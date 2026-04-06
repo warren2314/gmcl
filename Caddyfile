@@ -1,20 +1,21 @@
-{
-	email you@example.com
+# Behind Cloudflare — Cloudflare handles TLS, Caddy serves HTTP on port 80.
+# Set SSL/TLS mode in Cloudflare dashboard to "Flexible".
+
+:80 {
+    encode gzip
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options        "SAMEORIGIN"
+        Referrer-Policy        "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    handle /health {
+        reverse_proxy app:8080
+    }
+
+    handle {
+        reverse_proxy app:8080
+    }
 }
-
-http://localhost:80 {
-	encode gzip
-
-	@health {
-		path /health
-	}
-
-	handle @health {
-		reverse_proxy app:8080
-	}
-
-	handle {
-		reverse_proxy app:8080
-	}
-}
-
