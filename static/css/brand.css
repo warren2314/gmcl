@@ -1,0 +1,155 @@
+:root {
+  --bs-primary: #C41E3A;
+  --bs-primary-rgb: 196, 30, 58;
+  --gmcl-blue: #2E86C1;
+  --gmcl-blue-rgb: 46, 134, 193;
+  --gmcl-gold: #F5A623;
+}
+
+/* ── Bootstrap primary overrides ─────────────────────────────────────────── */
+.btn-primary {
+  --bs-btn-bg: var(--bs-primary);
+  --bs-btn-border-color: var(--bs-primary);
+  --bs-btn-hover-bg: #a3182f;
+  --bs-btn-hover-border-color: #8e1428;
+  --bs-btn-active-bg: #8e1428;
+  --bs-btn-active-border-color: #7a1123;
+  --bs-btn-disabled-bg: var(--bs-primary);
+  --bs-btn-disabled-border-color: var(--bs-primary);
+}
+
+.btn-outline-primary {
+  --bs-btn-color: var(--bs-primary);
+  --bs-btn-border-color: var(--bs-primary);
+  --bs-btn-hover-bg: var(--bs-primary);
+  --bs-btn-hover-border-color: var(--bs-primary);
+  --bs-btn-active-bg: var(--bs-primary);
+  --bs-btn-active-border-color: var(--bs-primary);
+}
+
+/* ── Navbar ───────────────────────────────────────────────────────────────── */
+.navbar { --bs-navbar-brand-color: #fff; }
+.bg-gmcl { background-color: var(--bs-primary) !important; }
+.bg-gmcl .navbar-brand img {
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+.table-gmcl thead {
+  background-color: var(--bs-primary);
+  color: #fff;
+}
+.table-gmcl thead th { border-color: var(--bs-primary); }
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.card-gmcl { border-top: 3px solid var(--bs-primary); }
+
+/* KPI cards */
+.card-kpi {
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.card-kpi:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+}
+.kpi-number {
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -.5px;
+}
+.kpi-label {
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #6c757d;
+  font-weight: 600;
+}
+.kpi-icon {
+  font-size: 2.2rem;
+  opacity: .18;
+}
+
+/* KPI accent borders */
+.kpi-red    { border-top: 4px solid var(--bs-primary); }
+.kpi-blue   { border-top: 4px solid var(--gmcl-blue); }
+.kpi-green  { border-top: 4px solid #198754; }
+.kpi-amber  { border-top: 4px solid var(--gmcl-gold); }
+.kpi-purple { border-top: 4px solid #6f42c1; }
+.kpi-teal   { border-top: 4px solid #20c997; }
+
+/* ── Charts ───────────────────────────────────────────────────────────────── */
+.chart-container {
+  position: relative;
+  height: 300px;
+}
+.chart-container-sm {
+  position: relative;
+  height: 220px;
+}
+.chart-container-lg {
+  position: relative;
+  height: 380px;
+}
+
+/* ── Sanctions ────────────────────────────────────────────────────────────── */
+.badge-yellow-card {
+  background-color: #ffc107;
+  color: #000;
+  font-size: .8rem;
+  padding: .35em .65em;
+}
+.badge-red-card {
+  background-color: #dc3545;
+  color: #fff;
+  font-size: .8rem;
+  padding: .35em .65em;
+}
+.sanction-row-yellow { background-color: rgba(255,193,7,.08) !important; }
+.sanction-row-red    { background-color: rgba(220,53,69,.08) !important; }
+
+/* ── Reports ──────────────────────────────────────────────────────────────── */
+.report-card-generating {
+  opacity: .65;
+  border-left: 4px solid #adb5bd;
+}
+.report-card-ready {
+  border-left: 4px solid #198754;
+}
+.report-card-error {
+  border-left: 4px solid #dc3545;
+}
+
+/* ── Compliance ───────────────────────────────────────────────────────────── */
+.compliance-submitted { background-color: rgba(25,135,84,.08) !important; }
+.compliance-missing   { background-color: rgba(220,53,69,.06) !important; }
+
+/* ── Umpire score bar ─────────────────────────────────────────────────────── */
+.umpire-score-bar { height: 6px; border-radius: 3px; }
+
+/* ── Utility ──────────────────────────────────────────────────────────────── */
+.text-gmcl-blue  { color: var(--gmcl-blue) !important; }
+.text-gmcl-red   { color: var(--bs-primary) !important; }
+a { color: var(--bs-primary); }
+a:hover { color: #8e1428; }
+
+/* Section divider */
+.section-heading {
+  font-size: .7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: #adb5bd;
+  margin-bottom: .5rem;
+}
+
+/* Autosave status badge */
+#autosave-status {
+  font-size: .85rem;
+  color: #6c757d;
+}

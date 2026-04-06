@@ -1,0 +1,36 @@
+# Caddyfile.production — copy to Caddyfile before building the production Docker image.
+# Replace YOUR_DOMAIN with the actual domain (e.g. admin.gmcl.co.uk).
+# Caddy will automatically obtain and renew a Let's Encrypt TLS certificate.
+#
+# Usage:
+#   cp Caddyfile.production Caddyfile
+#   bash scripts/deploy.sh
+
+{
+    email webmaster@gmcl.co.uk
+}
+
+YOUR_DOMAIN {
+    encode gzip
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "SAMEORIGIN"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    @health {
+        path /health
+    }
+
+    handle @health {
+        reverse_proxy app:8080
+    }
+
+    handle {
+        reverse_proxy app:8080
+    }
+}

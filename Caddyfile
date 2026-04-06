@@ -1,0 +1,20 @@
+{
+	email you@example.com
+}
+
+http://localhost:80 {
+	encode gzip
+
+	@health {
+		path /health
+	}
+
+	handle @health {
+		reverse_proxy app:8080
+	}
+
+	handle {
+		reverse_proxy app:8080
+	}
+}
+
