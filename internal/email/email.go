@@ -1,47 +1,61 @@
 package email
 
 import (
+	"context"
 	"fmt"
 	"log"
-	"net/smtp"
 	"os"
+	"time"
+
+	"github.com/mailersend/mailersend-go"
 )
 
-// Client is a minimal SMTP email client.
+// Client sends transactional email via the MailerSend API.
 type Client struct {
-	host     string
-	port     string
-	username string
-	password string
-	from     string
+	apiKey   string
+	fromName string
+	fromEmail string
 }
 
 func NewFromEnv() *Client {
 	return &Client{
-		host:     os.Getenv("SMTP_HOST"),
-		port:     os.Getenv("SMTP_PORT"),
-		username: os.Getenv("SMTP_USERNAME"),
-		password: os.Getenv("SMTP_PASSWORD"),
-		from:     os.Getenv("SMTP_FROM"),
+		apiKey:    os.Getenv("MAILERSEND_API_KEY"),
+		fromName:  getEnv("MAILERSEND_FROM_NAME", "GMCL Admin"),
+		fromEmail: getEnv("MAILERSEND_FROM_EMAIL", "webmaster@gmcl.co.uk"),
 	}
 }
 
 func (c *Client) Send(to, subject, body string) error {
-	if c.host == "" || c.port == "" || c.from == "" {
-		// For local dev, fall back to logging.
-		log.Printf("email send (dev fallback) to=%s subject=%s body=%s", to, subject, body)
+	if c.apiKey == "" {
+		// Dev fallback — log to stdout instead of sending.
+		log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
 		return nil
 	}
 
-	addr := fmt.Sprintf("%s:%s", c.host, c.port)
-	auth := smtp.PlainAuth("", c.username, c.password, c.host)
-	msg := []byte("To: " + to + "\r\n" +
-		"Subject: " + subject + "\r\n" +
-		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=UTF-8\r\n" +
-		"\r\n" +
-		body + "\r\n")
+	ms := mailersend.NewMailersend(c.apiKey)
 
-	return smtp.SendMail(addr, auth, c.from, []string{to}, msg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	message := ms.Email.NewMessage()
+	message.SetFrom(mailersend.From{Name: c.fromName, Email: c.fromEmail})
+	message.SetRecipients([]mailersend.Recipient{{Email: to}})
+	message.SetSubject(subject)
+	message.SetText(body)
+	message.SetHTML(fmt.Sprintf("<pre style='font-family:monospace'>%s</pre>", body))
+
+	res, err := ms.Email.Send(ctx, message)
+	if err != nil {
+		return fmt.Errorf("mailersend: %w", err)
+	}
+
+	log.Printf("[email] sent to=%s subject=%q message-id=%s", to, subject, res.Header.Get("X-Message-Id"))
+	return nil
 }
 
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
