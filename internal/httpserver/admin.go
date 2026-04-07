@@ -170,7 +170,6 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 		mailer := email.NewFromEnv()
 		adminID, err := auth.StartAdminLogin(ctx, s.DB, mailer, username, password, r.RemoteAddr)
 		if err != nil {
-			// audit failed login attempt
 			s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
 				"username": username,
 			})
@@ -178,9 +177,13 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 			if c, err2 := r.Cookie(middleware.CSRFCookieName); err2 == nil {
 				csrfToken = c.Value
 			}
+			errMsg := "Invalid username or password."
+			if strings.Contains(err.Error(), "2fa_email_failed") {
+				errMsg = "Credentials accepted but the verification email could not be sent. Please check server email configuration."
+			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username)
+			writeAdminLoginPage(w, csrfToken, errMsg, username)
 			return
 		}
 

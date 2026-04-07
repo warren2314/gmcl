@@ -82,7 +82,7 @@ func StartAdminLogin(ctx context.Context, pool *db.Pool, mailer *email.Client, u
 	}
 
 	if err := mailer.Send(emailAddr, "Your admin login code", "Your one-time code is: "+code); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("2fa_email_failed: %w", err)
 	}
 
 	return id, nil
