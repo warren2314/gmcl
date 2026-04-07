@@ -167,6 +167,28 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
+		// When DISABLE_2FA=1, verify password only (no email code).
+		if os.Getenv("DISABLE_2FA") == "1" {
+			adminID, err := auth.VerifyPasswordOnly(ctx, s.DB, username, password)
+			if err != nil {
+				s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
+					"username": username,
+				})
+				csrfToken := ""
+				if c, err2 := r.Cookie(middleware.CSRFCookieName); err2 == nil {
+					csrfToken = c.Value
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusUnauthorized)
+				writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username)
+				return
+			}
+
+			// Skip 2FA — go straight to session.
+			s.issueAdminSession(w, r, ctx, adminID, username)
+			return
+		}
+
 		mailer := email.NewFromEnv()
 		adminID, err := auth.StartAdminLogin(ctx, s.DB, mailer, username, password, r.RemoteAddr)
 		if err != nil {
@@ -206,6 +228,38 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 
 		http.Redirect(w, r, "/admin/2fa", http.StatusSeeOther)
 	}
+}
+
+// issueAdminSession creates the signed session cookie and redirects to the dashboard
+// (or change-password page if force_password_change is set).
+func (s *Server) issueAdminSession(w http.ResponseWriter, r *http.Request, ctx context.Context, adminID int32, username string) {
+	now := time.Now().Unix()
+	sess := adminSession{
+		AdminID:  adminID,
+		Expiry:   now + int64((8 * time.Hour).Seconds()),
+		Name:     username,
+		Aud:      "adm",
+		JTI:      fmt.Sprintf("%d-%d", adminID, time.Now().UnixNano()),
+		IssuedAt: now,
+	}
+	if err := setAdminSessionCookie(w, &sess); err != nil {
+		http.Error(w, "could not set session", http.StatusInternalServerError)
+		return
+	}
+
+	s.audit(ctx, r, "admin", &adminID, "admin_login_success", "admin_user", func() *int64 {
+		v := int64(adminID)
+		return &v
+	}(), map[string]any{})
+
+	var forceChange bool
+	_ = s.DB.QueryRow(ctx, `SELECT force_password_change FROM admin_users WHERE id=$1`, adminID).Scan(&forceChange)
+	if forceChange {
+		http.Redirect(w, r, "/admin/change-password", http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
 }
 
 func (s *Server) handleAdmin2FAGet() http.HandlerFunc {

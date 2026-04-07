@@ -25,6 +25,44 @@ func CheckPassword(hash []byte, plain string) error {
 	return bcrypt.CompareHashAndPassword(hash, []byte(plain))
 }
 
+// VerifyPasswordOnly checks username/password without sending a 2FA code.
+// Used when DISABLE_2FA=1 is set.
+func VerifyPasswordOnly(ctx context.Context, pool *db.Pool, username, password string) (int32, error) {
+	var id int32
+	var pwHash []byte
+	var isActive bool
+	var lockedUntil sql.NullTime
+
+	err := pool.QueryRow(ctx, `
+		SELECT id, password_hash, is_active, locked_until
+		FROM admin_users
+		WHERE username = $1
+	`, username).Scan(&id, &pwHash, &isActive, &lockedUntil)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$7EqJtq98hPqEX7fNZaFWoO7O7O7O7O7O7O7O7O7O7O7O7O7O7O"), []byte(password))
+			return 0, fmt.Errorf("invalid credentials")
+		}
+		return 0, err
+	}
+	if !isActive {
+		return 0, fmt.Errorf("account disabled")
+	}
+	if lockedUntil.Valid && time.Now().Before(lockedUntil.Time) {
+		return 0, fmt.Errorf("account locked")
+	}
+	if err := CheckPassword(pwHash, password); err != nil {
+		_, _ = pool.Exec(ctx, `
+			UPDATE admin_users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = $1
+		`, id)
+		return 0, fmt.Errorf("invalid credentials")
+	}
+	_, _ = pool.Exec(ctx, `
+		UPDATE admin_users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1
+	`, id)
+	return id, nil
+}
+
 // StartAdminLogin verifies username/password and, if valid, creates a 2FA code and emails it.
 func StartAdminLogin(ctx context.Context, pool *db.Pool, mailer *email.Client, username, password, ip string) (int32, error) {
 	var id int32
