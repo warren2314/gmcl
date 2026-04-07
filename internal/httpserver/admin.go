@@ -109,24 +109,23 @@ func (s *Server) adminRouter() http.Handler {
 	return r
 }
 
-func (s *Server) handleAdminLoginGet() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		csrfToken := ""
-		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
-			csrfToken = c.Value
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pageHead(w, "Admin Login")
-		fmt.Fprint(w, `<div class="container" style="max-width:440px;margin-top:5rem">
+func writeAdminLoginPage(w http.ResponseWriter, csrfToken, errMsg, username string) {
+	pageHead(w, "Admin Login")
+	errorHTML := ""
+	if errMsg != "" {
+		errorHTML = `<div class="alert alert-danger py-2 text-start" role="alert">` + escapeHTML(errMsg) + `</div>`
+	}
+	fmt.Fprintf(w, `<div class="container" style="max-width:440px;margin-top:5rem">
 <div class="card card-gmcl shadow-sm">
   <div class="card-body text-center">
     <img src="/images/logo.webp" alt="GMCL" style="max-width:220px" class="mb-3">
     <h4 class="card-title mb-4">Admin Login</h4>
+    %s
     <form method="POST" action="/admin/login">
-      <input type="hidden" name="csrf_token" value="`+csrfToken+`">
+      <input type="hidden" name="csrf_token" value="%s">
       <div class="mb-3 text-start">
         <label class="form-label">Username</label>
-        <input class="form-control" name="username" required autofocus>
+        <input class="form-control" name="username" value="%s" required autofocus>
       </div>
       <div class="mb-3 text-start">
         <label class="form-label">Password</label>
@@ -137,8 +136,18 @@ func (s *Server) handleAdminLoginGet() http.HandlerFunc {
   </div>
 </div>
 </div>
-`)
-		pageFooter(w)
+`, errorHTML, csrfToken, escapeHTML(username))
+	pageFooter(w)
+}
+
+func (s *Server) handleAdminLoginGet() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		csrfToken := ""
+		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
+			csrfToken = c.Value
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writeAdminLoginPage(w, csrfToken, "", "")
 	}
 }
 
@@ -165,7 +174,13 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 			s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
 				"username": username,
 			})
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			csrfToken := ""
+			if c, err2 := r.Cookie(middleware.CSRFCookieName); err2 == nil {
+				csrfToken = c.Value
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username)
 			return
 		}
 
