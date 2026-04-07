@@ -1,80 +1,36 @@
 package email
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net/smtp"
 	"os"
-	"time"
-
-	"github.com/mailersend/mailersend-go"
 )
 
-// Client sends transactional email via MailerSend API or SMTP (Postfix fallback).
+// Client sends transactional email via SMTP (Postfix on the host droplet).
 type Client struct {
-	// MailerSend
-	apiKey    string
-	fromName  string
-	fromEmail string
-
-	// SMTP (Postfix on host)
-	smtpHost string
-	smtpPort string
-	smtpFrom string
+	host string
+	port string
+	from string
 }
 
 func NewFromEnv() *Client {
 	return &Client{
-		apiKey:    os.Getenv("MAILERSEND_API_KEY"),
-		fromName:  getEnv("MAILERSEND_FROM_NAME", "GMCL Admin"),
-		fromEmail: getEnv("MAILERSEND_FROM_EMAIL", "webmaster@gmcl.co.uk"),
-
-		smtpHost: os.Getenv("SMTP_HOST"),
-		smtpPort: getEnv("SMTP_PORT", "25"),
-		smtpFrom: getEnv("SMTP_FROM", "webmaster@gmcl.co.uk"),
+		host: os.Getenv("SMTP_HOST"),
+		port: getEnv("SMTP_PORT", "25"),
+		from: getEnv("SMTP_FROM", "webmaster@gmcl.co.uk"),
 	}
 }
 
 func (c *Client) Send(to, subject, body string) error {
-	// Prefer MailerSend if API key is set.
-	if c.apiKey != "" {
-		return c.sendMailerSend(to, subject, body)
+	if c.host == "" {
+		// Dev fallback — log to stdout when SMTP_HOST is not set.
+		log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
+		return nil
 	}
 
-	// Fall back to SMTP (Postfix on host) if configured.
-	if c.smtpHost != "" {
-		return c.sendSMTP(to, subject, body)
-	}
-
-	// Dev fallback — log to stdout.
-	log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
-	return nil
-}
-
-func (c *Client) sendMailerSend(to, subject, body string) error {
-	ms := mailersend.NewMailersend(c.apiKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	message := ms.Email.NewMessage()
-	message.SetFrom(mailersend.From{Name: c.fromName, Email: c.fromEmail})
-	message.SetRecipients([]mailersend.Recipient{{Email: to}})
-	message.SetSubject(subject)
-	message.SetText(body)
-	message.SetHTML(fmt.Sprintf("<pre style='font-family:monospace'>%s</pre>", body))
-
-	res, err := ms.Email.Send(ctx, message)
-	if err != nil {
-		return fmt.Errorf("2fa_email_failed: mailersend: %w", err)
-	}
-	log.Printf("[email] sent via MailerSend to=%s message-id=%s", to, res.Header.Get("X-Message-Id"))
-	return nil
-}
-
-func (c *Client) sendSMTP(to, subject, body string) error {
-	addr := fmt.Sprintf("%s:%s", c.smtpHost, c.smtpPort)
-	msg := []byte("From: " + c.smtpFrom + "\r\n" +
+	addr := fmt.Sprintf("%s:%s", c.host, c.port)
+	msg := []byte("From: " + c.from + "\r\n" +
 		"To: " + to + "\r\n" +
 		"Subject: " + subject + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
@@ -83,10 +39,10 @@ func (c *Client) sendSMTP(to, subject, body string) error {
 		body + "\r\n")
 
 	// Postfix on localhost requires no auth.
-	if err := smtp.SendMail(addr, nil, c.smtpFrom, []string{to}, msg); err != nil {
-		return fmt.Errorf("2fa_email_failed: smtp: %w", err)
+	if err := smtp.SendMail(addr, nil, c.from, []string{to}, msg); err != nil {
+		return fmt.Errorf("2fa_email_failed: %w", err)
 	}
-	log.Printf("[email] sent via SMTP to=%s subject=%q", to, subject)
+	log.Printf("[email] sent to=%s subject=%q", to, subject)
 	return nil
 }
 
