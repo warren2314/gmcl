@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"cricket-ground-feedback/internal/auth"
 	"cricket-ground-feedback/internal/db"
 	"cricket-ground-feedback/internal/httpserver"
 	"cricket-ground-feedback/internal/migrate"
@@ -16,11 +19,42 @@ import (
 )
 
 func main() {
+	resetEmail := flag.String("reset-admin", "", "Reset the password for an admin user (provide email/username)")
+	resetPass := flag.String("password", "", "New password to set (use with -reset-admin)")
+	flag.Parse()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := db.NewFromEnv(ctx)
 	cancel()
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	// Admin password reset mode — does not start the HTTP server.
+	if *resetEmail != "" {
+		if *resetPass == "" {
+			fmt.Fprintln(os.Stderr, "error: -password is required with -reset-admin")
+			os.Exit(1)
+		}
+		hash, err := auth.HashPassword(*resetPass)
+		if err != nil {
+			log.Fatalf("failed to hash password: %v", err)
+		}
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+		tag, err := pool.Exec(rctx, `
+			UPDATE admin_users SET password_hash=$1, force_password_change=FALSE
+			WHERE username=$2 OR email=$2
+		`, hash, *resetEmail)
+		if err != nil {
+			log.Fatalf("failed to update password: %v", err)
+		}
+		if tag.RowsAffected() == 0 {
+			fmt.Fprintf(os.Stderr, "no admin user found with username/email %q\n", *resetEmail)
+			os.Exit(1)
+		}
+		fmt.Printf("Password updated for %s\n", *resetEmail)
+		os.Exit(0)
 	}
 
 	if os.Getenv("MIGRATE") == "1" {
