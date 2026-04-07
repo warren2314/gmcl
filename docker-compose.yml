@@ -9,6 +9,8 @@ services:
       - APP_HTTP_ADDR=:8080
       - MIGRATE=1
       - MIGRATE_DIR=/migrations
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
