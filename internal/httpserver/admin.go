@@ -1145,11 +1145,12 @@ func (s *Server) handleAdminCSVGet() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "CSV Upload")
 		writeAdminNav(w, csrfToken, r.URL.Path)
-		fmt.Fprint(w, `<div class="container-fluid">
+		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Upload Captains CSV</h3>
 <div class="card card-gmcl shadow-sm" style="max-width:600px">
   <div class="card-body">
     <form method="POST" action="/admin/csv/captains/preview" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="%s">
       <div class="mb-3">
         <label class="form-label">CSV file</label>
         <input type="file" class="form-control" name="file" accept=".csv" required>
@@ -1160,7 +1161,7 @@ func (s *Server) handleAdminCSVGet() http.HandlerFunc {
   </div>
 </div>
 </div>
-`)
+`, escapeHTML(csrfToken))
 		pageFooter(w)
 	}
 }
@@ -1346,9 +1347,10 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 			}
 			fmt.Fprint(w, "</ul></div>")
 		}
-		fmt.Fprint(w, `<div class="card card-gmcl shadow-sm" style="max-width:600px">
+		fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm" style="max-width:600px">
   <div class="card-body">
     <form method="POST" action="/admin/csv/captains/apply">
+      <input type="hidden" name="csrf_token" value="%s">
       <div class="mb-3">
         <label class="form-label">Apply mode</label>
         <select class="form-select" name="mode">
@@ -1361,7 +1363,7 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
   </div>
 </div>
 </div>
-`)
+`, escapeHTML(csrfToken))
 		pageFooter(w)
 
 		// audit preview creation
