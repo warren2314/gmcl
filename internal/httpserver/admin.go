@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -192,6 +193,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 		mailer := email.NewFromEnv()
 		adminID, err := auth.StartAdminLogin(ctx, s.DB, mailer, username, password, r.RemoteAddr)
 		if err != nil {
+			log.Printf("[admin login] username=%s error=%v", username, err)
 			s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
 				"username": username,
 			})
@@ -1026,14 +1028,14 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		defer rows.Close()
 
 		type rankRow struct {
-			Club       string
-			Subs       int64
-			AvgPitch   float64
-			AvgBounce  float64
-			AvgSeam    float64
-			AvgCarry   float64
-			AvgTurn    float64
-			Sanctions  int64
+			Club      string
+			Subs      int64
+			AvgPitch  float64
+			AvgBounce float64
+			AvgSeam   float64
+			AvgCarry  float64
+			AvgTurn   float64
+			Sanctions int64
 		}
 		var data []rankRow
 		for rows.Next() {

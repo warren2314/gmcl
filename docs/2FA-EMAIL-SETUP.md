@@ -1,149 +1,290 @@
-# 2FA Email Setup — Status & Resumption Guide
+# 2FA Email Setup - AWS SES Runbook
+
+This document replaces the earlier Postfix/OpenDKIM/Cloudflare-forwarding approach.
+
+The recommended production path is:
+
+- send email directly from the app via **Amazon SES SMTP**
+- verify `gmcl.co.uk` in SES
+- enable SES DKIM signing
+- point the app at the SES SMTP endpoint
+
+This is simpler, cheaper, and easier to operate than running your own mail server.
+
+---
 
 ## Why This Matters
 
-Admin login uses two-factor authentication (2FA). After entering the correct
-password, the system emails a one-time 6-digit code to the admin's email address.
-The admin must enter this code to complete login. This was a client requirement.
+Admin login uses 2FA by email. After entering the correct password, the app sends a one-time code to the admin email address.
 
-Currently `DISABLE_2FA=1` is set in `.env` on the production droplet as a
-temporary bypass so the admin dashboard is accessible while email is being
-configured. **This must be removed once email is working.**
+Production currently uses `DISABLE_2FA=1` as a temporary bypass while email delivery is being finalized. Remove that bypass only after SES delivery is confirmed working.
 
 ---
 
-## Current State (as of 2026-04-07)
+## Recommended Architecture
 
-### What works
-- Postfix is installed and running on the droplet
-- The Docker app container can reach Postfix via `host.docker.internal:25`
-- UFW allows Docker network (`172.16.0.0/12`) to connect to port 25
-- The Go SMTP client correctly sends `EHLO gmcl.co.uk`
-- SPF record is set: `v=spf1 ip4:104.248.172.185 include:_spf.mx.cloudflare.net ~all`
+- **Outbound email**: Amazon SES
+- **Transport from app**: SMTP
+- **DNS**: Cloudflare can remain your DNS provider
+- **No dependency on Cloudflare Email Routing** for outbound delivery
 
-### What is blocking
-Cloudflare Email Routing rejects mail with:
-> "Cannot forward emails that are not authenticated"
-
-Cloudflare requires **DKIM** (or ARC) authentication on top of SPF. SPF alone
-is not enough for Cloudflare Email Routing to forward the message.
+You may still forward the mailbox wherever you want, but outbound sending should come directly from SES.
 
 ---
 
-## The Fix — OpenDKIM
+## What The App Needs
 
-We need to install and configure **OpenDKIM** so Postfix signs outgoing mail
-with a DKIM signature. Once the DNS TXT record is added, Cloudflare will see
-`dkim=pass` and forward the email successfully.
+The app already supports SMTP configuration through environment variables:
 
-### Steps completed
-- [x] `sudo apt-get install -y opendkim opendkim-tools`
-- [x] Key pair generated at `/etc/opendkim/keys/gmcl.co.uk/mail.private`
-- [x] `/etc/opendkim.conf` written with Unix socket config
-- [x] `/etc/opendkim/KeyTable`, `SigningTable`, `TrustedHosts` written
-- [x] Postfix configured to use milter: `unix:/run/opendkim/opendkim.sock`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM`
 
-### Steps remaining
-- [ ] Get OpenDKIM service running (currently failing — see below)
-- [ ] Get DNS TXT record from `/etc/opendkim/keys/gmcl.co.uk/mail.txt`
-- [ ] Add DKIM TXT record to Cloudflare DNS (`mail._domainkey.gmcl.co.uk`)
-- [ ] Test: `echo "test" | mail -s "DKIM test" webmaster@gmcl.co.uk`
-- [ ] Verify in Cloudflare Email Routing activity log that DKIM shows `pass`
-- [ ] Remove `DISABLE_2FA=1` from `/opt/gmcl/.env`
-- [ ] Restart app: `docker compose restart app`
+The current mailer code uses plain SMTP send flow, so SES SMTP is the lowest-change option.
+
+Relevant app file:
+
+- [internal/email/email.go](/e:/GMCL/internal/email/email.go)
 
 ---
 
-## Resuming OpenDKIM Setup
+## AWS SES Setup
 
-### Current failure
-OpenDKIM starts but exits immediately. Last attempt:
+Use the SES console in your preferred AWS region. Pick one region and keep all SES settings in that same region.
 
-```
-Process: ExecStart=/usr/sbin/opendkim -f (code=exited, status=0/SUCCESS)
-```
+Official AWS references:
 
-The systemd override at `/etc/systemd/system/opendkim.service.d/override.conf`
-was interfering. To continue:
+- SES verified identities: https://docs.aws.amazon.com/ses/latest/dg/verify-addresses-and-domains.html
+- SES Easy DKIM: https://docs.aws.amazon.com/ses/latest/dg/send-email-authentication-dkim-easy.html
+- SES SMTP credentials: https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
+- SES sandbox / production access: https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html
+- SES SMTP endpoints: https://docs.aws.amazon.com/general/latest/gr/ses.html
 
-```bash
-# Remove bad override if still present
-sudo rm -f /etc/systemd/system/opendkim.service.d/override.conf
-sudo systemctl daemon-reload
-sudo systemctl restart opendkim
-sudo systemctl status opendkim --no-pager
-```
+### 1. Choose an SES region
 
-If it still fails, run manually to see the real error:
-```bash
-sudo -u opendkim opendkim -f -x /etc/opendkim.conf
-```
+Use a region close to the app, for example:
 
-### Config files on the server
+- `eu-west-2` (London)
+- `eu-west-1` (Ireland)
 
-**`/etc/opendkim.conf`**
-```
-Mode                  sv
-SignatureAlgorithm    rsa-sha256
-Canonicalization      relaxed/relaxed
-KeyTable              /etc/opendkim/KeyTable
-SigningTable          /etc/opendkim/SigningTable
-ExternalIgnoreList    /etc/opendkim/TrustedHosts
-InternalHosts         /etc/opendkim/TrustedHosts
-Socket                local:/run/opendkim/opendkim.sock
-UMask                 002
-UserID                opendkim
-```
+Keep a note of the SMTP hostname for that region.
 
-**`/etc/opendkim/KeyTable`**
-```
-mail._domainkey.gmcl.co.uk gmcl.co.uk:mail:/etc/opendkim/keys/gmcl.co.uk/mail.private
-```
+Typical SES SMTP hostnames look like:
 
-**`/etc/opendkim/SigningTable`**
-```
-*@gmcl.co.uk mail._domainkey.gmcl.co.uk
-```
+- `email-smtp.eu-west-2.amazonaws.com`
+- `email-smtp.eu-west-1.amazonaws.com`
 
-**`/etc/opendkim/TrustedHosts`**
-```
-127.0.0.1
-::1
-localhost
-172.16.0.0/12
-```
+### 2. Verify the domain in SES
 
-### Postfix milter config (already set)
-```bash
-smtpd_milters = unix:/run/opendkim/opendkim.sock
-non_smtpd_milters = unix:/run/opendkim/opendkim.sock
-milter_default_action = accept
-milter_protocol = 6
-```
+In SES:
+
+1. Open **Verified identities**
+2. Create identity
+3. Choose **Domain**
+4. Enter `gmcl.co.uk`
+5. Enable **Easy DKIM**
+
+SES will give you DNS records to add in Cloudflare. Usually this includes:
+
+- one TXT record for domain verification
+- three CNAME records for DKIM
+
+Add them exactly as provided.
+
+### 3. Wait for SES verification
+
+In SES, wait until:
+
+- domain status = verified
+- DKIM status = successful
+
+Do not move on until both are green.
+
+### 4. Request production access if needed
+
+New SES accounts may start in the **sandbox**.
+
+If still in sandbox:
+
+- you can only send to verified recipients
+- that is not suitable for production 2FA or reminders
+
+Request production access in the same SES region before go-live.
+
+### 5. Create SMTP credentials
+
+Create SES SMTP credentials in IAM using the SES flow.
+
+You will get:
+
+- SMTP username
+- SMTP password
+
+Store them securely. The SMTP password is not the same as your AWS console password.
+
+### 6. Decide the sender address
+
+Use a sender address under the verified domain, for example:
+
+- `webmaster@gmcl.co.uk`
+- `noreply@gmcl.co.uk`
+
+Set that address as `SMTP_FROM`.
 
 ---
 
-## Once DKIM is Working — Cloudflare DNS Record
+## Cloudflare DNS Changes
 
-```bash
-sudo cat /etc/opendkim/keys/gmcl.co.uk/mail.txt
-```
+Cloudflare is still fine for DNS. You only need it to publish the SES verification and DKIM records.
 
-Add the output as a TXT record in Cloudflare DNS:
-- **Type**: TXT
-- **Name**: `mail._domainkey`
-- **Content**: the `p=...` value from the file (everything inside the quotes, joined together)
+Add the SES records exactly as AWS gives them:
+
+- verification TXT
+- DKIM CNAMEs
+
+Do not proxy them.
+
+After DNS propagates, SES should show the identity as verified.
 
 ---
 
-## Removing the Bypass
+## App Configuration
 
-Once email is confirmed working:
+Set these values in `/opt/gmcl/.env` on the server:
+
+```env
+SMTP_HOST=email-smtp.eu-west-2.amazonaws.com
+SMTP_PORT=587
+SMTP_USERNAME=YOUR_SES_SMTP_USERNAME
+SMTP_PASSWORD=YOUR_SES_SMTP_PASSWORD
+SMTP_FROM=webmaster@gmcl.co.uk
+```
+
+Notes:
+
+- Port `587` is the normal choice for SMTP with STARTTLS.
+- If port `587` is blocked in your environment, SES also documents other SMTP ports.
+- The app currently sends to the configured SMTP host directly.
+
+After updating `.env`, restart the app:
 
 ```bash
-sed -i '/DISABLE_2FA/d' /opt/gmcl/.env
+cd /opt/gmcl
 docker compose restart app
 ```
 
-Then test login at `gmcl.co.uk/admin/login` — the 2FA code should arrive at
-`webmaster@gmcl.co.uk` (forwarded by Cloudflare to your personal inbox).
+---
+
+## App Status
+
+The SMTP client in [internal/email/email.go](/e:/GMCL/internal/email/email.go) is expected to support:
+
+- SMTP AUTH via `SMTP_USERNAME` and `SMTP_PASSWORD`
+- STARTTLS when the server advertises it
+- a display-name `SMTP_FROM` header with the correct envelope sender address
+
+That matches the SES SMTP path described in this document.
+
+---
+
+## Recommended Rollout Order
+
+1. Verify `gmcl.co.uk` in SES
+2. Publish SES DKIM records in Cloudflare
+3. Confirm SES identity status is verified
+4. Create SES SMTP credentials
+5. Set SES SMTP env vars in production
+6. Restart app
+7. Test 2FA email delivery
+8. Remove `DISABLE_2FA=1`
+
+---
+
+## Production Test Checklist
+
+### 1. Basic SMTP test from the app
+
+Attempt admin login and confirm the app no longer logs the dev fallback.
+
+Expected result:
+
+- app attempts real SMTP delivery
+- recipient gets the 2FA code
+
+### 2. SES console checks
+
+In AWS SES, verify:
+
+- send accepted
+- no auth failures
+- no suppression/bounce issue
+
+### 3. Recipient header checks
+
+In the received email headers, look for:
+
+- `dkim=pass`
+- `spf=pass` or aligned mail path as expected
+
+### 4. App behaviour check
+
+Once email works:
+
+```bash
+cd /opt/gmcl
+sed -i '/DISABLE_2FA/d' .env
+docker compose restart app
+```
+
+Then test admin login again at `/admin/login`.
+
+---
+
+## Troubleshooting
+
+### SES identity never verifies
+
+- DNS records in Cloudflare are wrong
+- records were proxied instead of DNS-only
+- wrong AWS region was checked
+
+### SMTP auth fails
+
+- wrong SES SMTP credentials
+- app is not yet using SMTP AUTH
+- region hostname does not match the SES region where credentials/identity were created
+
+### TLS / connection failures
+
+- outbound SMTP port blocked by firewall/provider
+- app mailer does not yet negotiate STARTTLS
+
+### Email accepted but not arriving
+
+- recipient spam folder
+- SES sandbox still enabled
+- SES suppression or bounce state
+
+---
+
+## What To Ignore From The Old Setup
+
+These are no longer the preferred path:
+
+- local Postfix relay
+- OpenDKIM on the droplet
+- Cloudflare Email Routing as the outbound delivery path
+
+They can be removed later once SES is live and stable.
+
+---
+
+## Next Repo Task
+
+Once SES is configured, the next step is operational verification:
+
+- confirm SES identity verification is green
+- set the production `SMTP_*` values
+- test admin 2FA delivery end to end

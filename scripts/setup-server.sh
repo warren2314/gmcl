@@ -150,10 +150,10 @@ SEED_ADMIN_EMAIL=webmaster@gmcl.co.uk
 SEED_ADMIN_PASSWORD=CHANGE_ME_BOOTSTRAP_PASSWORD
 
 # ── Email / SMTP (for admin invite emails) ────────────────────────────────────
-SMTP_HOST=smtp.gmail.com
+SMTP_HOST=email-smtp.eu-west-2.amazonaws.com
 SMTP_PORT=587
-SMTP_USER=webmaster@gmcl.co.uk
-SMTP_PASSWORD=CHANGE_ME_SMTP_APP_PASSWORD
+SMTP_USERNAME=CHANGE_ME_SMTP_USERNAME
+SMTP_PASSWORD=CHANGE_ME_SMTP_PASSWORD
 SMTP_FROM=GMCL Admin <webmaster@gmcl.co.uk>
 
 # ── Play-Cricket API ──────────────────────────────────────────────────────────
