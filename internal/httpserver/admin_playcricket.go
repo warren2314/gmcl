@@ -18,12 +18,15 @@ type playCricketMappingSuggestion struct {
 	PlayCricketTeamID string
 	FixtureClub       string
 	FixtureTeam       string
+	LocalClubID       int32
 	LocalTeamID       int32
 	LocalClub         string
 	LocalTeam         string
 	ExistingPCID      string
 	Reason            string
 	Status            string
+	CreateClub        bool
+	CreateTeam        bool
 	Appearances       int32
 	UmpireRows        int32
 	LastMatchDate     time.Time
@@ -49,6 +52,7 @@ type playCricketResolver struct {
 
 type playCricketLocalTeamRef struct {
 	ID        int32
+	ClubID    int32
 	ClubName  string
 	TeamName  string
 	CurrentID string
@@ -176,19 +180,17 @@ func (s *Server) handleAdminPlayCricketMappingApply() http.HandlerFunc {
 
 		applied := 0
 		for _, suggestion := range data.Suggestions {
-			if suggestion.Status != "ready" {
+			if !playCricketStatusApplies(suggestion.Status) {
 				continue
 			}
-			if _, err := s.DB.Exec(ctx, `
-				UPDATE teams
-				SET play_cricket_team_id = $1
-				WHERE id = $2
-				  AND (play_cricket_team_id IS NULL OR TRIM(play_cricket_team_id) = '')
-			`, suggestion.PlayCricketTeamID, suggestion.LocalTeamID); err != nil {
+			teamID, err := s.applyPlayCricketSuggestion(ctx, suggestion)
+			if err != nil {
 				http.Error(w, "error", http.StatusInternalServerError)
 				return
 			}
-			applied++
+			if teamID != 0 {
+				applied++
+			}
 		}
 
 		data, err = s.buildPlayCricketMappingPageData(ctx)
@@ -285,18 +287,18 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
   <div class="card-body d-flex align-items-center justify-content-between gap-3 flex-wrap">
     <div>
       <h5 class="card-title mb-1">Bulk Team Mapping</h5>
-      <p class="text-muted mb-0">Safe auto-matches only. Existing non-empty local mappings are left alone unless they already match.</p>
+      <p class="text-muted mb-0">Safe auto-matches only. Existing non-empty local mappings are left alone unless they already match. Missing clubs or teams can be created from the Play-Cricket fixture data.</p>
     </div>
     <form method="POST" action="/admin/play-cricket/team-mapping/apply">
       <input type="hidden" name="csrf_token" value="%s">
-      <button type="submit" class="btn btn-primary"%s>Apply %d ready mappings</button>
+      <button type="submit" class="btn btn-primary"%s>Apply %d ready changes</button>
     </form>
   </div>
 </div>
 `, escapeHTML(csrfToken), disabledAttr(data.ReadyCount == 0), data.ReadyCount)
 
 	fmt.Fprintf(w, `<div class="row g-3 mb-4">
-  <div class="col-md-3"><div class="border rounded p-3 bg-success-subtle"><div class="text-muted small">Ready</div><div class="fs-4 fw-semibold">%d</div></div></div>
+  <div class="col-md-3"><div class="border rounded p-3 bg-success-subtle"><div class="text-muted small">Ready/Create</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col-md-3"><div class="border rounded p-3 bg-secondary-subtle"><div class="text-muted small">Already mapped</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col-md-3"><div class="border rounded p-3 bg-warning-subtle"><div class="text-muted small">Conflicts</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col-md-3"><div class="border rounded p-3 bg-danger-subtle"><div class="text-muted small">Unmatched</div><div class="fs-4 fw-semibold">%d</div></div></div>
@@ -327,6 +329,12 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
 			localLabel := "No local match"
 			if suggestion.LocalTeamID > 0 {
 				localLabel = escapeHTML(suggestion.LocalClub + " - " + suggestion.LocalTeam)
+			} else if suggestion.CreateTeam {
+				if suggestion.CreateClub {
+					localLabel = escapeHTML("Create " + suggestion.FixtureClub + " - " + suggestion.FixtureTeam)
+				} else {
+					localLabel = escapeHTML(suggestion.LocalClub + " - create " + suggestion.FixtureTeam)
+				}
 			}
 			note := suggestion.Reason
 			if suggestion.ExistingPCID != "" && suggestion.ExistingPCID != suggestion.PlayCricketTeamID {
@@ -446,9 +454,33 @@ func (s *Server) buildPlayCricketMappingPageData(ctx context.Context) (playCrick
 
 		local, ok := resolver.resolve(suggestion.FixtureClub, suggestion.FixtureTeam)
 		if !ok {
-			suggestion.Status = "unmatched"
-			suggestion.Reason = "No unique local club/team match was found."
-			data.UnmatchedCount++
+			club, clubFound := resolver.csvResolver.resolveClub(suggestion.FixtureClub)
+			if existing, taken := resolver.localByPCID[suggestion.PlayCricketTeamID]; taken {
+				suggestion.Status = "conflict"
+				suggestion.Reason = "This Play-Cricket ID is already linked to another local team."
+				suggestion.LocalClubID = existing.ClubID
+				suggestion.LocalTeamID = existing.ID
+				suggestion.LocalClub = existing.ClubName
+				suggestion.LocalTeam = existing.TeamName
+				suggestion.ExistingPCID = existing.CurrentID
+				data.ConflictCount++
+			} else if clubFound {
+				suggestion.Status = "create_team"
+				suggestion.Reason = "Local club found; team will be created from the fixture data."
+				suggestion.LocalClubID = club.ID
+				suggestion.LocalClub = club.Name
+				suggestion.LocalTeam = suggestion.FixtureTeam
+				suggestion.CreateTeam = true
+				data.ReadyCount++
+			} else {
+				suggestion.Status = "create_club_team"
+				suggestion.Reason = "Local club and team will be created from the fixture data."
+				suggestion.LocalClub = suggestion.FixtureClub
+				suggestion.LocalTeam = suggestion.FixtureTeam
+				suggestion.CreateClub = true
+				suggestion.CreateTeam = true
+				data.ReadyCount++
+			}
 			data.Suggestions = append(data.Suggestions, suggestion)
 			continue
 		}
@@ -512,7 +544,7 @@ func newPlayCricketResolver(ctx context.Context, s *Server) (*playCricketResolve
 	}
 
 	rows, err := s.DB.Query(ctx, `
-		SELECT t.id, cl.name, t.name, COALESCE(t.play_cricket_team_id, '')
+		SELECT t.id, cl.id, cl.name, t.name, COALESCE(t.play_cricket_team_id, '')
 		FROM teams t
 		JOIN clubs cl ON cl.id = t.club_id
 	`)
@@ -523,7 +555,7 @@ func newPlayCricketResolver(ctx context.Context, s *Server) (*playCricketResolve
 
 	for rows.Next() {
 		var team playCricketLocalTeamRef
-		if err := rows.Scan(&team.ID, &team.ClubName, &team.TeamName, &team.CurrentID); err != nil {
+		if err := rows.Scan(&team.ID, &team.ClubID, &team.ClubName, &team.TeamName, &team.CurrentID); err != nil {
 			return nil, err
 		}
 		team.CurrentID = strings.TrimSpace(team.CurrentID)
@@ -603,12 +635,16 @@ func playCricketStatusOrder(status string) int {
 	switch status {
 	case "ready":
 		return 0
-	case "already_mapped":
+	case "create_team":
 		return 1
-	case "conflict":
+	case "create_club_team":
 		return 2
-	default:
+	case "already_mapped":
 		return 3
+	case "conflict":
+		return 4
+	default:
+		return 5
 	}
 }
 
@@ -616,12 +652,103 @@ func playCricketStatusBadge(status string) string {
 	switch status {
 	case "ready":
 		return `<span class="badge text-bg-success">Ready</span>`
+	case "create_team":
+		return `<span class="badge text-bg-success">Create team</span>`
+	case "create_club_team":
+		return `<span class="badge text-bg-success">Create club + team</span>`
 	case "already_mapped":
 		return `<span class="badge text-bg-secondary">Already mapped</span>`
 	case "conflict":
 		return `<span class="badge text-bg-warning">Conflict</span>`
 	default:
 		return `<span class="badge text-bg-danger">Unmatched</span>`
+	}
+}
+
+func playCricketStatusApplies(status string) bool {
+	switch status {
+	case "ready", "create_team", "create_club_team":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) applyPlayCricketSuggestion(ctx context.Context, suggestion playCricketMappingSuggestion) (int32, error) {
+	switch suggestion.Status {
+	case "ready":
+		if _, err := s.DB.Exec(ctx, `
+			UPDATE teams
+			SET play_cricket_team_id = $1
+			WHERE id = $2
+			  AND (play_cricket_team_id IS NULL OR TRIM(play_cricket_team_id) = '')
+		`, suggestion.PlayCricketTeamID, suggestion.LocalTeamID); err != nil {
+			return 0, err
+		}
+		return suggestion.LocalTeamID, nil
+	case "create_team", "create_club_team":
+		clubID := suggestion.LocalClubID
+		var err error
+		if suggestion.CreateClub {
+			clubID, err = ensurePlayCricketClub(ctx, s, suggestion.FixtureClub)
+			if err != nil {
+				return 0, err
+			}
+		}
+		teamID, err := ensurePlayCricketTeam(ctx, s, clubID, suggestion.FixtureTeam, suggestion.PlayCricketTeamID)
+		if err != nil {
+			return 0, err
+		}
+		return teamID, nil
+	default:
+		return 0, nil
+	}
+}
+
+func ensurePlayCricketClub(ctx context.Context, s *Server, clubName string) (int32, error) {
+	var clubID int32
+	err := s.DB.QueryRow(ctx, `
+		INSERT INTO clubs (name)
+		VALUES ($1)
+		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`, strings.TrimSpace(clubName)).Scan(&clubID)
+	return clubID, err
+}
+
+func ensurePlayCricketTeam(ctx context.Context, s *Server, clubID int32, teamName, playCricketTeamID string) (int32, error) {
+	level := parseTeamLevel(teamName)
+	var teamID int32
+	err := s.DB.QueryRow(ctx, `
+		INSERT INTO teams (club_id, name, level, active, play_cricket_team_id)
+		VALUES ($1, $2, $3, TRUE, $4)
+		ON CONFLICT (club_id, name)
+		DO UPDATE SET
+			level = COALESCE(teams.level, EXCLUDED.level),
+			active = TRUE,
+			play_cricket_team_id = CASE
+				WHEN teams.play_cricket_team_id IS NULL OR TRIM(teams.play_cricket_team_id) = '' THEN EXCLUDED.play_cricket_team_id
+				ELSE teams.play_cricket_team_id
+			END
+		RETURNING id
+	`, clubID, strings.TrimSpace(teamName), level, strings.TrimSpace(playCricketTeamID)).Scan(&teamID)
+	return teamID, err
+}
+
+func parseTeamLevel(teamName string) any {
+	switch normalizeCaptainCSVTeamKey(teamName) {
+	case "1xi", "1":
+		return 1
+	case "2xi", "2":
+		return 2
+	case "3xi", "3":
+		return 3
+	case "4xi", "4":
+		return 4
+	case "5xi", "5":
+		return 5
+	default:
+		return nil
 	}
 }
 
