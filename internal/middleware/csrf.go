@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"strings"
 )
 
 const csrfCookieName = "csrf_token"
@@ -51,7 +52,11 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		r = r.WithContext(ctx)
 
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch {
-			_ = r.ParseForm() // safe even if already parsed
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+				_ = r.ParseMultipartForm(5 << 20)
+			} else {
+				_ = r.ParseForm() // safe even if already parsed
+			}
 			expected := CSRFToken(r)
 			formToken := r.FormValue("csrf_token")
 			if formToken == "" {
@@ -72,4 +77,3 @@ func generateCSRFToken() string {
 	_, _ = rand.Read(buf)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
-
