@@ -27,6 +27,7 @@ type playCricketMappingSuggestion struct {
 	Status            string
 	CreateClub        bool
 	CreateTeam        bool
+	Candidates        []playCricketCandidate
 	Appearances       int32
 	UmpireRows        int32
 	LastMatchDate     time.Time
@@ -56,6 +57,11 @@ type playCricketLocalTeamRef struct {
 	ClubName  string
 	TeamName  string
 	CurrentID string
+}
+
+type playCricketCandidate struct {
+	TeamID      int32
+	DisplayName string
 }
 
 func (s *Server) handleAdminPlayCricketGet() http.HandlerFunc {
@@ -169,6 +175,11 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 
 func (s *Server) handleAdminPlayCricketMappingApply() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
 
@@ -180,10 +191,11 @@ func (s *Server) handleAdminPlayCricketMappingApply() http.HandlerFunc {
 
 		applied := 0
 		for _, suggestion := range data.Suggestions {
-			if !playCricketStatusApplies(suggestion.Status) {
+			if r.FormValue("apply_"+suggestion.PlayCricketTeamID) != "1" {
 				continue
 			}
-			teamID, err := s.applyPlayCricketSuggestion(ctx, suggestion)
+			action := strings.TrimSpace(r.FormValue("action_" + suggestion.PlayCricketTeamID))
+			teamID, err := s.applyPlayCricketSuggestion(ctx, suggestion, action)
 			if err != nil {
 				http.Error(w, "error", http.StatusInternalServerError)
 				return
@@ -283,19 +295,18 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
 </div>
 `, escapeHTML(csrfToken), time.Now().In(s.LondonLoc).Format("2006-01-02"), data.FixtureCount, data.DistinctFixtureIDs, data.MappedTeams, data.ReadyCount, escapeHTML(lastFetched))
 
-	fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm mb-4">
+	fmt.Fprintf(w, `<form method="POST" action="/admin/play-cricket/team-mapping/apply">
+  <input type="hidden" name="csrf_token" value="%s">
+  <div class="card card-gmcl shadow-sm mb-4">
   <div class="card-body d-flex align-items-center justify-content-between gap-3 flex-wrap">
     <div>
       <h5 class="card-title mb-1">Bulk Team Mapping</h5>
       <p class="text-muted mb-0">Safe auto-matches only. Existing non-empty local mappings are left alone unless they already match. Missing clubs or teams can be created from the Play-Cricket fixture data.</p>
     </div>
-    <form method="POST" action="/admin/play-cricket/team-mapping/apply">
-      <input type="hidden" name="csrf_token" value="%s">
-      <button type="submit" class="btn btn-primary"%s>Apply %d ready changes</button>
-    </form>
+    <button type="submit" class="btn btn-primary"%s>Apply selected changes</button>
   </div>
 </div>
-`, escapeHTML(csrfToken), disabledAttr(data.ReadyCount == 0), data.ReadyCount)
+`, escapeHTML(csrfToken), disabledAttr(data.ReadyCount == 0))
 
 	fmt.Fprintf(w, `<div class="row g-3 mb-4">
   <div class="col-md-3"><div class="border rounded p-3 bg-success-subtle"><div class="text-muted small">Ready/Create</div><div class="fs-4 fw-semibold">%d</div></div></div>
@@ -310,9 +321,11 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
     <table class="table table-hover table-striped table-gmcl mb-0">
       <thead>
         <tr>
+          <th>Apply</th>
           <th>Status</th>
           <th>Play-Cricket</th>
           <th>Fixture Team</th>
+          <th>Action</th>
           <th>Local Team</th>
           <th>Fixtures</th>
           <th>Umpire Rows</th>
@@ -323,7 +336,7 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
       <tbody>
 `)
 	if len(data.Suggestions) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-4">No cached fixtures yet. Run a sync first.</td></tr>`)
+		fmt.Fprint(w, `<tr><td colspan="10" class="text-center text-muted py-4">No cached fixtures yet. Run a sync first.</td></tr>`)
 	} else {
 		for _, suggestion := range data.Suggestions {
 			localLabel := "No local match"
@@ -336,14 +349,22 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
 					localLabel = escapeHTML(suggestion.LocalClub + " - create " + suggestion.FixtureTeam)
 				}
 			}
+			applyCell := `<span class="text-muted">—</span>`
+			actionCell := `<span class="text-muted">No action</span>`
+			if playCricketStatusHasAction(suggestion) {
+				applyCell = fmt.Sprintf(`<input class="form-check-input" type="checkbox" name="apply_%s" value="1">`, escapeHTML(suggestion.PlayCricketTeamID))
+				actionCell = playCricketActionSelect(suggestion)
+			}
 			note := suggestion.Reason
 			if suggestion.ExistingPCID != "" && suggestion.ExistingPCID != suggestion.PlayCricketTeamID {
 				note = strings.TrimSpace(note + " Existing local ID: " + suggestion.ExistingPCID + ".")
 			}
 			fmt.Fprintf(w, `<tr>
   <td>%s</td>
+  <td>%s</td>
   <td><code>%s</code></td>
   <td>%s - %s</td>
+  <td>%s</td>
   <td>%s</td>
   <td>%d</td>
   <td>%d</td>
@@ -351,10 +372,12 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
   <td>%s</td>
 </tr>
 `,
+				applyCell,
 				playCricketStatusBadge(suggestion.Status),
 				escapeHTML(suggestion.PlayCricketTeamID),
 				escapeHTML(suggestion.FixtureClub),
 				escapeHTML(suggestion.FixtureTeam),
+				actionCell,
 				localLabel,
 				suggestion.Appearances,
 				suggestion.UmpireRows,
@@ -367,6 +390,7 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
     </table>
   </div>
 </div>
+</form>
 </div>
 `)
 	pageFooter(w)
@@ -471,6 +495,7 @@ func (s *Server) buildPlayCricketMappingPageData(ctx context.Context) (playCrick
 				suggestion.LocalClub = club.Name
 				suggestion.LocalTeam = suggestion.FixtureTeam
 				suggestion.CreateTeam = true
+				suggestion.Candidates = resolver.clubCandidates(club.ID)
 				data.ReadyCount++
 			} else {
 				suggestion.Status = "create_club_team"
@@ -489,6 +514,7 @@ func (s *Server) buildPlayCricketMappingPageData(ctx context.Context) (playCrick
 		suggestion.LocalClub = local.ClubName
 		suggestion.LocalTeam = local.TeamName
 		suggestion.ExistingPCID = local.CurrentID
+		suggestion.Candidates = resolver.clubCandidates(local.ClubID)
 
 		if local.CurrentID == suggestion.PlayCricketTeamID {
 			suggestion.Status = "already_mapped"
@@ -597,6 +623,27 @@ func (r *playCricketResolver) resolve(clubName, teamName string) (playCricketLoc
 	return team, ok
 }
 
+func (r *playCricketResolver) clubCandidates(clubID int32) []playCricketCandidate {
+	out := make([]playCricketCandidate, 0)
+	for _, team := range r.localByID {
+		if team.ClubID != clubID {
+			continue
+		}
+		label := team.ClubName + " - " + team.TeamName
+		if team.CurrentID != "" {
+			label += " (PC " + team.CurrentID + ")"
+		}
+		out = append(out, playCricketCandidate{
+			TeamID:      team.ID,
+			DisplayName: label,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].DisplayName < out[j].DisplayName
+	})
+	return out
+}
+
 func playCricketTeamVariants(teamName, clubName string) []string {
 	variants := []string{strings.TrimSpace(teamName)}
 
@@ -674,7 +721,47 @@ func playCricketStatusApplies(status string) bool {
 	}
 }
 
-func (s *Server) applyPlayCricketSuggestion(ctx context.Context, suggestion playCricketMappingSuggestion) (int32, error) {
+func playCricketStatusHasAction(suggestion playCricketMappingSuggestion) bool {
+	return playCricketStatusApplies(suggestion.Status) || len(suggestion.Candidates) > 0
+}
+
+func playCricketActionSelect(suggestion playCricketMappingSuggestion) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `<select class="form-select form-select-sm" name="action_%s">`, escapeHTML(suggestion.PlayCricketTeamID))
+	switch suggestion.Status {
+	case "ready":
+		fmt.Fprint(&b, `<option value="auto" selected>Map to matched local team</option>`)
+	case "create_team":
+		fmt.Fprint(&b, `<option value="auto" selected>Create missing team</option>`)
+	case "create_club_team":
+		fmt.Fprint(&b, `<option value="auto" selected>Create club and team</option>`)
+	default:
+		fmt.Fprint(&b, `<option value="">Choose action</option>`)
+	}
+	for _, candidate := range suggestion.Candidates {
+		fmt.Fprintf(&b, `<option value="map:%d">Map to %s</option>`, candidate.TeamID, escapeHTML(candidate.DisplayName))
+	}
+	b.WriteString(`</select>`)
+	return b.String()
+}
+
+func (s *Server) applyPlayCricketSuggestion(ctx context.Context, suggestion playCricketMappingSuggestion, action string) (int32, error) {
+	if strings.HasPrefix(action, "map:") {
+		targetID, err := strconv.ParseInt(strings.TrimPrefix(action, "map:"), 10, 32)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := s.DB.Exec(ctx, `
+			UPDATE teams
+			SET play_cricket_team_id = $1
+			WHERE id = $2
+			  AND (play_cricket_team_id IS NULL OR TRIM(play_cricket_team_id) = '' OR play_cricket_team_id = $1)
+		`, suggestion.PlayCricketTeamID, int32(targetID)); err != nil {
+			return 0, err
+		}
+		return int32(targetID), nil
+	}
+
 	switch suggestion.Status {
 	case "ready":
 		if _, err := s.DB.Exec(ctx, `
