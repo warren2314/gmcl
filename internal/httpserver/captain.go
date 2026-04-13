@@ -817,6 +817,64 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			WHERE season_id = $1 AND week_id = $2 AND team_id = $3
 		`, sess.SeasonID, sess.WeekID, sess.TeamID)
 
+		var (
+			clubName       string
+			teamName       string
+			captainName    string
+			captainEmail   string
+			recipientEmail string
+			recipientLabel string
+			copyEmailSent  bool
+			copyStatusHTML string
+		)
+		if err := s.DB.QueryRow(ctx, `
+			SELECT cl.name, t.name, c.full_name, c.email
+			FROM captains c
+			JOIN teams t ON t.id = c.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			WHERE c.id = $1
+		`, sess.CaptainID).Scan(&clubName, &teamName, &captainName, &captainEmail); err != nil {
+			log.Printf("[submission copy] submission_id=%d captain_id=%d lookup_error=%v", submissionID, sess.CaptainID, err)
+		} else {
+			recipientEmail = captainEmail
+			recipientLabel = captainName
+			if submittedByRole == "delegate" && strings.TrimSpace(submittedByEmail) != "" {
+				recipientEmail = submittedByEmail
+				if strings.TrimSpace(submittedByName) != "" {
+					recipientLabel = strings.TrimSpace(submittedByName)
+				}
+			}
+			if strings.TrimSpace(recipientEmail) != "" {
+				mailer := email.NewFromEnv()
+				copyBody := fmt.Sprintf(
+					"Your captain report has been recorded.\n\nClub: %s\nTeam: %s\nSubmitted for: %s\nMatch date: %s\nPitch rating: %d\nOutfield rating: %d\nFacilities rating: %d\n\nComments:\n%s\n",
+					clubName,
+					teamName,
+					captainName,
+					matchDate.Format("2006-01-02"),
+					pitchRating,
+					outfieldRating,
+					facilitiesRating,
+					comments,
+				)
+				if err := mailer.Send(recipientEmail, "Copy of your captain report", copyBody); err != nil {
+					log.Printf("[submission copy] submission_id=%d to=%s error=%v", submissionID, recipientEmail, err)
+				} else {
+					copyEmailSent = true
+				}
+			}
+		}
+
+		copyStatusHTML = `<p>Your submission has been recorded.</p>`
+		if copyEmailSent {
+			if recipientLabel == "" {
+				recipientLabel = recipientEmail
+			}
+			copyStatusHTML += `<p>A copy has been sent to ` + escapeHTML(recipientLabel) + `.</p>`
+		} else {
+			copyStatusHTML += `<p class="mb-0">We could not send the email copy, but the report was saved successfully.</p>`
+		}
+
 		http.SetCookie(w, &http.Cookie{
 			Name:     captainSessionCookie,
 			Value:    "",
@@ -830,14 +888,14 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Submitted")
 		writeCaptainNav(w)
-		fmt.Fprint(w, `<div class="container" style="max-width:540px">
+		fmt.Fprintf(w, `<div class="container" style="max-width:540px">
 <div class="alert alert-success shadow-sm text-center" role="alert">
   <h4 class="alert-heading">Thank you!</h4>
-  <p>Your submission has been recorded. A copy will be sent to your email.</p>
+  %s
   <a href="/" class="btn btn-outline-primary">Back to home</a>
 </div>
 </div>
-`)
+`, copyStatusHTML)
 		pageFooter(w)
 
 		s.audit(ctx, r, "system", nil, "submission_created", "submission", &submissionID, map[string]any{
