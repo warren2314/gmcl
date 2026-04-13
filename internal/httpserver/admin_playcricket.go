@@ -81,6 +81,7 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 		matchDate := strings.TrimSpace(r.FormValue("match_date"))
 		rawBody := strings.TrimSpace(r.FormValue("raw_body"))
 		var seasonID *int32
+		seasonNumber := 0
 		if seasonRaw := strings.TrimSpace(r.FormValue("season_id")); seasonRaw != "" {
 			parsed, err := strconv.ParseInt(seasonRaw, 10, 32)
 			if err != nil {
@@ -90,6 +91,7 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 			}
 			v := int32(parsed)
 			seasonID = &v
+			seasonNumber = int(v)
 		}
 
 		var details []leagueapi.MatchDetail
@@ -102,25 +104,35 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 			}
 			details = parsed.MatchDetails
 		} else {
-			if matchDate == "" {
-				data, _ := s.buildPlayCricketMappingPageData(ctx)
-				s.renderAdminPlayCricketPage(w, r, data, "", "Match date is required when raw JSON is blank.")
-				return
-			}
-			md, err := time.Parse("2006-01-02", matchDate)
-			if err != nil {
-				data, _ := s.buildPlayCricketMappingPageData(ctx)
-				s.renderAdminPlayCricketPage(w, r, data, "", "Match date must use YYYY-MM-DD.")
-				return
-			}
 			client := leagueapi.NewClient(leagueapi.NewConfigFromEnv())
-			fetched, err := client.FetchMatchesForDate(ctx, md)
-			if err != nil {
+			switch {
+			case seasonNumber > 0:
+				fetched, err := client.FetchMatchesForSeason(ctx, seasonNumber)
+				if err != nil {
+					data, _ := s.buildPlayCricketMappingPageData(ctx)
+					s.renderAdminPlayCricketPage(w, r, data, "", "Fixture sync failed: "+err.Error())
+					return
+				}
+				details = fetched
+			case matchDate == "":
 				data, _ := s.buildPlayCricketMappingPageData(ctx)
-				s.renderAdminPlayCricketPage(w, r, data, "", "Fixture sync failed: "+err.Error())
+				s.renderAdminPlayCricketPage(w, r, data, "", "Provide either a season or a match date when raw JSON is blank.")
 				return
+			default:
+				md, err := time.Parse("2006-01-02", matchDate)
+				if err != nil {
+					data, _ := s.buildPlayCricketMappingPageData(ctx)
+					s.renderAdminPlayCricketPage(w, r, data, "", "Match date must use YYYY-MM-DD.")
+					return
+				}
+				fetched, err := client.FetchMatchesForDate(ctx, md)
+				if err != nil {
+					data, _ := s.buildPlayCricketMappingPageData(ctx)
+					s.renderAdminPlayCricketPage(w, r, data, "", "Fixture sync failed: "+err.Error())
+					return
+				}
+				details = fetched
 			}
-			details = fetched
 		}
 
 		if err := leagueapi.UpsertFixtureBatch(ctx, s.DB, seasonID, details); err != nil {
@@ -221,17 +233,17 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
         <form method="POST" action="/admin/play-cricket/sync">
           <input type="hidden" name="csrf_token" value="%s">
           <div class="mb-3">
-            <label class="form-label">Match date</label>
+			<label class="form-label">Match date</label>
             <input type="date" class="form-control" name="match_date" value="%s">
           </div>
           <div class="mb-3">
-            <label class="form-label">Season ID (optional)</label>
-            <input type="number" class="form-control" name="season_id" min="1">
+            <label class="form-label">Season (optional)</label>
+            <input type="number" class="form-control" name="season_id" min="2000" placeholder="e.g. 2026">
           </div>
           <div class="mb-3">
             <label class="form-label">Raw JSON (optional)</label>
             <textarea class="form-control" name="raw_body" rows="8" placeholder='Paste Play-Cricket JSON here if you want to sync a full API response directly.'></textarea>
-            <div class="form-text">Leave raw JSON blank to fetch by date using the configured API credentials. The parser accepts both <code>match_details</code> and <code>matches</code>.</div>
+            <div class="form-text">Leave raw JSON blank to fetch from the configured API by season or by date. The parser accepts both <code>match_details</code> and <code>matches</code>.</div>
           </div>
           <button type="submit" class="btn btn-primary">Sync now</button>
         </form>

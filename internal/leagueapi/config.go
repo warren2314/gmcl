@@ -10,11 +10,11 @@ import (
 // Config holds Play-Cricket / league API settings (from environment).
 // Base URL and key are required for live HTTP fetch; sync can still upsert from JSON via internal endpoint without them.
 type Config struct {
-	BaseURL  string
-	APIKey   string
-	LeagueID string
-	// MatchesURLTemplate is appended to BaseURL. Placeholders: {leagueId}, {date}
-	// Example: /api/v1/matches?league_id={leagueId}&match_date={date}
+	BaseURL string
+	APIKey  string
+	SiteID  string
+	// MatchesURLTemplate is appended to BaseURL. Placeholders: {siteId}, {leagueId},
+	// {date}, {season}. The legacy {leagueId} placeholder is still supported.
 	MatchesURLTemplate string
 	// DateFormat is used for {date}: "dd/MM/yyyy" (API sample) or "2006-01-02"
 	DateFormat string
@@ -39,12 +39,16 @@ func NewConfigFromEnv() Config {
 	}
 	tpl := strings.TrimSpace(os.Getenv("PLAY_CRICKET_MATCHES_URL_TEMPLATE"))
 	if tpl == "" {
-		tpl = "/?league_id={leagueId}&match_date={date}"
+		tpl = "/api/v2/matches.json?site_id={siteId}&season={season}"
+	}
+	siteID := strings.TrimSpace(os.Getenv("PLAY_CRICKET_SITE_ID"))
+	if siteID == "" {
+		siteID = strings.TrimSpace(os.Getenv("PLAY_CRICKET_LEAGUE_ID"))
 	}
 	return Config{
 		BaseURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_BASE_URL")), "/"),
 		APIKey:             strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_KEY")),
-		LeagueID:           strings.TrimSpace(os.Getenv("PLAY_CRICKET_LEAGUE_ID")),
+		SiteID:             siteID,
 		MatchesURLTemplate: tpl,
 		DateFormat:         df,
 		AuthQueryParam:     strings.TrimSpace(os.Getenv("PLAY_CRICKET_AUTH_QUERY_PARAM")),

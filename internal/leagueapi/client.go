@@ -26,8 +26,8 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// BuildMatchesURL expands BaseURL + MatchesURLTemplate with league id and date.
-func (c *Client) BuildMatchesURL(matchDate time.Time) (string, error) {
+// BuildMatchesURL expands BaseURL + MatchesURLTemplate with site id, date, and season.
+func (c *Client) BuildMatchesURL(matchDate time.Time, season int) (string, error) {
 	if c.cfg.BaseURL == "" {
 		return "", fmt.Errorf("PLAY_CRICKET_API_BASE_URL is not set")
 	}
@@ -36,8 +36,16 @@ func (c *Client) BuildMatchesURL(matchDate time.Time) (string, error) {
 		tpl = "/" + tpl
 	}
 	dateStr := FormatDateForTemplate(matchDate, c.cfg.DateFormat)
-	tpl = strings.ReplaceAll(tpl, "{leagueId}", url.QueryEscape(c.cfg.LeagueID))
+	seasonStr := ""
+	if season > 0 {
+		seasonStr = fmt.Sprintf("%d", season)
+	} else {
+		seasonStr = fmt.Sprintf("%d", matchDate.Year())
+	}
+	tpl = strings.ReplaceAll(tpl, "{siteId}", url.QueryEscape(c.cfg.SiteID))
+	tpl = strings.ReplaceAll(tpl, "{leagueId}", url.QueryEscape(c.cfg.SiteID))
 	tpl = strings.ReplaceAll(tpl, "{date}", url.QueryEscape(dateStr))
+	tpl = strings.ReplaceAll(tpl, "{season}", url.QueryEscape(seasonStr))
 
 	u, err := url.Parse(c.cfg.BaseURL + tpl)
 	if err != nil {
@@ -53,10 +61,19 @@ func (c *Client) BuildMatchesURL(matchDate time.Time) (string, error) {
 
 // FetchMatchesForDate GETs match list for a calendar date and returns parsed details.
 func (c *Client) FetchMatchesForDate(ctx context.Context, matchDate time.Time) ([]MatchDetail, error) {
+	return c.fetchMatches(ctx, matchDate, 0)
+}
+
+// FetchMatchesForSeason GETs match list for a season and returns parsed details.
+func (c *Client) FetchMatchesForSeason(ctx context.Context, season int) ([]MatchDetail, error) {
+	return c.fetchMatches(ctx, time.Date(season, time.January, 1, 0, 0, 0, 0, time.UTC), season)
+}
+
+func (c *Client) fetchMatches(ctx context.Context, matchDate time.Time, season int) ([]MatchDetail, error) {
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("league API client not configured (set PLAY_CRICKET_API_BASE_URL and PLAY_CRICKET_API_KEY)")
 	}
-	urlStr, err := c.BuildMatchesURL(matchDate)
+	urlStr, err := c.BuildMatchesURL(matchDate, season)
 	if err != nil {
 		return nil, err
 	}

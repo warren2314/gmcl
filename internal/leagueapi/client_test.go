@@ -49,12 +49,12 @@ func TestBuildMatchesURL_Basic(t *testing.T) {
 	c := NewClient(Config{
 		BaseURL:            "https://play-cricket.example.com",
 		APIKey:             "testkey",
-		LeagueID:           "5501",
-		MatchesURLTemplate: "/api/v1/matches?league_id={leagueId}&match_date={date}",
+		SiteID:             "5501",
+		MatchesURLTemplate: "/api/v1/matches?site_id={siteId}&match_date={date}",
 		DateFormat:         "dd/MM/yyyy",
 	})
 	d := time.Date(2025, 4, 5, 0, 0, 0, 0, time.UTC)
-	u, err := c.BuildMatchesURL(d)
+	u, err := c.BuildMatchesURL(d, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,12 +73,12 @@ func TestBuildMatchesURL_AuthQueryParam(t *testing.T) {
 	c := NewClient(Config{
 		BaseURL:            "https://play-cricket.example.com",
 		APIKey:             "myapikey",
-		LeagueID:           "5501",
+		SiteID:             "5501",
 		MatchesURLTemplate: "/matches",
 		AuthQueryParam:     "api_key",
 	})
 	d := time.Date(2025, 4, 5, 0, 0, 0, 0, time.UTC)
-	u, err := c.BuildMatchesURL(d)
+	u, err := c.BuildMatchesURL(d, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestBuildMatchesURL_NoLeadingSlashTemplate(t *testing.T) {
 		MatchesURLTemplate: "api/v1/matches",
 	})
 	d := time.Date(2025, 4, 5, 0, 0, 0, 0, time.UTC)
-	u, err := c.BuildMatchesURL(d)
+	u, err := c.BuildMatchesURL(d, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestBuildMatchesURL_ISODateFormat(t *testing.T) {
 		DateFormat:         "2006-01-02",
 	})
 	d := time.Date(2025, 4, 5, 0, 0, 0, 0, time.UTC)
-	u, err := c.BuildMatchesURL(d)
+	u, err := c.BuildMatchesURL(d, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestBuildMatchesURL_ISODateFormat(t *testing.T) {
 
 func TestBuildMatchesURL_NoBaseURL(t *testing.T) {
 	c := NewClient(Config{APIKey: "k"})
-	_, err := c.BuildMatchesURL(time.Now())
+	_, err := c.BuildMatchesURL(time.Now(), 0)
 	if err == nil {
 		t.Fatal("expected error when BaseURL is empty")
 	}
@@ -344,7 +344,7 @@ func newTestClient(serverURL string) *Client {
 	return NewClient(Config{
 		BaseURL:            serverURL,
 		APIKey:             "testkey",
-		LeagueID:           "5501",
+		SiteID:             "5501",
 		MatchesURLTemplate: "/matches",
 		Timeout:            5 * time.Second,
 	})
