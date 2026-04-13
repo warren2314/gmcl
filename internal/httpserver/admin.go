@@ -87,6 +87,9 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/csv/captains", s.handleAdminCSVGet())
 		r.Post("/csv/captains/preview", s.handleAdminCSVPreview())
 		r.Post("/csv/captains/apply", s.handleAdminCSVApply())
+		r.Get("/play-cricket", s.handleAdminPlayCricketGet())
+		r.Post("/play-cricket/sync", s.handleAdminPlayCricketSync())
+		r.Post("/play-cricket/team-mapping/apply", s.handleAdminPlayCricketMappingApply())
 
 		// Admin user management
 		r.Get("/users", s.handleAdminUsers())

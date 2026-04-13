@@ -1,13 +1,16 @@
 package leagueapi
 
-// MatchDetailsResponse matches the common Play-Cricket league "match_details" envelope.
+// MatchDetailsResponse matches Play-Cricket responses. Some endpoints return
+// "match_details" while others return "matches"; both are accepted.
 type MatchDetailsResponse struct {
 	MatchDetails []MatchDetail `json:"match_details"`
+	Matches      []MatchDetail `json:"matches"`
 }
 
 // MatchDetail is a subset of fields returned per match; extra fields are ignored.
 type MatchDetail struct {
 	MatchID       string `json:"match_id"`
+	ID            int64  `json:"id"`
 	LeagueID      string `json:"league_id"`
 	CompetitionID string `json:"competition_id"`
 	MatchDate     string `json:"match_date"`

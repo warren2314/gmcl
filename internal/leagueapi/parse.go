@@ -3,6 +3,7 @@ package leagueapi
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +19,14 @@ func ParseMatchDetailsJSON(body []byte) (*MatchDetailsResponse, error) {
 	var r MatchDetailsResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, err
+	}
+	if len(r.MatchDetails) == 0 && len(r.Matches) > 0 {
+		r.MatchDetails = r.Matches
+	}
+	for i := range r.MatchDetails {
+		if strings.TrimSpace(r.MatchDetails[i].MatchID) == "" && r.MatchDetails[i].ID > 0 {
+			r.MatchDetails[i].MatchID = strconv.FormatInt(r.MatchDetails[i].ID, 10)
+		}
 	}
 	return &r, nil
 }

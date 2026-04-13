@@ -113,6 +113,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
         %s
         %s
         %s
+        %s
       </ul>
       <form method="POST" action="/admin/logout" class="d-flex">
         <input type="hidden" name="csrf_token" value="%s">
@@ -128,6 +129,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 		dropdownActive("/admin/rankings"),
 		navLink("/admin/sanctions", "Sanctions"),
 		navLink("/admin/reports", "Reports"),
+		navLink("/admin/play-cricket", "Play-Cricket"),
 		navLink("/admin/users", "Admin Users"),
 		navLink("/admin/csv/captains", "CSV Upload"),
 		csrfToken,
