@@ -1152,6 +1152,7 @@ func (s *Server) handleAdminCSVGet() http.HandlerFunc {
         <label class="form-label">CSV file</label>
         <input type="file" class="form-control" name="file" accept=".csv" required>
       </div>
+      <p class="text-muted small">Accepted headers: <code>club,team,captain_name,captain_email</code> or <code>first name,last name,email,MobileTel,Club,Team</code>. Missing clubs or teams will be created on apply.</p>
       <button type="submit" class="btn btn-primary">Preview</button>
     </form>
   </div>
@@ -1185,20 +1186,20 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 			return
 		}
 
-		allowed := []string{"club", "team", "captain_name", "captain_email"}
-		if len(header) != len(allowed) {
+		layout, err := parseCaptainCSVLayout(header)
+		if err != nil {
 			http.Error(w, "unexpected header", http.StatusBadRequest)
 			return
-		}
-		for i, h := range header {
-			if strings.ToLower(strings.TrimSpace(h)) != allowed[i] {
-				http.Error(w, "unexpected header", http.StatusBadRequest)
-				return
-			}
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
+
+		resolver, err := newCaptainCSVResolver(ctx, s)
+		if err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
 
 		var (
 			rows    []captainCSVRow
@@ -1227,12 +1228,7 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 				check.Write([]byte(field))
 			}
 
-			rw := captainCSVRow{
-				Club:  strings.TrimSpace(record[0]),
-				Team:  strings.TrimSpace(record[1]),
-				Name:  strings.TrimSpace(record[2]),
-				Email: strings.ToLower(strings.TrimSpace(record[3])),
-			}
+			rw := layout.buildRow(record)
 
 			// Basic validation
 			if rw.Club == "" || rw.Team == "" || rw.Name == "" || rw.Email == "" {
@@ -1254,26 +1250,15 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 				}
 			}
 
-			// Check that club and team already exist (no auto-creation).
-			var clubID int32
-			if err := s.DB.QueryRow(ctx, `SELECT id FROM clubs WHERE name = $1`, rw.Club).Scan(&clubID); err != nil {
-				if err == pgx.ErrNoRows {
-					rw.Errors = append(rw.Errors, "unknown club")
-				} else {
-					errors = append(errors, fmt.Sprintf("row %d: db error", rowNum+1))
-				}
-			} else {
-				var tmp int32
-				if err := s.DB.QueryRow(ctx, `SELECT id FROM teams WHERE club_id = $1 AND name = $2`, clubID, rw.Team).Scan(&tmp); err != nil {
-					if err == pgx.ErrNoRows {
-						rw.Errors = append(rw.Errors, "unknown team")
-					} else {
-						errors = append(errors, fmt.Sprintf("row %d: db error", rowNum+1))
-					}
+			// Canonicalize existing club/team names where possible; apply will create missing rows.
+			if resolvedClub, resolvedTeam, clubFound, teamFound := resolver.resolveClubAndTeam(rw.Club, rw.Team); clubFound {
+				rw.Club = resolvedClub
+				if teamFound {
+					rw.Team = resolvedTeam
 				}
 			}
 
-			key := strings.ToLower(rw.Club) + "|" + strings.ToLower(rw.Team) + "|" + strings.ToLower(rw.Email)
+			key := normalizeCaptainCSVClubKey(rw.Club) + "|" + normalizeCaptainCSVTeamKey(rw.Team) + "|" + strings.ToLower(rw.Email)
 			if _, found := seenKey[key]; found {
 				rw.Errors = append(rw.Errors, "duplicate row in file")
 			} else {
@@ -1485,14 +1470,24 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 
 			// defence-in-depth: re-check for formula-like fields and length.
 			fields := []string{rrow.Club, rrow.Team, rrow.Name, rrow.Email}
+			invalidRow := false
 			for _, f := range fields {
 				fs := strings.TrimSpace(f)
 				if fs != "" && (fs[0] == '=' || fs[0] == '+' || fs[0] == '-' || fs[0] == '@') {
-					continue
+					invalidRow = true
+					break
 				}
 				if len(fs) > 320 {
-					continue
+					invalidRow = true
+					break
 				}
+			}
+			if invalidRow {
+				if mode == "all_or_nothing" {
+					http.Error(w, "preview invalid", http.StatusBadRequest)
+					return
+				}
+				continue
 			}
 
 			var clubID int32
