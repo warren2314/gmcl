@@ -176,13 +176,13 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 		defer cancel()
 
 		type userRow struct {
-			ID            int32
-			Username      string
-			Email         string
-			IsActive      bool
-			ForceChange   bool
-			LastLogin     *time.Time
-			InvitedAt     *time.Time
+			ID          int32
+			Username    string
+			Email       string
+			IsActive    bool
+			ForceChange bool
+			LastLogin   *time.Time
+			InvitedAt   *time.Time
 		}
 		var users []userRow
 		rows, err := s.DB.Query(ctx, `
@@ -352,9 +352,12 @@ func (s *Server) handleAdminUserInvite() http.HandlerFunc {
 
 		// Send invite email
 		emailClient := email.NewFromEnv()
-		appURL := os.Getenv("APP_URL")
+		appURL := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
 		if appURL == "" {
-			appURL = "https://your-domain.com"
+			appURL = strings.TrimSpace(os.Getenv("APP_URL"))
+		}
+		if appURL == "" {
+			appURL = "https://gmcl.co.uk"
 		}
 		body := fmt.Sprintf(`You have been invited to the GMCL Admin Portal.
 
