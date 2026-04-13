@@ -81,17 +81,25 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 		matchDate := strings.TrimSpace(r.FormValue("match_date"))
 		rawBody := strings.TrimSpace(r.FormValue("raw_body"))
 		var seasonID *int32
-		seasonNumber := 0
-		if seasonRaw := strings.TrimSpace(r.FormValue("season_id")); seasonRaw != "" {
+		apiSeason := 0
+		if seasonRaw := strings.TrimSpace(r.FormValue("api_season")); seasonRaw != "" {
 			parsed, err := strconv.ParseInt(seasonRaw, 10, 32)
 			if err != nil {
 				data, _ := s.buildPlayCricketMappingPageData(ctx)
-				s.renderAdminPlayCricketPage(w, r, data, "", "Season ID must be a number.")
+				s.renderAdminPlayCricketPage(w, r, data, "", "API season must be a number like 2026.")
+				return
+			}
+			apiSeason = int(parsed)
+		}
+		if dbSeasonRaw := strings.TrimSpace(r.FormValue("db_season_id")); dbSeasonRaw != "" {
+			parsed, err := strconv.ParseInt(dbSeasonRaw, 10, 32)
+			if err != nil {
+				data, _ := s.buildPlayCricketMappingPageData(ctx)
+				s.renderAdminPlayCricketPage(w, r, data, "", "DB season ID must be a number.")
 				return
 			}
 			v := int32(parsed)
 			seasonID = &v
-			seasonNumber = int(v)
 		}
 
 		var details []leagueapi.MatchDetail
@@ -106,8 +114,8 @@ func (s *Server) handleAdminPlayCricketSync() http.HandlerFunc {
 		} else {
 			client := leagueapi.NewClient(leagueapi.NewConfigFromEnv())
 			switch {
-			case seasonNumber > 0:
-				fetched, err := client.FetchMatchesForSeason(ctx, seasonNumber)
+			case apiSeason > 0:
+				fetched, err := client.FetchMatchesForSeason(ctx, apiSeason)
 				if err != nil {
 					data, _ := s.buildPlayCricketMappingPageData(ctx)
 					s.renderAdminPlayCricketPage(w, r, data, "", "Fixture sync failed: "+err.Error())
@@ -237,13 +245,17 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
             <input type="date" class="form-control" name="match_date" value="%s">
           </div>
           <div class="mb-3">
-            <label class="form-label">Season (optional)</label>
-            <input type="number" class="form-control" name="season_id" min="2000" placeholder="e.g. 2026">
+			<label class="form-label">API season (optional)</label>
+            <input type="number" class="form-control" name="api_season" min="2000" placeholder="e.g. 2026">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">DB season ID (optional)</label>
+            <input type="number" class="form-control" name="db_season_id" min="1" placeholder="e.g. 2">
           </div>
           <div class="mb-3">
             <label class="form-label">Raw JSON (optional)</label>
             <textarea class="form-control" name="raw_body" rows="8" placeholder='Paste Play-Cricket JSON here if you want to sync a full API response directly.'></textarea>
-            <div class="form-text">Leave raw JSON blank to fetch from the configured API by season or by date. The parser accepts both <code>match_details</code> and <code>matches</code>.</div>
+            <div class="form-text">Use API season for Play-Cricket fetches. DB season ID is only for linking cached fixtures to a local season row. The parser accepts both <code>match_details</code> and <code>matches</code>.</div>
           </div>
           <button type="submit" class="btn btn-primary">Sync now</button>
         </form>
