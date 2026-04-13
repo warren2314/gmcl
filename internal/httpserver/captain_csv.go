@@ -87,6 +87,7 @@ func hasCaptainCSVHeaders(indexByHeader map[string]int, keys ...string) bool {
 
 func normalizeCaptainCSVHeader(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "\ufeff")
 	s = strings.NewReplacer(" ", "_", "-", "_").Replace(s)
 	return s
 }
