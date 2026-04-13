@@ -77,9 +77,6 @@ func (c *Client) Send(to, subject, body string) error {
 		if err := client.StartTLS(tlsConfig); err != nil {
 			return fmt.Errorf("2fa_email_failed: STARTTLS: %w", err)
 		}
-		if err := client.Hello(c.heloDomain); err != nil {
-			return fmt.Errorf("2fa_email_failed: EHLO after STARTTLS: %w", err)
-		}
 	} else if c.username != "" || c.password != "" {
 		return fmt.Errorf("2fa_email_failed: server does not support STARTTLS")
 	}
