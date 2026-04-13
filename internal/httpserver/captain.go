@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -267,7 +268,7 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 
 		// Look up captain for team (simplified: latest active).
 		var captainID int32
-		var email string
+		var captainEmail string
 		err = s.DB.QueryRow(ctx, `
 			SELECT c.id, w.season_id, c.email
 			FROM captains c
@@ -276,7 +277,7 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			WHERE c.team_id = $2
 			ORDER BY c.active_from DESC
 			LIMIT 1
-		`, weekID, teamID).Scan(&captainID, &seasonID, &email)
+		`, weekID, teamID).Scan(&captainID, &seasonID, &captainEmail)
 		if err != nil {
 			// Avoid enumeration: always say success.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -351,10 +352,18 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			VALUES ($1, $2, $3)
 		`, captainID, seasonID, weekID)
 
-		// TODO: send email using real SMTP; for now we only log in development.
+		link := fmt.Sprintf("%s/magic-link/confirm?token=%s", publicBaseURL(r), token)
 		if os.Getenv("APP_ENV") == "dev" {
-			link := fmt.Sprintf("%s/magic-link/confirm?token=%s", publicBaseURL(r), token)
-			fmt.Printf("Magic link for captain %d (%s): %s\n", captainID, email, link)
+			fmt.Printf("Magic link for captain %d (%s): %s\n", captainID, captainEmail, link)
+		}
+		mailer := email.NewFromEnv()
+		body := "Open this secure link to complete the captain report:\n\n" +
+			link + "\n\n" +
+			"This link expires automatically."
+		if err := mailer.Send(captainEmail, "Captain report access", body); err != nil {
+			log.Printf("[captain magic link] captain_id=%d email=%s error=%v", captainID, captainEmail, err)
+			http.Error(w, "could not send email", http.StatusInternalServerError)
+			return
 		}
 
 		// audit log (without target email)
