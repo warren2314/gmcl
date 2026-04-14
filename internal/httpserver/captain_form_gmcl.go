@@ -223,23 +223,15 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 `)
 
 	// Section 2 - Pitch & Ground (6 levels each)
-	opts := []struct {
+	section2Select := func(name, title string, options []struct {
 		Val   int
 		Label string
-	}{
-		{1, "Very good / minimal concern"},
-		{2, "Good"},
-		{3, "Above average / acceptable"},
-		{4, "Below average"},
-		{5, "Poor"},
-		{6, "Unfit (dangerous)"},
-	}
-	section2Select := func(name, title string) {
+	}) {
 		fmt.Fprintf(w, `<div class="col-md-6 mb-3">
   <label class="form-label">%s *</label>
   <select class="form-select" name="%s" required>
 `, title, name)
-		for _, o := range opts {
+		for _, o := range options {
 			sel := ""
 			if formValInt(draft, name) == o.Val {
 				sel = " selected"
@@ -256,10 +248,50 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
     <p class="text-muted">ECB requirement: comment on pitch and ground. Criteria are unevenness of bounce, seam movement, carry/bounce and turn from the protected area.</p>
     <div class="row">
 `)
-	section2Select("unevenness_of_bounce", "Unevenness of Bounce")
-	section2Select("seam_movement", "Seam Movement")
-	section2Select("carry_bounce", "Carry and/or Bounce")
-	section2Select("turn", "Turn")
+	section2Select("unevenness_of_bounce", "Unevenness of Bounce", []struct {
+		Val   int
+		Label string
+	}{
+		{1, "No unevenness of bounce at any stage throughout the match"},
+		{2, "Little unevenness of bounce at any stage throughout the match"},
+		{3, "Occasional, at most, unevenness of bounce throughout the match"},
+		{4, "More than occasional, at most, unevenness of bounce throughout the match"},
+		{5, "Excessive unevenness of bounce throughout the match"},
+		{6, "Unfit, should only be marked as such if dangerous."},
+	})
+	section2Select("seam_movement", "Seam Movement", []struct {
+		Val   int
+		Label string
+	}{
+		{1, "Limited seam movement, at most, at all stages of the match"},
+		{2, "Limited seam movement at all stages of the match"},
+		{3, "Occasional seam movement at all stages of the match"},
+		{4, "More than occasional seam movement at all stages of the match"},
+		{5, "Excessive seam movement at all stages of the match"},
+		{6, "Unfit, should only be marked as such if dangerous."},
+	})
+	section2Select("carry_bounce", "Carry and/or Bounce", []struct {
+		Val   int
+		Label string
+	}{
+		{1, "Good carry and / or bounce throughout the match"},
+		{2, "Average carry and / or bounce throughout the match"},
+		{3, "Lacking in carry and / or bounce throughout the match"},
+		{4, "Minimal carry and / or bounce throughout the match"},
+		{5, "Very minimal carry and / or bounce throughout the match"},
+		{6, "Unfit, should only be marked as such if dangerous."},
+	})
+	section2Select("turn", "Turn", []struct {
+		Val   int
+		Label string
+	}{
+		{1, "Little or no turn from the protected area"},
+		{2, "A little turn from the protected area"},
+		{3, "Moderate turn from the protected area"},
+		{4, "Considerable turn from the protected area"},
+		{5, "Excessive assistance to spin bowlers from the protected area"},
+		{6, "Unfit, should only be marked as such if dangerous."},
+	})
 
 	fmt.Fprint(w, `    </div>
   </div>
@@ -269,7 +301,7 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
   <button type="submit" class="btn btn-primary btn-lg">Submit report</button>
 </div>
 </form>
-<p class="text-muted text-center mb-5">Thanks for completing the form. You will receive a copy at the email above.</p>
+<p class="text-muted text-center mb-5">Submitting will take you to a separate confirmation page.</p>
 </div>
 `)
 	pageFooter(w)
