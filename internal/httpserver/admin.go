@@ -1129,6 +1129,7 @@ type captainCSVRow struct {
 	Team   string
 	Name   string
 	Email  string
+	Phone  string
 	Errors []string
 }
 
@@ -1472,7 +1473,7 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 			}
 
 			// defence-in-depth: re-check for formula-like fields and length.
-			fields := []string{rrow.Club, rrow.Team, rrow.Name, rrow.Email}
+			fields := []string{rrow.Club, rrow.Team, rrow.Name, rrow.Email, rrow.Phone}
 			invalidRow := false
 			for _, f := range fields {
 				fs := strings.TrimSpace(f)
@@ -1529,9 +1530,9 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 			if exists {
 				_, err = tx.Exec(ctx, `
 					UPDATE captains
-					SET full_name = $1, active_to = NULL
-					WHERE team_id = $2 AND email = $3
-				`, rrow.Name, teamID, rrow.Email)
+					SET full_name = $1, phone = NULLIF($2, ''), active_to = NULL
+					WHERE team_id = $3 AND email = $4
+				`, rrow.Name, rrow.Phone, teamID, rrow.Email)
 				if err != nil {
 					http.Error(w, "error", http.StatusInternalServerError)
 					return
@@ -1539,9 +1540,9 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 				updated++
 			} else {
 				_, err = tx.Exec(ctx, `
-					INSERT INTO captains (team_id, full_name, email, active_from)
-					VALUES ($1, $2, $3, CURRENT_DATE)
-				`, teamID, rrow.Name, rrow.Email)
+					INSERT INTO captains (team_id, full_name, email, phone, active_from)
+					VALUES ($1, $2, $3, NULLIF($4, ''), CURRENT_DATE)
+				`, teamID, rrow.Name, rrow.Email, rrow.Phone)
 				if err != nil {
 					http.Error(w, "error", http.StatusInternalServerError)
 					return

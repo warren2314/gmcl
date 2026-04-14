@@ -11,6 +11,7 @@ type captainCSVLayout struct {
 	teamIdx      int
 	nameIdx      int
 	emailIdx     int
+	phoneIdx     int
 	firstNameIdx int
 	lastNameIdx  int
 }
@@ -56,6 +57,7 @@ func parseCaptainCSVLayout(header []string) (captainCSVLayout, error) {
 			teamIdx:      indexByHeader["team"],
 			nameIdx:      indexByHeader["captain_name"],
 			emailIdx:     indexByHeader["captain_email"],
+			phoneIdx:     -1,
 			firstNameIdx: -1,
 			lastNameIdx:  -1,
 		}, nil
@@ -68,6 +70,7 @@ func parseCaptainCSVLayout(header []string) (captainCSVLayout, error) {
 			teamIdx:      indexByHeader["team"],
 			nameIdx:      -1,
 			emailIdx:     indexByHeader["email"],
+			phoneIdx:     indexByHeader["mobiletel"],
 			firstNameIdx: indexByHeader["first_name"],
 			lastNameIdx:  indexByHeader["last_name"],
 		}, nil
@@ -110,6 +113,7 @@ func (l captainCSVLayout) buildRow(record []string) captainCSVRow {
 		Team:  field(l.teamIdx),
 		Name:  name,
 		Email: strings.ToLower(field(l.emailIdx)),
+		Phone: field(l.phoneIdx),
 	}
 }
 

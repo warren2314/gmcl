@@ -34,6 +34,7 @@ type adminCaptainEdit struct {
 	TeamID      int32
 	FullName    string
 	Email       string
+	Phone       string
 	ActiveFrom  string
 	ActiveTo    string
 	CurrentlyOn bool
@@ -61,6 +62,7 @@ type adminTeamCaptainRow struct {
 	CaptainID         *int32
 	CaptainName       string
 	CaptainEmail      string
+	CaptainPhone      string
 }
 
 type adminCaptainRow struct {
@@ -69,6 +71,7 @@ type adminCaptainRow struct {
 	TeamName   string
 	FullName   string
 	Email      string
+	Phone      string
 	ActiveFrom string
 	ActiveTo   string
 	IsActive   bool
@@ -250,6 +253,7 @@ func (s *Server) handleAdminCaptainSave() http.HandlerFunc {
 		teamID, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("team_id")), 10, 32)
 		fullName := strings.TrimSpace(r.FormValue("full_name"))
 		emailAddr := strings.TrimSpace(r.FormValue("email"))
+		phone := strings.TrimSpace(r.FormValue("phone"))
 		activeFrom := strings.TrimSpace(r.FormValue("active_from"))
 		activeToRaw := strings.TrimSpace(r.FormValue("active_to"))
 		activeNow := r.FormValue("currently_on") == "on"
@@ -277,20 +281,21 @@ func (s *Server) handleAdminCaptainSave() http.HandlerFunc {
 				SET team_id = $1,
 				    full_name = $2,
 				    email = $3,
-				    active_from = $4,
-				    active_to = $5
-				WHERE id = $6
-			`, int32(teamID), fullName, emailAddr, activeFrom, activeTo, int32(id))
+				    phone = NULLIF($4, ''),
+				    active_from = $5,
+				    active_to = $6
+				WHERE id = $7
+			`, int32(teamID), fullName, emailAddr, phone, activeFrom, activeTo, int32(id))
 			if err == nil {
 				s.audit(ctx, r, "admin", nil, "captain_updated", "captain", func() *int64 { v := int64(id); return &v }(), map[string]any{"email": emailAddr})
 			}
 		} else {
 			var captainID int32
 			err = s.DB.QueryRow(ctx, `
-				INSERT INTO captains (team_id, full_name, email, active_from, active_to)
-				VALUES ($1, $2, $3, $4, $5)
+				INSERT INTO captains (team_id, full_name, email, phone, active_from, active_to)
+				VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
 				RETURNING id
-			`, int32(teamID), fullName, emailAddr, activeFrom, activeTo).Scan(&captainID)
+			`, int32(teamID), fullName, emailAddr, phone, activeFrom, activeTo).Scan(&captainID)
 			if err == nil {
 				s.audit(ctx, r, "admin", nil, "captain_created", "captain", func() *int64 { v := int64(captainID); return &v }(), map[string]any{"email": emailAddr})
 			}
@@ -395,11 +400,11 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	filter := "%" + data.Query + "%"
 	teamRows, err := s.DB.Query(ctx, `
 		SELECT t.id, cl.id, cl.name, t.name, t.active, t.level, COALESCE(t.play_cricket_team_id, ''),
-		       cur.id, COALESCE(cur.full_name, ''), COALESCE(cur.email, '')
+		       cur.id, COALESCE(cur.full_name, ''), COALESCE(cur.email, ''), COALESCE(cur.phone, '')
 		FROM teams t
 		JOIN clubs cl ON cl.id = t.club_id
 		LEFT JOIN LATERAL (
-		    SELECT c.id, c.full_name, c.email
+		    SELECT c.id, c.full_name, c.email, COALESCE(c.phone, '') AS phone
 		    FROM captains c
 		    WHERE c.team_id = t.id AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    ORDER BY c.active_from DESC, c.id DESC
@@ -410,6 +415,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		   OR t.name ILIKE $1
 		   OR COALESCE(cur.full_name, '') ILIKE $1
 		   OR COALESCE(cur.email, '') ILIKE $1
+		   OR COALESCE(cur.phone, '') ILIKE $1
 		ORDER BY cl.name, t.name
 	`, filter)
 	if err != nil {
@@ -419,7 +425,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	for teamRows.Next() {
 		var row adminTeamCaptainRow
 		var captainID *int32
-		if err := teamRows.Scan(&row.TeamID, &row.ClubID, &row.ClubName, &row.TeamName, &row.Active, &row.Level, &row.PlayCricketTeamID, &captainID, &row.CaptainName, &row.CaptainEmail); err != nil {
+		if err := teamRows.Scan(&row.TeamID, &row.ClubID, &row.ClubName, &row.TeamName, &row.Active, &row.Level, &row.PlayCricketTeamID, &captainID, &row.CaptainName, &row.CaptainEmail, &row.CaptainPhone); err != nil {
 			return data, err
 		}
 		row.CaptainID = captainID
@@ -427,7 +433,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	}
 
 	captainRows, err := s.DB.Query(ctx, `
-		SELECT c.id, cl.name, t.name, c.full_name, c.email,
+		SELECT c.id, cl.name, t.name, c.full_name, c.email, COALESCE(c.phone, ''),
 		       TO_CHAR(c.active_from, 'YYYY-MM-DD'),
 		       COALESCE(TO_CHAR(c.active_to, 'YYYY-MM-DD'), ''),
 		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active
@@ -439,6 +445,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		   OR t.name ILIKE $1
 		   OR c.full_name ILIKE $1
 		   OR c.email ILIKE $1
+		   OR COALESCE(c.phone, '') ILIKE $1
 		ORDER BY (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) DESC, cl.name, t.name, c.active_from DESC
 		LIMIT 300
 	`, filter)
@@ -448,7 +455,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	defer captainRows.Close()
 	for captainRows.Next() {
 		var row adminCaptainRow
-		if err := captainRows.Scan(&row.ID, &row.ClubName, &row.TeamName, &row.FullName, &row.Email, &row.ActiveFrom, &row.ActiveTo, &row.IsActive); err != nil {
+		if err := captainRows.Scan(&row.ID, &row.ClubName, &row.TeamName, &row.FullName, &row.Email, &row.Phone, &row.ActiveFrom, &row.ActiveTo, &row.IsActive); err != nil {
 			return data, err
 		}
 		data.CaptainRows = append(data.CaptainRows, row)
@@ -468,11 +475,11 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	if captainID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("captain_id")), 10, 32); captainID > 0 {
 		var activeFrom, activeTo string
 		_ = s.DB.QueryRow(ctx, `
-			SELECT id, team_id, full_name, email,
+			SELECT id, team_id, full_name, email, COALESCE(phone, ''),
 			       TO_CHAR(active_from, 'YYYY-MM-DD'),
 			       COALESCE(TO_CHAR(active_to, 'YYYY-MM-DD'), '')
 			FROM captains WHERE id = $1
-		`, int32(captainID)).Scan(&data.CaptainEdit.ID, &data.CaptainEdit.TeamID, &data.CaptainEdit.FullName, &data.CaptainEdit.Email, &activeFrom, &activeTo)
+		`, int32(captainID)).Scan(&data.CaptainEdit.ID, &data.CaptainEdit.TeamID, &data.CaptainEdit.FullName, &data.CaptainEdit.Email, &data.CaptainEdit.Phone, &activeFrom, &activeTo)
 		data.CaptainEdit.ActiveFrom = activeFrom
 		data.CaptainEdit.ActiveTo = activeTo
 		data.CaptainEdit.CurrentlyOn = activeTo == ""
@@ -567,12 +574,13 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 	fmt.Fprintf(w, `</select></div>
 <div class="mb-3"><label class="form-label">Full name</label><input class="form-control" name="full_name" value="%s" required></div>
 <div class="mb-3"><label class="form-label">Email</label><input class="form-control" type="email" name="email" value="%s" required></div>
+<div class="mb-3"><label class="form-label">Phone</label><input class="form-control" name="phone" value="%s" placeholder="e.g. 07..."></div>
 <div class="mb-3"><label class="form-label">Active from</label><input class="form-control" type="date" name="active_from" value="%s" required></div>
 <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="currently_on" id="captain-current"%s><label class="form-check-label" for="captain-current">Currently active captain</label></div>
 <div class="mb-3"><label class="form-label">Active to</label><input class="form-control" type="date" name="active_to" value="%s"><div class="form-text">Leave blank for the current captain. Set a date to keep history without deleting the record.</div></div>
 <button class="btn btn-primary" type="submit">Save captain</button>
 <a class="btn btn-outline-secondary ms-2" href="/admin/teams-captains">New</a>
-</form></div></div></div>`, escapeHTML(data.CaptainEdit.FullName), escapeHTML(data.CaptainEdit.Email), escapeHTML(data.CaptainEdit.ActiveFrom), currentChecked, escapeHTML(data.CaptainEdit.ActiveTo))
+</form></div></div></div>`, escapeHTML(data.CaptainEdit.FullName), escapeHTML(data.CaptainEdit.Email), escapeHTML(data.CaptainEdit.Phone), escapeHTML(data.CaptainEdit.ActiveFrom), currentChecked, escapeHTML(data.CaptainEdit.ActiveTo))
 	fmt.Fprint(w, `</div>`)
 
 	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Teams</div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Club</th><th>Team</th><th>Captain</th><th>Play-Cricket</th><th>Status</th><th></th></tr></thead><tbody>`)
@@ -595,6 +603,9 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 			captain = escapeHTML(row.CaptainName)
 			if row.CaptainEmail != "" {
 				captain += `<div class="text-muted small">` + escapeHTML(row.CaptainEmail) + `</div>`
+			}
+			if row.CaptainPhone != "" {
+				captain += `<div class="text-muted small">` + escapeHTML(row.CaptainPhone) + `</div>`
 			}
 		}
 		pcID := `<span class="text-muted">Not set</span>`
@@ -644,7 +655,7 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 			dateLabel += escapeHTML(row.ActiveTo)
 		}
 		fmt.Fprintf(w, `<tr>
-<td>%s<div class="text-muted small">%s</div></td>
+<td>%s<div class="text-muted small">%s</div>%s</td>
 <td>%s - %s</td>
 <td>%s</td>
 <td>%s</td>
@@ -652,7 +663,12 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
   <a class="btn btn-sm btn-outline-primary" href="/admin/teams-captains?captain_id=%d">Edit</a>
   %s
 </td>
-</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), escapeHTML(row.ClubName), escapeHTML(row.TeamName), dateLabel, status, row.ID, deactivate)
+</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), func() string {
+			if row.Phone == "" {
+				return ""
+			}
+			return `<div class="text-muted small">` + escapeHTML(row.Phone) + `</div>`
+		}(), escapeHTML(row.ClubName), escapeHTML(row.TeamName), dateLabel, status, row.ID, deactivate)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 	fmt.Fprint(w, `</div>`)
