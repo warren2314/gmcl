@@ -1,10 +1,12 @@
 package httpserver
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func formVal(m map[string]any, k string) string {
@@ -39,7 +41,7 @@ func selStr(current, want string) string {
 }
 
 // renderGMCLForm writes the GMCL Captain's Report questionnaire.
-func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any) {
+func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any) {
 	val := func(k string) string { return formVal(draft, k) }
 	rad := func(k string, want string) string {
 		if formVal(draft, k) == want {
@@ -55,17 +57,11 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
 	pageHead(w, "Captain's Report")
 	writeCaptainNav(w)
 
+	cfg := s.loadCaptainFormConfigForRender(seasonID)
+
 	fmt.Fprint(w, `<div class="container">
-<h2 class="mb-3">GMCL Captain's Report - Prem 1, Prem 2, Championship &amp; Division 1</h2>
-<p class="text-muted">This form covers umpire performance and the ECB-required pitch and ground feedback for your match.</p>
-<div class="alert alert-light border mb-4">
-  <div>This form is for you to comment on:</div>
-  <ol class="mb-2">
-    <li>The performance of the umpires at your game for GMCLUA.</li>
-    <li>The pitch and ground conditions to meet ECB requirements.</li>
-  </ol>
-  <div class="small text-muted">Comments about league playing regulations should go to <a href="mailto:rules@gtrmcrcricket.co.uk">rules@gtrmcricket.co.uk</a>.</div>
-</div>
+<h2 class="mb-3">`+escapeHTML(cfg.Title)+`</h2>
+`+renderCaptainFormIntroHTML(cfg.IntroText)+`
 `)
 	if submitterRole == "delegate" {
 		fmt.Fprintf(
@@ -285,4 +281,37 @@ func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	return s
+}
+
+func (s *Server) loadCaptainFormConfigForRender(seasonID int32) captainFormConfig {
+	cfg := captainFormConfig{
+		SeasonID:  seasonID,
+		Title:     "GMCL Captain's Report - Prem 1, Prem 2, Championship & Division 1",
+		IntroText: "This form is for you to comment on:\n\n1. The performance of the umpires at your game for GMCLUA.\n2. The pitch and ground conditions to meet ECB requirements.\n\nComments about league playing regulations should go to rules@gtrmcrcricket.co.uk.",
+	}
+	if seasonID == 0 {
+		return cfg
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	loaded, err := s.loadCaptainFormConfig(ctx, seasonID)
+	if err == nil && loaded.Title != "" && loaded.IntroText != "" {
+		cfg = loaded
+	}
+	return cfg
+}
+
+func renderCaptainFormIntroHTML(introText string) string {
+	parts := strings.Split(strings.TrimSpace(introText), "\n\n")
+	var b strings.Builder
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		b.WriteString(`<div class="alert alert-light border mb-4"><div class="mb-0">`)
+		b.WriteString(strings.ReplaceAll(escapeHTML(part), "\n", "<br>"))
+		b.WriteString(`</div></div>`)
+	}
+	return b.String()
 }

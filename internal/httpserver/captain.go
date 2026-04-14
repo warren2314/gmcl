@@ -557,7 +557,7 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 
 		today := time.Now().Format("2006-01-02")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		s.renderGMCLForm(w, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft)
+		s.renderGMCLForm(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft)
 	}
 }
 
