@@ -97,6 +97,9 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 	if formVal(draft, "prefill_source") == "league_api" {
 		fmt.Fprint(w, `<div class="alert alert-secondary mb-3">Umpire names were prefilled from the league fixture feed. Please confirm they match your match.</div>`)
 	}
+	fmt.Fprint(w, `<div id="form-validation-alert" class="alert alert-danger d-none" role="alert">
+Please complete all required fields before submitting. The page will scroll to the first missing answer.
+</div>`)
 
 	// Section 1 - Umpires
 	fmt.Fprint(w, `
@@ -303,6 +306,36 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 </form>
 <p class="text-muted text-center mb-5">Submitting will take you to a separate confirmation page.</p>
 </div>
+<script>
+(function() {
+  const form = document.getElementById('feedback-form');
+  const alertBox = document.getElementById('form-validation-alert');
+  if (!form || !alertBox) return;
+
+  function showValidationMessage() {
+    alertBox.classList.remove('d-none');
+    const invalid = form.querySelector(':invalid');
+    if (invalid) {
+      invalid.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      try { invalid.focus({ preventScroll: true }); } catch (_) { invalid.focus(); }
+    }
+  }
+
+  form.addEventListener('submit', function(e) {
+    if (!form.checkValidity()) {
+      e.preventDefault();
+      showValidationMessage();
+      form.reportValidity();
+    }
+  });
+
+  form.addEventListener('input', function() {
+    if (form.checkValidity()) {
+      alertBox.classList.add('d-none');
+    }
+  });
+})();
+</script>
 `)
 	pageFooter(w)
 }
