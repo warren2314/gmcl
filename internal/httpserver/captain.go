@@ -553,10 +553,7 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			}
 		}
 
-		csrfToken := ""
-		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
-			csrfToken = c.Value
-		}
+		csrfToken := middleware.CSRFToken(r)
 
 		today := time.Now().Format("2006-01-02")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -693,7 +690,14 @@ func buildGMCLDraftFromRequest(r *http.Request) map[string]any {
 		}
 	}
 	// Normalise numeric fields from string to int for dropdowns
-	for _, key := range []string{"unevenness_of_bounce", "seam_movement", "carry_bounce", "turn"} {
+	for _, key := range []string{
+		"unevenness_of_bounce", "seam_movement", "carry_bounce", "turn",
+		"decision_making_umpire1", "decision_making_umpire2",
+		"match_management_umpire1", "match_management_umpire2",
+		"player_management_umpire1", "player_management_umpire2",
+		"presence_image_umpire1", "presence_image_umpire2",
+		"teamwork_umpire1", "teamwork_umpire2",
+	} {
 		if v := r.FormValue(key); v != "" {
 			if i, err := strconv.Atoi(v); err == nil {
 				draft[key] = i
@@ -768,23 +772,27 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			facilitiesRating = 5
 		}
 
-		comments := strings.TrimSpace(r.FormValue("umpire_comments"))
-		if d := strings.TrimSpace(r.FormValue("umpire_comments_detail")); d != "" {
-			comments = comments + "\n\n" + d
-		}
-
 		formData := buildGMCLDraftFromRequest(r)
+		umpire1Overall, err := deriveUmpirePerformance(r, "umpire1")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		umpire2Overall, err := deriveUmpirePerformance(r, "umpire2")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		umpire1Reason := strings.TrimSpace(r.FormValue("umpire1_reason"))
+		umpire2Reason := strings.TrimSpace(r.FormValue("umpire2_reason"))
+		comments := buildCombinedUmpireComments(umpire1Reason, umpire2Reason)
+
+		formData["umpire1_performance"] = umpire1Overall
+		formData["umpire2_performance"] = umpire2Overall
+		formData["umpire_comments"] = comments
 		formDataJSON, _ := json.Marshal(formData)
-		umpire1Type := strings.ToLower(strings.TrimSpace(r.FormValue("umpire1_type")))
-		umpire2Type := strings.ToLower(strings.TrimSpace(r.FormValue("umpire2_type")))
-		if umpire1Type != "panel" && umpire1Type != "club" {
-			http.Error(w, "umpire 1 type must be panel or club", http.StatusBadRequest)
-			return
-		}
-		if umpire2Type != "panel" && umpire2Type != "club" {
-			http.Error(w, "umpire 2 type must be panel or club", http.StatusBadRequest)
-			return
-		}
+		umpire1Type := "panel"
+		umpire2Type := "panel"
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -999,4 +1007,42 @@ func publicBaseURL(r *http.Request) string {
 	}
 	host := r.Host
 	return scheme + "://" + host
+}
+
+func deriveUmpirePerformance(r *http.Request, suffix string) (string, error) {
+	fields := []string{
+		"decision_making_" + suffix,
+		"match_management_" + suffix,
+		"player_management_" + suffix,
+		"presence_image_" + suffix,
+		"teamwork_" + suffix,
+	}
+	total := 0
+	for _, field := range fields {
+		v, err := strconv.Atoi(strings.TrimSpace(r.FormValue(field)))
+		if err != nil || v < 1 || v > 5 {
+			return "", fmt.Errorf("all umpire scoring fields are required")
+		}
+		total += v
+	}
+	avg := float64(total) / float64(len(fields))
+	switch {
+	case avg >= 4:
+		return "Good", nil
+	case avg >= 3:
+		return "Average", nil
+	default:
+		return "Poor", nil
+	}
+}
+
+func buildCombinedUmpireComments(umpire1Reason, umpire2Reason string) string {
+	parts := make([]string, 0, 2)
+	if umpire1Reason != "" {
+		parts = append(parts, "Umpire 1:\n"+umpire1Reason)
+	}
+	if umpire2Reason != "" {
+		parts = append(parts, "Umpire 2:\n"+umpire2Reason)
+	}
+	return strings.Join(parts, "\n\n")
 }

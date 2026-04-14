@@ -38,7 +38,7 @@ func selStr(current, want string) string {
 	return ""
 }
 
-// renderGMCLForm writes the 2025 GMCL Captain's Report questionnaire (umpires + pitch/ground).
+// renderGMCLForm writes the GMCL Captain's Report questionnaire.
 func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any) {
 	val := func(k string) string { return formVal(draft, k) }
 	rad := func(k string, want string) string {
@@ -56,8 +56,16 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
 	writeCaptainNav(w)
 
 	fmt.Fprint(w, `<div class="container">
-<h2 class="mb-3">2025 GMCL Captain's Report</h2>
-<p class="text-muted">Saturday Lower Division (2,3,4,5,6 including Club Umpires) and All Sunday Divisions.</p>
+<h2 class="mb-3">GMCL Captain's Report - Prem 1, Prem 2, Championship &amp; Division 1</h2>
+<p class="text-muted">This form covers umpire performance and the ECB-required pitch and ground feedback for your match.</p>
+<div class="alert alert-light border mb-4">
+  <div>This form is for you to comment on:</div>
+  <ol class="mb-2">
+    <li>The performance of the umpires at your game for GMCLUA.</li>
+    <li>The pitch and ground conditions to meet ECB requirements.</li>
+  </ol>
+  <div class="small text-muted">Comments about league playing regulations should go to <a href="mailto:rules@gtrmcrcricket.co.uk">rules@gtrmcricket.co.uk</a>.</div>
+</div>
 `)
 	if submitterRole == "delegate" {
 		fmt.Fprintf(
@@ -99,8 +107,7 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
 <div class="card card-gmcl shadow-sm mb-4">
   <div class="card-header bg-gmcl text-white"><strong>Section 1 &ndash; Captain's Report on the Umpires</strong></div>
   <div class="card-body">
-    <p class="text-muted">Please provide constructive feedback. Give the date of the match, your club name and the umpires standing.</p>
-    <p><strong>IMPORTANT:</strong> Mandatory to provide comments when giving a score of 2 or below.</p>
+    <p class="text-muted">Please provide constructive feedback. If you give a mark of 2 or 1 for an umpire, explain the reasons.</p>
     <div class="row g-3">
       <div class="col-md-6">
         <label class="form-label">Date *</label>
@@ -124,13 +131,8 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
       </div>
       <div class="col-md-4">
         <label class="form-label">Your Team *</label>
-        <select class="form-select" name="your_team" required>
-          <option value="1st XI"`+selStr(val("your_team"), "1st XI")+`>1st XI</option>
-          <option value="2nd XI"`+selStr(val("your_team"), "2nd XI")+`>2nd XI</option>
-          <option value="3rd XI"`+selStr(val("your_team"), "3rd XI")+`>3rd XI</option>
-          <option value="4th XI"`+selStr(val("your_team"), "4th XI")+`>4th XI</option>
-          <option value="5th XI"`+selStr(val("your_team"), "5th XI")+`>5th XI</option>
-        </select>
+        <input type="hidden" name="your_team" value="`+escapeHTML(teamName)+`">
+        <input type="text" class="form-control" value="`+escapeHTML(teamName)+`" readonly>
       </div>
       <div class="col-md-4">
         <label class="form-label">Your Name *</label>
@@ -140,62 +142,84 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
         <label class="form-label">Your Email *</label>
         <input type="email" class="form-control" value="`+escapeHTML(submitterEmail)+`" readonly>
       </div>
-      <div class="col-md-6">
-        <label class="form-label">Umpire 1 Type *</label>
-        <select class="form-select" name="umpire1_type" required>
-          <option value="panel"`+selStr(val("umpire1_type"), "panel")+`>Panel umpire</option>
-          <option value="club"`+selStr(val("umpire1_type"), "club")+`>Club umpire</option>
-        </select>
-      </div>
-      <div class="col-md-6">
-        <label class="form-label">Umpire 2 Type *</label>
-        <select class="form-select" name="umpire2_type" required>
-          <option value="panel"`+selStr(val("umpire2_type"), "panel")+`>Panel umpire</option>
-          <option value="club"`+selStr(val("umpire2_type"), "club")+`>Club umpire</option>
-        </select>
-      </div>
     </div>
 
     <hr>
-    <h6>Umpire Performance (Poor / Average / Good)</h6>
-    <div class="mb-3">
-      <label class="form-label">Umpire 1:</label><br>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire1_performance" value="Poor" id="u1p"`+rad("umpire1_performance", "Poor")+`>
-        <label class="form-check-label" for="u1p">Poor</label>
+    <div class="row g-3 mb-4">
+      <div class="col-md-6">
+        <label class="form-label d-block">Did Umpire 1 attend the toss? *</label>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="Yes" id="u1toss_yes"`+rad("umpire1_toss_attended", "Yes")+` required>
+          <label class="form-check-label" for="u1toss_yes">Yes</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="No" id="u1toss_no"`+rad("umpire1_toss_attended", "No")+`>
+          <label class="form-check-label" for="u1toss_no">No</label>
+        </div>
       </div>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire1_performance" value="Average" id="u1a"`+rad("umpire1_performance", "Average")+`>
-        <label class="form-check-label" for="u1a">Average</label>
-      </div>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire1_performance" value="Good" id="u1g"`+rad("umpire1_performance", "Good")+`>
-        <label class="form-check-label" for="u1g">Good</label>
-      </div>
-    </div>
-    <div class="mb-3">
-      <label class="form-label">Umpire 2:</label><br>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire2_performance" value="Poor" id="u2p"`+rad("umpire2_performance", "Poor")+`>
-        <label class="form-check-label" for="u2p">Poor</label>
-      </div>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire2_performance" value="Average" id="u2a"`+rad("umpire2_performance", "Average")+`>
-        <label class="form-check-label" for="u2a">Average</label>
-      </div>
-      <div class="form-check form-check-inline">
-        <input class="form-check-input" type="radio" name="umpire2_performance" value="Good" id="u2g"`+rad("umpire2_performance", "Good")+`>
-        <label class="form-check-label" for="u2g">Good</label>
+      <div class="col-md-6">
+        <label class="form-label d-block">Did Umpire 2 attend the toss? *</label>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="Yes" id="u2toss_yes"`+rad("umpire2_toss_attended", "Yes")+` required>
+          <label class="form-check-label" for="u2toss_yes">Yes</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="No" id="u2toss_no"`+rad("umpire2_toss_attended", "No")+`>
+          <label class="form-check-label" for="u2toss_no">No</label>
+        </div>
       </div>
     </div>
+`)
 
+	scoreMatrix := []struct {
+		Key   string
+		Title string
+		Body  string
+	}{
+		{"decision_making", "Decision Making", "Umpire appeared calm, well positioned, confident and clear when explaining decision making."},
+		{"match_management", "Match Management", "Ensured a safe and positive playing environment and applied the laws and playing conditions accurately."},
+		{"player_management", "Player Management", "Worked well with players and captains before, during and after the match and dealt with behaviour challenges early and fairly."},
+		{"presence_image", "Presence &amp; Image", "Used communication styles positively with players and captains for the benefit of the game."},
+		{"teamwork", "Teamwork", "Showed effective co-operation with officiating colleagues for an effective game."},
+	}
+	renderScoreRow := func(fieldKey, label, help string) {
+		fmt.Fprintf(w, `<div class="card border-0 bg-light mb-3">
+  <div class="card-body">
+    <div class="fw-semibold mb-1">%s</div>
+    <div class="text-muted small mb-3">%s</div>
+    <div class="row g-3 align-items-start">
+      <div class="col-md-6">
+        <label class="form-label d-block">Umpire 1 *</label>
+`, label, help)
+		for _, score := range []string{"5", "4", "3", "2", "1"} {
+			fmt.Fprintf(w, `<div class="form-check form-check-inline">
+  <input class="form-check-input" type="radio" name="%s_umpire1" value="%s" id="%s_u1_%s"%s required>
+  <label class="form-check-label" for="%s_u1_%s">%s</label>
+</div>`, fieldKey, score, fieldKey, score, rad(fieldKey+"_umpire1", score), fieldKey, score, score)
+		}
+		fmt.Fprint(w, `</div><div class="col-md-6"><label class="form-label d-block">Umpire 2 *</label>`)
+		for _, score := range []string{"5", "4", "3", "2", "1"} {
+			fmt.Fprintf(w, `<div class="form-check form-check-inline">
+  <input class="form-check-input" type="radio" name="%s_umpire2" value="%s" id="%s_u2_%s"%s required>
+  <label class="form-check-label" for="%s_u2_%s">%s</label>
+</div>`, fieldKey, score, fieldKey, score, rad(fieldKey+"_umpire2", score), fieldKey, score, score)
+		}
+		fmt.Fprint(w, `</div></div></div></div>`)
+	}
+
+	fmt.Fprint(w, `<div class="mb-3 small text-muted"><strong>Scoring guide:</strong> 5 = Outstanding, 4 = Above Standard, 3 = Standard Expected, 2 = Development Needed, 1 = Poor.</div>`)
+	for _, row := range scoreMatrix {
+		renderScoreRow(row.Key, row.Title, row.Body)
+	}
+
+	fmt.Fprint(w, `
     <div class="mb-3">
-      <label class="form-label">Comments re Umpire 1 &amp; 2 (performance only):</label>
-      <textarea class="form-control" name="umpire_comments" rows="4" hx-post="/captain/form/autosave" hx-trigger="keyup changed delay:800ms" hx-target="#autosave-status" hx-include="closest form" hx-swap="innerHTML">`+escapeHTML(val("umpire_comments"))+`</textarea>
+      <label class="form-label">If you have given a mark of 2 or 1 for Umpire 1, explain the reasons.</label>
+      <textarea class="form-control" name="umpire1_reason" rows="4" hx-post="/captain/form/autosave" hx-trigger="keyup changed delay:800ms" hx-target="#autosave-status" hx-include="closest form" hx-swap="innerHTML">`+escapeHTML(val("umpire1_reason"))+`</textarea>
     </div>
     <div class="mb-3">
-      <label class="form-label">Detailed feedback (optional):</label>
-      <textarea class="form-control" name="umpire_comments_detail" rows="3" hx-post="/captain/form/autosave" hx-trigger="keyup changed delay:800ms" hx-target="#autosave-status" hx-include="closest form" hx-swap="innerHTML">`+escapeHTML(val("umpire_comments_detail"))+`</textarea>
+      <label class="form-label">If you have given a mark of 2 or 1 for Umpire 2, explain the reasons.</label>
+      <textarea class="form-control" name="umpire2_reason" rows="4" hx-post="/captain/form/autosave" hx-trigger="keyup changed delay:800ms" hx-target="#autosave-status" hx-include="closest form" hx-swap="innerHTML">`+escapeHTML(val("umpire2_reason"))+`</textarea>
     </div>
     <div id="autosave-status"></div>
   </div>
@@ -207,11 +231,11 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
 		Val   int
 		Label string
 	}{
-		{1, "No unevenness / Very good"},
-		{2, "Little unevenness / Good"},
-		{3, "Occasional / Above average"},
-		{4, "More than occasional / Below average"},
-		{5, "Excessive / Poor"},
+		{1, "Very good / minimal concern"},
+		{2, "Good"},
+		{3, "Above average / acceptable"},
+		{4, "Below average"},
+		{5, "Poor"},
 		{6, "Unfit (dangerous)"},
 	}
 	section2Select := func(name, title string) {
@@ -233,7 +257,7 @@ func (s *Server) renderGMCLForm(w io.Writer, csrfToken, clubName, teamName, capt
 <div class="card card-gmcl shadow-sm mb-4">
   <div class="card-header bg-gmcl text-white"><strong>Section 2 &ndash; Scores for the Pitch &amp; Ground</strong></div>
   <div class="card-body">
-    <p class="text-muted">ECB requirement: comment on pitch and ground. Criteria: Unevenness of Bounce, Seam Movement, Carry and/or Bounce, Turn (from protected area).</p>
+    <p class="text-muted">ECB requirement: comment on pitch and ground. Criteria are unevenness of bounce, seam movement, carry/bounce and turn from the protected area.</p>
     <div class="row">
 `)
 	section2Select("unevenness_of_bounce", "Unevenness of Bounce")

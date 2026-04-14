@@ -146,10 +146,7 @@ func writeAdminLoginPage(w http.ResponseWriter, csrfToken, errMsg, username stri
 
 func (s *Server) handleAdminLoginGet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		csrfToken := ""
-		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
-			csrfToken = c.Value
-		}
+		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writeAdminLoginPage(w, csrfToken, "", "")
 	}
@@ -178,10 +175,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 				s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
 					"username": username,
 				})
-				csrfToken := ""
-				if c, err2 := r.Cookie(middleware.CSRFCookieName); err2 == nil {
-					csrfToken = c.Value
-				}
+				csrfToken := middleware.CSRFToken(r)
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
 				writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username)
@@ -200,10 +194,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 			s.audit(ctx, r, "admin", nil, "admin_login_failed", "admin_user", nil, map[string]any{
 				"username": username,
 			})
-			csrfToken := ""
-			if c, err2 := r.Cookie(middleware.CSRFCookieName); err2 == nil {
-				csrfToken = c.Value
-			}
+			csrfToken := middleware.CSRFToken(r)
 			errMsg := "Invalid username or password."
 			if strings.Contains(err.Error(), "2fa_email_failed") {
 				errMsg = "Credentials accepted but the verification email could not be sent. Please check server email configuration."
@@ -269,10 +260,7 @@ func (s *Server) issueAdminSession(w http.ResponseWriter, r *http.Request, ctx c
 
 func (s *Server) handleAdmin2FAGet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		csrfToken := ""
-		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
-			csrfToken = c.Value
-		}
+		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Two-Factor Authentication")
 		fmt.Fprint(w, `<div class="container" style="max-width:440px;margin-top:5rem">
