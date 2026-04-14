@@ -90,6 +90,12 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/play-cricket", s.handleAdminPlayCricketGet())
 		r.Post("/play-cricket/sync", s.handleAdminPlayCricketSync())
 		r.Post("/play-cricket/team-mapping/apply", s.handleAdminPlayCricketMappingApply())
+		r.Get("/teams-captains", s.handleAdminTeamsCaptainsGet())
+		r.Post("/clubs/save", s.handleAdminClubSave())
+		r.Post("/teams/save", s.handleAdminTeamSave())
+		r.Post("/teams/{id}/toggle-active", s.handleAdminTeamToggleActive())
+		r.Post("/captains/save", s.handleAdminCaptainSave())
+		r.Post("/captains/{id}/deactivate", s.handleAdminCaptainDeactivate())
 		r.Get("/form-settings", s.handleAdminCaptainFormSettingsGet())
 		r.Post("/form-settings", s.handleAdminCaptainFormSettingsPost())
 
