@@ -89,7 +89,6 @@ func (s *Server) handleRetentionNotice() http.HandlerFunc {
         <tr><td>Captain submissions</td><td>Retained for league administration unless specifically anonymised or deleted under an approved process</td></tr>
       </tbody>
     </table>
-    <p class="text-muted mb-0">These values can be overridden in environment configuration and operational cleanup can be triggered from the admin Security &amp; Privacy page.</p>
   </div>
 </div>
 </div>`,
