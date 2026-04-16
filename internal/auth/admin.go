@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"cricket-ground-feedback/internal/db"
@@ -14,6 +16,35 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+func adminLockoutPolicy() (maxAttempts int, duration time.Duration) {
+	maxAttempts = 5
+	duration = 15 * time.Minute
+	if raw := os.Getenv("ADMIN_MAX_FAILED_ATTEMPTS"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			maxAttempts = v
+		}
+	}
+	if raw := os.Getenv("ADMIN_LOCKOUT_MINUTES"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			duration = time.Duration(v) * time.Minute
+		}
+	}
+	return maxAttempts, duration
+}
+
+func recordFailedAdminAttempt(ctx context.Context, pool *db.Pool, adminID int32) {
+	maxAttempts, lockDuration := adminLockoutPolicy()
+	_, _ = pool.Exec(ctx, `
+		UPDATE admin_users
+		SET failed_login_attempts = failed_login_attempts + 1,
+		    locked_until = CASE
+		        WHEN failed_login_attempts + 1 >= $2 THEN now() + $3::interval
+		        ELSE locked_until
+		    END
+		WHERE id = $1
+	`, adminID, maxAttempts, fmt.Sprintf("%d seconds", int(lockDuration.Seconds())))
+}
 
 // HashPassword hashes a plaintext password for admin users.
 func HashPassword(plain string) ([]byte, error) {
@@ -52,9 +83,7 @@ func VerifyPasswordOnly(ctx context.Context, pool *db.Pool, username, password s
 		return 0, fmt.Errorf("account locked")
 	}
 	if err := CheckPassword(pwHash, password); err != nil {
-		_, _ = pool.Exec(ctx, `
-			UPDATE admin_users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = $1
-		`, id)
+		recordFailedAdminAttempt(ctx, pool, id)
 		return 0, fmt.Errorf("invalid credentials")
 	}
 	_, _ = pool.Exec(ctx, `
@@ -91,11 +120,7 @@ func StartAdminLogin(ctx context.Context, pool *db.Pool, mailer *email.Client, u
 		return 0, fmt.Errorf("account locked")
 	}
 	if err := CheckPassword(pwHash, password); err != nil {
-		_, _ = pool.Exec(ctx, `
-			UPDATE admin_users
-			SET failed_login_attempts = failed_login_attempts + 1
-			WHERE id = $1
-		`, id)
+		recordFailedAdminAttempt(ctx, pool, id)
 		return 0, fmt.Errorf("invalid credentials")
 	}
 
