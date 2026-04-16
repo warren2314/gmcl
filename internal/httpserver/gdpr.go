@@ -55,12 +55,16 @@ func (s *Server) handlePrivacyNotice() http.HandlerFunc {
       <li>League administration and reporting operations.</li>
       <li>Security, fraud prevention and access control.</li>
       <li>Maintaining compliance, auditability and service integrity.</li>
+      <li>Monitoring whether required captain submissions are received by the applicable deadline and supporting league sanction processes for non-submission.</li>
     </ul>
+    <h5>Automated compliance checks and sanctions</h5>
+    <p>The application uses submission and scheduling data to monitor whether required reports have been submitted on time. Where a required submission is not recorded by the deadline, the system may automatically flag or issue a league sanction, including yellow or red cards, in line with league rules.</p>
+    <p>These outcomes are intended to support league administration rather than operate as an unreviewable black-box decision. League administrators may review, confirm, amend or reverse a sanction where a report was submitted, an exception applies, or the automated outcome was incorrect.</p>
     <h5>How long data is kept</h5>
     <p>Operational security data is retained for limited periods and can be cleaned up from the admin security tools. Submission records are retained for league administration unless separately anonymised or removed under an agreed process.</p>
     <p>See the <a href="/retention">retention schedule</a> for the current application defaults.</p>
     <h5>Data subject requests</h5>
-    <p>Requests for access, correction or erasure should be sent to <a href="mailto:%s">%s</a>. The admin panel contains export and anonymisation tooling to help process captain-level requests.</p>
+    <p>Requests for access, correction or erasure, and queries or challenges relating to an apparent non-submission or sanction, should be sent to <a href="mailto:%s">%s</a>. The admin panel contains export and anonymisation tooling to help process captain-level requests.</p>
   </div>
 </div>
 </div>`, escapeHTML(contactEmail), escapeHTML(contactEmail))
