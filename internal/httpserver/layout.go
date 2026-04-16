@@ -50,9 +50,15 @@ func pageHeadWithCharts(w io.Writer, title string) {
 func writeCaptainNav(w io.Writer) {
 	fmt.Fprint(w, `<nav class="navbar navbar-dark bg-gmcl mb-4">
   <div class="container">
-    <a class="navbar-brand d-flex align-items-center" href="/">
-      <img src="/images/logo.webp" alt="GMCL" height="48" class="me-2">
-    </a>
+    <div class="d-flex align-items-center justify-content-between w-100">
+      <a class="navbar-brand d-flex align-items-center" href="/">
+        <img src="/images/logo.webp" alt="GMCL" height="48" class="me-2">
+      </a>
+      <div class="d-flex gap-3">
+        <a class="link-light text-decoration-none small" href="/privacy">Privacy</a>
+        <a class="link-light text-decoration-none small" href="/retention">Retention</a>
+      </div>
+    </div>
   </div>
 </nav>
 `)
@@ -117,6 +123,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
         %s
         %s
         %s
+        %s
       </ul>
       <form method="POST" action="/admin/logout" class="d-flex">
         <input type="hidden" name="csrf_token" value="%s">
@@ -135,6 +142,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 		navLink("/admin/play-cricket", "Play-Cricket"),
 		navLink("/admin/teams-captains", "Teams & Captains"),
 		navLink("/admin/security", "Security & Privacy"),
+		navLink("/admin/gdpr", "GDPR"),
 		navLink("/admin/form-settings", "Form Settings"),
 		navLink("/admin/users", "Admin Users"),
 		navLink("/admin/csv/captains", "CSV Upload"),

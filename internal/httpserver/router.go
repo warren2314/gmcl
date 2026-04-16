@@ -68,6 +68,8 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 
 	// public captain flow
 	r.Get("/", s.handlePublicEntry())
+	r.Get("/privacy", s.handlePrivacyNotice())
+	r.Get("/retention", s.handleRetentionNotice())
 	// Rate limit magic link requests per IP + club/team.
 	r.With(middleware.RateLimit(15)).Post("/magic-link/request", s.handleMagicLinkRequest())
 	// Magic link confirmation uses GET (intermediate page) then POST to redeem.
