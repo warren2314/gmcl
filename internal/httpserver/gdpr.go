@@ -42,6 +42,9 @@ func (s *Server) handlePrivacyNotice() http.HandlerFunc {
 		fmt.Fprintf(w, `<div class="container" style="max-width:900px">
 <div class="card shadow-sm">
   <div class="card-body">
+    <div class="d-flex justify-content-end mb-2">
+      <a href="/" class="btn btn-sm btn-outline-secondary">Close</a>
+    </div>
     <h3 class="mb-3">Privacy Notice</h3>
     <p>This application is used by the Greater Manchester Cricket League to administer captain reporting, authenticate captains and administrators, manage league compliance processes, and support related league operations.</p>
     <p>This notice explains what personal data is processed through the application, why it is used, and how requests relating to that data can be made.</p>
@@ -83,6 +86,9 @@ func (s *Server) handleRetentionNotice() http.HandlerFunc {
 		fmt.Fprintf(w, `<div class="container" style="max-width:900px">
 <div class="card shadow-sm">
   <div class="card-body">
+    <div class="d-flex justify-content-end mb-2">
+      <a href="/" class="btn btn-sm btn-outline-secondary">Close</a>
+    </div>
     <h3 class="mb-3">Retention Schedule</h3>
     <p>This schedule summarises the default retention periods used by the application for operational and security-related data.</p>
     <table class="table table-sm">
