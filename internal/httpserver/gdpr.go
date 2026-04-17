@@ -43,28 +43,31 @@ func (s *Server) handlePrivacyNotice() http.HandlerFunc {
 <div class="card shadow-sm">
   <div class="card-body">
     <h3 class="mb-3">Privacy Notice</h3>
-    <p>This GMCL reporting application processes personal data for the purpose of administering league reporting, authenticating captains and administrators, collecting match feedback, and operating league compliance workflows.</p>
-    <h5>Personal data processed</h5>
+    <p>This application is used by the Greater Manchester Cricket League to administer captain reporting, authenticate captains and administrators, manage league compliance processes, and support related league operations.</p>
+    <p>This notice explains what personal data is processed through the application, why it is used, and how requests relating to that data can be made.</p>
+    <h5>Categories of personal data</h5>
     <ul>
-      <li>Captain and admin identity details such as name, email address and, where provided, phone number.</li>
-      <li>Authentication and security data such as login events, single-use access tokens, IP addresses and user-agent strings.</li>
-      <li>Submission content and related operational metadata needed to administer reports and league processes.</li>
+      <li>Captain and administrator identity details, including name, email address and, where provided, phone number.</li>
+      <li>Club and team details linked to captain reporting and league administration.</li>
+      <li>Submission data, including report content, timestamps and related operational metadata.</li>
+      <li>Authentication and security data, including login events, single-use access tokens, IP addresses and user-agent information.</li>
     </ul>
-    <h5>Purpose and lawful basis</h5>
+    <h5>How the data is used</h5>
     <ul>
-      <li>League administration and reporting operations.</li>
-      <li>Security, fraud prevention and access control.</li>
-      <li>Maintaining compliance, auditability and service integrity.</li>
-      <li>Monitoring whether required captain submissions are received by the applicable deadline and supporting league sanction processes for non-submission.</li>
+      <li>To operate league reporting and related administration.</li>
+      <li>To send secure access links to captains and support administrator access.</li>
+      <li>To maintain security, prevent misuse, and keep an audit trail of important system actions.</li>
+      <li>To monitor whether required reports have been submitted by the relevant deadline.</li>
+      <li>To support league compliance and sanction processes where a required submission has not been received.</li>
     </ul>
-    <h5>Automated compliance checks and sanctions</h5>
-    <p>The application uses submission and scheduling data to monitor whether required reports have been submitted on time. Where a required submission is not recorded by the deadline, the system may automatically flag or issue a league sanction, including yellow or red cards, in line with league rules.</p>
-    <p>These outcomes are intended to support league administration rather than operate as an unreviewable black-box decision. League administrators may review, confirm, amend or reverse a sanction where a report was submitted, an exception applies, or the automated outcome was incorrect.</p>
-    <h5>How long data is kept</h5>
-    <p>Operational security data is retained for limited periods and can be cleaned up from the admin security tools. Submission records are retained for league administration unless separately anonymised or removed under an agreed process.</p>
-    <p>See the <a href="/retention">retention schedule</a> for the current application defaults.</p>
-    <h5>Data subject requests</h5>
-    <p>Requests for access, correction or erasure, and queries or challenges relating to an apparent non-submission or sanction, should be sent to <a href="mailto:%s">%s</a>. The admin panel contains export and anonymisation tooling to help process captain-level requests.</p>
+    <h5>Compliance checks and sanctions</h5>
+    <p>The application uses submission and scheduling data to check whether required reports have been submitted on time. Where a required submission is not recorded by the deadline, the system may automatically flag or issue a league sanction, including yellow or red cards, in accordance with league rules.</p>
+    <p>These checks are intended to support league administration and are not intended to operate as an unreviewable black-box decision. League administrators may review, confirm, amend or reverse a sanction where a report was submitted, an exception applies, or the automated outcome was incorrect.</p>
+    <h5>Retention</h5>
+    <p>Operational security data is retained for limited periods. Submission records are retained for league administration unless they are later anonymised or removed under an approved process.</p>
+    <p>Further detail is set out in the <a href="/retention">retention schedule</a>.</p>
+    <h5>Your rights and requests</h5>
+    <p>Requests for access, correction or erasure, and queries or challenges relating to an apparent non-submission or sanction, should be sent to <a href="mailto:%s">%s</a>.</p>
   </div>
 </div>
 </div>`, escapeHTML(contactEmail), escapeHTML(contactEmail))
@@ -81,6 +84,7 @@ func (s *Server) handleRetentionNotice() http.HandlerFunc {
 <div class="card shadow-sm">
   <div class="card-body">
     <h3 class="mb-3">Retention Schedule</h3>
+    <p>This schedule summarises the default retention periods used by the application for operational and security-related data.</p>
     <table class="table table-sm">
       <thead><tr><th>Data</th><th>Default retention</th></tr></thead>
       <tbody>
@@ -90,9 +94,10 @@ func (s *Server) handleRetentionNotice() http.HandlerFunc {
         <tr><td>Admin 2FA codes</td><td>%d days after expiry/use</td></tr>
         <tr><td>CSV preview tokens</td><td>%d days after expiry/use</td></tr>
         <tr><td>Draft autosaves</td><td>%d days since last autosave</td></tr>
-        <tr><td>Captain submissions</td><td>Retained for league administration unless specifically anonymised or deleted under an approved process</td></tr>
+        <tr><td>Captain submissions</td><td>Retained for league administration unless later anonymised or deleted under an approved process</td></tr>
       </tbody>
     </table>
+    <p class="mb-0">Where a data subject request is upheld, relevant captain contact data can be exported or anonymised through the league’s admin processes.</p>
   </div>
 </div>
 </div>`,
