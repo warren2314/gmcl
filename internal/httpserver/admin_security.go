@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -41,8 +42,22 @@ func (s *Server) handleAdminSecurityGet() http.HandlerFunc {
 		defer cancel()
 		data, err := s.buildSecurityPageData(ctx, r)
 		if err != nil {
-			http.Error(w, "error", http.StatusInternalServerError)
-			return
+			log.Printf("[admin security] build page data error: %v", err)
+			data = securityPageData{
+				Disable2FA:        os.Getenv("DISABLE_2FA") == "1",
+				SessionSecretSet:  os.Getenv("SESSION_SECRET") != "",
+				AdminSecretSet:    os.Getenv("ADMIN_SESSION_SECRET") != "",
+				HMACSecretSet:     os.Getenv("INTERNAL_HMAC_SECRET") != "",
+				SMTPConfigured:    os.Getenv("SMTP_HOST") != "" && os.Getenv("SMTP_USERNAME") != "" && os.Getenv("SMTP_PASSWORD") != "",
+				HSTSEnabled:       os.Getenv("ENABLE_HSTS") != "0",
+				MaxFailedAttempts: 5,
+				LockoutMinutes:    15,
+				ErrorMsg:          "Some security summary data could not be loaded. Check application logs for details.",
+			}
+			if maxAttempts, lockout := securityAdminLockoutPolicy(); maxAttempts > 0 {
+				data.MaxFailedAttempts = maxAttempts
+				data.LockoutMinutes = int(lockout / time.Minute)
+			}
 		}
 		s.renderAdminSecurityPage(w, r, data)
 	}
