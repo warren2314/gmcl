@@ -118,17 +118,17 @@ func (s *Server) loadRetentionSummaries(ctx context.Context) ([]retentionSummary
 		action string
 	}
 	specs := []spec{
-		{"Audit logs", retentionDays("RETENTION_AUDIT_LOG_DAYS", 365), `SELECT COUNT(*) FROM audit_logs WHERE created_at < now() - ($1::text || ' days')::interval`, "Delete"},
-		{"Magic-link tokens", retentionDays("RETENTION_MAGIC_LINK_TOKEN_DAYS", 30), `SELECT COUNT(*) FROM magic_link_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`, "Delete"},
-		{"Magic-link send log", retentionDays("RETENTION_MAGIC_LINK_SEND_LOG_DAYS", 90), `SELECT COUNT(*) FROM magic_link_send_log WHERE created_at < now() - ($1::text || ' days')::interval`, "Delete"},
-		{"Admin 2FA codes", retentionDays("RETENTION_ADMIN_2FA_DAYS", 14), `SELECT COUNT(*) FROM admin_2fa_codes WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`, "Delete"},
-		{"CSV preview tokens", retentionDays("RETENTION_CSV_PREVIEW_DAYS", 7), `SELECT COUNT(*) FROM csv_preview_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`, "Delete"},
-		{"Draft autosaves", retentionDays("RETENTION_DRAFT_DAYS", 30), `SELECT COUNT(*) FROM drafts WHERE last_autosaved_at < now() - ($1::text || ' days')::interval`, "Delete"},
+		{"Audit logs", retentionDays("RETENTION_AUDIT_LOG_DAYS", 365), `SELECT COUNT(*) FROM audit_logs WHERE created_at < now() - interval '%d days'`, "Delete"},
+		{"Magic-link tokens", retentionDays("RETENTION_MAGIC_LINK_TOKEN_DAYS", 30), `SELECT COUNT(*) FROM magic_link_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`, "Delete"},
+		{"Magic-link send log", retentionDays("RETENTION_MAGIC_LINK_SEND_LOG_DAYS", 90), `SELECT COUNT(*) FROM magic_link_send_log WHERE created_at < now() - interval '%d days'`, "Delete"},
+		{"Admin 2FA codes", retentionDays("RETENTION_ADMIN_2FA_DAYS", 14), `SELECT COUNT(*) FROM admin_2fa_codes WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`, "Delete"},
+		{"CSV preview tokens", retentionDays("RETENTION_CSV_PREVIEW_DAYS", 7), `SELECT COUNT(*) FROM csv_preview_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`, "Delete"},
+		{"Draft autosaves", retentionDays("RETENTION_DRAFT_DAYS", 30), `SELECT COUNT(*) FROM drafts WHERE last_autosaved_at < now() - interval '%d days'`, "Delete"},
 	}
 	var out []retentionSummary
 	for _, spec := range specs {
 		var count int64
-		if err := s.DB.QueryRow(ctx, spec.query, spec.days).Scan(&count); err != nil {
+		if err := s.DB.QueryRow(ctx, fmt.Sprintf(spec.query, spec.days)).Scan(&count); err != nil {
 			if isUndefinedTableErr(err) {
 				count = 0
 			} else {
@@ -146,16 +146,16 @@ func (s *Server) runRetentionCleanup(ctx context.Context) (map[string]int64, err
 		days int
 		sql  string
 	}{
-		{"audit_logs_deleted", retentionDays("RETENTION_AUDIT_LOG_DAYS", 365), `DELETE FROM audit_logs WHERE created_at < now() - ($1::text || ' days')::interval`},
-		{"magic_link_tokens_deleted", retentionDays("RETENTION_MAGIC_LINK_TOKEN_DAYS", 30), `DELETE FROM magic_link_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`},
-		{"magic_link_send_log_deleted", retentionDays("RETENTION_MAGIC_LINK_SEND_LOG_DAYS", 90), `DELETE FROM magic_link_send_log WHERE created_at < now() - ($1::text || ' days')::interval`},
-		{"admin_2fa_codes_deleted", retentionDays("RETENTION_ADMIN_2FA_DAYS", 14), `DELETE FROM admin_2fa_codes WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`},
-		{"csv_preview_tokens_deleted", retentionDays("RETENTION_CSV_PREVIEW_DAYS", 7), `DELETE FROM csv_preview_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - ($1::text || ' days')::interval`},
-		{"drafts_deleted", retentionDays("RETENTION_DRAFT_DAYS", 30), `DELETE FROM drafts WHERE last_autosaved_at < now() - ($1::text || ' days')::interval`},
+		{"audit_logs_deleted", retentionDays("RETENTION_AUDIT_LOG_DAYS", 365), `DELETE FROM audit_logs WHERE created_at < now() - interval '%d days'`},
+		{"magic_link_tokens_deleted", retentionDays("RETENTION_MAGIC_LINK_TOKEN_DAYS", 30), `DELETE FROM magic_link_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`},
+		{"magic_link_send_log_deleted", retentionDays("RETENTION_MAGIC_LINK_SEND_LOG_DAYS", 90), `DELETE FROM magic_link_send_log WHERE created_at < now() - interval '%d days'`},
+		{"admin_2fa_codes_deleted", retentionDays("RETENTION_ADMIN_2FA_DAYS", 14), `DELETE FROM admin_2fa_codes WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`},
+		{"csv_preview_tokens_deleted", retentionDays("RETENTION_CSV_PREVIEW_DAYS", 7), `DELETE FROM csv_preview_tokens WHERE (used_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '%d days'`},
+		{"drafts_deleted", retentionDays("RETENTION_DRAFT_DAYS", 30), `DELETE FROM drafts WHERE last_autosaved_at < now() - interval '%d days'`},
 	}
 	results := make(map[string]int64, len(queries))
 	for _, q := range queries {
-		tag, err := s.DB.Exec(ctx, q.sql, q.days)
+		tag, err := s.DB.Exec(ctx, fmt.Sprintf(q.sql, q.days))
 		if err != nil {
 			if isUndefinedTableErr(err) {
 				results[q.key] = 0
