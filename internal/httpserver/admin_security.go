@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"cricket-ground-feedback/internal/middleware"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type retentionSummary struct {
@@ -111,7 +114,11 @@ func (s *Server) loadRetentionSummaries(ctx context.Context) ([]retentionSummary
 	for _, spec := range specs {
 		var count int64
 		if err := s.DB.QueryRow(ctx, spec.query, spec.days).Scan(&count); err != nil {
-			return nil, err
+			if isUndefinedTableErr(err) {
+				count = 0
+			} else {
+				return nil, err
+			}
 		}
 		out = append(out, retentionSummary{Label: spec.label, Days: spec.days, Count: count, Action: spec.action})
 	}
@@ -135,6 +142,10 @@ func (s *Server) runRetentionCleanup(ctx context.Context) (map[string]int64, err
 	for _, q := range queries {
 		tag, err := s.DB.Exec(ctx, q.sql, q.days)
 		if err != nil {
+			if isUndefinedTableErr(err) {
+				results[q.key] = 0
+				continue
+			}
 			return nil, err
 		}
 		results[q.key] = tag.RowsAffected()
@@ -165,6 +176,11 @@ func securityAdminLockoutPolicy() (maxAttempts int, duration time.Duration) {
 		}
 	}
 	return maxAttempts, duration
+}
+
+func isUndefinedTableErr(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }
 
 func (s *Server) renderAdminSecurityPage(w http.ResponseWriter, r *http.Request, data securityPageData) {
