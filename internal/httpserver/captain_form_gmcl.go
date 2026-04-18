@@ -117,12 +117,30 @@ Please complete all required fields before submitting. The page will scroll to t
         <input type="text" class="form-control" value="`+escapeHTML(clubName)+`" readonly>
       </div>
       <div class="col-md-6">
+        <label class="form-label">Match Status *</label>
+        <select class="form-select" name="match_outcome" id="match-outcome" required>
+          <option value="played"` + selStr(val("match_outcome"), "played") + `>Played</option>
+          <option value="postponed_rain"` + selStr(val("match_outcome"), "postponed_rain") + `>Postponed - Rain</option>
+          <option value="no_play"` + selStr(val("match_outcome"), "no_play") + `>No Play</option>
+          <option value="conceded_other_team"` + selStr(val("match_outcome"), "conceded_other_team") + `>Conceded - Other Team</option>
+          <option value="conceded_our_team"` + selStr(val("match_outcome"), "conceded_our_team") + `>Conceded - Our Team</option>
+        </select>
+      </div>
+      <div class="col-md-6" id="no-play-reason-group">
+        <label class="form-label">Reason game did not go ahead</label>
+        <textarea class="form-control" name="match_outcome_reason" id="match-outcome-reason" rows="2">` + escapeHTML(val("match_outcome_reason")) + `</textarea>
+      </div>
+    </div>
+
+    <div id="played-match-fields">
+    <div class="row g-3 mt-1">
+      <div class="col-md-6">
         <label class="form-label">Umpire 1 Name *</label>
-        <input type="text" class="form-control" name="umpire1_name" required value="`+escapeHTML(val("umpire1_name"))+`">
+        <input type="text" class="form-control" name="umpire1_name" data-played-required="true" required value="`+escapeHTML(val("umpire1_name"))+`">
       </div>
       <div class="col-md-6">
         <label class="form-label">Umpire 2 Name *</label>
-        <input type="text" class="form-control" name="umpire2_name" required value="`+escapeHTML(val("umpire2_name"))+`">
+        <input type="text" class="form-control" name="umpire2_name" data-played-required="true" required value="`+escapeHTML(val("umpire2_name"))+`">
       </div>
       <div class="col-12">
         <label class="form-label">If not listed, enter names below</label>
@@ -130,7 +148,7 @@ Please complete all required fields before submitting. The page will scroll to t
       </div>
       <div class="col-md-4">
         <label class="form-label">Your Team *</label>
-        <input type="hidden" name="your_team" value="`+escapeHTML(teamName)+`">
+        <input type="hidden" name="your_team" data-played-required="true" value="`+escapeHTML(teamName)+`">
         <input type="text" class="form-control" value="`+escapeHTML(teamName)+`" readonly>
       </div>
       <div class="col-md-4">
@@ -148,7 +166,7 @@ Please complete all required fields before submitting. The page will scroll to t
       <div class="col-md-6">
         <label class="form-label d-block">Did Umpire 1 attend the toss? *</label>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="Yes" id="u1toss_yes"`+rad("umpire1_toss_attended", "Yes")+` required>
+          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="Yes" id="u1toss_yes"`+rad("umpire1_toss_attended", "Yes")+` data-played-required="true" required>
           <label class="form-check-label" for="u1toss_yes">Yes</label>
         </div>
         <div class="form-check form-check-inline">
@@ -159,7 +177,7 @@ Please complete all required fields before submitting. The page will scroll to t
       <div class="col-md-6">
         <label class="form-label d-block">Did Umpire 2 attend the toss? *</label>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="Yes" id="u2toss_yes"`+rad("umpire2_toss_attended", "Yes")+` required>
+          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="Yes" id="u2toss_yes"`+rad("umpire2_toss_attended", "Yes")+` data-played-required="true" required>
           <label class="form-check-label" for="u2toss_yes">Yes</label>
         </div>
         <div class="form-check form-check-inline">
@@ -192,14 +210,14 @@ Please complete all required fields before submitting. The page will scroll to t
 `, label, help)
 		for _, score := range []string{"5", "4", "3", "2", "1"} {
 			fmt.Fprintf(w, `<div class="form-check form-check-inline">
-  <input class="form-check-input" type="radio" name="%s_umpire1" value="%s" id="%s_u1_%s"%s required>
+  <input class="form-check-input" type="radio" name="%s_umpire1" value="%s" id="%s_u1_%s"%s data-played-required="true" required>
   <label class="form-check-label" for="%s_u1_%s">%s</label>
 </div>`, fieldKey, score, fieldKey, score, rad(fieldKey+"_umpire1", score), fieldKey, score, score)
 		}
 		fmt.Fprint(w, `</div><div class="col-md-6"><label class="form-label d-block">Umpire 2 *</label>`)
 		for _, score := range []string{"5", "4", "3", "2", "1"} {
 			fmt.Fprintf(w, `<div class="form-check form-check-inline">
-  <input class="form-check-input" type="radio" name="%s_umpire2" value="%s" id="%s_u2_%s"%s required>
+  <input class="form-check-input" type="radio" name="%s_umpire2" value="%s" id="%s_u2_%s"%s data-played-required="true" required>
   <label class="form-check-label" for="%s_u2_%s">%s</label>
 </div>`, fieldKey, score, fieldKey, score, rad(fieldKey+"_umpire2", score), fieldKey, score, score)
 		}
@@ -232,7 +250,7 @@ Please complete all required fields before submitting. The page will scroll to t
 	}) {
 		fmt.Fprintf(w, `<div class="col-md-6 mb-3">
   <label class="form-label">%s *</label>
-  <select class="form-select" name="%s" required>
+  <select class="form-select" name="%s" data-played-required="true" required>
 `, title, name)
 		for _, o := range options {
 			sel := ""
@@ -299,6 +317,7 @@ Please complete all required fields before submitting. The page will scroll to t
 	fmt.Fprint(w, `    </div>
   </div>
 </div>
+</div>
 
 <div class="d-grid mb-4">
   <button type="submit" class="btn btn-primary btn-lg">Submit report</button>
@@ -310,7 +329,27 @@ Please complete all required fields before submitting. The page will scroll to t
 (function() {
   const form = document.getElementById('feedback-form');
   const alertBox = document.getElementById('form-validation-alert');
+  const matchOutcome = document.getElementById('match-outcome');
+  const noPlayReasonGroup = document.getElementById('no-play-reason-group');
+  const noPlayReason = document.getElementById('match-outcome-reason');
+  const playedMatchFields = document.getElementById('played-match-fields');
   if (!form || !alertBox) return;
+
+  function syncMatchOutcomeState() {
+    const unplayed = matchOutcome && matchOutcome.value !== 'played';
+    if (playedMatchFields) {
+      playedMatchFields.style.display = unplayed ? 'none' : '';
+    }
+    if (noPlayReasonGroup) {
+      noPlayReasonGroup.style.display = unplayed ? '' : 'none';
+    }
+    form.querySelectorAll('[data-played-required="true"]').forEach(function(field) {
+      field.required = !unplayed;
+    });
+    if (noPlayReason) {
+      noPlayReason.required = !!unplayed;
+    }
+  }
 
   function showValidationMessage() {
     alertBox.classList.remove('d-none');
@@ -322,6 +361,7 @@ Please complete all required fields before submitting. The page will scroll to t
   }
 
   form.addEventListener('submit', function(e) {
+    syncMatchOutcomeState();
     if (!form.checkValidity()) {
       e.preventDefault();
       showValidationMessage();
@@ -334,6 +374,10 @@ Please complete all required fields before submitting. The page will scroll to t
       alertBox.classList.add('d-none');
     }
   });
+  if (matchOutcome) {
+    matchOutcome.addEventListener('change', syncMatchOutcomeState);
+    syncMatchOutcomeState();
+  }
 })();
 </script>
 `)

@@ -721,10 +721,23 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 
 		// Required GMCL fields
 		matchDateStr := r.FormValue("match_date")
+		matchOutcome := strings.TrimSpace(r.FormValue("match_outcome"))
+		if matchOutcome == "" {
+			matchOutcome = "played"
+		}
+		matchOutcomeReason := strings.TrimSpace(r.FormValue("match_outcome_reason"))
 		umpire1 := strings.TrimSpace(r.FormValue("umpire1_name"))
 		umpire2 := strings.TrimSpace(r.FormValue("umpire2_name"))
 		yourTeam := r.FormValue("your_team")
-		if matchDateStr == "" || umpire1 == "" || umpire2 == "" || yourTeam == "" {
+		if matchDateStr == "" {
+			http.Error(w, "missing required fields (date)", http.StatusBadRequest)
+			return
+		}
+		if matchOutcome != "played" && matchOutcomeReason == "" {
+			http.Error(w, "missing required fields (reason game did not go ahead)", http.StatusBadRequest)
+			return
+		}
+		if matchOutcome == "played" && (umpire1 == "" || umpire2 == "" || yourTeam == "") {
 			http.Error(w, "missing required fields (date, umpire names, your team)", http.StatusBadRequest)
 			return
 		}
@@ -736,63 +749,79 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 		}
 
 		// Pitch criteria 1–6 (1=best, 6=unfit) -> map to 1–5 for legacy columns: rating = max(1, min(5, 7 - score))
-		score := func(name string) int {
-			i, _ := strconv.Atoi(r.FormValue(name))
-			if i < 1 {
-				i = 1
+		pitchRating := 3
+		outfieldRating := 3
+		facilitiesRating := 3
+		if matchOutcome == "played" {
+			score := func(name string) int {
+				i, _ := strconv.Atoi(r.FormValue(name))
+				if i < 1 {
+					i = 1
+				}
+				if i > 6 {
+					i = 6
+				}
+				return i
 			}
-			if i > 6 {
-				i = 6
+			unevenness := score("unevenness_of_bounce")
+			seam := score("seam_movement")
+			carry := score("carry_bounce")
+			turn := score("turn")
+			pitchRating = 7 - unevenness
+			if pitchRating < 1 {
+				pitchRating = 1
 			}
-			return i
-		}
-		unevenness := score("unevenness_of_bounce")
-		seam := score("seam_movement")
-		carry := score("carry_bounce")
-		turn := score("turn")
-		pitchRating := 7 - unevenness
-		if pitchRating < 1 {
-			pitchRating = 1
-		}
-		if pitchRating > 5 {
-			pitchRating = 5
-		}
-		outfieldRating := 7 - seam
-		if outfieldRating < 1 {
-			outfieldRating = 1
-		}
-		if outfieldRating > 5 {
-			outfieldRating = 5
-		}
-		facilitiesRating := (7 - carry + 7 - turn) / 2
-		if facilitiesRating < 1 {
-			facilitiesRating = 1
-		}
-		if facilitiesRating > 5 {
-			facilitiesRating = 5
+			if pitchRating > 5 {
+				pitchRating = 5
+			}
+			outfieldRating = 7 - seam
+			if outfieldRating < 1 {
+				outfieldRating = 1
+			}
+			if outfieldRating > 5 {
+				outfieldRating = 5
+			}
+			facilitiesRating = (7 - carry + 7 - turn) / 2
+			if facilitiesRating < 1 {
+				facilitiesRating = 1
+			}
+			if facilitiesRating > 5 {
+				facilitiesRating = 5
+			}
 		}
 
 		formData := buildGMCLDraftFromRequest(r)
-		umpire1Overall, err := deriveUmpirePerformance(r, "umpire1")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		umpire2Overall, err := deriveUmpirePerformance(r, "umpire2")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		umpire1Reason := strings.TrimSpace(r.FormValue("umpire1_reason"))
-		umpire2Reason := strings.TrimSpace(r.FormValue("umpire2_reason"))
-		comments := buildCombinedUmpireComments(umpire1Reason, umpire2Reason)
-
-		formData["umpire1_performance"] = umpire1Overall
-		formData["umpire2_performance"] = umpire2Overall
-		formData["umpire_comments"] = comments
-		formDataJSON, _ := json.Marshal(formData)
+		comments := ""
 		umpire1Type := "panel"
 		umpire2Type := "panel"
+		if matchOutcome == "played" {
+			umpire1Overall, err := deriveUmpirePerformance(r, "umpire1")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			umpire2Overall, err := deriveUmpirePerformance(r, "umpire2")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			umpire1Reason := strings.TrimSpace(r.FormValue("umpire1_reason"))
+			umpire2Reason := strings.TrimSpace(r.FormValue("umpire2_reason"))
+			comments = buildCombinedUmpireComments(umpire1Reason, umpire2Reason)
+
+			formData["umpire1_performance"] = umpire1Overall
+			formData["umpire2_performance"] = umpire2Overall
+			formData["umpire_comments"] = comments
+		} else {
+			comments = "Match not played: " + matchOutcomeReason
+			formData["match_not_played"] = true
+			formData["umpire1_performance"] = ""
+			formData["umpire2_performance"] = ""
+			formData["umpire_comments"] = comments
+			umpire1Type = "n/a"
+			umpire2Type = "n/a"
+		}
+		formDataJSON, _ := json.Marshal(formData)
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -855,11 +884,12 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			if strings.TrimSpace(recipientEmail) != "" {
 				mailer := email.NewFromEnv()
 				copyBody := fmt.Sprintf(
-					"Your captain report has been recorded.\n\nClub: %s\nTeam: %s\nSubmitted for: %s\nMatch date: %s\nPitch rating: %d\nOutfield rating: %d\nFacilities rating: %d\n\nComments:\n%s\n",
+					"Your captain report has been recorded.\n\nClub: %s\nTeam: %s\nSubmitted for: %s\nMatch date: %s\nMatch status: %s\nPitch rating: %d\nOutfield rating: %d\nFacilities rating: %d\n\nComments:\n%s\n",
 					clubName,
 					teamName,
 					captainName,
 					matchDate.Format("2006-01-02"),
+					strings.ReplaceAll(matchOutcome, "_", " "),
 					pitchRating,
 					outfieldRating,
 					facilitiesRating,
