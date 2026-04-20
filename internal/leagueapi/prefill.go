@@ -8,6 +8,36 @@ import (
 	"cricket-ground-feedback/internal/db"
 )
 
+// LookupHomeClubID returns the club ID of the home team for a given match.
+// It joins league_fixtures → teams → clubs via play_cricket_team_id.
+// Returns 0 if the fixture cannot be found or the home team is not mapped locally.
+func LookupHomeClubID(ctx context.Context, pool *db.Pool, teamID int32, matchDate time.Time) int32 {
+	var pcID *string
+	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
+	if pcID == nil || strings.TrimSpace(*pcID) == "" {
+		return 0
+	}
+	id := strings.TrimSpace(*pcID)
+
+	var homeClubID *int32
+	_ = pool.QueryRow(ctx, `
+		SELECT cl.id
+		FROM league_fixtures lf
+		JOIN teams ht ON TRIM(ht.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+		JOIN clubs cl ON cl.id = ht.club_id
+		WHERE lf.match_date = $1::date
+		  AND (TRIM(lf.home_team_pc_id) = $2 OR TRIM(lf.away_team_pc_id) = $2)
+		  AND TRIM(COALESCE(lf.home_team_pc_id, '')) <> ''
+		ORDER BY lf.fetched_at DESC
+		LIMIT 1
+	`, matchDate.Format("2006-01-02"), id).Scan(&homeClubID)
+
+	if homeClubID == nil {
+		return 0
+	}
+	return *homeClubID
+}
+
 // LookupUmpirePrefill returns umpire names from cached league_fixtures for this team and date.
 // team_id must have teams.play_cricket_team_id set to match home_team_pc_id or away_team_pc_id.
 func LookupUmpirePrefill(ctx context.Context, pool *db.Pool, teamID int32, matchDate time.Time) (umpire1, umpire2 string, ok bool) {

@@ -835,15 +835,22 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			submittedByName = strings.TrimSpace(sess.SubmitterName)
 			submittedByEmail = strings.TrimSpace(sess.SubmitterEmail)
 		}
+		homeClubID := leagueapi.LookupHomeClubID(ctx, s.DB, sess.TeamID, matchDate)
+		var homeClubIDArg any
+		if homeClubID > 0 {
+			homeClubIDArg = homeClubID
+		}
 		err = s.DB.QueryRow(ctx, `
 			INSERT INTO submissions (season_id, week_id, team_id, captain_id, match_date,
 			                         pitch_rating, outfield_rating, facilities_rating, comments, form_data,
-			                         submitted_by_name, submitted_by_email, submitted_by_role, umpire1_type, umpire2_type)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15)
+			                         submitted_by_name, submitted_by_email, submitted_by_role, umpire1_type, umpire2_type,
+			                         home_club_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15, $16)
 			RETURNING id
 		`, sess.SeasonID, sess.WeekID, sess.TeamID, sess.CaptainID, matchDate.Format("2006-01-02"),
 			pitchRating, outfieldRating, facilitiesRating, comments, formDataJSON,
-			submittedByName, submittedByEmail, submittedByRole, umpire1Type, umpire2Type).Scan(&submissionID)
+			submittedByName, submittedByEmail, submittedByRole, umpire1Type, umpire2Type,
+			homeClubIDArg).Scan(&submissionID)
 		if err != nil {
 			http.Error(w, "could not save submission", http.StatusInternalServerError)
 			return

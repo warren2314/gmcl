@@ -1007,7 +1007,7 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		`).Scan(&seasonID, &seasonName)
 
 		rows, err := s.DB.Query(ctx, `
-			SELECT cl.name,
+			SELECT COALESCE(home_cl.name, cl.name)                           AS club_name,
 			       COUNT(sub.id)                                              AS submissions,
 			       ROUND(AVG(sub.pitch_rating)::numeric, 2)                  AS avg_pitch,
 			       ROUND(AVG((sub.form_data->>'unevenness_of_bounce')::numeric)::numeric,2) AS avg_bounce,
@@ -1016,14 +1016,15 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 			       ROUND(AVG((sub.form_data->>'turn')::numeric)::numeric,2)                 AS avg_turn,
 			       COALESCE(sc.sanction_count, 0)                            AS sanctions
 			FROM submissions sub
-			JOIN teams t  ON sub.team_id  = t.id
-			JOIN clubs cl ON t.club_id    = cl.id
+			JOIN teams t   ON sub.team_id   = t.id
+			JOIN clubs cl  ON t.club_id     = cl.id
+			LEFT JOIN clubs home_cl ON home_cl.id = sub.home_club_id
 			LEFT JOIN (
 			    SELECT club_id, COUNT(*) AS sanction_count FROM sanctions
 			    WHERE season_id = $1 AND status = 'active' GROUP BY club_id
-			) sc ON cl.id = sc.club_id
+			) sc ON COALESCE(home_cl.id, cl.id) = sc.club_id
 			WHERE sub.season_id = $1
-			GROUP BY cl.name, sc.sanction_count
+			GROUP BY COALESCE(home_cl.name, cl.name), sc.sanction_count
 			ORDER BY avg_pitch DESC NULLS LAST
 		`, seasonID)
 		if err != nil {
