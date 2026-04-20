@@ -33,6 +33,11 @@ type playCricketMappingSuggestion struct {
 	LastMatchDate     time.Time
 }
 
+type playCricketSeasonRef struct {
+	ID   int32
+	Name string
+}
+
 type playCricketMappingPageData struct {
 	FixtureCount       int
 	DistinctFixtureIDs int
@@ -43,6 +48,7 @@ type playCricketMappingPageData struct {
 	AlreadyMappedCount int
 	ConflictCount      int
 	UnmatchedCount     int
+	Seasons            []playCricketSeasonRef
 }
 
 type playCricketResolver struct {
@@ -217,6 +223,109 @@ func (s *Server) handleAdminPlayCricketMappingApply() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		fail := func(msg string) {
+			data, _ := s.buildPlayCricketMappingPageData(ctx)
+			s.renderAdminPlayCricketPage(w, r, data, "", msg)
+		}
+
+		seasonRaw := strings.TrimSpace(r.FormValue("season_id"))
+		if seasonRaw == "" {
+			fail("Select a season before generating weeks.")
+			return
+		}
+		seasonID, err := strconv.ParseInt(seasonRaw, 10, 32)
+		if err != nil || seasonID <= 0 {
+			fail("Invalid season.")
+			return
+		}
+
+		var seasonStart, seasonEnd time.Time
+		err = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM seasons WHERE id = $1`, int32(seasonID)).Scan(&seasonStart, &seasonEnd)
+		if err != nil {
+			fail("Season not found.")
+			return
+		}
+
+		// Distinct match dates within the season's date range.
+		dRows, err := s.DB.Query(ctx, `
+			SELECT DISTINCT match_date
+			FROM league_fixtures
+			WHERE match_date BETWEEN $1 AND $2
+			ORDER BY match_date
+		`, seasonStart, seasonEnd)
+		if err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
+		defer dRows.Close()
+
+		var dates []time.Time
+		for dRows.Next() {
+			var d time.Time
+			if err := dRows.Scan(&d); err != nil {
+				http.Error(w, "error", http.StatusInternalServerError)
+				return
+			}
+			dates = append(dates, d)
+		}
+		if err := dRows.Err(); err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
+
+		if len(dates) == 0 {
+			fail("No fixtures found within this season's date range. Sync fixtures first.")
+			return
+		}
+
+		inserted := 0
+		for i, d := range dates {
+			weekNum := i + 1
+			start := d
+			end := d.AddDate(0, 0, 6)
+			if i+1 < len(dates) {
+				if prev := dates[i+1].AddDate(0, 0, -1); prev.Before(end) {
+					end = prev
+				}
+			}
+			tag, err := s.DB.Exec(ctx, `
+				INSERT INTO weeks (season_id, week_number, start_date, end_date)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (season_id, week_number) DO NOTHING
+			`, int32(seasonID), weekNum, start, end)
+			if err != nil {
+				http.Error(w, "error", http.StatusInternalServerError)
+				return
+			}
+			inserted += int(tag.RowsAffected())
+		}
+
+		s.audit(ctx, r, "admin", nil, "generate_weeks", "weeks", nil, map[string]any{
+			"season_id": seasonID,
+			"total":     len(dates),
+			"inserted":  inserted,
+		})
+
+		data, err := s.buildPlayCricketMappingPageData(ctx)
+		if err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
+		msg := fmt.Sprintf("Generated %d weeks from fixture dates (%d new, %d already existed).", len(dates), inserted, len(dates)-inserted)
+		s.renderAdminPlayCricketPage(w, r, data, msg, "")
+	}
+}
+
 func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Request, data playCricketMappingPageData, successMsg, errorMsg string) {
 	csrfToken := ""
 	if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
@@ -294,6 +403,32 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
   </div>
 </div>
 `, escapeHTML(csrfToken), time.Now().In(s.LondonLoc).Format("2006-01-02"), data.FixtureCount, data.DistinctFixtureIDs, data.MappedTeams, data.ReadyCount, escapeHTML(lastFetched))
+
+	fmt.Fprintf(w, `<div class="row g-4 mb-4">
+  <div class="col-lg-5">
+    <div class="card card-gmcl shadow-sm h-100">
+      <div class="card-body">
+        <h5 class="card-title">Generate Weeks from Fixtures</h5>
+        <p class="text-muted small">Creates a <code>weeks</code> row for each distinct match date found in synced fixtures. Each week runs from the match date until the day before the next match (or +6 days for the last week). Already-existing weeks are left unchanged.</p>
+        <form method="POST" action="/admin/play-cricket/generate-weeks">
+          <input type="hidden" name="csrf_token" value="%s">
+          <div class="mb-3">
+            <label class="form-label">Season</label>
+            <select class="form-select" name="season_id"%s>
+              <option value="">— select —</option>
+`)
+	for _, season := range data.Seasons {
+		fmt.Fprintf(w, `              <option value="%d">%s</option>`+"\n", season.ID, escapeHTML(season.Name))
+	}
+	fmt.Fprintf(w, `            </select>
+          </div>
+          <button type="submit" class="btn btn-primary"%s>Generate weeks</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+`, escapeHTML(csrfToken), disabledAttr(len(data.Seasons) == 0), disabledAttr(len(data.Seasons) == 0))
 
 	fmt.Fprintf(w, `<form method="POST" action="/admin/play-cricket/team-mapping/apply">
   <input type="hidden" name="csrf_token" value="%s">
@@ -413,6 +548,22 @@ func (s *Server) buildPlayCricketMappingPageData(ctx context.Context) (playCrick
 		FROM teams
 		WHERE play_cricket_team_id IS NOT NULL AND TRIM(play_cricket_team_id) <> ''
 	`).Scan(&data.MappedTeams); err != nil {
+		return data, err
+	}
+
+	seasonRows, err := s.DB.Query(ctx, `SELECT id, name FROM seasons ORDER BY start_date DESC, id DESC`)
+	if err != nil {
+		return data, err
+	}
+	defer seasonRows.Close()
+	for seasonRows.Next() {
+		var sr playCricketSeasonRef
+		if err := seasonRows.Scan(&sr.ID, &sr.Name); err != nil {
+			return data, err
+		}
+		data.Seasons = append(data.Seasons, sr)
+	}
+	if err := seasonRows.Err(); err != nil {
 		return data, err
 	}
 
