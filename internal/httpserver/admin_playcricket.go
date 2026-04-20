@@ -416,7 +416,7 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
             <label class="form-label">Season</label>
             <select class="form-select" name="season_id"%s>
               <option value="">— select —</option>
-`)
+`, escapeHTML(csrfToken), disabledAttr(len(data.Seasons) == 0))
 	for _, season := range data.Seasons {
 		fmt.Fprintf(w, `              <option value="%d">%s</option>`+"\n", season.ID, escapeHTML(season.Name))
 	}
@@ -428,7 +428,7 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
     </div>
   </div>
 </div>
-`, escapeHTML(csrfToken), disabledAttr(len(data.Seasons) == 0), disabledAttr(len(data.Seasons) == 0))
+`, disabledAttr(len(data.Seasons) == 0))
 
 	fmt.Fprintf(w, `<form method="POST" action="/admin/play-cricket/team-mapping/apply">
   <input type="hidden" name="csrf_token" value="%s">
