@@ -7,13 +7,14 @@ import (
 )
 
 type captainCSVLayout struct {
-	clubIdx      int
-	teamIdx      int
-	nameIdx      int
-	emailIdx     int
-	phoneIdx     int
-	firstNameIdx int
-	lastNameIdx  int
+	clubIdx              int
+	teamIdx              int
+	nameIdx              int
+	emailIdx             int
+	phoneIdx             int
+	firstNameIdx         int
+	lastNameIdx          int
+	requireExistingTeams bool
 }
 
 type captainCSVResolver struct {
@@ -73,6 +74,26 @@ func parseCaptainCSVLayout(header []string) (captainCSVLayout, error) {
 			phoneIdx:     indexByHeader["mobiletel"],
 			firstNameIdx: indexByHeader["first_name"],
 			lastNameIdx:  indexByHeader["last_name"],
+		}, nil
+	}
+
+	const googleFormEmailHeader = "please_confirm_your_email_address_for_us_to_send_reminders_and_links_for_the_captains_report"
+	if hasCaptainCSVHeaders(indexByHeader,
+		"timestamp",
+		"please_confirm_your_name",
+		"please_state_your_club",
+		"please_state_your_team_grade",
+		googleFormEmailHeader,
+	) {
+		return captainCSVLayout{
+			clubIdx:              indexByHeader["please_state_your_club"],
+			teamIdx:              indexByHeader["please_state_your_team_grade"],
+			nameIdx:              indexByHeader["please_confirm_your_name"],
+			emailIdx:             indexByHeader[googleFormEmailHeader],
+			phoneIdx:             -1,
+			firstNameIdx:         -1,
+			lastNameIdx:          -1,
+			requireExistingTeams: true,
 		}, nil
 	}
 

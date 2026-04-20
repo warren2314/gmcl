@@ -1263,7 +1263,11 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 				rw.Club = resolvedClub
 				if teamFound {
 					rw.Team = resolvedTeam
+				} else if layout.requireExistingTeams {
+					rw.Errors = append(rw.Errors, "team not found in database")
 				}
+			} else if layout.requireExistingTeams {
+				rw.Errors = append(rw.Errors, "club not found in database")
 			}
 
 			key := normalizeCaptainCSVClubKey(rw.Club) + "|" + normalizeCaptainCSVTeamKey(rw.Team) + "|" + strings.ToLower(rw.Email)
