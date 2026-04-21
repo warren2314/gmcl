@@ -531,26 +531,41 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			_ = json.Unmarshal(draftJSON, &draft)
 		}
 
-		matchDateStr := formVal(draft, "match_date")
-		if matchDateStr == "" {
-			matchDateStr = time.Now().Format("2006-01-02")
-		}
-		if md, err := time.Parse("2006-01-02", matchDateStr); err == nil {
-			u1, u2, ok := leagueapi.LookupUmpirePrefill(ctx, s.DB, sess.TeamID, md)
-			if ok {
+		// Look up the week's date range to find the fixture (not just today's date).
+		var weekStart, weekEnd time.Time
+		_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
+
+		if !weekStart.IsZero() {
+			if fp, ok := leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd); ok {
 				filled := false
-				if formVal(draft, "umpire1_name") == "" && u1 != "" {
-					draft["umpire1_name"] = u1
+				if formVal(draft, "match_date") == "" && fp.MatchDate != "" {
+					draft["match_date"] = fp.MatchDate
 					filled = true
 				}
-				if formVal(draft, "umpire2_name") == "" && u2 != "" {
-					draft["umpire2_name"] = u2
+				if formVal(draft, "umpire1_name") == "" && fp.Umpire1 != "" {
+					draft["umpire1_name"] = fp.Umpire1
+					filled = true
+				}
+				if formVal(draft, "umpire2_name") == "" && fp.Umpire2 != "" {
+					draft["umpire2_name"] = fp.Umpire2
+					filled = true
+				}
+				if formVal(draft, "opposition") == "" && fp.Opposition != "" {
+					draft["opposition"] = fp.Opposition
+					filled = true
+				}
+				if formVal(draft, "venue") == "" && fp.Venue != "" {
+					draft["venue"] = fp.Venue
 					filled = true
 				}
 				if filled {
 					draft["prefill_source"] = "league_api"
 				}
 			}
+		}
+
+		if formVal(draft, "match_date") == "" {
+			draft["match_date"] = time.Now().Format("2006-01-02")
 		}
 
 		csrfToken := middleware.CSRFToken(r)

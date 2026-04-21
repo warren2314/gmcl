@@ -117,6 +117,14 @@ Please complete all required fields before submitting. The page will scroll to t
         <input type="text" class="form-control" value="`+escapeHTML(clubName)+`" readonly>
       </div>
       <div class="col-md-6">
+        <label class="form-label">Opposition</label>
+        <input type="text" class="form-control" name="opposition" value="`+escapeHTML(val("opposition"))+`" placeholder="e.g. Milnrow CC 2nd XI">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">Venue</label>
+        <input type="text" class="form-control" name="venue" value="`+escapeHTML(val("venue"))+`" placeholder="e.g. Milnrow CC">
+      </div>
+      <div class="col-md-6">
         <label class="form-label">Match Status *</label>
         <select class="form-select" name="match_outcome" id="match-outcome" required>
           <option value="played"` + selStr(val("match_outcome"), "played") + `>Played</option>
