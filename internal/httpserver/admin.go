@@ -48,6 +48,10 @@ func (s *Server) adminRouter() http.Handler {
 	r.Post("/login", s.handleAdminLoginPost())
 	r.Get("/2fa", s.handleAdmin2FAGet())
 	r.Post("/2fa", s.handleAdmin2FAPost())
+	r.Get("/forgot-password", s.handleAdminForgotPasswordGet())
+	r.Post("/forgot-password", s.handleAdminForgotPasswordPost())
+	r.Get("/reset-password", s.handleAdminResetPasswordGet())
+	r.Post("/reset-password", s.handleAdminResetPasswordPost())
 
 	// Change-password is accessible to any authenticated admin, including those
 	// who are forced to change — it sits outside the full requireAdmin group so
@@ -127,11 +131,13 @@ func (s *Server) adminRouter() http.Handler {
 	return r
 }
 
-func writeAdminLoginPage(w http.ResponseWriter, csrfToken, errMsg, username string) {
+func writeAdminLoginPage(w http.ResponseWriter, csrfToken, errMsg, username string, resetOK bool) {
 	pageHead(w, "Admin Login")
-	errorHTML := ""
-	if errMsg != "" {
-		errorHTML = `<div class="alert alert-danger py-2 text-start" role="alert">` + escapeHTML(errMsg) + `</div>`
+	bannerHTML := ""
+	if resetOK {
+		bannerHTML = `<div class="alert alert-success py-2 text-start">Password updated — please log in.</div>`
+	} else if errMsg != "" {
+		bannerHTML = `<div class="alert alert-danger py-2 text-start" role="alert">` + escapeHTML(errMsg) + `</div>`
 	}
 	fmt.Fprintf(w, `<div class="container" style="max-width:440px;margin-top:5rem">
 <div class="card card-gmcl shadow-sm">
@@ -151,10 +157,13 @@ func writeAdminLoginPage(w http.ResponseWriter, csrfToken, errMsg, username stri
       </div>
       <button type="submit" class="btn btn-primary w-100">Continue</button>
     </form>
+    <div class="mt-3 text-center small">
+      <a href="/admin/forgot-password">Forgot password?</a>
+    </div>
   </div>
 </div>
 </div>
-`, errorHTML, csrfToken, escapeHTML(username))
+`, bannerHTML, csrfToken, escapeHTML(username))
 	pageFooter(w)
 }
 
@@ -162,7 +171,7 @@ func (s *Server) handleAdminLoginGet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writeAdminLoginPage(w, csrfToken, "", "")
+		writeAdminLoginPage(w, csrfToken, "", "", r.URL.Query().Get("reset") == "1")
 	}
 }
 
@@ -192,7 +201,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 				csrfToken := middleware.CSRFToken(r)
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
-				writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username)
+				writeAdminLoginPage(w, csrfToken, "Invalid username or password.", username, false)
 				return
 			}
 
@@ -215,7 +224,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			writeAdminLoginPage(w, csrfToken, errMsg, username)
+			writeAdminLoginPage(w, csrfToken, errMsg, username, false)
 			return
 		}
 

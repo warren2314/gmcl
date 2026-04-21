@@ -477,6 +477,221 @@ func validatePasswordStrength(pwd string) error {
 	return nil
 }
 
+// ── Forgot / reset password ────────────────────────────────────────────────────
+
+func (s *Server) handleAdminForgotPasswordGet() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		csrfToken := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Forgot Password")
+		writeCaptainNav(w)
+		fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
+<div class="card shadow-sm">
+  <div class="card-header fw-semibold">Reset Password</div>
+  <div class="card-body">
+    <p class="text-muted small">Enter your admin email address and we'll send you a reset link.</p>
+    <form method="POST" action="/admin/forgot-password">
+      <input type="hidden" name="csrf_token" value="%s">
+      <div class="mb-3">
+        <label class="form-label">Email address</label>
+        <input type="email" name="email" class="form-control" required autocomplete="email">
+      </div>
+      <button type="submit" class="btn btn-primary w-100">Send reset link</button>
+    </form>
+    <div class="mt-3 text-center small">
+      <a href="/admin/login">&larr; Back to login</a>
+    </div>
+  </div>
+</div>
+</div>`, csrfToken)
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminForgotPasswordPost() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		emailAddr := strings.TrimSpace(r.FormValue("email"))
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		// Look up admin by email — do this silently so we don't reveal whether the address exists.
+		var adminID int32
+		var username string
+		_ = s.DB.QueryRow(ctx, `
+			SELECT id, username FROM admin_users
+			WHERE LOWER(email) = LOWER($1) AND is_active = TRUE
+		`, emailAddr).Scan(&adminID, &username)
+
+		if adminID > 0 {
+			plain, hash, err := generateInviteTokenHash()
+			if err == nil {
+				expires := time.Now().Add(1 * time.Hour)
+				_, err = s.DB.Exec(ctx, `
+					INSERT INTO admin_invite_tokens (admin_user_id, token_hash, expires_at)
+					VALUES ($1, $2, $3)
+				`, adminID, hash, expires)
+				if err == nil {
+					appURL := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+					if appURL == "" {
+						appURL = "https://gmcl.co.uk"
+					}
+					resetLink := appURL + "/admin/reset-password?token=" + plain
+					body := fmt.Sprintf(`Hi %s,
+
+A password reset was requested for your GMCL Admin account.
+
+Click the link below to set a new password (valid for 1 hour):
+%s
+
+If you did not request this, you can safely ignore this email.
+
+— GMCL`, username, resetLink)
+					emailClient := email.NewFromEnv()
+					_ = emailClient.Send(emailAddr, "GMCL Admin — password reset", body)
+					s.audit(ctx, r, "public", nil, "admin_password_reset_requested", "admin_user",
+						func() *int64 { v := int64(adminID); return &v }(), map[string]any{})
+				}
+			}
+		}
+
+		// Always show the same page regardless of whether the email matched.
+		csrfToken := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Forgot Password")
+		writeCaptainNav(w)
+		fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
+<div class="card shadow-sm">
+  <div class="card-header fw-semibold">Reset Password</div>
+  <div class="card-body">
+    <div class="alert alert-success">If that email is registered, a reset link has been sent. Check your inbox.</div>
+    <div class="text-center small"><a href="/admin/login">&larr; Back to login</a></div>
+  </div>
+</div>
+</div>`, csrfToken)
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminResetPasswordGet() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimSpace(r.URL.Query().Get("token"))
+		csrfToken := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Reset Password")
+		writeCaptainNav(w)
+
+		if token == "" {
+			fmt.Fprint(w, `<div class="container" style="max-width:480px;margin-top:3rem"><div class="alert alert-danger">Invalid or missing reset token.</div></div>`)
+			pageFooter(w)
+			return
+		}
+
+		fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
+<div class="card shadow-sm">
+  <div class="card-header fw-semibold">Set New Password</div>
+  <div class="card-body">
+    <form method="POST" action="/admin/reset-password">
+      <input type="hidden" name="csrf_token" value="%s">
+      <input type="hidden" name="token" value="%s">
+      <div class="mb-3">
+        <label class="form-label">New Password</label>
+        <input type="password" name="new_password" class="form-control" required
+               minlength="12" autocomplete="new-password">
+        <div class="form-text">At least 12 characters, including uppercase, a number and a symbol.</div>
+      </div>
+      <div class="mb-4">
+        <label class="form-label">Confirm New Password</label>
+        <input type="password" name="confirm_password" class="form-control" required
+               autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn btn-primary w-100">Set Password</button>
+    </form>
+  </div>
+</div>
+</div>`, csrfToken, escapeHTML(token))
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminResetPasswordPost() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+
+		token := strings.TrimSpace(r.FormValue("token"))
+		newPwd := r.FormValue("new_password")
+		confirm := r.FormValue("confirm_password")
+
+		if token == "" {
+			http.Error(w, "missing token", http.StatusBadRequest)
+			return
+		}
+		if newPwd != confirm {
+			http.Error(w, "passwords do not match", http.StatusBadRequest)
+			return
+		}
+		if err := validatePasswordStrength(newPwd); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		h := sha256.Sum256([]byte(token))
+
+		var tokenID int64
+		var adminID int32
+		var expiresAt time.Time
+		var usedAt *time.Time
+		err := s.DB.QueryRow(ctx, `
+			SELECT id, admin_user_id, expires_at, used_at
+			FROM admin_invite_tokens
+			WHERE token_hash = $1
+		`, h[:]).Scan(&tokenID, &adminID, &expiresAt, &usedAt)
+		if err != nil || usedAt != nil || time.Now().After(expiresAt) {
+			http.Error(w, "Reset link is invalid or has expired.", http.StatusBadRequest)
+			return
+		}
+
+		newHash, err := auth.HashPassword(newPwd)
+		if err != nil {
+			http.Error(w, "hash error", http.StatusInternalServerError)
+			return
+		}
+
+		// Mark token used and update password in one go.
+		_, err = s.DB.Exec(ctx, `
+			UPDATE admin_invite_tokens SET used_at = now() WHERE id = $1
+		`, tokenID)
+		if err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
+		_, err = s.DB.Exec(ctx, `
+			UPDATE admin_users
+			SET password_hash = $1, force_password_change = FALSE
+			WHERE id = $2
+		`, newHash, adminID)
+		if err != nil {
+			http.Error(w, "error", http.StatusInternalServerError)
+			return
+		}
+
+		eid := int64(adminID)
+		s.audit(ctx, r, "public", nil, "admin_password_reset", "admin_user", &eid, map[string]any{})
+
+		http.Redirect(w, r, "/admin/login?reset=1", http.StatusSeeOther)
+	}
+}
+
 // generateInviteTokenHash creates a secure random token and returns (plaintext, sha256hash).
 func generateInviteTokenHash() (string, []byte, error) {
 	b := make([]byte, 32)
