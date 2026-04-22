@@ -262,7 +262,12 @@ func normalizeCaptainCSVClubKey(s string) string {
 	fields := strings.Fields(s)
 	filtered := make([]string, 0, len(fields))
 	for _, field := range fields {
-		if field == "cricket" || field == "club" || field == "cc" {
+		switch field {
+		case "cricket", "club", "cc",
+			"lancs", "lancashire",
+			"yorks", "yorkshire",
+			"cheshire", "derbys", "derbyshire",
+			"staffs", "staffordshire":
 			continue
 		}
 		filtered = append(filtered, field)
