@@ -267,7 +267,8 @@ func normalizeCaptainCSVClubKey(s string) string {
 			"lancs", "lancashire",
 			"yorks", "yorkshire",
 			"cheshire", "derbys", "derbyshire",
-			"staffs", "staffordshire":
+			"staffs", "staffordshire",
+			"bolton":
 			continue
 		}
 		filtered = append(filtered, field)
