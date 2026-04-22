@@ -1358,8 +1358,8 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 		writeAdminNav(w, csrfToken, r.URL.Path)
 		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Preview Captains CSV</h3>
-<p>Rows: <strong>%d</strong>, Valid: <strong>%d</strong></p>
-`, prev.RowCount, prev.ValidCount)
+<p>Rows: <strong>%d</strong> &nbsp;|&nbsp; Valid: <strong class="text-success">%d</strong> &nbsp;|&nbsp; Skipped/errors: <strong class="text-danger">%d</strong></p>
+`, prev.RowCount, prev.ValidCount, prev.RowCount-prev.ValidCount)
 		if len(prev.Errors) > 0 {
 			fmt.Fprint(w, `<div class="alert alert-danger"><strong>File errors:</strong><ul class="mb-0">`)
 			for _, e := range prev.Errors {
@@ -1367,7 +1367,7 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 			}
 			fmt.Fprint(w, "</ul></div>")
 		}
-		fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm" style="max-width:600px">
+		fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm mb-4" style="max-width:600px">
   <div class="card-body">
     <form method="POST" action="/admin/csv/captains/apply">
       <input type="hidden" name="csrf_token" value="%s">
@@ -1375,15 +1375,40 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
         <label class="form-label">Apply mode</label>
         <select class="form-select" name="mode">
           <option value="all_or_nothing">Fail all if any errors</option>
-          <option value="valid_only">Apply valid rows only</option>
+          <option value="valid_only" selected>Apply valid rows only</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary">Apply</button>
     </form>
   </div>
 </div>
-</div>
+<div class="card card-gmcl shadow-sm mb-4">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover table-gmcl mb-0">
+      <thead><tr>
+        <th>Status</th><th>Club</th><th>Team</th><th>Name</th><th>Email</th><th>Reason</th>
+      </tr></thead>
+      <tbody>
 `, escapeHTML(csrfToken))
+		for _, rr := range prev.Rows {
+			status := `<span class="badge bg-success">OK</span>`
+			reason := ""
+			if len(rr.Errors) > 0 {
+				status = `<span class="badge bg-danger">Skip</span>`
+				reason = strings.Join(rr.Errors, "; ")
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-danger small">%s</td></tr>`,
+				status,
+				escapeHTML(rr.Club), escapeHTML(rr.Team),
+				escapeHTML(rr.Name), escapeHTML(rr.Email),
+				escapeHTML(reason))
+		}
+		fmt.Fprint(w, `      </tbody>
+    </table>
+  </div>
+</div>
+</div>
+`)
 		pageFooter(w)
 
 		// audit preview creation
