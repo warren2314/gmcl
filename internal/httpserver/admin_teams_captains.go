@@ -79,6 +79,7 @@ type adminCaptainRow struct {
 
 type adminTeamsCaptainsPageData struct {
 	Query         string
+	Filter        string
 	ClubEdit      adminClubEdit
 	TeamEdit      adminTeamEdit
 	CaptainEdit   adminCaptainEdit
@@ -90,6 +91,7 @@ type adminTeamsCaptainsPageData struct {
 	TeamCount     int
 	ActiveTeams   int
 	ActiveCaps    int
+	MissingCaps   int
 	SuccessMsg    string
 	ErrorMsg      string
 }
@@ -338,6 +340,7 @@ func (s *Server) handleAdminCaptainDeactivate() http.HandlerFunc {
 func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Request) (adminTeamsCaptainsPageData, error) {
 	data := adminTeamsCaptainsPageData{
 		Query:      strings.TrimSpace(r.URL.Query().Get("q")),
+		Filter:     strings.TrimSpace(r.URL.Query().Get("filter")),
 		ClubEdit:   adminClubEdit{},
 		TeamEdit:   adminTeamEdit{Active: true},
 		CaptainEdit: adminCaptainEdit{
@@ -358,6 +361,9 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		return data, err
 	}
 	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE active_to IS NULL OR active_to >= CURRENT_DATE`).Scan(&data.ActiveCaps); err != nil {
+		return data, err
+	}
+	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE (active_to IS NULL OR active_to >= CURRENT_DATE) AND (TRIM(full_name) = '' OR TRIM(email) = '')`).Scan(&data.MissingCaps); err != nil {
 		return data, err
 	}
 
@@ -440,15 +446,14 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		FROM captains c
 		JOIN teams t ON t.id = c.team_id
 		JOIN clubs cl ON cl.id = t.club_id
-		WHERE $1 = '%%'
-		   OR cl.name ILIKE $1
-		   OR t.name ILIKE $1
-		   OR c.full_name ILIKE $1
-		   OR c.email ILIKE $1
-		   OR COALESCE(c.phone, '') ILIKE $1
+		WHERE ($1 AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		             AND (TRIM(c.full_name) = '' OR TRIM(c.email) = ''))
+		   OR (NOT $1 AND ($2 = '%%' OR cl.name ILIKE $2 OR t.name ILIKE $2
+		                   OR c.full_name ILIKE $2 OR c.email ILIKE $2
+		                   OR COALESCE(c.phone, '') ILIKE $2))
 		ORDER BY (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) DESC, cl.name, t.name, c.active_from DESC
 		LIMIT 300
-	`, filter)
+	`, data.Filter == "missing", filter)
 	if err != nil {
 		return data, err
 	}
@@ -502,12 +507,24 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 	if data.ErrorMsg != "" {
 		fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(data.ErrorMsg))
 	}
-	fmt.Fprintf(w, `<div class="row row-cols-1 row-cols-md-4 g-3 mb-4">
+	missingStyle := "bg-light"
+	if data.MissingCaps > 0 {
+		missingStyle = "bg-warning-subtle"
+	}
+	fmt.Fprintf(w, `<div class="row row-cols-1 row-cols-md-5 g-3 mb-4">
   <div class="col"><div class="border rounded p-3 bg-light"><div class="text-muted small">Clubs</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col"><div class="border rounded p-3 bg-light"><div class="text-muted small">Teams</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col"><div class="border rounded p-3 bg-light"><div class="text-muted small">Active teams</div><div class="fs-4 fw-semibold">%d</div></div></div>
   <div class="col"><div class="border rounded p-3 bg-light"><div class="text-muted small">Active captains</div><div class="fs-4 fw-semibold">%d</div></div></div>
-</div>`, data.ClubCount, data.TeamCount, data.ActiveTeams, data.ActiveCaps)
+  <div class="col"><a href="/admin/teams-captains?filter=missing" class="text-decoration-none"><div class="border rounded p-3 %s"><div class="text-muted small">Missing name/email</div><div class="fs-4 fw-semibold">%d</div></div></a></div>
+</div>`, data.ClubCount, data.TeamCount, data.ActiveTeams, data.ActiveCaps, missingStyle, data.MissingCaps)
+
+	if data.Filter == "missing" {
+		fmt.Fprint(w, `<div class="alert alert-warning d-flex align-items-center justify-content-between">
+  <span>Showing active captains with missing name or email address.</span>
+  <a href="/admin/teams-captains" class="btn btn-sm btn-outline-secondary">Clear filter</a>
+</div>`)
+	}
 
 	fmt.Fprintf(w, `<form method="GET" action="/admin/teams-captains" class="row g-2 mb-4">
   <div class="col-md-6"><input type="text" class="form-control" name="q" placeholder="Search club, team, captain, or email" value="%s"></div>
