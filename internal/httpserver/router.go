@@ -92,6 +92,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	internalMux := chi.NewRouter()
 	internalMux.Use(middleware.HMACVerifier(middleware.HMACConfig{}))
 	internalMux.Post("/send-reminders", s.handleInternalSendReminders())
+	internalMux.Post("/generate-sanctions", s.handleInternalGenerateSanctions())
 	internalMux.Post("/generate-weekly-report", s.handleInternalGenerateWeeklyReport())
 	internalMux.Post("/sync-league-fixtures", s.handleInternalSyncLeagueFixtures())
 	r.Mount("/internal", internalMux)

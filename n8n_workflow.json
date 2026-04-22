@@ -1,0 +1,249 @@
+{
+  "name": "GMCL Captain Emails & Sanctions",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 21 * * 6" }]
+        }
+      },
+      "id": "trigger-sat",
+      "name": "Saturday 21:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+      },
+      "id": "hmac-sat",
+      "name": "HMAC Saturday",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Signature", "value": "={{ $json.sig }}" },
+            { "name": "X-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-Nonce",     "value": "={{ $json.nonce }}" },
+            { "name": "Content-Type","value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.body }}"
+      },
+      "id": "http-sat",
+      "name": "POST Saturday game_day",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 21 * * 0" }]
+        }
+      },
+      "id": "trigger-sun",
+      "name": "Sunday 21:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+      },
+      "id": "hmac-sun",
+      "name": "HMAC Sunday",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Signature", "value": "={{ $json.sig }}" },
+            { "name": "X-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-Nonce",     "value": "={{ $json.nonce }}" },
+            { "name": "Content-Type","value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.body }}"
+      },
+      "id": "http-sun",
+      "name": "POST Sunday game_day",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 160]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 10 * * 1" }]
+        }
+      },
+      "id": "trigger-mon",
+      "name": "Monday 10:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'monday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+      },
+      "id": "hmac-mon",
+      "name": "HMAC Monday",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Signature", "value": "={{ $json.sig }}" },
+            { "name": "X-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-Nonce",     "value": "={{ $json.nonce }}" },
+            { "name": "Content-Type","value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.body }}"
+      },
+      "id": "http-mon",
+      "name": "POST Monday reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 320]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 10 * * 3" }]
+        }
+      },
+      "id": "trigger-wed-reminder",
+      "name": "Wednesday 10:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'wednesday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+      },
+      "id": "hmac-wed-reminder",
+      "name": "HMAC Wednesday reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Signature", "value": "={{ $json.sig }}" },
+            { "name": "X-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-Nonce",     "value": "={{ $json.nonce }}" },
+            { "name": "Content-Type","value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.body }}"
+      },
+      "id": "http-wed-reminder",
+      "name": "POST Wednesday reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 480]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "59 23 * * 3" }]
+        }
+      },
+      "id": "trigger-wed-sanctions",
+      "name": "Wednesday 23:59",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 640]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/generate-sanctions';\nconst ct = 'application/json';\nconst body = '{}';\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+      },
+      "id": "hmac-wed-sanctions",
+      "name": "HMAC Wednesday sanctions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/generate-sanctions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Signature", "value": "={{ $json.sig }}" },
+            { "name": "X-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-Nonce",     "value": "={{ $json.nonce }}" },
+            { "name": "Content-Type","value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.body }}"
+      },
+      "id": "http-wed-sanctions",
+      "name": "POST generate-sanctions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 640]
+    }
+  ],
+  "connections": {
+    "Saturday 21:00":     { "main": [[{ "node": "HMAC Saturday",           "type": "main", "index": 0 }]] },
+    "HMAC Saturday":      { "main": [[{ "node": "POST Saturday game_day",   "type": "main", "index": 0 }]] },
+    "Sunday 21:00":       { "main": [[{ "node": "HMAC Sunday",             "type": "main", "index": 0 }]] },
+    "HMAC Sunday":        { "main": [[{ "node": "POST Sunday game_day",     "type": "main", "index": 0 }]] },
+    "Monday 10:00":       { "main": [[{ "node": "HMAC Monday",             "type": "main", "index": 0 }]] },
+    "HMAC Monday":        { "main": [[{ "node": "POST Monday reminder",     "type": "main", "index": 0 }]] },
+    "Wednesday 10:00":    { "main": [[{ "node": "HMAC Wednesday reminder",  "type": "main", "index": 0 }]] },
+    "HMAC Wednesday reminder": { "main": [[{ "node": "POST Wednesday reminder",  "type": "main", "index": 0 }]] },
+    "Wednesday 23:59":    { "main": [[{ "node": "HMAC Wednesday sanctions", "type": "main", "index": 0 }]] },
+    "HMAC Wednesday sanctions": { "main": [[{ "node": "POST generate-sanctions", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "tags": []
+}

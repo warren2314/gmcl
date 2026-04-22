@@ -62,11 +62,13 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 
 		// Compliance query: all active teams left-joined to submissions this week
 		type compRow struct {
-			TeamID      int32
-			ClubName    string
-			TeamName    string
-			HasSubmitted bool
-			HasSanction  bool
+			TeamID        int32
+			ClubName      string
+			TeamName      string
+			HasSubmitted  bool
+			HasSanction   bool
+			PriorOffences int64
+			SuggestedCard string
 		}
 		var rows []compRow
 		var submitted, missing int
@@ -78,18 +80,26 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				),
 				sanctioned AS (
 				    SELECT DISTINCT team_id FROM sanctions
-				    WHERE season_id=$2 AND week_id=$1 AND reason='non_submission' AND status='active'
+				    WHERE season_id=$2 AND week_id=$1 AND reason='non_submission' AND status IN ('active','served')
+				),
+				prior_offences AS (
+				    SELECT team_id, COUNT(*) AS cnt
+				    FROM sanctions
+				    WHERE season_id=$2 AND reason='non_submission' AND status IN ('active','served')
+				    GROUP BY team_id
 				)
 				SELECT
 				    t.id,
 				    cl.name  AS club,
 				    t.name   AS team,
-				    (s.team_id IS NOT NULL) AS has_submitted,
-				    (sa.team_id IS NOT NULL) AS has_sanction
+				    (s.team_id IS NOT NULL)  AS has_submitted,
+				    (sa.team_id IS NOT NULL) AS has_sanction,
+				    COALESCE(po.cnt, 0)      AS prior_offences
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
-				LEFT JOIN submitted  s  ON s.team_id  = t.id
-				LEFT JOIN sanctioned sa ON sa.team_id = t.id
+				LEFT JOIN submitted     s  ON s.team_id  = t.id
+				LEFT JOIN sanctioned    sa ON sa.team_id = t.id
+				LEFT JOIN prior_offences po ON po.team_id = t.id
 				WHERE t.active = TRUE
 				ORDER BY has_submitted DESC, cl.name, t.name
 			`, weekID, seasonID)
@@ -98,7 +108,12 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				for crows.Next() {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
-						&cr.HasSubmitted, &cr.HasSanction); e == nil {
+						&cr.HasSubmitted, &cr.HasSanction, &cr.PriorOffences); e == nil {
+					if cr.PriorOffences >= 1 {
+						cr.SuggestedCard = "red"
+					} else {
+						cr.SuggestedCard = "yellow"
+					}
 						rows = append(rows, cr)
 						if cr.HasSubmitted {
 							submitted++
@@ -207,7 +222,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Club</th><th>Team</th><th>Status</th><th>Sanction</th><th></th>
+        <th>Club</th><th>Team</th><th>Status</th><th>Prior offences</th><th>Suggested card</th><th>Sanction</th><th></th>
       </tr></thead>
       <tbody>
 `, escapeHTML(seasonName), weekNum)
@@ -235,21 +250,28 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				}
 			}
 
+			priorCell := fmt.Sprintf(`<span class="text-muted">%d</span>`, cr.PriorOffences)
+			suggestedCell := `<span class="badge badge-yellow-card">🟡 Yellow</span>`
+			if cr.SuggestedCard == "red" {
+				suggestedCell = `<span class="badge badge-red-card">🔴 Red</span>`
+			}
+			sanctionCell := `<span class="text-muted">—</span>`
+			if cr.HasSanction {
+				sanctionCell = `<span class="badge badge-yellow-card">Active</span>`
+			}
+			if cr.HasSubmitted {
+				priorCell = `<span class="text-muted">—</span>`
+				suggestedCell = `<span class="text-muted">—</span>`
+			}
+
 			fmt.Fprintf(w,
-				`<tr class="%s"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+				`<tr class="%s"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 				rowClass, escapeHTML(cr.ClubName), escapeHTML(cr.TeamName),
-				statusBadge,
-				func() string {
-					if cr.HasSanction {
-						return `<span class="badge badge-yellow-card">Active</span>`
-					}
-					return `<span class="text-muted">—</span>`
-				}(),
-				actionCell)
+				statusBadge, priorCell, suggestedCell, sanctionCell, actionCell)
 		}
 
 		if len(rows) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active teams found.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No active teams found.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>

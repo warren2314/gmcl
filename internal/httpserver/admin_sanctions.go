@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
@@ -33,16 +35,18 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		}
 
 		type sanRow struct {
-			ID        int64
-			Week      int32
-			Club      string
-			Team      string
-			Colour    string
-			Reason    string
-			Notes     string
-			Status    string
-			IssuedAt  time.Time
-			IssuedBy  string
+			ID             int64
+			Week           int32
+			Club           string
+			Team           string
+			Colour         string
+			Reason         string
+			Notes          string
+			Status         string
+			IssuedAt       time.Time
+			IssuedBy       string
+			EmailStatus    string
+			PointsDeduct   *int32
 		}
 		var sanctions []sanRow
 		var yellowCount, redCount, activeCount int64
@@ -51,7 +55,9 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 			SELECT sa.id, w.week_number, cl.name, t.name,
 			       sa.colour, sa.reason, COALESCE(sa.notes,''),
 			       sa.status, sa.issued_at,
-			       COALESCE(au.username, 'system')
+			       COALESCE(au.username, 'system'),
+			       COALESCE(sa.email_status, 'pending'),
+			       sa.points_deduction
 			FROM sanctions sa
 			JOIN weeks w       ON sa.week_id  = w.id
 			JOIN clubs cl      ON sa.club_id  = cl.id
@@ -66,7 +72,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 				var sr sanRow
 				if e := srows.Scan(&sr.ID, &sr.Week, &sr.Club, &sr.Team,
 					&sr.Colour, &sr.Reason, &sr.Notes, &sr.Status,
-					&sr.IssuedAt, &sr.IssuedBy); e == nil {
+					&sr.IssuedAt, &sr.IssuedBy, &sr.EmailStatus, &sr.PointsDeduct); e == nil {
 					sanctions = append(sanctions, sr)
 					if sr.Colour == "yellow" {
 						yellowCount++
@@ -131,7 +137,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
         <th>Week</th><th>Club</th><th>Team</th><th>Card</th>
-        <th>Reason</th><th>Notes</th><th>Status</th><th>Issued</th><th>By</th><th></th>
+        <th>Reason</th><th>Notes</th><th>Status</th><th>Email</th><th>Issued</th><th>By</th><th></th>
       </tr></thead>
       <tbody>
 `)
@@ -180,22 +186,86 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 				notesDisplay = notesDisplay[:57] + "..."
 			}
 
+			emailBadge := ""
+			switch sr.EmailStatus {
+			case "pending":
+				emailBadge = fmt.Sprintf(`<a href="/admin/sanctions/%d/email" class="badge bg-warning text-dark text-decoration-none">Pending</a>`, sr.ID)
+			case "approved":
+				emailBadge = `<span class="badge bg-info">Approved</span>`
+			case "sent":
+				emailBadge = `<span class="badge bg-success">Sent</span>`
+			case "skipped":
+				emailBadge = `<span class="badge bg-secondary">Skipped</span>`
+			}
+
 			fmt.Fprintf(w,
-				`<tr class="%s"><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td>%s</td><td class="text-muted small">%s</td><td class="text-muted small">%s</td><td>%s</td></tr>`,
+				`<tr class="%s"><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td class="text-muted small">%s</td><td>%s</td></tr>`,
 				rowClass, sr.Week,
 				escapeHTML(sr.Club), escapeHTML(sr.Team),
 				cardBadge, escapeHTML(reasonLabel),
-				escapeHTML(notesDisplay), statusBadge,
+				escapeHTML(notesDisplay), statusBadge, emailBadge,
 				sr.IssuedAt.Format("02 Jan 15:04"),
 				escapeHTML(sr.IssuedBy), actions)
 		}
 
 		if len(sanctions) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="10" class="text-center text-muted py-3">No sanctions issued this season.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="11" class="text-center text-muted py-3">No sanctions issued this season.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
   </div>
+</div>`)
+
+		// Recipients management card
+		type recipientRow struct {
+			ID     int32
+			Name   string
+			Email  string
+			Active bool
+		}
+		var recipients []recipientRow
+		rrows, _ := s.DB.Query(ctx, `SELECT id, name, email, active FROM disciplinary_recipients ORDER BY name`)
+		if rrows != nil {
+			defer rrows.Close()
+			for rrows.Next() {
+				var rr recipientRow
+				if rrows.Scan(&rr.ID, &rr.Name, &rr.Email, &rr.Active) == nil {
+					recipients = append(recipients, rr)
+				}
+			}
+		}
+
+		fmt.Fprintf(w, `
+<div class="card shadow-sm mb-4">
+  <div class="card-header fw-semibold">Disciplinary Email Recipients</div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">These people receive a copy of every card letter that is approved and sent.</p>
+    <form method="POST" action="/admin/sanctions/recipients/save" class="row g-2 mb-3">
+      <input type="hidden" name="csrf_token" value="%s">
+      <div class="col-md-4"><input class="form-control form-control-sm" name="name" placeholder="Name" required></div>
+      <div class="col-md-5"><input class="form-control form-control-sm" type="email" name="email" placeholder="Email address" required></div>
+      <div class="col-auto"><button class="btn btn-sm btn-primary" type="submit">Add recipient</button></div>
+    </form>`, csrfToken)
+
+		if len(recipients) > 0 {
+			fmt.Fprint(w, `<table class="table table-sm mb-0"><thead><tr><th>Name</th><th>Email</th><th>Active</th><th></th></tr></thead><tbody>`)
+			for _, rr := range recipients {
+				activeBadge := `<span class="badge bg-success">Active</span>`
+				if !rr.Active {
+					activeBadge = `<span class="badge bg-secondary">Inactive</span>`
+				}
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>
+  <form method="POST" action="/admin/sanctions/recipients/%d/delete" class="d-inline">
+    <input type="hidden" name="csrf_token" value="%s">
+    <button class="btn btn-sm btn-outline-danger py-0" onclick="return confirm('Remove this recipient?')">Remove</button>
+  </form></td></tr>`,
+					escapeHTML(rr.Name), escapeHTML(rr.Email), activeBadge, rr.ID, csrfToken)
+			}
+			fmt.Fprint(w, `</tbody></table>`)
+		} else {
+			fmt.Fprint(w, `<p class="text-muted small">No recipients configured yet.</p>`)
+		}
+		fmt.Fprint(w, `  </div>
 </div>
 </div>`)
 		pageFooter(w)
@@ -410,6 +480,241 @@ func (s *Server) handleAdminSanctionResolve() http.HandlerFunc {
 
 		s.audit(ctx, r, "admin", adminID, "sanction_resolved", "sanction", &sanctionID, map[string]any{})
 
+		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionEmailPage shows the email draft for a sanction with approve/skip/edit options.
+func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sanctionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || sanctionID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		type sanctionDetail struct {
+			ID             int64
+			Club           string
+			Team           string
+			Colour         string
+			MatchWeek      int32
+			EmailSubject   string
+			EmailBody      string
+			EmailStatus    string
+			PointsDeduct   *int32
+		}
+		var sd sanctionDetail
+		err = s.DB.QueryRow(ctx, `
+			SELECT sa.id, cl.name, t.name, sa.colour, w.week_number,
+			       COALESCE(sa.email_subject,''), COALESCE(sa.email_body,''),
+			       COALESCE(sa.email_status,'pending'), sa.points_deduction
+			FROM sanctions sa
+			JOIN clubs cl ON cl.id = sa.club_id
+			JOIN teams t  ON t.id  = sa.team_id
+			JOIN weeks w  ON w.id  = sa.week_id
+			WHERE sa.id = $1
+		`, sanctionID).Scan(&sd.ID, &sd.Club, &sd.Team, &sd.Colour, &sd.MatchWeek,
+			&sd.EmailSubject, &sd.EmailBody, &sd.EmailStatus, &sd.PointsDeduct)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		csrfToken := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Sanction Email")
+		writeAdminNav(w, csrfToken, r.URL.Path)
+
+		cardLabel := "Yellow Card"
+		if sd.Colour == "red" {
+			cardLabel = "Red Card"
+		}
+		pointsVal := ""
+		if sd.PointsDeduct != nil {
+			pointsVal = strconv.Itoa(int(*sd.PointsDeduct))
+		}
+
+		fmt.Fprintf(w, `<div class="container" style="max-width:800px">
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div><h4 class="mb-0 fw-bold">%s Email</h4>
+  <p class="text-muted mb-0 small">%s &mdash; %s &mdash; Week %d</p></div>
+  <a href="/admin/sanctions" class="btn btn-sm btn-outline-secondary">Back</a>
+</div>
+<form method="POST" action="/admin/sanctions/%d/email/approve">
+  <input type="hidden" name="csrf_token" value="%s">
+  <div class="card shadow-sm mb-3">
+    <div class="card-header fw-semibold">Email draft</div>
+    <div class="card-body">
+      <div class="mb-3">
+        <label class="form-label fw-semibold">Subject</label>
+        <input class="form-control" name="email_subject" value="%s" required>
+      </div>`,
+			escapeHTML(cardLabel), escapeHTML(sd.Club), escapeHTML(sd.Team), sd.MatchWeek,
+			sd.ID, csrfToken, escapeHTML(sd.EmailSubject))
+
+		if sd.Colour == "red" {
+			fmt.Fprintf(w, `
+      <div class="mb-3">
+        <label class="form-label fw-semibold">Points deduction <span class="text-danger">*</span></label>
+        <input class="form-control" type="number" name="points_deduction" min="0" value="%s" required placeholder="e.g. 5">
+        <div class="form-text">Required for red cards. This will be inserted into the letter.</div>
+      </div>`, escapeHTML(pointsVal))
+		}
+
+		fmt.Fprintf(w, `
+      <div class="mb-3">
+        <label class="form-label fw-semibold">Email body</label>
+        <textarea class="form-control font-monospace" name="email_body" rows="18" style="font-size:0.85rem">%s</textarea>
+      </div>
+    </div>
+    <div class="card-footer d-flex gap-2">
+      <button class="btn btn-success" type="submit">Approve &amp; Send</button>
+    </div>
+  </div>
+</form>
+<form method="POST" action="/admin/sanctions/%d/email/skip">
+  <input type="hidden" name="csrf_token" value="%s">
+  <button class="btn btn-outline-secondary btn-sm" type="submit"
+          onclick="return confirm('Skip sending the email for this sanction?')">Skip email</button>
+</form>
+</div>`, escapeHTML(sd.EmailBody), sd.ID, csrfToken)
+
+		pageFooter(w)
+	}
+}
+
+// handleAdminSanctionEmailApprove saves edits, sets email_status=approved, and sends to all recipients.
+func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		sanctionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || sanctionID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		subject := strings.TrimSpace(r.FormValue("email_subject"))
+		body := strings.TrimSpace(r.FormValue("email_body"))
+		pointsRaw := strings.TrimSpace(r.FormValue("points_deduction"))
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		// Persist edits and mark approved
+		var pointsArg interface{}
+		if p, err := strconv.Atoi(pointsRaw); err == nil && p >= 0 {
+			pointsArg = p
+		}
+		sess, _ := getAdminSessionFromRequest(r)
+		approvedBy := "admin"
+		if sess != nil {
+			approvedBy = strconv.Itoa(int(sess.AdminID))
+		}
+
+		_, err = s.DB.Exec(ctx, `
+			UPDATE sanctions
+			SET email_subject=$1, email_body=$2, points_deduction=$3,
+			    email_status='approved', email_approved_by=$4, email_approved_at=now()
+			WHERE id=$5
+		`, subject, body, pointsArg, approvedBy, sanctionID)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+
+		// Fetch active recipients
+		rrows, err := s.DB.Query(ctx, `SELECT email FROM disciplinary_recipients WHERE active=TRUE`)
+		if err != nil {
+			http.Redirect(w, r, "/admin/sanctions?error=approved+but+could+not+fetch+recipients", http.StatusSeeOther)
+			return
+		}
+		defer rrows.Close()
+		var recipients []string
+		for rrows.Next() {
+			var e string
+			if rrows.Scan(&e) == nil {
+				recipients = append(recipients, e)
+			}
+		}
+
+		mailer := email.NewFromEnv()
+		sentCount := 0
+		for _, to := range recipients {
+			if mailer.Send(to, subject, body) == nil {
+				sentCount++
+			}
+		}
+
+		if sentCount > 0 || len(recipients) == 0 {
+			s.DB.Exec(ctx, `UPDATE sanctions SET email_status='sent', email_sent_at=now() WHERE id=$1`, sanctionID)
+		}
+
+		adminID := s.resolveAdminID(r)
+		s.audit(ctx, r, "admin", adminID, "sanction_email_sent", "sanction", &sanctionID, map[string]any{
+			"recipients": len(recipients),
+			"sent":       sentCount,
+		})
+
+		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionEmailSkip marks a sanction email as skipped (no letter sent).
+func (s *Server) handleAdminSanctionEmailSkip() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sanctionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || sanctionID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		s.DB.Exec(ctx, `UPDATE sanctions SET email_status='skipped' WHERE id=$1`, sanctionID)
+		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionRecipientSave adds a new disciplinary email recipient.
+func (s *Server) handleAdminSanctionRecipientSave() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		emailAddr := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+		if name == "" || emailAddr == "" {
+			http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		s.DB.Exec(ctx, `
+			INSERT INTO disciplinary_recipients (name, email)
+			VALUES ($1, $2)
+			ON CONFLICT (email) DO UPDATE SET name=$1, active=TRUE
+		`, name, emailAddr)
+		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionRecipientDelete removes a disciplinary email recipient.
+func (s *Server) handleAdminSanctionRecipientDelete() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		if id == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		s.DB.Exec(ctx, `DELETE FROM disciplinary_recipients WHERE id=$1`, int32(id))
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
 }
