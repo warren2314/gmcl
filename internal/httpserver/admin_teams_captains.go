@@ -363,7 +363,17 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE active_to IS NULL OR active_to >= CURRENT_DATE`).Scan(&data.ActiveCaps); err != nil {
 		return data, err
 	}
-	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE (active_to IS NULL OR active_to >= CURRENT_DATE) AND (TRIM(full_name) = '' OR TRIM(email) = '')`).Scan(&data.MissingCaps); err != nil {
+	if err := s.DB.QueryRow(ctx, `
+		SELECT COUNT(*) FROM teams t
+		WHERE t.active = TRUE
+		  AND NOT EXISTS (
+		      SELECT 1 FROM captains c
+		      WHERE c.team_id = t.id
+		        AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		        AND TRIM(c.full_name) <> ''
+		        AND TRIM(c.email) <> ''
+		  )
+	`).Scan(&data.MissingCaps); err != nil {
 		return data, err
 	}
 
@@ -416,14 +426,14 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		    ORDER BY c.active_from DESC, c.id DESC
 		    LIMIT 1
 		) cur ON TRUE
-		WHERE $1 = '%%'
-		   OR cl.name ILIKE $1
-		   OR t.name ILIKE $1
-		   OR COALESCE(cur.full_name, '') ILIKE $1
-		   OR COALESCE(cur.email, '') ILIKE $1
-		   OR COALESCE(cur.phone, '') ILIKE $1
+		WHERE ($1 AND t.active = TRUE
+		            AND (cur.id IS NULL OR TRIM(cur.full_name) = '' OR TRIM(cur.email) = ''))
+		   OR (NOT $1 AND ($2 = '%%' OR cl.name ILIKE $2 OR t.name ILIKE $2
+		                   OR COALESCE(cur.full_name, '') ILIKE $2
+		                   OR COALESCE(cur.email, '') ILIKE $2
+		                   OR COALESCE(cur.phone, '') ILIKE $2))
 		ORDER BY cl.name, t.name
-	`, filter)
+	`, data.Filter == "missing", filter)
 	if err != nil {
 		return data, err
 	}
@@ -446,11 +456,10 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		FROM captains c
 		JOIN teams t ON t.id = c.team_id
 		JOIN clubs cl ON cl.id = t.club_id
-		WHERE ($1 AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
-		             AND (TRIM(c.full_name) = '' OR TRIM(c.email) = ''))
-		   OR (NOT $1 AND ($2 = '%%' OR cl.name ILIKE $2 OR t.name ILIKE $2
-		                   OR c.full_name ILIKE $2 OR c.email ILIKE $2
-		                   OR COALESCE(c.phone, '') ILIKE $2))
+		WHERE NOT $1
+		  AND ($2 = '%%' OR cl.name ILIKE $2 OR t.name ILIKE $2
+		       OR c.full_name ILIKE $2 OR c.email ILIKE $2
+		       OR COALESCE(c.phone, '') ILIKE $2)
 		ORDER BY (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) DESC, cl.name, t.name, c.active_from DESC
 		LIMIT 300
 	`, data.Filter == "missing", filter)
