@@ -134,7 +134,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    AND TRIM(c.email) <> ''
 		JOIN weeks w ON $1 BETWEEN w.start_date AND w.end_date
-		    AND w.season_id = (SELECT season_id FROM seasons WHERE $1 BETWEEN start_date AND end_date LIMIT 1)
+		    AND w.season_id = (SELECT s.id FROM seasons s WHERE $1 BETWEEN s.start_date AND s.end_date LIMIT 1)
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
 		  AND NOT EXISTS (
