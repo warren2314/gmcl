@@ -54,6 +54,7 @@ services:
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - WEBHOOK_URL=https://n8n.gmcl.co.uk/
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
     env_file:
       - .env
     volumes:
