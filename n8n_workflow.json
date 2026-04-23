@@ -15,7 +15,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $vars.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
       },
       "id": "hmac-sat",
       "name": "HMAC Saturday",
@@ -26,7 +26,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -61,7 +61,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $vars.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'game_day', match_date: new Date().toISOString().slice(0, 10) });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
       },
       "id": "hmac-sun",
       "name": "HMAC Sunday",
@@ -72,7 +72,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -107,7 +107,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $vars.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'monday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'monday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
       },
       "id": "hmac-mon",
       "name": "HMAC Monday",
@@ -118,7 +118,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -153,7 +153,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $vars.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'wednesday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/send-reminders';\nconst ct = 'application/json';\nconst body = JSON.stringify({ type: 'wednesday' });\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
       },
       "id": "hmac-wed-reminder",
       "name": "HMAC Wednesday reminder",
@@ -164,7 +164,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -199,7 +199,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $vars.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/generate-sanctions';\nconst ct = 'application/json';\nconst body = '{}';\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nconst method = 'POST';\nconst path = '/internal/generate-sanctions';\nconst ct = 'application/json';\nconst body = '{}';\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst msg = `${ts}|${nonce}|${method}|${path}|${ct}|${body}`;\nconst sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');\nreturn [{ json: { body, ts, nonce, sig, ct } }];"
       },
       "id": "hmac-wed-sanctions",
       "name": "HMAC Wednesday sanctions",
@@ -210,7 +210,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.GMCL_BASE_URL }}/internal/generate-sanctions",
+        "url": "={{ $env.GMCL_BASE_URL }}/internal/generate-sanctions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
