@@ -49,6 +49,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		worows, _ := s.DB.Query(ctx, `
 			SELECT w.id, w.week_number, s.name
 			FROM weeks w JOIN seasons s ON w.season_id=s.id
+			WHERE s.is_archived = FALSE
 			ORDER BY s.start_date DESC, w.week_number ASC LIMIT 40
 		`)
 		if worows != nil {
