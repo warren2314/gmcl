@@ -58,9 +58,15 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			secret := []byte(os.Getenv("N8N_HMAC_SECRET"))
-			if len(secret) == 0 {
+			secret := os.Getenv("N8N_HMAC_SECRET")
+			if secret == "" {
 				http.Error(w, "hmac not configured", http.StatusInternalServerError)
+				return
+			}
+
+			// Accept simple bearer token as alternative to full HMAC (for n8n HTTP nodes).
+			if auth := r.Header.Get("Authorization"); auth == "Bearer "+secret {
+				next.ServeHTTP(w, r)
 				return
 			}
 
@@ -109,7 +115,7 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 			ct := r.Header.Get("Content-Type")
-			mac := hmac.New(sha256.New, secret)
+			mac := hmac.New(sha256.New, []byte(secret))
 			mac.Write([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s", tsStr, nonce, r.Method, r.URL.Path, ct, string(bodyBytes))))
 			expected := mac.Sum(nil)
 
