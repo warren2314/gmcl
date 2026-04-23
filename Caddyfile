@@ -1,3 +1,7 @@
-:80 {
+gmcl.co.uk {
 	reverse_proxy app:8080
+}
+
+n8n.gmcl.co.uk {
+	reverse_proxy n8n:5678
 }
