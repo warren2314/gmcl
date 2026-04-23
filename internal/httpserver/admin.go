@@ -93,6 +93,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/reports/{id}", s.handleAdminReportView())
 		r.Get("/reports/{id}/status", s.handleAdminReportStatus())
 		r.Get("/reports/{id}/download", s.handleAdminReportDownload())
+		r.Get("/reports/{id}/print", s.handleAdminReportPrint())
 
 		r.Get("/csv/captains", s.handleAdminCSVGet())
 		r.Post("/csv/captains/preview", s.handleAdminCSVPreview())

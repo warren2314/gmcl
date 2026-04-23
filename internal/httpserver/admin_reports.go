@@ -143,6 +143,7 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
         <select name="report_type" class="form-select form-select-sm" id="rptType" onchange="updatePeriod()">
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
+          <option value="quarterly">Quarterly</option>
           <option value="season_end">Season End</option>
         </select>
       </div>
@@ -170,6 +171,11 @@ function updatePeriod() {
   } else if (t === 'monthly') {
     p.placeholder = d.getFullYear()+'-'+(String(d.getMonth()+1).padStart(2,'0'));
     h.textContent = 'Format: YYYY-MM';
+    p.value = p.placeholder;
+  } else if (t === 'quarterly') {
+    var q = Math.ceil((d.getMonth()+1)/3);
+    p.placeholder = d.getFullYear()+'-Q'+q;
+    h.textContent = 'Format: YYYY-Q1 through YYYY-Q4';
     p.value = p.placeholder;
   } else {
     p.placeholder = String(d.getFullYear());
@@ -254,7 +260,7 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 			return
 		}
 
-		validTypes := map[string]bool{"weekly": true, "monthly": true, "season_end": true}
+		validTypes := map[string]bool{"weekly": true, "monthly": true, "quarterly": true, "season_end": true}
 		if !validTypes[reportType] {
 			http.Error(w, "invalid report type", http.StatusBadRequest)
 			return
@@ -386,7 +392,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
     <h4 class="mb-0 fw-bold">%s Report: %s</h4>
     <p class="text-muted mb-0 small">%s &mdash; Generated %s</p>
   </div>
-  <a href="/admin/reports/%d/download" class="btn btn-sm btn-outline-secondary">Download JSON</a>
+  <a href="/admin/reports/%d/print" target="_blank" class="btn btn-sm btn-outline-secondary">🖨 Print / Save as PDF</a>
 </div>
 `, escapeHTML(typeLabel), escapeHTML(rp.ReportPeriod), escapeHTML(rp.SeasonName),
 			rp.GeneratedAt.Format("02 Jan 2006 15:04"), reportID)
@@ -631,6 +637,99 @@ func (s *Server) handleAdminReportStatus() http.HandlerFunc {
 	}
 }
 
+// handleAdminReportPrint renders a print-friendly HTML page (open in browser → Ctrl+P → Save as PDF).
+func (s *Server) handleAdminReportPrint() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		reportID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var payload []byte
+		var seasonName string
+		if err := s.DB.QueryRow(ctx, `
+			SELECT gr.payload_json, s.name
+			FROM generated_reports gr JOIN seasons s ON gr.season_id=s.id
+			WHERE gr.id=$1 AND gr.status='ready'
+		`, reportID).Scan(&payload, &seasonName); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		var rp reportPayload
+		if err := json.Unmarshal(payload, &rp); err != nil {
+			http.Error(w, "corrupt report", http.StatusInternalServerError)
+			return
+		}
+
+		typeLabel := strings.Title(strings.ReplaceAll(rp.ReportType, "_", " "))
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>GMCL %s Report — %s</title>
+<style>
+body { font-family: Arial, sans-serif; font-size: 13px; margin: 30px; color: #222; }
+h1 { font-size: 20px; margin-bottom: 4px; }
+h2 { font-size: 15px; margin-top: 24px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+p.meta { color: #666; font-size: 12px; margin: 0 0 20px; }
+table { border-collapse: collapse; width: 100%%; margin-top: 8px; }
+th { background: #8b0000; color: #fff; padding: 6px 10px; text-align: left; font-size: 12px; }
+td { padding: 5px 10px; border-bottom: 1px solid #eee; }
+.kpis { display: flex; gap: 20px; margin: 16px 0; flex-wrap: wrap; }
+.kpi { border: 1px solid #ddd; border-radius: 6px; padding: 12px 18px; min-width: 120px; }
+.kpi-num { font-size: 28px; font-weight: bold; }
+.kpi-label { font-size: 11px; color: #666; text-transform: uppercase; }
+@media print { button { display: none; } body { margin: 10mm; } }
+</style>
+</head><body>
+<button onclick="window.print()" style="float:right;padding:6px 14px;background:#8b0000;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">🖨 Print / Save as PDF</button>
+<h1>GMCL %s Report: %s</h1>
+<p class="meta">%s &mdash; Generated %s</p>
+<div class="kpis">
+  <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Submissions Received</div></div>
+  <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Teams Expected</div></div>
+  <div class="kpi"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Compliance</div></div>
+  <div class="kpi"><div class="kpi-num">%.2f</div><div class="kpi-label">Avg Pitch Rating</div></div>
+</div>`,
+			typeLabel, rp.ReportPeriod,
+			typeLabel, escapeHTML(rp.ReportPeriod),
+			escapeHTML(seasonName), rp.GeneratedAt.Format("02 Jan 2006 15:04"),
+			rp.SubmissionsReceived, rp.SubmissionsExpected, rp.ComplianceRate, rp.AvgPitchRating)
+
+		if len(rp.MissingTeams) > 0 {
+			fmt.Fprint(w, `<h2>Missing Submissions</h2><table><tr><th>Club</th><th>Team</th></tr>`)
+			for _, m := range rp.MissingTeams {
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td></tr>`, escapeHTML(m.ClubName), escapeHTML(m.TeamName))
+			}
+			fmt.Fprint(w, `</table>`)
+		}
+
+		if len(rp.ClubBreakdown) > 0 {
+			fmt.Fprint(w, `<h2>Club Breakdown</h2><table><tr><th>Club</th><th>Submissions</th><th>Avg Pitch</th></tr>`)
+			for _, c := range rp.ClubBreakdown {
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%.2f</td></tr>`, escapeHTML(c.Club), c.Subs, c.AvgPitch)
+			}
+			fmt.Fprint(w, `</table>`)
+		}
+
+		if len(rp.UmpireSummary) > 0 {
+			fmt.Fprint(w, `<h2>Umpire Summary</h2><table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
+			for _, u := range rp.UmpireSummary {
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
+					escapeHTML(u.Name), u.Ratings, u.Good, u.Average, u.Poor, u.Score)
+			}
+			fmt.Fprint(w, `</table>`)
+		}
+
+		fmt.Fprint(w, `</body></html>`)
+	}
+}
+
 // handleAdminReportDownload returns the raw report JSON.
 func (s *Server) handleAdminReportDownload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -687,6 +786,16 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 		// period is YYYY-MM
 		whereExtra += " AND to_char(sub.match_date,'YYYY-MM')=$2"
 		args = append(args, period)
+	} else if reportType == "quarterly" {
+		// period is YYYY-Q1..Q4 → convert to date range
+		var year, quarter int
+		fmt.Sscanf(period, "%d-Q%d", &year, &quarter)
+		startMonth := (quarter-1)*3 + 1
+		endMonth := startMonth + 2
+		start := fmt.Sprintf("%04d-%02d-01", year, startMonth)
+		end := fmt.Sprintf("%04d-%02d-01", year, endMonth+1)
+		whereExtra += " AND sub.match_date >= $2 AND sub.match_date < $3"
+		args = append(args, start, end)
 	}
 	// season_end uses no extra filter
 
