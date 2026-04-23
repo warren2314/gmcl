@@ -64,8 +64,9 @@ info "Deploying commit: ${COMMIT}"
 # ── Build & restart ──────────────────────────────────────────────────────────
 section "Building images and restarting containers"
 
-# Keep the DB running — only rebuild app + caddy
+# Keep the DB running — rebuild app + caddy, start n8n if not already running
 docker compose up -d --build --no-deps --remove-orphans app caddy
+docker compose up -d --no-recreate n8n
 
 info "Containers restarted."
 
