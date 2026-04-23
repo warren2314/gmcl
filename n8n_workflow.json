@@ -26,7 +26,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "https://gmcl.co.uk/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -72,7 +72,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "https://gmcl.co.uk/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -118,7 +118,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "https://gmcl.co.uk/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -164,7 +164,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GMCL_BASE_URL }}/internal/send-reminders",
+        "url": "https://gmcl.co.uk/internal/send-reminders",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -210,7 +210,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GMCL_BASE_URL }}/internal/generate-sanctions",
+        "url": "https://gmcl.co.uk/internal/generate-sanctions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
