@@ -432,6 +432,52 @@ func (s *Server) handleInternalSyncLeagueFixtures() http.HandlerFunc {
 	}
 }
 
+// handleInternalPreviewEmail renders reminder/sanction email templates without sending.
+// POST body: {"type":"game_day"|"monday"|"wednesday"|"yellow"|"red", "send_to":"optional@email.com"}
+func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Type   string `json:"type"`
+			SendTo string `json:"send_to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+
+		var subject, body string
+		link := "https://gmcl.co.uk/captain/link/EXAMPLE_TOKEN"
+
+		switch req.Type {
+		case "yellow":
+			subject, body = buildSanctionEmail("yellow", "Example CC", "Example CC - 1st XI", "26 April 2026", 0)
+		case "red":
+			subject, body = buildSanctionEmail("red", "Example CC", "Example CC - 1st XI", "26 April 2026", 5)
+		default:
+			t := req.Type
+			if t == "" {
+				t = "game_day"
+			}
+			subject, body = buildReminderEmail(t, "Joe Bloggs", "Example CC", "Example CC - 1st XI", "26 April 2026", link)
+		}
+
+		if req.SendTo != "" {
+			mailer := email.NewFromEnv()
+			if err := mailer.Send(req.SendTo, subject, body); err != nil {
+				http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"subject": subject,
+			"body":    body,
+			"sent_to": req.SendTo,
+		})
+	}
+}
+
 // nextWednesdayMidnight returns 23:59:59 on the Wednesday following or equal to matchDate.
 func nextWednesdayMidnight(matchDate time.Time) time.Time {
 	d := matchDate
