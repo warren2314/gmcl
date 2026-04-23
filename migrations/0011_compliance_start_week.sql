@@ -1,0 +1,2 @@
+ALTER TABLE seasons
+    ADD COLUMN IF NOT EXISTS compliance_start_week INTEGER NOT NULL DEFAULT 1;

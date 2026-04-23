@@ -74,12 +74,18 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Compliance
 		r.Get("/compliance", s.handleAdminCompliance())
+		r.Post("/compliance/start-week", s.handleAdminComplianceStartWeek())
 
 		// Sanctions
 		r.Get("/sanctions", s.handleAdminSanctions())
 		r.Post("/sanctions/issue", s.handleAdminSanctionIssue())
 		r.Post("/sanctions/bulk-issue", s.handleAdminSanctionBulkIssue())
 		r.Post("/sanctions/{id}/resolve", s.handleAdminSanctionResolve())
+		r.Get("/sanctions/{id}/email", s.handleAdminSanctionEmailPage())
+		r.Post("/sanctions/{id}/email/approve", s.handleAdminSanctionEmailApprove())
+		r.Post("/sanctions/{id}/email/skip", s.handleAdminSanctionEmailSkip())
+		r.Post("/sanctions/recipients/save", s.handleAdminSanctionRecipientSave())
+		r.Post("/sanctions/recipients/{id}/delete", s.handleAdminSanctionRecipientDelete())
 
 		// Reports
 		r.Get("/reports", s.handleAdminReports())
@@ -402,13 +408,14 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		var seasonName string
 		var weekID int32
 		var weekNum int32
+		var complianceStartWeek int32
 		weekErr := s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number
+			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
 			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
 			ORDER BY w.start_date LIMIT 1
-		`).Scan(&seasonID, &seasonName, &weekID, &weekNum)
+		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
 
 		// ── 2. KPI: submissions this week / season total / avg pitch ───────
 		var weekSubs, seasonSubs, activeTeams int64
@@ -430,9 +437,16 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM weeks
 				WHERE season_id=$1 AND end_date < CURRENT_DATE
-			`, seasonID).Scan(&weeksElapsed)
+				  AND week_number >= $2
+			`, seasonID, complianceStartWeek).Scan(&weeksElapsed)
+			var trackingSubs int64
+			s.DB.QueryRow(ctx, `
+				SELECT COUNT(*) FROM submissions sub
+				JOIN weeks w ON sub.week_id = w.id
+				WHERE sub.season_id=$1 AND w.week_number >= $2
+			`, seasonID, complianceStartWeek).Scan(&trackingSubs)
 			if weeksElapsed > 0 && activeTeams > 0 {
-				complianceRate = float64(seasonSubs) / float64(weeksElapsed*activeTeams) * 100
+				complianceRate = float64(trackingSubs) / float64(weeksElapsed*activeTeams) * 100
 				if complianceRate > 100 {
 					complianceRate = 100
 				}

@@ -21,12 +21,13 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		var seasonName string
 		var weekNum int32
 
+		var complianceStartWeek int32 = 1
 		s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number
+			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
 			FROM weeks w JOIN seasons s ON w.season_id=s.id
 			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
 			ORDER BY w.start_date LIMIT 1
-		`).Scan(&seasonID, &seasonName, &weekID, &weekNum)
+		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
 
 		if wid := r.URL.Query().Get("week_id"); wid != "" {
 			if n, err := strconv.Atoi(wid); err == nil {
@@ -152,9 +153,17 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
     <h4 class="mb-0 fw-bold">Compliance</h4>
     <p class="text-muted mb-0 small">Who has and hasn't submitted for a given week</p>
   </div>
-  <form method="GET" action="/admin/compliance" class="d-flex gap-2 align-items-center">
+  <div class="d-flex gap-2 align-items-center">
+    <form method="POST" action="/admin/compliance/start-week" class="d-flex gap-2 align-items-center">
+      <input type="hidden" name="csrf_token" value="%s">
+      <input type="hidden" name="season_id" value="%d">
+      <label class="form-label mb-0 small text-muted text-nowrap">Track from week</label>
+      <input type="number" name="start_week" value="%d" min="1" class="form-control form-control-sm" style="width:70px">
+      <button class="btn btn-outline-secondary btn-sm">Save</button>
+    </form>
+    <form method="GET" action="/admin/compliance" class="d-flex gap-2 align-items-center">
     <select name="week_id" class="form-select form-select-sm" onchange="this.form.submit()">
-`)
+`, csrfToken, seasonID, complianceStartWeek)
 		for _, wo := range weekOpts {
 			sel := ""
 			if wo.ID == weekID {
@@ -164,7 +173,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				wo.ID, sel, escapeHTML(wo.Season), wo.Num)
 		}
 		fmt.Fprint(w, `    </select>
-  </form>
+    </form>
+  </div>
 </div>
 `)
 
@@ -288,5 +298,19 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 </div>
 </div>`)
 		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminComplianceStartWeek() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		seasonID, _ := strconv.Atoi(r.FormValue("season_id"))
+		startWeek, _ := strconv.Atoi(r.FormValue("start_week"))
+		if seasonID > 0 && startWeek >= 1 {
+			s.DB.Exec(ctx, `UPDATE seasons SET compliance_start_week=$1 WHERE id=$2`, startWeek, seasonID)
+		}
+		http.Redirect(w, r, "/admin/compliance", http.StatusSeeOther)
 	}
 }
