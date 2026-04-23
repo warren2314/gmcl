@@ -321,6 +321,11 @@ func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
 			inserted += int(tag.RowsAffected())
 		}
 
+		// Delete stale weeks beyond the new count (left over from old per-date generation).
+		s.DB.Exec(ctx, `
+			DELETE FROM weeks WHERE season_id=$1 AND week_number > $2
+		`, int32(seasonID), len(groups))
+
 		// Re-link existing submissions to the correct week based on match_date.
 		s.DB.Exec(ctx, `
 			UPDATE submissions sub
