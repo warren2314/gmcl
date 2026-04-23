@@ -259,18 +259,24 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		drafted := 0
 		for _, m := range missed {
-			// Count prior non-submission notices sent this season
-			var priorCount int64
+			var yellowCount, redCount int64
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM sanctions
 				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
-				  AND status IN ('active','served')
-			`, m.TeamID, m.SeasonID).Scan(&priorCount)
+				  AND colour='yellow' AND status IN ('active','served')
+			`, m.TeamID, m.SeasonID).Scan(&yellowCount)
+			s.DB.QueryRow(ctx, `
+				SELECT COUNT(*) FROM sanctions
+				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
+				  AND colour='red' AND status IN ('active','served')
+			`, m.TeamID, m.SeasonID).Scan(&redCount)
 
+			// 3 yellows triggers a red; red card points = number of reds so far + 1
 			colour := "yellow"
-			if priorCount >= 1 {
+			pointsDeduction := 0
+			if yellowCount >= 3 {
 				colour = "red"
-				// Mark existing active yellows as served
+				pointsDeduction = int(redCount) + 1
 				s.DB.Exec(ctx, `
 					UPDATE sanctions SET status='served', resolved_at=now()
 					WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
@@ -278,15 +284,15 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 			}
 
 			dateStr := m.MatchDate.Format("2 January 2006")
-			subject, body := buildSanctionEmail(colour, m.ClubName, m.TeamName, dateStr, 0)
+			subject, body := buildSanctionEmail(colour, m.ClubName, m.TeamName, dateStr, pointsDeduction)
 
 			var sanctionID int64
 			err := s.DB.QueryRow(ctx, `
 				INSERT INTO sanctions
-				    (season_id, week_id, team_id, club_id, colour, reason, email_subject, email_body, email_status)
-				VALUES ($1, $2, $3, $4, $5, 'non_submission', $6, $7, 'pending')
+				    (season_id, week_id, team_id, club_id, colour, reason, points_deduction, email_subject, email_body, email_status)
+				VALUES ($1, $2, $3, $4, $5, 'non_submission', $6, $7, $8, 'pending')
 				RETURNING id
-			`, m.SeasonID, m.WeekID, m.TeamID, m.ClubID, colour, subject, body).Scan(&sanctionID)
+			`, m.SeasonID, m.WeekID, m.TeamID, m.ClubID, colour, pointsDeduction, subject, body).Scan(&sanctionID)
 			if err != nil {
 				continue
 			}
@@ -294,8 +300,9 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 			eid := sanctionID
 			s.audit(ctx, r, "n8n", nil, "sanction_auto_drafted", "sanction", &eid, map[string]any{
-				"team_id": m.TeamID,
-				"colour":  colour,
+				"team_id":          m.TeamID,
+				"colour":           colour,
+				"points_deduction": pointsDeduction,
 			})
 		}
 

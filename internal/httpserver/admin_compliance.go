@@ -67,7 +67,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			TeamName      string
 			HasSubmitted  bool
 			HasSanction   bool
-			PriorOffences int64
+			YellowCount   int64
+			RedCount      int64
 			SuggestedCard string
 		}
 		var rows []compRow
@@ -82,10 +83,16 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    SELECT DISTINCT team_id FROM sanctions
 				    WHERE season_id=$2 AND week_id=$1 AND reason='non_submission' AND status IN ('active','served')
 				),
-				prior_offences AS (
+				yellow_counts AS (
 				    SELECT team_id, COUNT(*) AS cnt
 				    FROM sanctions
-				    WHERE season_id=$2 AND reason='non_submission' AND status IN ('active','served')
+				    WHERE season_id=$2 AND reason='non_submission' AND colour='yellow' AND status IN ('active','served')
+				    GROUP BY team_id
+				),
+				red_counts AS (
+				    SELECT team_id, COUNT(*) AS cnt
+				    FROM sanctions
+				    WHERE season_id=$2 AND reason='non_submission' AND colour='red' AND status IN ('active','served')
 				    GROUP BY team_id
 				)
 				SELECT
@@ -94,12 +101,14 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    t.name   AS team,
 				    (s.team_id IS NOT NULL)  AS has_submitted,
 				    (sa.team_id IS NOT NULL) AS has_sanction,
-				    COALESCE(po.cnt, 0)      AS prior_offences
+				    COALESCE(yc.cnt, 0)      AS yellow_count,
+				    COALESCE(rc.cnt, 0)      AS red_count
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
-				LEFT JOIN submitted     s  ON s.team_id  = t.id
-				LEFT JOIN sanctioned    sa ON sa.team_id = t.id
-				LEFT JOIN prior_offences po ON po.team_id = t.id
+				LEFT JOIN submitted    s  ON s.team_id  = t.id
+				LEFT JOIN sanctioned   sa ON sa.team_id = t.id
+				LEFT JOIN yellow_counts yc ON yc.team_id = t.id
+				LEFT JOIN red_counts    rc ON rc.team_id = t.id
 				WHERE t.active = TRUE
 				ORDER BY has_submitted DESC, cl.name, t.name
 			`, weekID, seasonID)
@@ -108,8 +117,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				for crows.Next() {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
-						&cr.HasSubmitted, &cr.HasSanction, &cr.PriorOffences); e == nil {
-					if cr.PriorOffences >= 1 {
+						&cr.HasSubmitted, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
+					if cr.YellowCount >= 3 {
 						cr.SuggestedCard = "red"
 					} else {
 						cr.SuggestedCard = "yellow"
@@ -250,7 +259,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				}
 			}
 
-			priorCell := fmt.Sprintf(`<span class="text-muted">%d</span>`, cr.PriorOffences)
+			priorCell := fmt.Sprintf(`<span class="text-muted">🟡 %d / 🔴 %d</span>`, cr.YellowCount, cr.RedCount)
 			suggestedCell := `<span class="badge badge-yellow-card">🟡 Yellow</span>`
 			if cr.SuggestedCard == "red" {
 				suggestedCell = `<span class="badge badge-red-card">🔴 Red</span>`
