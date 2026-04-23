@@ -288,21 +288,32 @@ func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
 			return
 		}
 
+		// Group consecutive match dates (≤1 day apart, i.e. Sat+Sun) into one week.
+		type weekGroup struct{ start, end time.Time }
+		var groups []weekGroup
+		for _, d := range dates {
+			if len(groups) == 0 || d.Sub(groups[len(groups)-1].end) > 24*time.Hour {
+				groups = append(groups, weekGroup{start: d, end: d})
+			} else {
+				groups[len(groups)-1].end = d
+			}
+		}
+
 		inserted := 0
-		for i, d := range dates {
+		for i, g := range groups {
 			weekNum := i + 1
-			start := d
-			end := d.AddDate(0, 0, 6)
-			if i+1 < len(dates) {
-				if prev := dates[i+1].AddDate(0, 0, -1); prev.Before(end) {
+			end := g.end.AddDate(0, 0, 6)
+			if i+1 < len(groups) {
+				if prev := groups[i+1].start.AddDate(0, 0, -1); prev.Before(end) {
 					end = prev
 				}
 			}
 			tag, err := s.DB.Exec(ctx, `
 				INSERT INTO weeks (season_id, week_number, start_date, end_date)
 				VALUES ($1, $2, $3, $4)
-				ON CONFLICT (season_id, week_number) DO NOTHING
-			`, int32(seasonID), weekNum, start, end)
+				ON CONFLICT (season_id, week_number) DO UPDATE
+				SET start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date
+			`, int32(seasonID), weekNum, g.start, end)
 			if err != nil {
 				http.Error(w, "error", http.StatusInternalServerError)
 				return
