@@ -321,6 +321,16 @@ func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
 			inserted += int(tag.RowsAffected())
 		}
 
+		// Re-link existing submissions to the correct week based on match_date.
+		s.DB.Exec(ctx, `
+			UPDATE submissions sub
+			SET week_id = w.id
+			FROM weeks w
+			WHERE w.season_id = $1
+			  AND sub.match_date BETWEEN w.start_date AND w.end_date
+			  AND sub.week_id != w.id
+		`, int32(seasonID))
+
 		s.audit(ctx, r, "admin", nil, "generate_weeks", "weeks", nil, map[string]any{
 			"season_id": seasonID,
 			"total":     len(dates),
