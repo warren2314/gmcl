@@ -47,6 +47,10 @@ func NewFromEnv() *Client {
 }
 
 func (c *Client) Send(to, subject, body string) error {
+	if override := os.Getenv("EMAIL_OVERRIDE"); override != "" {
+		log.Printf("[email override] original_to=%s redirecting_to=%s subject=%s", to, override, subject)
+		to = override
+	}
 	if c.host == "" {
 		log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
 		return nil
