@@ -173,7 +173,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 			continue
 		}
 
-		link := "https://gmcl.co.uk/captain/link/" + token
+		link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
 		subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, link)
 
 		if err := mailer.Send(ct.Email, subject, body); err != nil {
@@ -446,7 +446,7 @@ func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
 		}
 
 		var subject, body string
-		link := "https://gmcl.co.uk/captain/link/EXAMPLE_TOKEN"
+		link := "https://gmcl.co.uk/magic-link/confirm?token=EXAMPLE_TOKEN"
 
 		switch req.Type {
 		case "yellow":
