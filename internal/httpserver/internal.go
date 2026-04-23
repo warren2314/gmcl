@@ -259,28 +259,24 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		drafted := 0
 		for _, m := range missed {
-			var yellowCount, redCount int64
+			var totalOffences, redCount int64
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM sanctions
 				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
-				  AND colour='yellow' AND status IN ('active','served')
-			`, m.TeamID, m.SeasonID).Scan(&yellowCount)
+				  AND status IN ('active','served')
+			`, m.TeamID, m.SeasonID).Scan(&totalOffences)
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM sanctions
 				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
 				  AND colour='red' AND status IN ('active','served')
 			`, m.TeamID, m.SeasonID).Scan(&redCount)
 
-			// 3 yellows triggers a red; red card points = number of reds so far + 1
+			// Every 3rd offence is a red card; points deduction increments per red.
 			colour := "yellow"
 			pointsDeduction := 0
-			if yellowCount >= 3 {
+			if (totalOffences+1)%3 == 0 {
 				colour = "red"
 				pointsDeduction = int(redCount) + 1
-				s.DB.Exec(ctx, `
-					UPDATE sanctions SET status='served', resolved_at=now()
-					WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
-				`, m.TeamID, m.SeasonID)
 			}
 
 			dateStr := m.MatchDate.Format("2 January 2006")

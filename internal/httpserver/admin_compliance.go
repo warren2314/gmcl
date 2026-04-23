@@ -119,7 +119,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
 						&cr.HasSubmitted, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
-					if cr.YellowCount >= 3 {
+					totalOffences := cr.YellowCount + cr.RedCount
+					if (totalOffences+1)%3 == 0 {
 						cr.SuggestedCard = "red"
 					} else {
 						cr.SuggestedCard = "yellow"
