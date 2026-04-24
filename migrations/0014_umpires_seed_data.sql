@@ -108,4 +108,4 @@ INSERT INTO umpires (full_name) VALUES
   ('Philip Yates'),
   ('Fiz Yousaf'),
   ('Shah Zeb')
-ON CONFLICT ON CONSTRAINT umpires_full_name_unique DO NOTHING;
+ON CONFLICT (full_name) DO NOTHING;
