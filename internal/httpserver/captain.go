@@ -579,7 +579,7 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 }
 
 func (s *Server) loadUmpires(ctx context.Context) []umpireRow {
-	rows, err := s.DB.Query(ctx, `SELECT id, forename || ' ' || surname FROM umpires WHERE active ORDER BY surname, forename`)
+	rows, err := s.DB.Query(ctx, `SELECT id, full_name FROM umpires WHERE active ORDER BY full_name`)
 	if err != nil {
 		return nil
 	}
