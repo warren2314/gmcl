@@ -3,10 +3,9 @@ CREATE TABLE IF NOT EXISTS umpires (
     forename TEXT NOT NULL,
     surname  TEXT NOT NULL,
     active   BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (forename, surname)
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_umpires_name ON umpires (forename, surname);
 
 INSERT INTO umpires (forename, surname) VALUES
   ('Abrar',            'Ahmad'),
