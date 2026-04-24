@@ -1022,13 +1022,37 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
 
-		// Resolve current season for filtering
+		// Season selector
 		var seasonID int32
 		var seasonName string
-		_ = s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-		`).Scan(&seasonID, &seasonName)
+		if sid := r.URL.Query().Get("season_id"); sid != "" {
+			n, _ := strconv.Atoi(sid)
+			seasonID = int32(n)
+			s.DB.QueryRow(ctx, `SELECT name FROM seasons WHERE id=$1`, seasonID).Scan(&seasonName)
+		}
+		if seasonID == 0 {
+			s.DB.QueryRow(ctx, `
+				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
+				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+			`).Scan(&seasonID, &seasonName)
+		}
+
+		// All seasons for selector
+		type season struct {
+			ID   int32
+			Name string
+		}
+		var seasons []season
+		srows, _ := s.DB.Query(ctx, `SELECT id, name FROM seasons WHERE is_archived=FALSE ORDER BY start_date DESC`)
+		if srows != nil {
+			defer srows.Close()
+			for srows.Next() {
+				var ss season
+				if srows.Scan(&ss.ID, &ss.Name) == nil {
+					seasons = append(seasons, ss)
+				}
+			}
+		}
 
 		rows, err := s.DB.Query(ctx, `
 			SELECT COALESCE(home_cl.name, cl.name)                           AS club_name,
@@ -1068,14 +1092,36 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 			Sanctions int64
 		}
 		var data []rankRow
+		var totalSubs int64
+		var totalAvgPitch float64
 		for rows.Next() {
 			var rr rankRow
 			if err := rows.Scan(&rr.Club, &rr.Subs, &rr.AvgPitch, &rr.AvgBounce,
 				&rr.AvgSeam, &rr.AvgCarry, &rr.AvgTurn, &rr.Sanctions); err != nil {
 				continue
 			}
+			totalSubs += rr.Subs
+			totalAvgPitch += rr.AvgPitch
 			data = append(data, rr)
 		}
+		avgPitchOverall := 0.0
+		if len(data) > 0 {
+			avgPitchOverall = totalAvgPitch / float64(len(data))
+		}
+
+		// Chart data — top 15 by avg pitch
+		var chartLabels, chartPitch []string
+		limit := 15
+		if len(data) < limit {
+			limit = len(data)
+		}
+		for i := 0; i < limit; i++ {
+			lb, _ := json.Marshal(data[i].Club)
+			chartLabels = append(chartLabels, string(lb))
+			chartPitch = append(chartPitch, fmt.Sprintf("%.2f", data[i].AvgPitch))
+		}
+		labelsJSON := "[" + joinStrings(chartLabels, ",") + "]"
+		pitchJSON := "[" + joinStrings(chartPitch, ",") + "]"
 
 		csrfToken := ""
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
@@ -1099,17 +1145,86 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		pageHeadWithCharts(w, "Club Rankings")
 		writeAdminNav(w, csrfToken, r.URL.Path)
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
+
+		// Header + season selector
 		fmt.Fprintf(w, `
-<div class="d-flex align-items-center justify-content-between mb-4">
+<div class="d-flex align-items-start justify-content-between mb-4">
   <div>
     <h4 class="mb-0 fw-bold">Club Rankings</h4>
-    <p class="text-muted mb-0 small">%s &mdash; pitch criteria (1=best, 6=worst for bounce/seam/carry/turn)</p>
+    <p class="text-muted mb-0 small">Pitch quality ranked by average score — bounce/seam/carry/turn rated 1–6</p>
   </div>
-  <a href="/admin/rankings/umpires" class="btn btn-sm btn-outline-primary">Umpire Rankings</a>
-</div>`, escapeHTML(seasonName))
+  <div class="d-flex gap-2 align-items-center">
+    <form method="GET" action="/admin/rankings" class="d-flex gap-2 align-items-center">
+      <select name="season_id" class="form-select form-select-sm" onchange="this.form.submit()">`)
+		for _, ss := range seasons {
+			sel := ""
+			if ss.ID == seasonID {
+				sel = " selected"
+			}
+			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, ss.ID, sel, escapeHTML(ss.Name))
+		}
+		fmt.Fprintf(w, `      </select>
+    </form>
+    <a href="/admin/rankings/umpires" class="btn btn-sm btn-outline-primary">Umpire Rankings</a>
+  </div>
+</div>`)
 
+		// KPI cards
+		fmt.Fprintf(w, `
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card card-kpi kpi-blue text-center p-3">
+      <div class="kpi-number">%d</div>
+      <div class="kpi-label">Clubs Ranked</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card card-kpi kpi-teal text-center p-3">
+      <div class="kpi-number">%d</div>
+      <div class="kpi-label">Total Submissions</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card card-kpi kpi-green text-center p-3">
+      <div class="kpi-number">%.2f</div>
+      <div class="kpi-label">Avg Pitch Rating</div>
+    </div>
+  </div>
+</div>`, len(data), totalSubs, avgPitchOverall)
+
+		// Chart
+		fmt.Fprintf(w, `
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold">Top 15 Clubs — Average Pitch Rating</div>
+      <div class="card-body">
+        <div class="chart-container-lg"><canvas id="chartClubPitch"></canvas></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var ctx = document.getElementById('chartClubPitch');
+  if(!ctx) return;
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: %s,
+      datasets: [{ label: 'Avg Pitch', data: %s, backgroundColor: '#8b0000' }]
+    },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: { x: { min: 0, max: 5 } },
+      plugins: { legend: { display: false } } }
+  });
+})();
+</script>`, labelsJSON, pitchJSON)
+
+		// Table
 		fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
+  <div class="card-header fw-semibold">All Clubs</div>
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
@@ -1120,11 +1235,9 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
       <tbody>
 `)
 		for i, d := range data {
-			sanBadge := ""
+			sanBadge := `<span class="text-muted">—</span>`
 			if d.Sanctions > 0 {
 				sanBadge = fmt.Sprintf(`<span class="badge badge-yellow-card">%d</span>`, d.Sanctions)
-			} else {
-				sanBadge = `<span class="text-muted">—</span>`
 			}
 			fmt.Fprintf(w,
 				`<tr><td class="text-muted">%d</td><td><strong>%s</strong></td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
