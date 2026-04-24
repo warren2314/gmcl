@@ -346,6 +346,7 @@ Please complete all required fields before submitting. The page will scroll to t
       <textarea class="form-control" name="umpire2_reason" rows="4" hx-post="/captain/form/autosave" hx-trigger="keyup changed delay:800ms" hx-target="#autosave-status" hx-include="closest form" hx-swap="innerHTML">`+escapeHTML(val("umpire2_reason"))+`</textarea>
     </div>
     <div id="autosave-status"></div>
+    </div>
   </div>
 </div>
 `)
@@ -370,6 +371,7 @@ Please complete all required fields before submitting. The page will scroll to t
 	}
 
 	fmt.Fprint(w, `
+<div id="played-section2">
 <div class="card card-gmcl shadow-sm mb-4">
   <div class="card-header bg-gmcl text-white"><strong>Section 2 &ndash; Scores for the Pitch &amp; Ground</strong></div>
   <div class="card-body">
@@ -425,7 +427,9 @@ Please complete all required fields before submitting. The page will scroll to t
   </div>
 </div>
 </div>
+`)
 
+	fmt.Fprint(w, `
 <div class="d-grid mb-4">
   <button type="submit" class="btn btn-primary btn-lg">Submit report</button>
 </div>
@@ -452,6 +456,7 @@ function syncUmpireOther(n) {
   var alertBox      = document.getElementById('form-validation-alert');
   var matchOutcome  = document.getElementById('match-outcome');
   var playedFields  = document.getElementById('played-match-fields');
+  var section2      = document.getElementById('played-section2');
   if (!form || !alertBox) return;
 
   // Outcomes that show the full umpire + pitch questionnaire
@@ -462,6 +467,9 @@ function syncUmpireOther(n) {
     var showFull = !!fullOutcomes[outcome];
     if (playedFields) {
       playedFields.style.display = showFull ? '' : 'none';
+    }
+    if (section2) {
+      section2.style.display = showFull ? '' : 'none';
     }
     form.querySelectorAll('[data-played-required="true"]').forEach(function(field) {
       field.required = showFull;
