@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+type umpireRow struct {
+	ID       int32
+	FullName string
+}
+
 func formVal(m map[string]any, k string) string {
 	if v, ok := m[k]; ok && v != nil {
 		if s, ok := v.(string); ok {
@@ -41,7 +46,7 @@ func selStr(current, want string) string {
 }
 
 // renderGMCLForm writes the GMCL Captain's Report questionnaire.
-func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any) {
+func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any, umpires []umpireRow) {
 	val := func(k string) string { return formVal(draft, k) }
 	rad := func(k string, want string) string {
 		if formVal(draft, k) == want {
@@ -101,6 +106,33 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 Please complete all required fields before submitting. The page will scroll to the first missing answer.
 </div>`)
 
+	// --- Determine which umpire name to pre-select in the dropdown ---
+	// If the saved name matches a known umpire, pre-select it; otherwise select "other".
+	umpireSelectVal := func(fieldKey string) string {
+		name := val(fieldKey)
+		if name == "" {
+			return ""
+		}
+		for _, u := range umpires {
+			if strings.EqualFold(u.FullName, name) {
+				return u.FullName
+			}
+		}
+		return "other"
+	}
+	umpireOtherVal := func(fieldKey string) string {
+		name := val(fieldKey)
+		if name == "" {
+			return ""
+		}
+		for _, u := range umpires {
+			if strings.EqualFold(u.FullName, name) {
+				return "" // it's in the list, no "other" text needed
+			}
+		}
+		return name
+	}
+
 	// Section 1 - Umpires
 	fmt.Fprint(w, `
 <div class="card card-gmcl shadow-sm mb-4">
@@ -128,44 +160,108 @@ Please complete all required fields before submitting. The page will scroll to t
         <label class="form-label">Match Status *</label>
         <select class="form-select" name="match_outcome" id="match-outcome" required>
           <option value="played"` + selStr(val("match_outcome"), "played") + `>Played</option>
-          <option value="postponed_rain"` + selStr(val("match_outcome"), "postponed_rain") + `>Postponed - Rain</option>
+          <option value="play_started_abandoned"` + selStr(val("match_outcome"), "play_started_abandoned") + `>Play Started - Match Abandoned</option>
           <option value="no_play"` + selStr(val("match_outcome"), "no_play") + `>No Play</option>
           <option value="conceded_other_team"` + selStr(val("match_outcome"), "conceded_other_team") + `>Conceded - Other Team</option>
           <option value="conceded_our_team"` + selStr(val("match_outcome"), "conceded_our_team") + `>Conceded - Our Team</option>
         </select>
       </div>
-      <div class="col-md-6" id="no-play-reason-group">
-        <label class="form-label">Reason game did not go ahead</label>
-        <textarea class="form-control" name="match_outcome_reason" id="match-outcome-reason" rows="2">` + escapeHTML(val("match_outcome_reason")) + `</textarea>
-      </div>
     </div>
 
     <div id="played-match-fields">
     <div class="row g-3 mt-1">
-      <div class="col-md-6">
-        <label class="form-label">Umpire 1 Name *</label>
-        <input type="text" class="form-control" name="umpire1_name" data-played-required="true" required value="`+escapeHTML(val("umpire1_name"))+`">
+`)
+
+	// Umpire 1 dropdown
+	u1sel := umpireSelectVal("umpire1_name")
+	u1other := umpireOtherVal("umpire1_name")
+	u1otherDisplay := `style="display:none"`
+	if u1sel == "other" {
+		u1otherDisplay = ""
+	}
+	fmt.Fprint(w, `      <div class="col-md-6">
+        <label class="form-label">Umpire 1 *</label>
+        <select class="form-select mb-2" name="umpire1_name_select" id="umpire1-select" data-played-required="true" required onchange="syncUmpireOther('1')">
+          <option value="">-- Select umpire --</option>
+`)
+	for _, u := range umpires {
+		sel := ""
+		if u.FullName == u1sel {
+			sel = " selected"
+		}
+		fmt.Fprintf(w, `          <option value="%s"%s>%s</option>`+"\n", escapeHTML(u.FullName), sel, escapeHTML(u.FullName))
+	}
+	otherSel1 := ""
+	if u1sel == "other" {
+		otherSel1 = " selected"
+	}
+	fmt.Fprintf(w, `          <option value="other"%s>Other / not listed</option>
+        </select>
+        <input type="text" class="form-control mb-2" name="umpire1_name_other" id="umpire1-other" placeholder="Enter umpire name" value="%s" %s>
+        <div class="d-flex gap-3">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire1_type" value="panel" id="u1_panel"%s>
+            <label class="form-check-label" for="u1_panel">Panel</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire1_type" value="club" id="u1_club"%s>
+            <label class="form-check-label" for="u1_club">Club</label>
+          </div>
+        </div>
       </div>
-      <div class="col-md-6">
-        <label class="form-label">Umpire 2 Name *</label>
-        <input type="text" class="form-control" name="umpire2_name" data-played-required="true" required value="`+escapeHTML(val("umpire2_name"))+`">
+`, otherSel1, escapeHTML(u1other), u1otherDisplay, rad("umpire1_type", "panel"), rad("umpire1_type", "club"))
+
+	// Umpire 2 dropdown
+	u2sel := umpireSelectVal("umpire2_name")
+	u2other := umpireOtherVal("umpire2_name")
+	u2otherDisplay := `style="display:none"`
+	if u2sel == "other" {
+		u2otherDisplay = ""
+	}
+	fmt.Fprint(w, `      <div class="col-md-6">
+        <label class="form-label">Umpire 2 *</label>
+        <select class="form-select mb-2" name="umpire2_name_select" id="umpire2-select" data-played-required="true" required onchange="syncUmpireOther('2')">
+          <option value="">-- Select umpire --</option>
+`)
+	for _, u := range umpires {
+		sel := ""
+		if u.FullName == u2sel {
+			sel = " selected"
+		}
+		fmt.Fprintf(w, `          <option value="%s"%s>%s</option>`+"\n", escapeHTML(u.FullName), sel, escapeHTML(u.FullName))
+	}
+	otherSel2 := ""
+	if u2sel == "other" {
+		otherSel2 = " selected"
+	}
+	fmt.Fprintf(w, `          <option value="other"%s>Other / not listed</option>
+        </select>
+        <input type="text" class="form-control mb-2" name="umpire2_name_other" id="umpire2-other" placeholder="Enter umpire name" value="%s" %s>
+        <div class="d-flex gap-3">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire2_type" value="panel" id="u2_panel"%s>
+            <label class="form-check-label" for="u2_panel">Panel</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire2_type" value="club" id="u2_club"%s>
+            <label class="form-check-label" for="u2_club">Club</label>
+          </div>
+        </div>
       </div>
-      <div class="col-12">
-        <label class="form-label">If not listed, enter names below</label>
-        <input type="text" class="form-control" name="umpire_names_other" value="`+escapeHTML(val("umpire_names_other"))+`">
-      </div>
-      <div class="col-md-4">
+`, otherSel2, escapeHTML(u2other), u2otherDisplay, rad("umpire2_type", "panel"), rad("umpire2_type", "club"))
+
+	fmt.Fprintf(w, `      <div class="col-md-4">
         <label class="form-label">Your Team *</label>
-        <input type="hidden" name="your_team" data-played-required="true" value="`+escapeHTML(teamName)+`">
-        <input type="text" class="form-control" value="`+escapeHTML(teamName)+`" readonly>
+        <input type="hidden" name="your_team" data-played-required="true" value="%s">
+        <input type="text" class="form-control" value="%s" readonly>
       </div>
       <div class="col-md-4">
         <label class="form-label">Your Name *</label>
-        <input type="text" class="form-control" value="`+escapeHTML(submitterName)+`" readonly>
+        <input type="text" class="form-control" value="%s" readonly>
       </div>
       <div class="col-md-4">
         <label class="form-label">Your Email *</label>
-        <input type="email" class="form-control" value="`+escapeHTML(submitterEmail)+`" readonly>
+        <input type="email" class="form-control" value="%s" readonly>
       </div>
     </div>
 
@@ -174,27 +270,30 @@ Please complete all required fields before submitting. The page will scroll to t
       <div class="col-md-6">
         <label class="form-label d-block">Did Umpire 1 attend the toss? *</label>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="Yes" id="u1toss_yes"`+rad("umpire1_toss_attended", "Yes")+` data-played-required="true" required>
+          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="Yes" id="u1toss_yes"%s data-played-required="true" required>
           <label class="form-check-label" for="u1toss_yes">Yes</label>
         </div>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="No" id="u1toss_no"`+rad("umpire1_toss_attended", "No")+`>
+          <input class="form-check-input" type="radio" name="umpire1_toss_attended" value="No" id="u1toss_no"%s>
           <label class="form-check-label" for="u1toss_no">No</label>
         </div>
       </div>
       <div class="col-md-6">
         <label class="form-label d-block">Did Umpire 2 attend the toss? *</label>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="Yes" id="u2toss_yes"`+rad("umpire2_toss_attended", "Yes")+` data-played-required="true" required>
+          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="Yes" id="u2toss_yes"%s data-played-required="true" required>
           <label class="form-check-label" for="u2toss_yes">Yes</label>
         </div>
         <div class="form-check form-check-inline">
-          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="No" id="u2toss_no"`+rad("umpire2_toss_attended", "No")+`>
+          <input class="form-check-input" type="radio" name="umpire2_toss_attended" value="No" id="u2toss_no"%s>
           <label class="form-check-label" for="u2toss_no">No</label>
         </div>
       </div>
     </div>
-`)
+`,
+		escapeHTML(teamName), escapeHTML(teamName), escapeHTML(submitterName), escapeHTML(submitterEmail),
+		rad("umpire1_toss_attended", "Yes"), rad("umpire1_toss_attended", "No"),
+		rad("umpire2_toss_attended", "Yes"), rad("umpire2_toss_attended", "No"))
 
 	scoreMatrix := []struct {
 		Key   string
@@ -334,34 +433,49 @@ Please complete all required fields before submitting. The page will scroll to t
 <p class="text-muted text-center mb-5">Submitting will take you to a separate confirmation page.</p>
 </div>
 <script>
+function syncUmpireOther(n) {
+  var sel   = document.getElementById('umpire' + n + '-select');
+  var other = document.getElementById('umpire' + n + '-other');
+  if (!sel || !other) return;
+  if (sel.value === 'other') {
+    other.style.display = '';
+    other.required = true;
+  } else {
+    other.style.display = 'none';
+    other.required = false;
+    other.value = '';
+  }
+}
+
 (function() {
-  const form = document.getElementById('feedback-form');
-  const alertBox = document.getElementById('form-validation-alert');
-  const matchOutcome = document.getElementById('match-outcome');
-  const noPlayReasonGroup = document.getElementById('no-play-reason-group');
-  const noPlayReason = document.getElementById('match-outcome-reason');
-  const playedMatchFields = document.getElementById('played-match-fields');
+  var form          = document.getElementById('feedback-form');
+  var alertBox      = document.getElementById('form-validation-alert');
+  var matchOutcome  = document.getElementById('match-outcome');
+  var playedFields  = document.getElementById('played-match-fields');
   if (!form || !alertBox) return;
 
+  // Outcomes that show the full umpire + pitch questionnaire
+  var fullOutcomes = {'played': true, 'play_started_abandoned': true};
+
   function syncMatchOutcomeState() {
-    const unplayed = matchOutcome && matchOutcome.value !== 'played';
-    if (playedMatchFields) {
-      playedMatchFields.style.display = unplayed ? 'none' : '';
-    }
-    if (noPlayReasonGroup) {
-      noPlayReasonGroup.style.display = unplayed ? '' : 'none';
+    var outcome = matchOutcome ? matchOutcome.value : 'played';
+    var showFull = !!fullOutcomes[outcome];
+    if (playedFields) {
+      playedFields.style.display = showFull ? '' : 'none';
     }
     form.querySelectorAll('[data-played-required="true"]').forEach(function(field) {
-      field.required = !unplayed;
+      field.required = showFull;
     });
-    if (noPlayReason) {
-      noPlayReason.required = !!unplayed;
+    // Keep umpire-other fields in sync with their selects when showing
+    if (showFull) {
+      syncUmpireOther('1');
+      syncUmpireOther('2');
     }
   }
 
   function showValidationMessage() {
     alertBox.classList.remove('d-none');
-    const invalid = form.querySelector(':invalid');
+    var invalid = form.querySelector(':invalid');
     if (invalid) {
       invalid.scrollIntoView({ behavior: 'smooth', block: 'center' });
       try { invalid.focus({ preventScroll: true }); } catch (_) { invalid.focus(); }
