@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -79,13 +80,16 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 		for _, matchDate := range matchDates {
 			n, sk, err := s.sendRemindersForDate(ctx, mailer, matchDate, req.Type)
 			if err != nil {
+				log.Printf("[reminders] date=%s error: %v", matchDate.Format("2006-01-02"), err)
 				http.Error(w, "error: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			log.Printf("[reminders] date=%s sent=%d skipped=%d", matchDate.Format("2006-01-02"), n, sk)
 			sent += n
 			skipped += sk
 		}
 
+		log.Printf("[reminders] type=%s sent=%d skipped=%d", req.Type, sent, skipped)
 		s.audit(ctx, r, "n8n", nil, "send_reminders", "reminder", nil, map[string]any{
 			"type":    req.Type,
 			"sent":    sent,

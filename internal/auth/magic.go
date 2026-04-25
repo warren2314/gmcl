@@ -69,7 +69,7 @@ func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, 
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO magic_link_tokens (captain_id, season_id, week_id, token_hash, expires_at, request_ip, request_user_agent, delegate_name, delegate_email)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''))
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::inet, $7, NULLIF($8, ''), NULLIF($9, ''))
 	`, captainID, seasonID, weekID, hash[:], expiresAt, ip, ua, delegateName, delegateEmail)
 	if err != nil {
 		return "", err
