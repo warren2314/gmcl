@@ -418,6 +418,16 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			ORDER BY w.start_date LIMIT 1
 		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
 
+		// Display week offset: if compliance tracking starts at week N,
+		// show week numbers relative to that start so week N displays as "Week 1".
+		displayWeek := weekNum
+		if complianceStartWeek > 1 {
+			displayWeek = weekNum - (complianceStartWeek - 1)
+			if displayWeek < 1 {
+				displayWeek = 1
+			}
+		}
+
 		// ── 2. KPI: submissions this week / season total / avg pitch ───────
 		var weekSubs, seasonSubs, activeTeams int64
 		var avgPitch float64
@@ -596,7 +606,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
     <h4 class="mb-0 fw-bold">Dashboard</h4>
     <p class="text-muted mb-0 small">`)
 		if weekErr == nil {
-			fmt.Fprintf(w, `%s &mdash; Week %d`, escapeHTML(seasonName), weekNum)
+			fmt.Fprintf(w, `%s &mdash; Week %d`, escapeHTML(seasonName), displayWeek)
 		} else {
 			fmt.Fprint(w, `No active week`)
 		}
@@ -634,7 +644,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			pitchStr := fmt.Sprintf(`<span style="color:%s">%.1f</span>`, pitchColour, avgPitch)
 			sanctStr := fmt.Sprintf(`<span class="%s">%d</span>`, sanctionClass, openSanctions)
 
-			kpiCard("kpi-red", fmt.Sprintf("%d", weekNum),
+			kpiCard("kpi-red", fmt.Sprintf("%d", displayWeek),
 				"Current Week", fmt.Sprintf(`<div class="text-muted" style="font-size:.75rem">%s</div>`, escapeHTML(seasonName)), "📅")
 			kpiCard("kpi-blue", fmt.Sprintf("%d", weekSubs),
 				"This Week", fmt.Sprintf(`<div class="text-muted" style="font-size:.75rem">of %d teams</div>`, activeTeams), "📋")
