@@ -256,11 +256,13 @@ func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
 			return
 		}
 
-		// Distinct match dates within the season's date range.
+		// Distinct weekend (Sat/Sun) match dates — midweek cup fixtures are excluded
+		// so they don't create spurious extra weeks in the compliance calendar.
 		dRows, err := s.DB.Query(ctx, `
 			SELECT DISTINCT match_date
 			FROM league_fixtures
 			WHERE match_date BETWEEN $1 AND $2
+			  AND EXTRACT(DOW FROM match_date) IN (0, 6)
 			ORDER BY match_date
 		`, seasonStart, seasonEnd)
 		if err != nil {
