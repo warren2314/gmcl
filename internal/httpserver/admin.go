@@ -852,11 +852,12 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		defer cancel()
 
 		rows, err := s.DB.Query(ctx, `
-			SELECT s.name, w.week_number, COUNT(sub.id) AS submissions
+			SELECT s.name, w.week_number, w.start_date, w.end_date, COUNT(sub.id) AS submissions,
+			       (CURRENT_DATE BETWEEN w.start_date AND w.end_date) AS is_current
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
 			LEFT JOIN submissions sub ON sub.week_id = w.id
-			GROUP BY s.name, w.week_number
+			GROUP BY s.name, w.week_number, w.start_date, w.end_date
 			ORDER BY s.name, w.week_number
 		`)
 		if err != nil {
@@ -866,14 +867,17 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		defer rows.Close()
 
 		type row struct {
-			Season string
-			Week   int32
-			Count  int64
+			Season    string
+			Week      int32
+			StartDate time.Time
+			EndDate   time.Time
+			Count     int64
+			IsCurrent bool
 		}
 		var data []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.Season, &r.Week, &r.Count); err != nil {
+			if err := rows.Scan(&r.Season, &r.Week, &r.StartDate, &r.EndDate, &r.Count, &r.IsCurrent); err != nil {
 				http.Error(w, "error", http.StatusInternalServerError)
 				return
 			}
@@ -893,11 +897,17 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 <div class="card card-gmcl shadow-sm">
   <div class="table-responsive">
     <table class="table table-hover table-striped table-gmcl mb-0">
-      <thead><tr><th>Season</th><th>Week</th><th>Submissions</th></tr></thead>
+      <thead><tr><th>Season</th><th>Week</th><th>Start Date</th><th>End Date</th><th>Submissions</th></tr></thead>
       <tbody>
 `)
 		for _, d := range data {
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td></tr>`, d.Season, d.Week, d.Count)
+			rowClass := ""
+			if d.IsCurrent {
+				rowClass = ` class="table-warning fw-bold"`
+			}
+			fmt.Fprintf(w, `<tr%s><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
+				rowClass, d.Season, d.Week,
+				d.StartDate.Format("2 Jan 2006"), d.EndDate.Format("2 Jan 2006"), d.Count)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
