@@ -328,14 +328,13 @@ func (s *Server) handleAdminPlayCricketGenerateWeeks() http.HandlerFunc {
 			DELETE FROM weeks WHERE season_id=$1 AND week_number > $2
 		`, int32(seasonID), len(groups))
 
-		// Re-link existing submissions to the correct week based on match_date.
+		// Re-link existing submissions to the correct week and season based on match_date.
 		s.DB.Exec(ctx, `
 			UPDATE submissions sub
-			SET week_id = w.id
+			SET week_id = w.id, season_id = w.season_id
 			FROM weeks w
 			WHERE w.season_id = $1
 			  AND sub.match_date BETWEEN w.start_date AND w.end_date
-			  AND sub.week_id != w.id
 		`, int32(seasonID))
 
 		s.audit(ctx, r, "admin", nil, "generate_weeks", "weeks", nil, map[string]any{
