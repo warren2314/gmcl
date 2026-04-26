@@ -446,6 +446,11 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 			return
 		}
 		now := time.Now().Unix()
+		loc := s.LondonLoc
+		if loc == nil {
+			loc = time.UTC
+		}
+		sessionExpiry := timeutil.NextWednesdayExpiry(time.Now(), loc).Unix()
 		sess := captainSession{
 			CaptainID:      mt.CaptainID,
 			SeasonID:       mt.SeasonID,
@@ -454,7 +459,7 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 			SubmitterName:  "",
 			SubmitterEmail: "",
 			SubmitterRole:  "captain",
-			Expiry:         now + int64((2 * time.Hour).Seconds()),
+			Expiry:         sessionExpiry,
 			Aud:            "cap",
 			JTI:            uuid.NewString(),
 			IssuedAt:       now,
