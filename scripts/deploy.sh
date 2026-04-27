@@ -68,11 +68,12 @@ section "Building images and restarting containers"
 docker compose up -d --build --no-deps --remove-orphans app
 docker compose up -d --no-recreate n8n
 
-# Step 2: wait for app to be healthy before touching Caddy
+# Step 2: wait for app to be healthy before touching Caddy.
+# Port 8080 is only inside the Docker network so we can't curl it from the host.
+# Instead, poll Docker's own healthcheck status.
 section "Waiting for app to become healthy"
-APP_HEALTH_URL="http://localhost:8080/health"
 ELAPSED=0
-until curl -sf "${APP_HEALTH_URL}" &>/dev/null; do
+until [[ "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q app)")" == "healthy" ]]; do
     if [[ ${ELAPSED} -ge ${HEALTH_TIMEOUT} ]]; then
         error "App health check timed out after ${HEALTH_TIMEOUT}s. Check: docker compose logs app"
     fi
