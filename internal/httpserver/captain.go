@@ -401,10 +401,17 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
   <div class="card-body text-center">
     <img src="/images/logo.webp" alt="GMCL" style="max-width:220px" class="mb-3">
     <h4 class="card-title">Open feedback form</h4>
-    <p class="text-muted">Click continue to open your feedback form. If you did not request this email, you can safely ignore it.</p>
+    <p class="text-muted">Please confirm you are the intended recipient before continuing.</p>
     <form method="POST" action="/magic-link/confirm">
       <input type="hidden" name="token" value="%s">
-      <button type="submit" class="btn btn-primary w-100">Continue</button>
+      <div class="form-check text-start mb-3">
+        <input class="form-check-input" type="checkbox" id="confirmCheck"
+               onchange="document.getElementById('continueBtn').disabled = !this.checked">
+        <label class="form-check-label" for="confirmCheck">
+          I confirm I am accessing this link to submit my captain&rsquo;s report
+        </label>
+      </div>
+      <button type="submit" id="continueBtn" class="btn btn-primary w-100" disabled>Continue</button>
     </form>
   </div>
 </div>
