@@ -439,13 +439,13 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		mt, err := auth.ConsumeMagicToken(ctx, s.DB, token)
+		mt, err := auth.ValidateMagicToken(ctx, s.DB, token)
 		if err != nil {
-			log.Printf("[magic-link] consume failed: %v | ip=%s ua=%q", err, r.RemoteAddr, r.UserAgent())
+			log.Printf("[magic-link] validate failed: %v | ip=%s ua=%q", err, r.RemoteAddr, r.UserAgent())
 			http.Error(w, "link invalid or expired", http.StatusBadRequest)
 			return
 		}
-		log.Printf("[magic-link] consumed: captain_id=%d | ip=%s ua=%q", mt.CaptainID, r.RemoteAddr, r.UserAgent())
+		log.Printf("[magic-link] validated: captain_id=%d | ip=%s ua=%q", mt.CaptainID, r.RemoteAddr, r.UserAgent())
 
 		// Determine team from captain.
 		var teamID int32

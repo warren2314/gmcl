@@ -81,7 +81,41 @@ func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, 
 	return token, nil
 }
 
+// ValidateMagicToken verifies a token is valid and returns the linked identity
+// without consuming it, allowing the same link to be used multiple times until
+// it expires at Wednesday 23:59 or is superseded by a newer token.
+func ValidateMagicToken(ctx context.Context, pool *db.Pool, token string) (*MagicToken, error) {
+	hash := sha256.Sum256([]byte(token))
+
+	var t MagicToken
+	var expiresAt time.Time
+	var usedAt sql.NullTime
+
+	err := pool.QueryRow(ctx, `
+		SELECT captain_id, season_id, week_id, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
+		FROM magic_link_tokens
+		WHERE token_hash = $1
+	`, hash[:]).Scan(&t.CaptainID, &t.SeasonID, &t.WeekID, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrTokenInvalid
+		}
+		return nil, err
+	}
+
+	now := time.Now()
+	if !usedAt.Time.IsZero() {
+		return nil, ErrTokenInvalid
+	}
+	if now.After(expiresAt) {
+		return nil, ErrTokenExpired
+	}
+
+	return &t, nil
+}
+
 // ConsumeMagicToken verifies a token, marks it as used, and returns the linked identity.
+// Kept for any flows that require true one-time use.
 func ConsumeMagicToken(ctx context.Context, pool *db.Pool, token string) (*MagicToken, error) {
 	hash := sha256.Sum256([]byte(token))
 
@@ -89,7 +123,7 @@ func ConsumeMagicToken(ctx context.Context, pool *db.Pool, token string) (*Magic
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx) // safe even if committed
+	defer tx.Rollback(ctx)
 
 	var t MagicToken
 	var expiresAt time.Time
