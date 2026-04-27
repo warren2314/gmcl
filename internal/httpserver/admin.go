@@ -857,8 +857,13 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
 			LEFT JOIN submissions sub ON sub.week_id = w.id
+			WHERE s.id = (
+			    SELECT id FROM seasons
+			    WHERE CURRENT_DATE BETWEEN start_date AND end_date
+			    ORDER BY start_date DESC LIMIT 1
+			)
 			GROUP BY s.name, w.week_number, w.start_date, w.end_date
-			ORDER BY s.name, w.week_number
+			ORDER BY w.week_number
 		`)
 		if err != nil {
 			http.Error(w, "error", http.StatusInternalServerError)
