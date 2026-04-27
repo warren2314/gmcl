@@ -181,6 +181,16 @@ Please complete all required fields before submitting. The page will scroll to t
 	}
 	fmt.Fprint(w, `      <div class="col-md-6">
         <label class="form-label">Umpire 1 *</label>
+        <div class="d-flex gap-3 mb-2">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire1_type" value="panel" id="u1_panel"`+rad("umpire1_type", "panel")+` onchange="syncUmpireType('1')">
+            <label class="form-check-label" for="u1_panel">Panel umpire</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire1_type" value="club" id="u1_club"`+rad("umpire1_type", "club")+` onchange="syncUmpireType('1')">
+            <label class="form-check-label" for="u1_club">Club umpire</label>
+          </div>
+        </div>
         <select class="form-select mb-2" name="umpire1_name_select" id="umpire1-select" data-played-required="true" required onchange="syncUmpireOther('1')">
           <option value="">-- Select umpire --</option>
 `)
@@ -198,18 +208,8 @@ Please complete all required fields before submitting. The page will scroll to t
 	fmt.Fprintf(w, `          <option value="other"%s>Other / not listed</option>
         </select>
         <input type="text" class="form-control mb-2" name="umpire1_name_other" id="umpire1-other" placeholder="Enter umpire name" value="%s" %s>
-        <div class="d-flex gap-3">
-          <div class="form-check">
-            <input class="form-check-input" type="radio" name="umpire1_type" value="panel" id="u1_panel"%s>
-            <label class="form-check-label" for="u1_panel">Panel</label>
-          </div>
-          <div class="form-check">
-            <input class="form-check-input" type="radio" name="umpire1_type" value="club" id="u1_club"%s>
-            <label class="form-check-label" for="u1_club">Club</label>
-          </div>
-        </div>
       </div>
-`, otherSel1, escapeHTML(u1other), u1otherDisplay, rad("umpire1_type", "panel"), rad("umpire1_type", "club"))
+`, otherSel1, escapeHTML(u1other), u1otherDisplay)
 
 	// Umpire 2 dropdown
 	u2sel := umpireSelectVal("umpire2_name")
@@ -220,6 +220,16 @@ Please complete all required fields before submitting. The page will scroll to t
 	}
 	fmt.Fprint(w, `      <div class="col-md-6">
         <label class="form-label">Umpire 2 *</label>
+        <div class="d-flex gap-3 mb-2">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire2_type" value="panel" id="u2_panel"`+rad("umpire2_type", "panel")+` onchange="syncUmpireType('2')">
+            <label class="form-check-label" for="u2_panel">Panel umpire</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="umpire2_type" value="club" id="u2_club"`+rad("umpire2_type", "club")+` onchange="syncUmpireType('2')">
+            <label class="form-check-label" for="u2_club">Club umpire</label>
+          </div>
+        </div>
         <select class="form-select mb-2" name="umpire2_name_select" id="umpire2-select" data-played-required="true" required onchange="syncUmpireOther('2')">
           <option value="">-- Select umpire --</option>
 `)
@@ -237,18 +247,8 @@ Please complete all required fields before submitting. The page will scroll to t
 	fmt.Fprintf(w, `          <option value="other"%s>Other / not listed</option>
         </select>
         <input type="text" class="form-control mb-2" name="umpire2_name_other" id="umpire2-other" placeholder="Enter umpire name" value="%s" %s>
-        <div class="d-flex gap-3">
-          <div class="form-check">
-            <input class="form-check-input" type="radio" name="umpire2_type" value="panel" id="u2_panel"%s>
-            <label class="form-check-label" for="u2_panel">Panel</label>
-          </div>
-          <div class="form-check">
-            <input class="form-check-input" type="radio" name="umpire2_type" value="club" id="u2_club"%s>
-            <label class="form-check-label" for="u2_club">Club</label>
-          </div>
-        </div>
       </div>
-`, otherSel2, escapeHTML(u2other), u2otherDisplay, rad("umpire2_type", "panel"), rad("umpire2_type", "club"))
+`, otherSel2, escapeHTML(u2other), u2otherDisplay)
 
 	fmt.Fprintf(w, `      <div class="col-md-4">
         <label class="form-label">Your Team *</label>
@@ -444,10 +444,22 @@ function syncUmpireOther(n) {
   if (sel.value === 'other') {
     other.style.display = '';
     other.required = true;
+    other.focus();
   } else {
     other.style.display = 'none';
     other.required = false;
     other.value = '';
+  }
+}
+
+function syncUmpireType(n) {
+  var clubRadio = document.getElementById('u' + n + '_club');
+  if (!clubRadio || !clubRadio.checked) return;
+  // Club umpire: auto-select "Other" so the name field appears
+  var sel = document.getElementById('umpire' + n + '-select');
+  if (sel && sel.value !== 'other') {
+    sel.value = 'other';
+    syncUmpireOther(n);
   }
 }
 

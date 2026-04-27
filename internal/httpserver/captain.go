@@ -791,8 +791,23 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			http.Error(w, "missing required fields (date)", http.StatusBadRequest)
 			return
 		}
-		if requiresFullData && (umpire1 == "" || umpire2 == "" || yourTeam == "") {
-			http.Error(w, "missing required fields (umpire names, your team)", http.StatusBadRequest)
+		if requiresFullData && (umpire1 == "" || umpire2 == "") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			pageHead(w, "Captain's Report")
+			writeCaptainNav(w)
+			fmt.Fprint(w, `<div class="container" style="max-width:540px">
+<div class="alert alert-danger shadow-sm">
+  <h5 class="alert-heading">Umpire name missing</h5>
+  <p class="mb-3">Both umpire names are required. If your umpire is a club umpire, please select <strong>Club umpire</strong> and type their name in the box that appears.</p>
+  <a href="javascript:history.back()" class="btn btn-danger">Go back and fix</a>
+</div>
+</div>`)
+			pageFooter(w)
+			return
+		}
+		if requiresFullData && yourTeam == "" {
+			http.Error(w, "missing required fields (your team)", http.StatusBadRequest)
 			return
 		}
 
