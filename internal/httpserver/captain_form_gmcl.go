@@ -149,12 +149,12 @@ Please complete all required fields before submitting. The page will scroll to t
         <input type="text" class="form-control" value="`+escapeHTML(clubName)+`" readonly>
       </div>
       <div class="col-md-6">
-        <label class="form-label">Opposition *</label>
-        <input type="text" class="form-control" name="opposition" value="`+escapeHTML(val("opposition"))+`" placeholder="e.g. Milnrow CC 2nd XI" required>
+        <label class="form-label">Opposition</label>
+        <input type="text" class="form-control" name="opposition" value="`+escapeHTML(val("opposition"))+`" placeholder="e.g. Milnrow CC 2nd XI"`+prefillReadonly(draft, "opposition")+`>
       </div>
       <div class="col-md-6">
-        <label class="form-label">Venue *</label>
-        <input type="text" class="form-control" name="venue" value="`+escapeHTML(val("venue"))+`" placeholder="e.g. Milnrow CC" required>
+        <label class="form-label">Venue</label>
+        <input type="text" class="form-control" name="venue" value="`+escapeHTML(val("venue"))+`" placeholder="e.g. Milnrow CC"`+prefillReadonly(draft, "venue")+`>
       </div>
       <div class="col-md-6">
         <label class="form-label">Match Status *</label>
@@ -524,6 +524,14 @@ function syncUmpireType(n) {
 </script>
 `)
 	pageFooter(w)
+}
+
+// prefillReadonly returns " readonly" when a field was pre-filled from the league API.
+func prefillReadonly(draft map[string]any, field string) string {
+	if formVal(draft, "prefill_source") == "league_api" && formVal(draft, field) != "" {
+		return " readonly"
+	}
+	return ""
 }
 
 func escapeHTML(s string) string {
