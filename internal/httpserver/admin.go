@@ -65,6 +65,7 @@ func (s *Server) adminRouter() http.Handler {
 
 		r.Get("/dashboard", s.handleAdminDashboard())
 		r.Get("/weeks", s.handleAdminWeeks())
+		r.Get("/weeks/{id}", s.handleAdminWeekDetail())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
 
 		// Rankings
@@ -852,7 +853,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		defer cancel()
 
 		rows, err := s.DB.Query(ctx, `
-			SELECT s.name, w.week_number, w.start_date, w.end_date, COUNT(sub.id) AS submissions,
+			SELECT w.id, s.name, w.week_number, w.start_date, w.end_date, COUNT(sub.id) AS submissions,
 			       (CURRENT_DATE BETWEEN w.start_date AND w.end_date) AS is_current
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
@@ -862,7 +863,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			    WHERE CURRENT_DATE BETWEEN start_date AND end_date
 			    ORDER BY start_date DESC LIMIT 1
 			)
-			GROUP BY s.name, w.week_number, w.start_date, w.end_date
+			GROUP BY w.id, s.name, w.week_number, w.start_date, w.end_date
 			ORDER BY w.week_number
 		`)
 		if err != nil {
@@ -872,6 +873,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		defer rows.Close()
 
 		type row struct {
+			WeekID    int32
 			Season    string
 			Week      int32
 			StartDate time.Time
@@ -882,7 +884,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		var data []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.Season, &r.Week, &r.StartDate, &r.EndDate, &r.Count, &r.IsCurrent); err != nil {
+			if err := rows.Scan(&r.WeekID, &r.Season, &r.Week, &r.StartDate, &r.EndDate, &r.Count, &r.IsCurrent); err != nil {
 				http.Error(w, "error", http.StatusInternalServerError)
 				return
 			}
@@ -910,8 +912,8 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			if d.IsCurrent {
 				rowClass = ` class="table-warning fw-bold"`
 			}
-			fmt.Fprintf(w, `<tr%s><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
-				rowClass, d.Season, d.Week,
+			fmt.Fprintf(w, `<tr%s style="cursor:pointer" onclick="location.href='/admin/weeks/%d'"><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
+				rowClass, d.WeekID, d.Season, d.Week,
 				d.StartDate.Format("2 Jan 2006"), d.EndDate.Format("2 Jan 2006"), d.Count)
 		}
 		fmt.Fprint(w, `      </tbody>
@@ -920,6 +922,134 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 </div>
 </div>
 `)
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		weekID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		if err != nil {
+			http.Error(w, "invalid week id", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var seasonName string
+		var weekNum int32
+		var startDate, endDate time.Time
+		err = s.DB.QueryRow(ctx, `
+			SELECT s.name, w.week_number, w.start_date, w.end_date
+			FROM weeks w JOIN seasons s ON s.id = w.season_id
+			WHERE w.id = $1
+		`, int32(weekID)).Scan(&seasonName, &weekNum, &startDate, &endDate)
+		if err != nil {
+			http.Error(w, "week not found", http.StatusNotFound)
+			return
+		}
+
+		type subRow struct {
+			ID               int64
+			Club             string
+			Team             string
+			Captain          string
+			MatchDate        time.Time
+			MatchOutcome     string
+			Umpire1          string
+			Umpire2          string
+			PitchRating      int
+			OutfieldRating   int
+			FacilitiesRating int
+			SubmittedByRole  string
+			CreatedAt        time.Time
+		}
+
+		rows, err := s.DB.Query(ctx, `
+			SELECT sub.id, cl.name, t.name, c.full_name,
+			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
+			       COALESCE(sub.form_data->>'umpire1_name',''), COALESCE(sub.form_data->>'umpire2_name',''),
+			       sub.pitch_rating, sub.outfield_rating, sub.facilities_rating,
+			       COALESCE(sub.submitted_by_role,'captain'), sub.created_at
+			FROM submissions sub
+			JOIN captains c ON c.id = sub.captain_id
+			JOIN teams t ON t.id = sub.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			WHERE sub.week_id = $1
+			ORDER BY sub.created_at
+		`, int32(weekID))
+		if err != nil {
+			http.Error(w, "error loading submissions", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var subs []subRow
+		for rows.Next() {
+			var s subRow
+			if err := rows.Scan(&s.ID, &s.Club, &s.Team, &s.Captain,
+				&s.MatchDate, &s.MatchOutcome, &s.Umpire1, &s.Umpire2,
+				&s.PitchRating, &s.OutfieldRating, &s.FacilitiesRating,
+				&s.SubmittedByRole, &s.CreatedAt); err != nil {
+				continue
+			}
+			subs = append(subs, s)
+		}
+
+		csrfToken := ""
+		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
+			csrfToken = c.Value
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, fmt.Sprintf("Week %d Submissions", weekNum))
+		writeAdminNav(w, csrfToken, "/admin/weeks")
+		fmt.Fprintf(w, `<div class="container-fluid">
+<div class="d-flex align-items-center gap-3 mb-3">
+  <a href="/admin/weeks" class="btn btn-outline-secondary btn-sm">&larr; All Weeks</a>
+  <h3 class="mb-0">Week %d &mdash; %s &ndash; %s <span class="fs-6 text-muted">(%s)</span></h3>
+</div>
+`, weekNum, startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), seasonName)
+
+		if len(subs) == 0 {
+			fmt.Fprint(w, `<div class="alert alert-info">No submissions for this week yet.</div>`)
+		} else {
+			fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm mb-4">
+  <div class="card-header bg-gmcl text-white d-flex justify-content-between align-items-center">
+    <strong>%d submission(s)</strong>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover table-striped table-gmcl mb-0">
+      <thead><tr>
+        <th>Club</th><th>Team</th><th>Captain</th><th>Match Date</th>
+        <th>Outcome</th><th>Umpire 1</th><th>Umpire 2</th>
+        <th>Pitch</th><th>Outfield</th><th>Facilities</th><th>Submitted</th><th></th>
+      </tr></thead>
+      <tbody>
+`, len(subs))
+			for _, s := range subs {
+				outcome := strings.ReplaceAll(s.MatchOutcome, "_", " ")
+				fmt.Fprintf(w, `<tr>
+  <td>%s</td><td>%s</td><td>%s</td><td>%s</td>
+  <td>%s</td><td>%s</td><td>%s</td>
+  <td>%d</td><td>%d</td><td>%d</td>
+  <td class="text-nowrap small">%s</td>
+  <td><a href="/admin/submissions/%d" class="btn btn-outline-secondary btn-sm">View</a></td>
+</tr>`,
+					escapeHTML(s.Club), escapeHTML(s.Team), escapeHTML(s.Captain),
+					s.MatchDate.Format("2 Jan 2006"),
+					escapeHTML(outcome), escapeHTML(s.Umpire1), escapeHTML(s.Umpire2),
+					s.PitchRating, s.OutfieldRating, s.FacilitiesRating,
+					s.CreatedAt.Format("2 Jan 15:04"),
+					s.ID)
+			}
+			fmt.Fprint(w, `      </tbody>
+    </table>
+  </div>
+</div>`)
+		}
+		fmt.Fprint(w, `</div>`)
 		pageFooter(w)
 	}
 }
