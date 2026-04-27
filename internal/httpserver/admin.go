@@ -67,6 +67,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/weeks", s.handleAdminWeeks())
 		r.Get("/weeks/{weekNum}", s.handleAdminWeekDetail())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
+		r.Post("/submissions/{id}/fix-date", s.handleAdminSubmissionFixDate())
 
 		// Rankings
 		r.Get("/rankings", s.handleAdminRankings())
@@ -1171,10 +1172,66 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 			}
 		}
 
-		fmt.Fprint(w, `<a href="/admin/dashboard" class="btn btn-outline-primary">&larr; Back to dashboard</a>
+		fmt.Fprintf(w, `<div class="card border-warning shadow-sm mb-4">
+  <div class="card-header bg-warning text-dark"><strong>Correct Match Date</strong></div>
+  <div class="card-body">
+    <p class="text-muted mb-3">If the captain entered the wrong match date, correct it here. The submission will be automatically re-assigned to the right week based on the new date.</p>
+    <form method="POST" action="/admin/submissions/%d/fix-date" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="%s">
+      <div class="col-auto">
+        <label class="form-label fw-semibold">Match Date</label>
+        <input type="date" class="form-control" name="match_date" value="%s" required>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-warning">Update &amp; Re-assign Week</button>
+      </div>
+    </form>
+  </div>
 </div>
-`)
+<a href="/admin/dashboard" class="btn btn-outline-primary">&larr; Back to dashboard</a>
+</div>
+`, id, csrfToken, matchDate.Format("2006-01-02"))
 		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminSubmissionFixDate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		newDate, err := time.Parse("2006-01-02", r.FormValue("match_date"))
+		if err != nil {
+			http.Error(w, "invalid date", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Re-assign week based on the corrected match date
+		_, err = s.DB.Exec(ctx, `
+			UPDATE submissions sub
+			SET match_date = $1,
+			    week_id    = w.id,
+			    season_id  = w.season_id,
+			    form_data  = jsonb_set(COALESCE(form_data, '{}'::jsonb), '{match_date}', to_jsonb($2::text))
+			FROM weeks w
+			WHERE sub.id = $3
+			  AND $1 BETWEEN w.start_date AND w.end_date
+		`, newDate.Format("2006-01-02"), newDate.Format("2006-01-02"), id)
+		if err != nil {
+			http.Error(w, "could not update submission: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		http.Redirect(w, r, fmt.Sprintf("/admin/submissions/%d", id), http.StatusSeeOther)
 	}
 }
 

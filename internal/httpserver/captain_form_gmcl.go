@@ -142,7 +142,8 @@ Please complete all required fields before submitting. The page will scroll to t
     <div class="row g-3">
       <div class="col-md-6">
         <label class="form-label">Date *</label>
-        <input type="date" class="form-control" name="match_date" value="`+matchDateVal+`" required>
+        <input type="date" class="form-control" name="match_date" id="match-date-input" value="`+matchDateVal+`" required onchange="checkFutureDate(this)">
+        <div id="future-date-warning" class="alert alert-warning mt-1 mb-0 py-1 px-2 small d-none">This date is in the future — please check it is correct.</div>
       </div>
       <div class="col-md-6">
         <label class="form-label">Your Club *</label>
@@ -437,6 +438,13 @@ Please complete all required fields before submitting. The page will scroll to t
 <p class="text-muted text-center mb-5">Submitting will take you to a separate confirmation page.</p>
 </div>
 <script>
+function checkFutureDate(input) {
+  var warn = document.getElementById('future-date-warning');
+  if (!warn) return;
+  warn.classList.toggle('d-none', !input.value || input.value <= new Date().toISOString().slice(0, 10));
+}
+(function() { var d = document.getElementById('match-date-input'); if (d) checkFutureDate(d); })();
+
 function syncUmpireOther(n) {
   var sel   = document.getElementById('umpire' + n + '-select');
   var other = document.getElementById('umpire' + n + '-other');
