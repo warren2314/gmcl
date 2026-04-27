@@ -821,6 +821,21 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			http.Error(w, "invalid date format", http.StatusBadRequest)
 			return
 		}
+		if matchDate.After(time.Now().Truncate(24 * time.Hour)) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			pageHead(w, "Captain's Report")
+			writeCaptainNav(w)
+			fmt.Fprint(w, `<div class="container" style="max-width:540px">
+<div class="alert alert-danger shadow-sm">
+  <h5 class="alert-heading">Future match date not allowed</h5>
+  <p class="mb-3">The match date you entered is in the future. Please go back and enter the correct date.</p>
+  <a href="javascript:history.back()" class="btn btn-danger">Go back and fix</a>
+</div>
+</div>`)
+			pageFooter(w)
+			return
+		}
 
 		// Pitch criteria 1–6 (1=best, 6=unfit) -> map to 1–5 for legacy columns: rating = max(1, min(5, 7 - score))
 		pitchRating := 3
