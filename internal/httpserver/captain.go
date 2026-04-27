@@ -396,22 +396,27 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 			w.Header().Set("Cache-Control", "no-store")
 			pageHead(w, "Confirm Link")
 			writeCaptainNav(w)
-			fmt.Fprintf(w, `<div class="container" style="max-width:540px">
-<div class="card card-gmcl shadow-sm">
-  <div class="card-body text-center">
-    <img src="/images/logo.webp" alt="GMCL" style="max-width:220px" class="mb-3">
-    <h4 class="card-title">Open feedback form</h4>
-    <p class="text-muted">Please confirm you are the intended recipient before continuing.</p>
+			fmt.Fprintf(w, `<div class="container" style="max-width:560px">
+<div class="card card-gmcl shadow">
+  <div class="card-body p-4 text-center">
+    <img src="/images/logo.webp" alt="GMCL" style="max-width:200px" class="mb-4">
+    <h3 class="fw-bold mb-1">Captain&rsquo;s Report</h3>
+    <p class="text-muted mb-4">You have received a secure link to submit your match report.<br>Please confirm below before continuing.</p>
     <form method="POST" action="/magic-link/confirm">
       <input type="hidden" name="token" value="%s">
-      <div class="form-check text-start mb-3">
-        <input class="form-check-input" type="checkbox" id="confirmCheck"
-               onchange="document.getElementById('continueBtn').disabled = !this.checked">
-        <label class="form-check-label" for="confirmCheck">
-          I confirm I am accessing this link to submit my captain&rsquo;s report
-        </label>
+      <div class="border border-2 border-primary rounded p-3 mb-4 text-start" style="background:#f0f4ff">
+        <div class="form-check d-flex align-items-start gap-2 m-0">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" id="confirmCheck"
+                 style="width:1.4rem;height:1.4rem"
+                 onchange="document.getElementById('continueBtn').disabled = !this.checked">
+          <label class="form-check-label fw-semibold fs-6" for="confirmCheck" style="cursor:pointer">
+            I confirm I am the captain (or authorised stand-in) accessing this link to submit my captain&rsquo;s report.
+          </label>
+        </div>
       </div>
-      <button type="submit" id="continueBtn" class="btn btn-primary w-100" disabled>Continue</button>
+      <button type="submit" id="continueBtn" class="btn btn-primary btn-lg w-100" disabled>
+        Open my report form &rarr;
+      </button>
     </form>
   </div>
 </div>
