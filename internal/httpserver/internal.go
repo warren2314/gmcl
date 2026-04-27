@@ -439,6 +439,145 @@ func (s *Server) handleInternalSyncLeagueFixtures() http.HandlerFunc {
 	}
 }
 
+// handleInternalRefreshUmpirePrefills is called by n8n every Friday.
+// It re-syncs league fixtures for the upcoming weekend from Play-Cricket, then
+// updates any existing drafts for the current week with the latest umpire names.
+func (s *Server) handleInternalRefreshUmpirePrefills() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+
+		// Find the active or next week's date range.
+		var weekID, seasonID int32
+		var weekStart, weekEnd time.Time
+		err := s.DB.QueryRow(ctx, `
+			WITH active AS (
+				SELECT w.id, w.season_id, w.start_date, w.end_date, 1 AS p
+				FROM weeks w
+				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
+				LIMIT 1
+			), upcoming AS (
+				SELECT w.id, w.season_id, w.start_date, w.end_date, 2 AS p
+				FROM weeks w
+				WHERE w.start_date > CURRENT_DATE
+				ORDER BY w.start_date LIMIT 1
+			)
+			SELECT id, season_id, start_date, end_date
+			FROM (SELECT * FROM active UNION ALL SELECT * FROM upcoming) x
+			ORDER BY p LIMIT 1
+		`).Scan(&weekID, &seasonID, &weekStart, &weekEnd)
+		if err != nil {
+			http.Error(w, "no active week found", http.StatusInternalServerError)
+			return
+		}
+
+		// Collect Sat/Sun dates within the week range.
+		var matchDates []time.Time
+		for d := weekStart; !d.After(weekEnd); d = d.AddDate(0, 0, 1) {
+			if wd := d.Weekday(); wd == time.Saturday || wd == time.Sunday {
+				matchDates = append(matchDates, d)
+			}
+		}
+
+		cfg := leagueapi.NewConfigFromEnv()
+		client := leagueapi.NewClient(cfg)
+		synced := 0
+		for _, md := range matchDates {
+			details, err := client.FetchMatchesForDate(ctx, md)
+			if err != nil {
+				log.Printf("[umpire-refresh] fetch failed for %s: %v", md.Format("2006-01-02"), err)
+				continue
+			}
+			if err := leagueapi.UpsertFixtureBatch(ctx, s.DB, &seasonID, details); err != nil {
+				log.Printf("[umpire-refresh] upsert failed for %s: %v", md.Format("2006-01-02"), err)
+				continue
+			}
+			synced += len(details)
+		}
+		log.Printf("[umpire-refresh] synced %d fixtures for week %d", synced, weekID)
+
+		// Update drafts for this week with the latest umpire data from league_fixtures.
+		rows, err := s.DB.Query(ctx, `
+			SELECT d.id, d.team_id, d.draft_data
+			FROM drafts d
+			WHERE d.season_id = $1 AND d.week_id = $2
+		`, seasonID, weekID)
+		if err != nil {
+			log.Printf("[umpire-refresh] draft query failed: %v", err)
+			http.Error(w, "draft query error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type draftRow struct {
+			ID     int64
+			TeamID int32
+			Data   map[string]any
+		}
+		var drafts []draftRow
+		for rows.Next() {
+			var dr draftRow
+			var raw []byte
+			if err := rows.Scan(&dr.ID, &dr.TeamID, &raw); err != nil {
+				continue
+			}
+			_ = json.Unmarshal(raw, &dr.Data)
+			if dr.Data == nil {
+				dr.Data = map[string]any{}
+			}
+			drafts = append(drafts, dr)
+		}
+		rows.Close()
+
+		updated := 0
+		for _, dr := range drafts {
+			u1, u2, ok := leagueapi.LookupUmpirePrefill(ctx, s.DB, dr.TeamID, weekStart)
+			if !ok {
+				// Try Sunday too
+				if len(matchDates) > 1 {
+					u1, u2, ok = leagueapi.LookupUmpirePrefill(ctx, s.DB, dr.TeamID, matchDates[len(matchDates)-1])
+				}
+			}
+			if !ok || (u1 == "" && u2 == "") {
+				continue
+			}
+			if u1 != "" {
+				dr.Data["umpire1_name"] = u1
+			}
+			if u2 != "" {
+				dr.Data["umpire2_name"] = u2
+			}
+			payload, err := json.Marshal(dr.Data)
+			if err != nil {
+				continue
+			}
+			_, err = s.DB.Exec(ctx, `
+				UPDATE drafts SET draft_data = $1, last_autosaved_at = now()
+				WHERE id = $2
+			`, payload, dr.ID)
+			if err != nil {
+				log.Printf("[umpire-refresh] draft update failed id=%d: %v", dr.ID, err)
+				continue
+			}
+			updated++
+		}
+		log.Printf("[umpire-refresh] updated %d drafts with umpire data for week %d", updated, weekID)
+
+		s.audit(ctx, r, "n8n", nil, "internal_refresh_umpire_prefills", "week", func() *int64 {
+			v := int64(weekID)
+			return &v
+		}(), map[string]any{"synced_fixtures": synced, "updated_drafts": updated})
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":          "ok",
+			"synced_fixtures": synced,
+			"updated_drafts":  updated,
+			"week_id":         weekID,
+		})
+	}
+}
+
 // handleInternalPreviewEmail renders reminder/sanction email templates without sending.
 // POST body: {"type":"game_day"|"monday"|"wednesday"|"yellow"|"red", "send_to":"optional@email.com"}
 func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {

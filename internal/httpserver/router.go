@@ -95,6 +95,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	internalMux.Post("/generate-sanctions", s.handleInternalGenerateSanctions())
 	internalMux.Post("/generate-weekly-report", s.handleInternalGenerateWeeklyReport())
 	internalMux.Post("/sync-league-fixtures", s.handleInternalSyncLeagueFixtures())
+	internalMux.Post("/refresh-umpire-prefills", s.handleInternalRefreshUmpirePrefills())
 	internalMux.Post("/preview-email", s.handleInternalPreviewEmail())
 	r.Mount("/internal", internalMux)
 
