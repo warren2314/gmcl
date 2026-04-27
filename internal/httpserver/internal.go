@@ -501,6 +501,12 @@ func buildReminderEmail(reminderType, captainName, clubName, teamName, matchDate
 		firstName = "Captain"
 	}
 
+	const expiredLinkNote = `If your link appears to have expired or is not working, you can access a fresh submission form directly at:
+
+https://gmcl.co.uk
+
+Simply select your club and team from the filters on the home page to retrieve your personalised link.`
+
 	switch reminderType {
 	case "game_day":
 		subject = "GMCL Captain's Report — Please Submit Today"
@@ -515,10 +521,12 @@ Submit your report:
 
 This link is valid until Wednesday at midnight. Reports submitted after this deadline will not be accepted and may result in a yellow card being issued to your team.
 
+%s
+
 If you have any questions, please contact the league office.
 
 Kind regards,
-Greater Manchester Cricket League`, firstName, matchDate, clubName, teamName, link)
+Greater Manchester Cricket League`, firstName, matchDate, clubName, teamName, link, expiredLinkNote)
 
 	case "monday":
 		subject = "GMCL Captain's Report — Reminder"
@@ -531,10 +539,12 @@ Please submit your report using the link below. The deadline is Wednesday at mid
 Submit your report:
 %s
 
+%s
+
 If you have already submitted your report, please disregard this message.
 
 Kind regards,
-Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link)
+Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link, expiredLinkNote)
 
 	case "wednesday":
 		subject = "GMCL Captain's Report — Final Reminder (Deadline Tonight)"
@@ -545,10 +555,12 @@ This is a final reminder that your captain's report for %s — %s (match played 
 Submit your report now:
 %s
 
+%s
+
 Failure to submit before midnight tonight will result in a yellow card being issued to your team.
 
 Kind regards,
-Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link)
+Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link, expiredLinkNote)
 	}
 
 	return subject, body
