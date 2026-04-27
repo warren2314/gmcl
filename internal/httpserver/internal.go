@@ -481,18 +481,32 @@ func (s *Server) handleInternalRefreshUmpirePrefills() http.HandlerFunc {
 
 		cfg := leagueapi.NewConfigFromEnv()
 		client := leagueapi.NewClient(cfg)
-		synced := 0
+
+		// Fetch per match date (so a {date}-filtered URL template works correctly).
+		// Deduplicate by match ID before upserting to avoid double-counting when the
+		// API returns all-season fixtures regardless of date.
+		seen := make(map[string]leagueapi.MatchDetail)
 		for _, md := range matchDates {
 			details, err := client.FetchMatchesForDate(ctx, md)
 			if err != nil {
 				log.Printf("[umpire-refresh] fetch failed for %s: %v", md.Format("2006-01-02"), err)
 				continue
 			}
-			if err := leagueapi.UpsertFixtureBatch(ctx, s.DB, &seasonID, details); err != nil {
-				log.Printf("[umpire-refresh] upsert failed for %s: %v", md.Format("2006-01-02"), err)
-				continue
+			for _, d := range details {
+				seen[d.MatchID] = d
 			}
-			synced += len(details)
+		}
+		unique := make([]leagueapi.MatchDetail, 0, len(seen))
+		for _, d := range seen {
+			unique = append(unique, d)
+		}
+		synced := 0
+		if len(unique) > 0 {
+			if err := leagueapi.UpsertFixtureBatch(ctx, s.DB, &seasonID, unique); err != nil {
+				log.Printf("[umpire-refresh] upsert failed: %v", err)
+			} else {
+				synced = len(unique)
+			}
 		}
 		log.Printf("[umpire-refresh] synced %d fixtures for week %d", synced, weekID)
 

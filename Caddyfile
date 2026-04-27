@@ -1,5 +1,8 @@
 gmcl.co.uk:80 {
-	reverse_proxy app:8080
+	reverse_proxy app:8080 {
+		lb_try_duration 35s
+		lb_try_interval 500ms
+	}
 }
 
 n8n.gmcl.co.uk:80 {

@@ -64,26 +64,44 @@ info "Deploying commit: ${COMMIT}"
 # ── Build & restart ──────────────────────────────────────────────────────────
 section "Building images and restarting containers"
 
-# Keep the DB running — rebuild app + caddy, start n8n if not already running
-docker compose up -d --build --no-deps --remove-orphans app caddy
+# Step 1: rebuild and restart the app (DB stays up, Caddy keeps serving existing traffic)
+docker compose up -d --build --no-deps --remove-orphans app
 docker compose up -d --no-recreate n8n
 
-info "Containers restarted."
-
-# ── Health check ─────────────────────────────────────────────────────────────
-section "Waiting for health check at ${HEALTH_URL}"
-
+# Step 2: wait for app to be healthy before touching Caddy
+section "Waiting for app to become healthy"
+APP_HEALTH_URL="http://localhost:8080/health"
 ELAPSED=0
-until curl -sf "${HEALTH_URL}" &>/dev/null; do
+until curl -sf "${APP_HEALTH_URL}" &>/dev/null; do
     if [[ ${ELAPSED} -ge ${HEALTH_TIMEOUT} ]]; then
-        error "Health check timed out after ${HEALTH_TIMEOUT}s. Check: docker compose logs app"
+        error "App health check timed out after ${HEALTH_TIMEOUT}s. Check: docker compose logs app"
     fi
     echo -n "."
     sleep 3
     ELAPSED=$((ELAPSED + 3))
 done
 echo ""
-info "Health check passed (${ELAPSED}s)."
+info "App healthy (${ELAPSED}s)."
+
+# Step 3: now reload Caddy — app is ready so no 502 window
+section "Reloading Caddy"
+docker compose up -d --build --no-deps caddy
+info "Caddy reloaded."
+
+# ── Health check through Caddy ────────────────────────────────────────────────
+section "Verifying end-to-end health at ${HEALTH_URL}"
+
+ELAPSED=0
+until curl -sf "${HEALTH_URL}" &>/dev/null; do
+    if [[ ${ELAPSED} -ge 30 ]]; then
+        error "End-to-end health check timed out. Check: docker compose logs caddy"
+    fi
+    echo -n "."
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+done
+echo ""
+info "End-to-end health check passed (${ELAPSED}s)."
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 section "Cleaning up dangling images"
