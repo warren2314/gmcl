@@ -531,14 +531,14 @@ func (s *Server) handleInternalRefreshUmpirePrefills() http.HandlerFunc {
 
 		updated := 0
 		for _, dr := range drafts {
-			u1, u2, ok := leagueapi.LookupUmpirePrefill(ctx, s.DB, dr.TeamID, weekStart)
-			if !ok {
-				// Try Sunday too
-				if len(matchDates) > 1 {
-					u1, u2, ok = leagueapi.LookupUmpirePrefill(ctx, s.DB, dr.TeamID, matchDates[len(matchDates)-1])
+			var u1, u2 string
+			for _, md := range matchDates {
+				u1, u2, _ = leagueapi.LookupUmpirePrefill(ctx, s.DB, dr.TeamID, md)
+				if u1 != "" || u2 != "" {
+					break
 				}
 			}
-			if !ok || (u1 == "" && u2 == "") {
+			if u1 == "" && u2 == "" {
 				continue
 			}
 			if u1 != "" {
