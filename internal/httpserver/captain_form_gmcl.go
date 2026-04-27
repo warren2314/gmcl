@@ -149,12 +149,12 @@ Please complete all required fields before submitting. The page will scroll to t
         <input type="text" class="form-control" value="`+escapeHTML(clubName)+`" readonly>
       </div>
       <div class="col-md-6">
-        <label class="form-label">Opposition</label>
-        <input type="text" class="form-control" name="opposition" value="`+escapeHTML(val("opposition"))+`" placeholder="e.g. Milnrow CC 2nd XI">
+        <label class="form-label">Opposition *</label>
+        <input type="text" class="form-control" name="opposition" value="`+escapeHTML(val("opposition"))+`" placeholder="e.g. Milnrow CC 2nd XI" required>
       </div>
       <div class="col-md-6">
-        <label class="form-label">Venue</label>
-        <input type="text" class="form-control" name="venue" value="`+escapeHTML(val("venue"))+`" placeholder="e.g. Milnrow CC">
+        <label class="form-label">Venue *</label>
+        <input type="text" class="form-control" name="venue" value="`+escapeHTML(val("venue"))+`" placeholder="e.g. Milnrow CC" required>
       </div>
       <div class="col-md-6">
         <label class="form-label">Match Status *</label>

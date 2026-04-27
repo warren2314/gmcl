@@ -788,12 +788,29 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 		umpire1 := resolveUmpireName("umpire1_name_select", "umpire1_name_other")
 		umpire2 := resolveUmpireName("umpire2_name_select", "umpire2_name_other")
 		yourTeam := r.FormValue("your_team")
+		opposition := strings.TrimSpace(r.FormValue("opposition"))
+		venue := strings.TrimSpace(r.FormValue("venue"))
 
 		// Outcomes that require full umpire + pitch data
 		requiresFullData := matchOutcome == "played" || matchOutcome == "play_started_abandoned"
 
 		if matchDateStr == "" {
 			http.Error(w, "missing required fields (date)", http.StatusBadRequest)
+			return
+		}
+		if opposition == "" || venue == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			pageHead(w, "Captain's Report")
+			writeCaptainNav(w)
+			fmt.Fprint(w, `<div class="container" style="max-width:540px">
+<div class="alert alert-danger shadow-sm">
+  <h5 class="alert-heading">Opposition and venue required</h5>
+  <p class="mb-3">Please go back and enter the opposition team and venue.</p>
+  <a href="javascript:history.back()" class="btn btn-danger">Go back and fix</a>
+</div>
+</div>`)
+			pageFooter(w)
 			return
 		}
 		if requiresFullData && (umpire1 == "" || umpire2 == "") {

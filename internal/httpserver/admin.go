@@ -963,6 +963,8 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			Captain          string
 			MatchDate        time.Time
 			MatchOutcome     string
+			Opposition       string
+			Venue            string
 			Umpire1          string
 			Umpire2          string
 			PitchRating      int
@@ -975,6 +977,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		rows, err := s.DB.Query(ctx, `
 			SELECT sub.id, cl.name, t.name, c.full_name,
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
+			       COALESCE(sub.form_data->>'opposition',''), COALESCE(sub.form_data->>'venue',''),
 			       COALESCE(sub.form_data->>'umpire1_name',''), COALESCE(sub.form_data->>'umpire2_name',''),
 			       sub.pitch_rating, sub.outfield_rating, sub.facilities_rating,
 			       COALESCE(sub.submitted_by_role,'captain'), sub.submitted_at
@@ -995,7 +998,8 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		for rows.Next() {
 			var s subRow
 			if err := rows.Scan(&s.ID, &s.Club, &s.Team, &s.Captain,
-				&s.MatchDate, &s.MatchOutcome, &s.Umpire1, &s.Umpire2,
+				&s.MatchDate, &s.MatchOutcome, &s.Opposition, &s.Venue,
+				&s.Umpire1, &s.Umpire2,
 				&s.PitchRating, &s.OutfieldRating, &s.FacilitiesRating,
 				&s.SubmittedByRole, &s.CreatedAt); err != nil {
 				continue
@@ -1029,7 +1033,8 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
     <table class="table table-hover table-striped table-gmcl mb-0">
       <thead><tr>
         <th>Club</th><th>Team</th><th>Captain</th><th>Match Date</th>
-        <th>Outcome</th><th>Umpire 1</th><th>Umpire 2</th>
+        <th>Outcome</th><th>Opposition</th><th>Venue</th>
+        <th>Umpire 1</th><th>Umpire 2</th>
         <th>Pitch</th><th>Outfield</th><th>Facilities</th><th>Submitted</th><th></th>
       </tr></thead>
       <tbody>
@@ -1037,15 +1042,17 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			for _, s := range subs {
 				outcome := strings.ReplaceAll(s.MatchOutcome, "_", " ")
 				fmt.Fprintf(w, `<tr>
-  <td>%s</td><td>%s</td><td>%s</td><td>%s</td>
+  <td>%s</td><td>%s</td><td>%s</td><td class="text-nowrap">%s</td>
   <td>%s</td><td>%s</td><td>%s</td>
+  <td>%s</td><td>%s</td>
   <td>%d</td><td>%d</td><td>%d</td>
   <td class="text-nowrap small">%s</td>
   <td><a href="/admin/submissions/%d" class="btn btn-outline-secondary btn-sm">View</a></td>
 </tr>`,
 					escapeHTML(s.Club), escapeHTML(s.Team), escapeHTML(s.Captain),
 					s.MatchDate.Format("2 Jan 2006"),
-					escapeHTML(outcome), escapeHTML(s.Umpire1), escapeHTML(s.Umpire2),
+					escapeHTML(outcome), escapeHTML(s.Opposition), escapeHTML(s.Venue),
+					escapeHTML(s.Umpire1), escapeHTML(s.Umpire2),
 					s.PitchRating, s.OutfieldRating, s.FacilitiesRating,
 					s.CreatedAt.Format("2 Jan 15:04"),
 					s.ID)
