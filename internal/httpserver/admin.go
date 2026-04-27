@@ -65,7 +65,7 @@ func (s *Server) adminRouter() http.Handler {
 
 		r.Get("/dashboard", s.handleAdminDashboard())
 		r.Get("/weeks", s.handleAdminWeeks())
-		r.Get("/weeks/{id}", s.handleAdminWeekDetail())
+		r.Get("/weeks/{weekNum}", s.handleAdminWeekDetail())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
 
 		// Rankings
@@ -913,7 +913,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 				rowClass = ` class="table-warning fw-bold"`
 			}
 			fmt.Fprintf(w, `<tr%s style="cursor:pointer" onclick="location.href='/admin/weeks/%d'"><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
-				rowClass, d.WeekID, d.Season, d.Week,
+				rowClass, d.Week, d.Season, d.Week,
 				d.StartDate.Format("2 Jan 2006"), d.EndDate.Format("2 Jan 2006"), d.Count)
 		}
 		fmt.Fprint(w, `      </tbody>
@@ -928,23 +928,28 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 
 func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		weekID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		weekNum, err := strconv.ParseInt(chi.URLParam(r, "weekNum"), 10, 32)
 		if err != nil {
-			http.Error(w, "invalid week id", http.StatusBadRequest)
+			http.Error(w, "invalid week number", http.StatusBadRequest)
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
+		var weekID int32
 		var seasonName string
-		var weekNum int32
 		var startDate, endDate time.Time
 		err = s.DB.QueryRow(ctx, `
-			SELECT s.name, w.week_number, w.start_date, w.end_date
+			SELECT w.id, s.name, w.start_date, w.end_date
 			FROM weeks w JOIN seasons s ON s.id = w.season_id
-			WHERE w.id = $1
-		`, int32(weekID)).Scan(&seasonName, &weekNum, &startDate, &endDate)
+			WHERE w.week_number = $1
+			  AND s.id = (
+			      SELECT id FROM seasons
+			      WHERE CURRENT_DATE BETWEEN start_date AND end_date
+			      ORDER BY start_date DESC LIMIT 1
+			  )
+		`, int32(weekNum)).Scan(&weekID, &seasonName, &startDate, &endDate)
 		if err != nil {
 			http.Error(w, "week not found", http.StatusNotFound)
 			return
@@ -971,14 +976,14 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
 			       COALESCE(sub.form_data->>'umpire1_name',''), COALESCE(sub.form_data->>'umpire2_name',''),
 			       sub.pitch_rating, sub.outfield_rating, sub.facilities_rating,
-			       COALESCE(sub.submitted_by_role,'captain'), sub.created_at
+			       COALESCE(sub.submitted_by_role,'captain'), sub.submitted_at
 			FROM submissions sub
 			JOIN captains c ON c.id = sub.captain_id
 			JOIN teams t ON t.id = sub.team_id
 			JOIN clubs cl ON cl.id = t.club_id
 			WHERE sub.week_id = $1
-			ORDER BY sub.created_at
-		`, int32(weekID))
+			ORDER BY sub.submitted_at
+		`, weekID)
 		if err != nil {
 			http.Error(w, "error loading submissions", http.StatusInternalServerError)
 			return
@@ -1008,9 +1013,9 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="d-flex align-items-center gap-3 mb-3">
   <a href="/admin/weeks" class="btn btn-outline-secondary btn-sm">&larr; All Weeks</a>
-  <h3 class="mb-0">Week %d &mdash; %s &ndash; %s <span class="fs-6 text-muted">(%s)</span></h3>
+  <h3 class="mb-0">Week %d &mdash; %s &ndash; %s <span class="fs-6 text-muted fw-normal">(%s)</span></h3>
 </div>
-`, weekNum, startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), seasonName)
+`, int(weekNum), startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), seasonName)
 
 		if len(subs) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-info">No submissions for this week yet.</div>`)
