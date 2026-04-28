@@ -66,6 +66,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			Poor         int64
 			Score        float64
 			GoodPct      float64
+			CommentCount int64
 		}
 		var umpires []umpireRow
 		var totalRatings, uniqueUmpires int64
@@ -75,7 +76,8 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				WITH ratings AS (
 				    SELECT lower(trim(form_data->>'umpire1_name'))  AS key,
 				           trim(form_data->>'umpire1_name')         AS display,
-				           form_data->>'umpire1_performance'        AS perf
+				           form_data->>'umpire1_performance'        AS perf,
+				           COALESCE(form_data->>'umpire_comments','') AS comment
 				    FROM submissions
 				    WHERE season_id = $1
 				      AND (form_data->>'umpire1_name') IS NOT NULL
@@ -84,7 +86,8 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				    UNION ALL
 				    SELECT lower(trim(form_data->>'umpire2_name')),
 				           trim(form_data->>'umpire2_name'),
-				           form_data->>'umpire2_performance'
+				           form_data->>'umpire2_performance',
+				           COALESCE(form_data->>'umpire_comments','')
 				    FROM submissions
 				    WHERE season_id = $1
 				      AND (form_data->>'umpire2_name') IS NOT NULL
@@ -103,12 +106,13 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				            COUNT(*) FILTER (WHERE perf='Good')    * 3.0 +
 				            COUNT(*) FILTER (WHERE perf='Average') * 2.0 +
 				            COUNT(*) FILTER (WHERE perf='Poor')    * 1.0
-				        ) / NULLIF(COUNT(*),0), 3)                         AS score
+				        ) / NULLIF(COUNT(*),0), 3)                         AS score,
+				        COUNT(*) FILTER (WHERE comment <> '')              AS comment_count
 				    FROM ratings
 				    GROUP BY key
 				    HAVING COUNT(*) >= $2
 				)
-				SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0)
+				SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count
 				FROM scored
 				ORDER BY score DESC NULLS LAST, total DESC
 			`, seasonID, minRatings)
@@ -116,7 +120,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				defer urows.Close()
 				for urows.Next() {
 					var u umpireRow
-					if e := urows.Scan(&u.Name, &u.Total, &u.Good, &u.Average, &u.Poor, &u.Score); e == nil {
+					if e := urows.Scan(&u.Name, &u.Total, &u.Good, &u.Average, &u.Poor, &u.Score, &u.CommentCount); e == nil {
 						if u.Total > 0 {
 							u.GoodPct = float64(u.Good) / float64(u.Total) * 100
 						}
@@ -251,6 +255,10 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				barPoor = 0
 			}
 			commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID))
+			commentBtn := fmt.Sprintf(`<a href="%s" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a>`, commentURL)
+			if u.CommentCount > 0 {
+				commentBtn = fmt.Sprintf(`<a href="%s" class="btn btn-warning btn-sm py-0 px-2 fw-semibold" style="font-size:.75rem">%d comment(s)</a>`, commentURL, u.CommentCount)
+			}
 			fmt.Fprintf(w, `
 <tr>
   <td class="text-muted">%d</td>
@@ -267,13 +275,13 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
       <div class="progress-bar bg-danger"  style="width:%d%%"></div>
     </div>
   </td>
-  <td><a href="%s" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a></td>
+  <td>%s</td>
 </tr>`,
 				i+1, escapeHTML(u.Name), u.Total,
 				u.Good, u.Average, u.Poor,
 				scoreClass, u.Score,
 				barGood, barAvg, barPoor,
-				commentURL)
+				commentBtn)
 		}
 		if len(umpires) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="9" class="text-center text-muted py-3">No umpire ratings found for this season.</td></tr>`)
