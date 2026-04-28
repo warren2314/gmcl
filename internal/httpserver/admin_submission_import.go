@@ -192,7 +192,7 @@ func (s *Server) resolveLegacyRows(ctx context.Context, rows []legacySubmissionR
 			continue
 		}
 
-		// Look up team (club ILIKE match + team name)
+		// Look up team — try exact team name first, then fall back to any 1st XI, then any team for the club.
 		var teamID, captainID int32
 		var weekID, seasonID int32
 		err := s.DB.QueryRow(ctx, `
@@ -200,14 +200,15 @@ func (s *Server) resolveLegacyRows(ctx context.Context, rows []legacySubmissionR
 			FROM teams t
 			JOIN clubs cl ON cl.id = t.club_id
 			WHERE cl.name ILIKE $1
-			  AND (t.name ILIKE $2 OR t.name ILIKE '%1st%')
-			  AND t.active = TRUE
-			ORDER BY cl.name = $1 DESC, t.name = $2 DESC
+			ORDER BY
+			  (t.name ILIKE $2)             DESC,
+			  (t.name ILIKE '%1st%')        DESC,
+			  t.active                      DESC
 			LIMIT 1
 		`, "%"+row.ClubName+"%", "%"+row.TeamName+"%").Scan(&teamID)
 		if err == pgx.ErrNoRows {
 			row.Status = "no_club"
-			row.StatusMsg = "club/team not found: " + row.ClubName
+			row.StatusMsg = "club not found: " + row.ClubName
 			continue
 		} else if err != nil {
 			row.Status = "error"
