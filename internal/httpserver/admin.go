@@ -963,21 +963,21 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		}
 
 		type subRow struct {
-			ID               int64
-			Club             string
-			Team             string
-			Captain          string
-			MatchDate        time.Time
-			MatchOutcome     string
-			Opposition       string
-			Venue            string
-			Umpire1          string
-			Umpire2          string
-			PitchRating      int
-			OutfieldRating   int
-			FacilitiesRating int
-			SubmittedByRole  string
-			CreatedAt        time.Time
+			ID              int64
+			Club            string
+			Team            string
+			Captain         string
+			MatchDate       time.Time
+			MatchOutcome    string
+			Opposition      string
+			Venue           string
+			Umpire1         string
+			Umpire2         string
+			PitchRating     int
+			Seam            int
+			Carry           int
+			SubmittedByRole string
+			CreatedAt       time.Time
 		}
 
 		rows, err := s.DB.Query(ctx, `
@@ -985,7 +985,9 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
 			       COALESCE(sub.form_data->>'opposition',''), COALESCE(sub.form_data->>'venue',''),
 			       COALESCE(sub.form_data->>'umpire1_name',''), COALESCE(sub.form_data->>'umpire2_name',''),
-			       sub.pitch_rating, sub.outfield_rating, sub.facilities_rating,
+			       sub.pitch_rating,
+			       COALESCE((sub.form_data->>'seam_movement')::int, 0),
+			       COALESCE((sub.form_data->>'carry_bounce')::int, 0),
 			       COALESCE(sub.submitted_by_role,'captain'), sub.submitted_at
 			FROM submissions sub
 			JOIN captains c ON c.id = sub.captain_id
@@ -1006,7 +1008,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			if err := rows.Scan(&s.ID, &s.Club, &s.Team, &s.Captain,
 				&s.MatchDate, &s.MatchOutcome, &s.Opposition, &s.Venue,
 				&s.Umpire1, &s.Umpire2,
-				&s.PitchRating, &s.OutfieldRating, &s.FacilitiesRating,
+				&s.PitchRating, &s.Seam, &s.Carry,
 				&s.SubmittedByRole, &s.CreatedAt); err != nil {
 				continue
 			}
@@ -1041,7 +1043,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
         <th>Club</th><th>Team</th><th>Captain</th><th>Match Date</th>
         <th>Outcome</th><th>Opposition</th><th>Venue</th>
         <th>Umpire 1</th><th>Umpire 2</th>
-        <th>Pitch</th><th>Outfield</th><th>Facilities</th><th>Submitted</th><th></th>
+        <th>Pitch</th><th>Seam</th><th>Carry/Turn</th><th>Submitted</th><th></th>
       </tr></thead>
       <tbody>
 `, len(subs))
@@ -1059,7 +1061,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 					s.MatchDate.Format("2 Jan 2006"),
 					escapeHTML(outcome), escapeHTML(s.Opposition), escapeHTML(s.Venue),
 					escapeHTML(s.Umpire1), escapeHTML(s.Umpire2),
-					s.PitchRating, s.OutfieldRating, s.FacilitiesRating,
+					s.PitchRating, s.Seam, s.Carry,
 					s.CreatedAt.Format("2 Jan 15:04"),
 					s.ID)
 			}
@@ -1179,7 +1181,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 		var clubName, teamName string
 		var captainName string
 		var matchDate time.Time
-		var pitch, outfield, facilities int32
+		var pitch int32
 		var comments string
 		var submittedByName, submittedByEmail, submittedByRole string
 		var umpire1Type, umpire2Type string
@@ -1187,7 +1189,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 
 		err = s.DB.QueryRow(ctx, `
 			SELECT s.name, w.week_number, cl.name, t.name, c.full_name,
-			       sub.match_date, sub.pitch_rating, sub.outfield_rating, sub.facilities_rating,
+			       sub.match_date, sub.pitch_rating,
 			       COALESCE(sub.comments, ''), COALESCE(sub.submitted_by_name, ''),
 			       COALESCE(sub.submitted_by_email, ''), COALESCE(sub.submitted_by_role, 'captain'),
 			       COALESCE(sub.umpire1_type, 'panel'), COALESCE(sub.umpire2_type, 'panel'),
@@ -1199,7 +1201,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 			JOIN clubs cl ON t.club_id = cl.id
 			JOIN captains c ON sub.captain_id = c.id
 			WHERE sub.id = $1
-		`, id).Scan(&season, &week, &clubName, &teamName, &captainName, &matchDate, &pitch, &outfield, &facilities,
+		`, id).Scan(&season, &week, &clubName, &teamName, &captainName, &matchDate, &pitch,
 			&comments, &submittedByName, &submittedByEmail, &submittedByRole, &umpire1Type, &umpire2Type, &formDataJSON)
 		if err != nil {
 			if err == pgx.ErrNoRows {
@@ -1230,8 +1232,6 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
       <dt class="col-sm-3">Submitted By</dt><dd class="col-sm-9">%s (%s)</dd>
       <dt class="col-sm-3">Match Date</dt><dd class="col-sm-9">%s</dd>
       <dt class="col-sm-3">Pitch Rating</dt><dd class="col-sm-9">%d</dd>
-      <dt class="col-sm-3">Outfield Rating</dt><dd class="col-sm-9">%d</dd>
-      <dt class="col-sm-3">Facilities Rating</dt><dd class="col-sm-9">%d</dd>
       <dt class="col-sm-3">Umpire Types</dt><dd class="col-sm-9">Umpire 1: %s, Umpire 2: %s</dd>
 `, id, season, week, clubName, teamName, captainName, func() string {
 			if submittedByRole == "delegate" {
@@ -1241,7 +1241,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 				return submittedByEmail
 			}
 			return captainName
-		}(), submittedByRole, matchDate.Format("2006-01-02"), pitch, outfield, facilities, umpire1Type, umpire2Type)
+		}(), submittedByRole, matchDate.Format("2006-01-02"), pitch, umpire1Type, umpire2Type)
 		if comments != "" {
 			fmt.Fprintf(w, `      <dt class="col-sm-3">Comments</dt><dd class="col-sm-9">%s</dd>
 `, escapeHTML(comments))
