@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+
+	"golang.org/x/text/encoding/charmap"
 	"fmt"
 	"log"
 	"net/http"
@@ -543,7 +545,7 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 		}
 		defer f.Close()
 
-		reader := csv.NewReader(f)
+		reader := csv.NewReader(charmap.Windows1252.NewDecoder().Reader(f))
 		reader.LazyQuotes = true
 		reader.FieldsPerRecord = -1
 		allRecords, err := reader.ReadAll()
