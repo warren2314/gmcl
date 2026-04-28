@@ -840,6 +840,7 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 		pitchRating := 3
 		outfieldRating := 3
 		facilitiesRating := 3
+		unevenness, seam, carry, turn := 0, 0, 0, 0
 		if requiresFullData {
 			score := func(name string) int {
 				i, _ := strconv.Atoi(r.FormValue(name))
@@ -851,10 +852,10 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 				}
 				return i
 			}
-			unevenness := score("unevenness_of_bounce")
-			seam := score("seam_movement")
-			carry := score("carry_bounce")
-			turn := score("turn")
+			unevenness = score("unevenness_of_bounce")
+			seam = score("seam_movement")
+			carry = score("carry_bounce")
+			turn = score("turn")
 			pitchRating = 7 - unevenness
 			if pitchRating < 1 {
 				pitchRating = 1
@@ -985,16 +986,31 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			}
 			if strings.TrimSpace(recipientEmail) != "" {
 				mailer := email.NewFromEnv()
+				umpire1Label := umpire1
+				if umpire1Type == "club" {
+					umpire1Label += " (club)"
+				}
+				umpire2Label := umpire2
+				if umpire2Type == "club" {
+					umpire2Label += " (club)"
+				}
+				var pitchSection string
+				if requiresFullData {
+					pitchSection = fmt.Sprintf(
+						"\nUnevenness of bounce: %d\nSeam movement: %d\nCarry and/or bounce: %d\nTurn: %d",
+						unevenness, seam, carry, turn,
+					)
+				}
 				copyBody := fmt.Sprintf(
-					"Your captain report has been recorded.\n\nClub: %s\nTeam: %s\nSubmitted for: %s\nMatch date: %s\nMatch status: %s\nPitch rating: %d\nOutfield rating: %d\nFacilities rating: %d\n\nComments:\n%s\n",
+					"Your captain report has been recorded.\n\nClub: %s\nTeam: %s\nSubmitted for: %s\nMatch date: %s\nMatch status: %s\nUmpire 1: %s\nUmpire 2: %s%s\n\nComments:\n%s\n",
 					clubName,
 					teamName,
 					captainName,
 					matchDate.Format("2006-01-02"),
 					strings.ReplaceAll(matchOutcome, "_", " "),
-					pitchRating,
-					outfieldRating,
-					facilitiesRating,
+					umpire1Label,
+					umpire2Label,
+					pitchSection,
 					comments,
 				)
 				if err := mailer.Send(recipientEmail, "Copy of your captain report", copyBody); err != nil {
