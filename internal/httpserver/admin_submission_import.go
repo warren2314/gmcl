@@ -34,6 +34,11 @@ type legacySubmissionRow struct {
 	Seam           int
 	Carry          int
 	Turn           int
+	// set by lower-format parser; if non-empty, used directly instead of computing from scores
+	Umpire1Performance string
+	Umpire2Performance string
+	Umpire1Type        string // "panel" or "club"; if empty, derived from name
+	Umpire2Type        string
 	// resolved
 	TeamID    int32
 	CaptainID int32
@@ -45,6 +50,7 @@ type legacySubmissionRow struct {
 
 func parseLegacyPitchScore(text string) int {
 	t := strings.ToLower(strings.TrimSpace(text))
+	t = strings.ReplaceAll(t, "uneveness", "unevenness") // fix common spelling variant in older forms
 	if strings.Contains(t, "unfit") {
 		return 6
 	}
@@ -124,6 +130,132 @@ func umpireAvgPerformance(scores ...int) string {
 	default:
 		return "Poor"
 	}
+}
+
+// detectAndParseLegacyCSV detects which Google Form version was exported and routes accordingly.
+// records must already have the header row stripped.
+func detectAndParseLegacyCSV(records [][]string) ([]legacySubmissionRow, error) {
+	for _, rec := range records {
+		if strings.TrimSpace(rec[0]) == "" {
+			continue
+		}
+		if len(rec) >= 26 {
+			return parseLegacyCSV(records)
+		}
+		if len(rec) >= 18 {
+			return parseLegacyLowerCSV(records)
+		}
+	}
+	return nil, fmt.Errorf("could not detect CSV format (too few columns)")
+}
+
+// splitUmpireNamesFromFreetext splits a freetext field like "Mark Wood and Joe Smith" into two names.
+func splitUmpireNamesFromFreetext(s string) []string {
+	lower := strings.ToLower(s)
+	for _, sep := range []string{" and ", " & ", " / ", ", "} {
+		if idx := strings.Index(lower, sep); idx >= 0 {
+			return []string{
+				strings.TrimSpace(s[:idx]),
+				strings.TrimSpace(s[idx+len(sep):]),
+			}
+		}
+	}
+	if s != "" {
+		return []string{strings.TrimSpace(s)}
+	}
+	return nil
+}
+
+// parseLegacyLowerCSV parses the 18-column "lower division" format that has overall Good/Average/Poor
+// per umpire rather than individual 1–5 scoring criteria.
+//
+// Columns: 0=timestamp 1=date 2=club 3=team 4=name 5=email
+//          6=u1perf 7=u2perf 8=comments 9=comments_detail
+//          10=u1_dropdown 11=u2_dropdown 12=freetext_names 13=email2
+//          14=unevenness 15=seam 16=carry 17=turn
+func parseLegacyLowerCSV(records [][]string) ([]legacySubmissionRow, error) {
+	isNotListed := func(s string) bool {
+		l := strings.ToLower(strings.TrimSpace(s))
+		return strings.Contains(l, "not listed") || strings.Contains(l, "only one")
+	}
+	onlyOne := func(s string) bool {
+		return strings.Contains(strings.ToLower(strings.TrimSpace(s)), "only one")
+	}
+
+	var rows []legacySubmissionRow
+	for i, rec := range records {
+		if len(rec) < 18 {
+			continue
+		}
+		if strings.TrimSpace(rec[0]) == "" {
+			continue
+		}
+		row := legacySubmissionRow{RowNum: i + 2}
+
+		d, err := time.Parse("02/01/2006", strings.TrimSpace(rec[1]))
+		if err != nil {
+			d, err = time.Parse("02/01/2006 15:04", strings.TrimSpace(rec[0]))
+			if err != nil {
+				row.Status = "error"
+				row.StatusMsg = "unparseable date"
+				rows = append(rows, row)
+				continue
+			}
+		}
+		row.MatchDate = d.Truncate(24 * time.Hour)
+		row.ClubName = strings.TrimSpace(rec[2])
+		row.TeamName = strings.TrimSpace(rec[3])
+		row.CaptainName = strings.TrimSpace(rec[4])
+		row.CaptainEmail = strings.TrimSpace(rec[5])
+
+		row.Umpire1Performance = strings.TrimSpace(rec[6])
+		row.Umpire2Performance = strings.TrimSpace(rec[7])
+
+		c1 := strings.TrimSpace(rec[8])
+		c2 := strings.TrimSpace(rec[9])
+		row.U1Reason = c1
+		row.U2Reason = c2
+
+		u1raw := strings.TrimSpace(rec[10])
+		u2raw := strings.TrimSpace(rec[11])
+		freeNames := splitUmpireNamesFromFreetext(strings.TrimSpace(rec[12]))
+		ftIdx := 0
+
+		if onlyOne(u1raw) {
+			row.Umpire1Name = ""
+			row.Umpire1Type = "club"
+		} else if isNotListed(u1raw) {
+			if ftIdx < len(freeNames) {
+				row.Umpire1Name = titleCaseName(freeNames[ftIdx])
+				ftIdx++
+			}
+			row.Umpire1Type = "club"
+		} else {
+			row.Umpire1Name = titleCaseName(u1raw)
+			row.Umpire1Type = "panel"
+		}
+
+		if onlyOne(u2raw) {
+			row.Umpire2Name = ""
+			row.Umpire2Type = "club"
+		} else if isNotListed(u2raw) {
+			if ftIdx < len(freeNames) {
+				row.Umpire2Name = titleCaseName(freeNames[ftIdx])
+			}
+			row.Umpire2Type = "club"
+		} else {
+			row.Umpire2Name = titleCaseName(u2raw)
+			row.Umpire2Type = "panel"
+		}
+
+		row.Unevenness = parseLegacyPitchScore(rec[14])
+		row.Seam = parseLegacyPitchScore(rec[15])
+		row.Carry = parseLegacyPitchScore(rec[16])
+		row.Turn = parseLegacyPitchScore(rec[17])
+
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func parseLegacyCSV(records [][]string) ([]legacySubmissionRow, error) {
@@ -293,46 +425,66 @@ func (s *Server) resolveLegacyRows(ctx context.Context, rows []legacySubmissionR
 }
 
 func buildLegacyFormData(row legacySubmissionRow) map[string]any {
-	u1type := "panel"
-	if strings.Contains(strings.ToLower(row.Umpire1Name), "not listed") {
-		u1type = "club"
+	u1type := row.Umpire1Type
+	if u1type == "" {
+		u1type = "panel"
+		if strings.Contains(strings.ToLower(row.Umpire1Name), "not listed") {
+			u1type = "club"
+		}
 	}
-	u2type := "panel"
-	if strings.Contains(strings.ToLower(row.Umpire2Name), "not listed") {
-		u2type = "club"
+	u2type := row.Umpire2Type
+	if u2type == "" {
+		u2type = "panel"
+		if strings.Contains(strings.ToLower(row.Umpire2Name), "not listed") {
+			u2type = "club"
+		}
+	}
+	u1perf := row.Umpire1Performance
+	if u1perf == "" {
+		u1perf = umpireAvgPerformance(row.DM1, row.MM1, row.PM1, row.PI1, row.TW1)
+	}
+	u2perf := row.Umpire2Performance
+	if u2perf == "" {
+		u2perf = umpireAvgPerformance(row.DM2, row.MM2, row.PM2, row.PI2, row.TW2)
 	}
 	comments := buildCombinedUmpireComments(row.U1Reason, row.U2Reason)
-	return map[string]any{
-		"match_date":                    row.MatchDate.Format("2006-01-02"),
-		"match_outcome":                 "played",
-		"your_team":                     row.TeamName,
-		"umpire1_name":                  row.Umpire1Name,
-		"umpire2_name":                  row.Umpire2Name,
-		"umpire1_type":                  u1type,
-		"umpire2_type":                  u2type,
-		"umpire1_toss_attended":         row.U1Toss,
-		"umpire2_toss_attended":         row.U2Toss,
-		"decision_making_umpire1":       row.DM1,
-		"match_management_umpire1":      row.MM1,
-		"player_management_umpire1":     row.PM1,
-		"presence_image_umpire1":        row.PI1,
-		"teamwork_umpire1":              row.TW1,
-		"umpire1_reason":                row.U1Reason,
-		"decision_making_umpire2":       row.DM2,
-		"match_management_umpire2":      row.MM2,
-		"player_management_umpire2":     row.PM2,
-		"presence_image_umpire2":        row.PI2,
-		"teamwork_umpire2":              row.TW2,
-		"umpire2_reason":                row.U2Reason,
-		"umpire1_performance":           umpireAvgPerformance(row.DM1, row.MM1, row.PM1, row.PI1, row.TW1),
-		"umpire2_performance":           umpireAvgPerformance(row.DM2, row.MM2, row.PM2, row.PI2, row.TW2),
-		"umpire_comments":               comments,
-		"unevenness_of_bounce":          row.Unevenness,
-		"seam_movement":                 row.Seam,
-		"carry_bounce":                  row.Carry,
-		"turn":                          row.Turn,
-		"import_source":                 "legacy_csv",
+	fd := map[string]any{
+		"match_date":            row.MatchDate.Format("2006-01-02"),
+		"match_outcome":         "played",
+		"your_team":             row.TeamName,
+		"umpire1_name":          row.Umpire1Name,
+		"umpire2_name":          row.Umpire2Name,
+		"umpire1_type":          u1type,
+		"umpire2_type":          u2type,
+		"umpire1_toss_attended": row.U1Toss,
+		"umpire2_toss_attended": row.U2Toss,
+		"umpire1_reason":        row.U1Reason,
+		"umpire2_reason":        row.U2Reason,
+		"umpire1_performance":   u1perf,
+		"umpire2_performance":   u2perf,
+		"umpire_comments":       comments,
+		"unevenness_of_bounce":  row.Unevenness,
+		"seam_movement":         row.Seam,
+		"carry_bounce":          row.Carry,
+		"turn":                  row.Turn,
+		"import_source":         "legacy_csv",
 	}
+	// Only store individual umpire scores when they were actually collected (full format)
+	if row.DM1+row.MM1+row.PM1+row.PI1+row.TW1 > 0 {
+		fd["decision_making_umpire1"] = row.DM1
+		fd["match_management_umpire1"] = row.MM1
+		fd["player_management_umpire1"] = row.PM1
+		fd["presence_image_umpire1"] = row.PI1
+		fd["teamwork_umpire1"] = row.TW1
+	}
+	if row.DM2+row.MM2+row.PM2+row.PI2+row.TW2 > 0 {
+		fd["decision_making_umpire2"] = row.DM2
+		fd["match_management_umpire2"] = row.MM2
+		fd["player_management_umpire2"] = row.PM2
+		fd["presence_image_umpire2"] = row.PI2
+		fd["teamwork_umpire2"] = row.TW2
+	}
+	return fd
 }
 
 func derivePitchRatings(unevenness, seam, carry, turn int) (pitch, outfield, facilities int) {
@@ -407,7 +559,7 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
-		rows, err := parseLegacyCSV(allRecords[1:]) // skip header
+		rows, err := detectAndParseLegacyCSV(allRecords[1:]) // skip header
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -502,7 +654,7 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		rows, _ := parseLegacyCSV(allRecords)
+		rows, _ := detectAndParseLegacyCSV(allRecords)
 		rows = s.resolveLegacyRows(ctx, rows)
 
 		inserted := 0
@@ -531,13 +683,19 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 			pitch, outfield, facilities := derivePitchRatings(row.Unevenness, row.Seam, row.Carry, row.Turn)
 			comments := buildCombinedUmpireComments(row.U1Reason, row.U2Reason)
 
-			u1type := "panel"
-			if strings.Contains(strings.ToLower(row.Umpire1Name), "not listed") {
-				u1type = "club"
+			u1type := row.Umpire1Type
+			if u1type == "" {
+				u1type = "panel"
+				if strings.Contains(strings.ToLower(row.Umpire1Name), "not listed") {
+					u1type = "club"
+				}
 			}
-			u2type := "panel"
-			if strings.Contains(strings.ToLower(row.Umpire2Name), "not listed") {
-				u2type = "club"
+			u2type := row.Umpire2Type
+			if u2type == "" {
+				u2type = "panel"
+				if strings.Contains(strings.ToLower(row.Umpire2Name), "not listed") {
+					u2type = "club"
+				}
 			}
 
 			_, err := s.DB.Exec(ctx, `
