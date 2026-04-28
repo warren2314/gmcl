@@ -973,9 +973,10 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			Venue           string
 			Umpire1         string
 			Umpire2         string
-			PitchRating     int
+			Bounce          int
 			Seam            int
 			Carry           int
+			Turn            int
 			SubmittedByRole string
 			CreatedAt       time.Time
 		}
@@ -985,9 +986,10 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
 			       COALESCE(sub.form_data->>'opposition',''), COALESCE(sub.form_data->>'venue',''),
 			       COALESCE(sub.form_data->>'umpire1_name',''), COALESCE(sub.form_data->>'umpire2_name',''),
-			       sub.pitch_rating,
+			       COALESCE((sub.form_data->>'unevenness_of_bounce')::int, 0),
 			       COALESCE((sub.form_data->>'seam_movement')::int, 0),
 			       COALESCE((sub.form_data->>'carry_bounce')::int, 0),
+			       COALESCE((sub.form_data->>'turn')::int, 0),
 			       COALESCE(sub.submitted_by_role,'captain'), sub.submitted_at
 			FROM submissions sub
 			JOIN captains c ON c.id = sub.captain_id
@@ -1008,7 +1010,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			if err := rows.Scan(&s.ID, &s.Club, &s.Team, &s.Captain,
 				&s.MatchDate, &s.MatchOutcome, &s.Opposition, &s.Venue,
 				&s.Umpire1, &s.Umpire2,
-				&s.PitchRating, &s.Seam, &s.Carry,
+				&s.Bounce, &s.Seam, &s.Carry, &s.Turn,
 				&s.SubmittedByRole, &s.CreatedAt); err != nil {
 				continue
 			}
@@ -1043,7 +1045,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
         <th>Club</th><th>Team</th><th>Captain</th><th>Match Date</th>
         <th>Outcome</th><th>Opposition</th><th>Venue</th>
         <th>Umpire 1</th><th>Umpire 2</th>
-        <th>Pitch</th><th>Seam</th><th>Carry/Turn</th><th>Submitted</th><th></th>
+        <th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th><th>Submitted</th><th></th>
       </tr></thead>
       <tbody>
 `, len(subs))
@@ -1053,7 +1055,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
   <td>%s</td><td>%s</td><td>%s</td><td class="text-nowrap">%s</td>
   <td>%s</td><td>%s</td><td>%s</td>
   <td>%s</td><td>%s</td>
-  <td>%d</td><td>%d</td><td>%d</td>
+  <td>%d</td><td>%d</td><td>%d</td><td>%d</td>
   <td class="text-nowrap small">%s</td>
   <td><a href="/admin/submissions/%d" class="btn btn-outline-secondary btn-sm">View</a></td>
 </tr>`,
@@ -1061,7 +1063,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 					s.MatchDate.Format("2 Jan 2006"),
 					escapeHTML(outcome), escapeHTML(s.Opposition), escapeHTML(s.Venue),
 					escapeHTML(s.Umpire1), escapeHTML(s.Umpire2),
-					s.PitchRating, s.Seam, s.Carry,
+					s.Bounce, s.Seam, s.Carry, s.Turn,
 					s.CreatedAt.Format("2 Jan 15:04"),
 					s.ID)
 			}
