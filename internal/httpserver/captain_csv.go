@@ -257,13 +257,16 @@ func normalizeCaptainCSVExactKey(s string) string {
 
 func normalizeCaptainCSVClubKey(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.NewReplacer("&", " and ", ".", " ", ",", " ", "'", "", "-", " ").Replace(s)
+	// Strip both straight apostrophe and curly/smart apostrophe (U+2019) from Google Forms
+	s = strings.NewReplacer("&", " and ", ".", " ", ",", " ", "'", "", "\u2019", "", "-", " ").Replace(s)
 	s = strings.ReplaceAll(s, "cricket club", " ")
 	fields := strings.Fields(s)
 	filtered := make([]string, 0, len(fields))
 	for _, field := range fields {
 		switch field {
-		case "cricket", "club", "cc",
+		case "cricket", "club", "cc", "ccc",
+			// "C&SC" expands to "c and sc"; strip all three so it matches "Cricket & Social Club"
+			"c", "sc", "and", "social",
 			"lancs", "lancashire",
 			"yorks", "yorkshire",
 			"cheshire", "derbys", "derbyshire",

@@ -560,11 +560,10 @@ If you did not request this, you can safely ignore this email.
 		}
 
 		// Always show the same page regardless of whether the email matched.
-		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Forgot Password")
 		writeCaptainNav(w)
-		fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
+		fmt.Fprint(w, `<div class="container" style="max-width:480px;margin-top:3rem">
 <div class="card shadow-sm">
   <div class="card-header fw-semibold">Reset Password</div>
   <div class="card-body">
@@ -572,7 +571,7 @@ If you did not request this, you can safely ignore this email.
     <div class="text-center small"><a href="/admin/login">&larr; Back to login</a></div>
   </div>
 </div>
-</div>`, csrfToken)
+</div>`)
 		pageFooter(w)
 	}
 }
