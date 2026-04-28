@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -76,6 +77,7 @@ func (s *Server) adminRouter() http.Handler {
 		// Rankings
 		r.Get("/rankings", s.handleAdminRankings())
 		r.Get("/rankings/umpires", s.handleAdminUmpireRankings())
+		r.Get("/rankings/clubs", s.handleAdminClubDetail())
 		r.Get("/umpires/{name}/comments", s.handleAdminUmpireComments())
 
 		// Compliance
@@ -1558,8 +1560,8 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 				sanBadge = fmt.Sprintf(`<span class="badge badge-yellow-card">%d</span>`, d.Sanctions)
 			}
 			fmt.Fprintf(w,
-				`<tr><td class="text-muted">%d</td><td><strong>%s</strong></td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
-				i+1, escapeHTML(d.Club), d.Subs,
+				`<tr><td class="text-muted">%d</td><td><strong><a href="/admin/rankings/clubs?club=%s&amp;season_id=%d" class="text-decoration-none">%s</a></strong></td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+				i+1, url.QueryEscape(d.Club), seasonID, escapeHTML(d.Club), d.Subs,
 				ratingBadge(d.AvgPitch), ratingBadge(d.AvgBounce), ratingBadge(d.AvgSeam),
 				ratingBadge(d.AvgCarry), ratingBadge(d.AvgTurn), sanBadge)
 		}
@@ -1572,6 +1574,228 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 </div>
 </div>
 `)
+		pageFooter(w)
+	}
+}
+
+// handleAdminClubDetail shows all submissions for a specific home club in a given season.
+func (s *Server) handleAdminClubDetail() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		clubName := strings.TrimSpace(r.URL.Query().Get("club"))
+		if clubName == "" {
+			http.Redirect(w, r, "/admin/rankings", http.StatusSeeOther)
+			return
+		}
+
+		var seasonID int32
+		var seasonName string
+		if sid := r.URL.Query().Get("season_id"); sid != "" {
+			n, _ := strconv.Atoi(sid)
+			seasonID = int32(n)
+			s.DB.QueryRow(r.Context(), `SELECT name FROM seasons WHERE id=$1`, seasonID).Scan(&seasonName)
+		}
+		if seasonID == 0 {
+			s.DB.QueryRow(r.Context(), `
+				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
+				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+			`).Scan(&seasonID, &seasonName)
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+
+		type subRow struct {
+			ID           int64
+			MatchDate    time.Time
+			SubmittingClub string
+			Team         string
+			Umpire1      string
+			Umpire2      string
+			Pitch        int32
+			Bounce       float64
+			Seam         float64
+			Carry        float64
+			Turn         float64
+			HomeFlag     bool
+		}
+
+		rows, err := s.DB.Query(ctx, `
+			SELECT sub.id, sub.match_date,
+			       cl.name                                                             AS submitting_club,
+			       t.name                                                              AS team,
+			       COALESCE(sub.form_data->>'umpire1_name','')                        AS u1,
+			       COALESCE(sub.form_data->>'umpire2_name','')                        AS u2,
+			       sub.pitch_rating,
+			       COALESCE((sub.form_data->>'unevenness_of_bounce')::numeric, 0)     AS bounce,
+			       COALESCE((sub.form_data->>'seam_movement')::numeric, 0)            AS seam,
+			       COALESCE((sub.form_data->>'carry_bounce')::numeric, 0)             AS carry,
+			       COALESCE((sub.form_data->>'turn')::numeric, 0)                     AS turn,
+			       sub.home_club_id IS NOT NULL                                       AS home_flag
+			FROM submissions sub
+			JOIN teams t   ON sub.team_id  = t.id
+			JOIN clubs cl  ON t.club_id    = cl.id
+			LEFT JOIN clubs home_cl ON home_cl.id = sub.home_club_id
+			WHERE sub.season_id = $1
+			  AND COALESCE(home_cl.name, cl.name) = $2
+			ORDER BY sub.match_date
+		`, seasonID, clubName)
+		if err != nil {
+			http.Error(w, "error loading data", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var subs []subRow
+		var totalPitch, totalBounce, totalSeam, totalCarry, totalTurn float64
+		for rows.Next() {
+			var sr subRow
+			if err := rows.Scan(&sr.ID, &sr.MatchDate, &sr.SubmittingClub, &sr.Team,
+				&sr.Umpire1, &sr.Umpire2, &sr.Pitch,
+				&sr.Bounce, &sr.Seam, &sr.Carry, &sr.Turn, &sr.HomeFlag); err != nil {
+				continue
+			}
+			subs = append(subs, sr)
+			totalPitch += float64(sr.Pitch)
+			totalBounce += sr.Bounce
+			totalSeam += sr.Seam
+			totalCarry += sr.Carry
+			totalTurn += sr.Turn
+		}
+
+		n := float64(len(subs))
+		avg := func(v float64) string {
+			if n == 0 {
+				return "—"
+			}
+			return fmt.Sprintf("%.2f", v/n)
+		}
+		badge := func(v float64) string {
+			if n == 0 {
+				return `<span class="text-muted">—</span>`
+			}
+			a := v / n
+			cls := "text-success"
+			if a < 3 {
+				cls = "text-danger"
+			} else if a < 4 {
+				cls = "text-warning"
+			}
+			return fmt.Sprintf(`<span class="%s fw-semibold">%.2f</span>`, cls, a)
+		}
+
+		csrfToken := ""
+		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
+			csrfToken = c.Value
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, clubName+" — Rankings Detail")
+		writeAdminNav(w, csrfToken, r.URL.Path)
+
+		backURL := fmt.Sprintf("/admin/rankings?season_id=%d", seasonID)
+		fmt.Fprintf(w, `<div class="container-fluid px-4">
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="%s">Club Rankings</a></li>
+    <li class="breadcrumb-item active">%s</li>
+  </ol>
+</nav>
+<div class="d-flex align-items-center gap-3 mb-4">
+  <div>
+    <h4 class="mb-0 fw-bold">%s</h4>
+    <p class="text-muted mb-0 small">%s — pitch ratings from reports played at this ground</p>
+  </div>
+</div>
+`, backURL, escapeHTML(clubName), escapeHTML(clubName), escapeHTML(seasonName))
+
+		// Averages summary
+		fmt.Fprintf(w, `
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%d</div><div class="text-muted small">Submissions</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%s</div><div class="text-muted small">Avg Pitch</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%s</div><div class="text-muted small">Avg Bounce</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%s</div><div class="text-muted small">Avg Seam</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%s</div><div class="text-muted small">Avg Carry</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card text-center p-3 shadow-sm">
+      <div class="fw-bold fs-4">%s</div><div class="text-muted small">Avg Turn</div>
+    </div>
+  </div>
+</div>
+`, len(subs), badge(totalPitch), badge(totalBounce), badge(totalSeam), badge(totalCarry), badge(totalTurn))
+
+		_ = avg // used via badge; keep compiler happy if badge inlines it
+
+		// Submissions table
+		fmt.Fprint(w, `
+<div class="card shadow-sm mb-4">
+  <div class="card-header fw-semibold">Individual Submissions</div>
+  <div class="table-responsive">
+    <table class="table table-hover table-gmcl mb-0">
+      <thead><tr>
+        <th>Date</th><th>Submitted by</th><th>Umpire 1</th><th>Umpire 2</th>
+        <th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th><th>Home data?</th><th></th>
+      </tr></thead>
+      <tbody>
+`)
+		scoreBadge := func(v float64) string {
+			cls := "text-success"
+			if v < 3 {
+				cls = "text-danger"
+			} else if v < 4 {
+				cls = "text-warning"
+			}
+			return fmt.Sprintf(`<span class="%s">%.0f</span>`, cls, v)
+		}
+		for _, sr := range subs {
+			homeLabel := `<span class="text-muted small">legacy/away</span>`
+			if sr.HomeFlag {
+				homeLabel = `<span class="badge bg-success">confirmed</span>`
+			}
+			fmt.Fprintf(w, `<tr>
+  <td class="text-nowrap">%s</td>
+  <td>%s<br><span class="text-muted small">%s</span></td>
+  <td>%s</td><td>%s</td>
+  <td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>
+  <td>%s</td>
+  <td><a href="/admin/submissions/%d" class="btn btn-outline-secondary btn-sm">View</a></td>
+</tr>`,
+				sr.MatchDate.Format("2 Jan 2006"),
+				escapeHTML(sr.SubmittingClub), escapeHTML(sr.Team),
+				escapeHTML(sr.Umpire1), escapeHTML(sr.Umpire2),
+				scoreBadge(float64(sr.Pitch)), scoreBadge(sr.Bounce), scoreBadge(sr.Seam),
+				scoreBadge(sr.Carry), scoreBadge(sr.Turn),
+				homeLabel, sr.ID)
+		}
+		if len(subs) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="11" class="text-center text-muted py-3">No submissions found.</td></tr>`)
+		}
+		fmt.Fprint(w, `      </tbody>
+    </table>
+  </div>
+</div>
+<p class="text-muted small"><strong>Home data confirmed</strong> = rating was made by a visiting team playing at this ground (via Play-Cricket fixture lookup). <strong>Legacy/away</strong> = home ground could not be confirmed (legacy import or home team self-reporting).</p>
+</div>`)
 		pageFooter(w)
 	}
 }
