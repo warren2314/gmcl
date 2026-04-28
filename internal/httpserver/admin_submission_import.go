@@ -186,36 +186,61 @@ func parseLegacyCSV(records [][]string) ([]legacySubmissionRow, error) {
 }
 
 func (s *Server) resolveLegacyRows(ctx context.Context, rows []legacySubmissionRow) []legacySubmissionRow {
+	resolver, err := newCaptainCSVResolver(ctx, s)
+	if err != nil {
+		for i := range rows {
+			rows[i].Status = "error"
+			rows[i].StatusMsg = "resolver init failed: " + err.Error()
+		}
+		return rows
+	}
+
 	for i := range rows {
 		row := &rows[i]
 		if row.Status == "error" {
 			continue
 		}
 
-		// Look up team — try exact team name first, then fall back to any 1st XI, then any team for the club.
-		var teamID, captainID int32
-		var weekID, seasonID int32
-		err := s.DB.QueryRow(ctx, `
-			SELECT t.id
-			FROM teams t
-			JOIN clubs cl ON cl.id = t.club_id
-			WHERE cl.name ILIKE $1
-			ORDER BY
-			  (t.name ILIKE $2)             DESC,
-			  (t.name ILIKE '%1st%')        DESC,
-			  t.active                      DESC
-			LIMIT 1
-		`, "%"+row.ClubName+"%", "%"+row.TeamName+"%").Scan(&teamID)
-		if err == pgx.ErrNoRows {
+		// Resolve club using the same fuzzy logic as the captain CSV uploader.
+		club, ok := resolver.resolveClub(row.ClubName)
+		if !ok {
 			row.Status = "no_club"
 			row.StatusMsg = "club not found: " + row.ClubName
 			continue
-		} else if err != nil {
-			row.Status = "error"
-			row.StatusMsg = err.Error()
+		}
+
+		// Resolve team within that club; fall back to 1st XI, then any team.
+		var teamID int32
+		tr, hasTeams := resolver.teamsByClubID[club.ID]
+		if !hasTeams {
+			row.Status = "no_club"
+			row.StatusMsg = "no teams found for club: " + club.Name
 			continue
 		}
+		team, found := resolveCaptainCSVTeam(tr, row.TeamName)
+		if !found {
+			// Try canonical 1st XI key
+			if ts := tr.byCanonicalKey[normalizeCaptainCSVTeamKey("1st XI")]; len(ts) > 0 {
+				team, found = ts[0], true
+			}
+		}
+		if !found {
+			// Pick any team
+			for _, t := range tr.byExactKey {
+				team, found = t, true
+				break
+			}
+		}
+		if !found {
+			row.Status = "no_club"
+			row.StatusMsg = "no team resolved for: " + club.Name + " / " + row.TeamName
+			continue
+		}
+		teamID = team.ID
 		row.TeamID = teamID
+
+		var captainID int32
+		var weekID, seasonID int32
 
 		// Active captain for this team
 		err = s.DB.QueryRow(ctx, `
