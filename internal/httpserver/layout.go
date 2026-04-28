@@ -103,6 +103,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
             <li><a class="dropdown-item" href="/admin/submissions">Search by Club</a></li>
+            <li><a class="dropdown-item" href="/admin/submissions/import">Import Legacy CSV</a></li>
             <li><a class="dropdown-item" href="/admin/weeks">Weeks</a></li>
             <li><a class="dropdown-item" href="/admin/compliance">Compliance</a></li>
             <li><a class="dropdown-item" href="/admin/reminders/preview">Reminder Preview</a></li>

@@ -67,6 +67,9 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/weeks", s.handleAdminWeeks())
 		r.Get("/weeks/{weekNum}", s.handleAdminWeekDetail())
 		r.Get("/submissions", s.handleAdminSubmissionsList())
+		r.Get("/submissions/import", s.handleAdminSubmissionImportGet())
+		r.Post("/submissions/import/preview", s.handleAdminSubmissionImportPreview())
+		r.Post("/submissions/import/apply", s.handleAdminSubmissionImportApply())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
 		r.Post("/submissions/{id}/fix-date", s.handleAdminSubmissionFixDate())
 
