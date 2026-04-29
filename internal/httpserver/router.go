@@ -68,6 +68,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 
 	// public captain flow
 	r.Get("/", s.handlePublicEntry())
+	r.With(middleware.RateLimit(60)).Get("/submissions", s.handlePublicSubmissionsStatus())
 	r.Get("/privacy", s.handlePrivacyNotice())
 	r.Get("/retention", s.handleRetentionNotice())
 	// Rate limit magic link requests per IP + club/team.

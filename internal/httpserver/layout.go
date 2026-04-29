@@ -55,6 +55,7 @@ func writeCaptainNav(w io.Writer) {
         <img src="/images/logo.webp" alt="GMCL" height="48" class="me-2">
       </a>
       <div class="d-flex gap-3">
+        <a class="link-light text-decoration-none small" href="/submissions">Submission Status</a>
         <a class="link-light text-decoration-none small" href="/privacy">Privacy</a>
         <a class="link-light text-decoration-none small" href="/retention">Retention</a>
       </div>
