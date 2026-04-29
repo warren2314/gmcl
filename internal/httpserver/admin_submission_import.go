@@ -145,7 +145,12 @@ func detectAndParseLegacyCSV(records [][]string) ([]legacySubmissionRow, error) 
 			return parseLegacyCSV(records)
 		}
 		if len(rec) >= 18 {
-			return parseLegacyLowerCSV(records)
+			// 18-col: has email (col 5) and email2 (col 13); pitch at 14-17
+			return parseLegacyLowerCSV(records, 6, 10, 14)
+		}
+		if len(rec) >= 16 {
+			// 16-col: no email fields; pitch at 12-15
+			return parseLegacyLowerCSV(records, 5, 9, 12)
 		}
 	}
 	return nil, fmt.Errorf("could not detect CSV format (too few columns)")
@@ -168,14 +173,17 @@ func splitUmpireNamesFromFreetext(s string) []string {
 	return nil
 }
 
-// parseLegacyLowerCSV parses the 18-column "lower division" format that has overall Good/Average/Poor
-// per umpire rather than individual 1–5 scoring criteria.
+// parseLegacyLowerCSV parses the lower-division Google Form CSV export.
+// It handles two column layouts via offsets:
 //
-// Columns: 0=timestamp 1=date 2=club 3=team 4=name 5=email
-//          6=u1perf 7=u2perf 8=comments 9=comments_detail
-//          10=u1_dropdown 11=u2_dropdown 12=freetext_names 13=email2
-//          14=unevenness 15=seam 16=carry 17=turn
-func parseLegacyLowerCSV(records [][]string) ([]legacySubmissionRow, error) {
+//	perfOff   — index of u1perf (u2perf = perfOff+1, comments = perfOff+2, detail = perfOff+3)
+//	dropOff   — index of u1_dropdown (u2_dropdown = dropOff+1, freetext = dropOff+2)
+//	pitchOff  — index of unevenness (seam = pitchOff+1, carry = pitchOff+2, turn = pitchOff+3)
+//
+// 18-col (with email): perfOff=6, dropOff=10, pitchOff=14
+// 16-col (no email):   perfOff=5, dropOff=9,  pitchOff=12
+func parseLegacyLowerCSV(records [][]string, perfOff, dropOff, pitchOff int) ([]legacySubmissionRow, error) {
+	minCols := pitchOff + 4
 	isNotListed := func(s string) bool {
 		l := strings.ToLower(strings.TrimSpace(s))
 		return strings.Contains(l, "not listed") || strings.Contains(l, "only one")
@@ -186,7 +194,7 @@ func parseLegacyLowerCSV(records [][]string) ([]legacySubmissionRow, error) {
 
 	var rows []legacySubmissionRow
 	for i, rec := range records {
-		if len(rec) < 18 {
+		if len(rec) < minCols {
 			continue
 		}
 		if strings.TrimSpace(rec[0]) == "" {
@@ -208,19 +216,15 @@ func parseLegacyLowerCSV(records [][]string) ([]legacySubmissionRow, error) {
 		row.ClubName = strings.TrimSpace(rec[2])
 		row.TeamName = strings.TrimSpace(rec[3])
 		row.CaptainName = strings.TrimSpace(rec[4])
-		row.CaptainEmail = strings.TrimSpace(rec[5])
 
-		row.Umpire1Performance = strings.TrimSpace(rec[6])
-		row.Umpire2Performance = strings.TrimSpace(rec[7])
+		row.Umpire1Performance = strings.TrimSpace(rec[perfOff])
+		row.Umpire2Performance = strings.TrimSpace(rec[perfOff+1])
+		row.U1Reason = strings.TrimSpace(rec[perfOff+2])
+		row.U2Reason = strings.TrimSpace(rec[perfOff+3])
 
-		c1 := strings.TrimSpace(rec[8])
-		c2 := strings.TrimSpace(rec[9])
-		row.U1Reason = c1
-		row.U2Reason = c2
-
-		u1raw := strings.TrimSpace(rec[10])
-		u2raw := strings.TrimSpace(rec[11])
-		freeNames := splitUmpireNamesFromFreetext(strings.TrimSpace(rec[12]))
+		u1raw := strings.TrimSpace(rec[dropOff])
+		u2raw := strings.TrimSpace(rec[dropOff+1])
+		freeNames := splitUmpireNamesFromFreetext(strings.TrimSpace(rec[dropOff+2]))
 		ftIdx := 0
 
 		if onlyOne(u1raw) {
@@ -250,10 +254,10 @@ func parseLegacyLowerCSV(records [][]string) ([]legacySubmissionRow, error) {
 			row.Umpire2Type = "panel"
 		}
 
-		row.Unevenness = parseLegacyPitchScore(rec[14])
-		row.Seam = parseLegacyPitchScore(rec[15])
-		row.Carry = parseLegacyPitchScore(rec[16])
-		row.Turn = parseLegacyPitchScore(rec[17])
+		row.Unevenness = parseLegacyPitchScore(rec[pitchOff])
+		row.Seam = parseLegacyPitchScore(rec[pitchOff+1])
+		row.Carry = parseLegacyPitchScore(rec[pitchOff+2])
+		row.Turn = parseLegacyPitchScore(rec[pitchOff+3])
 
 		rows = append(rows, row)
 	}
