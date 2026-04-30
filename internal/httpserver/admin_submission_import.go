@@ -420,9 +420,8 @@ func (s *Server) resolveLegacyRows(ctx context.Context, rows []legacySubmissionR
 			)
 		`, teamID, row.MatchDate.Format("2006-01-02")).Scan(&exists)
 		if exists {
-			row.Status = "duplicate"
-			row.StatusMsg = "submission already exists for this team and date"
-			continue
+			row.Status = "overwrite"
+			row.StatusMsg = "will overwrite existing submission"
 		}
 
 		row.Status = "ok"
@@ -582,7 +581,7 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 
 		okCount := 0
 		for _, row := range rows {
-			if row.Status == "ok" {
+			if row.Status == "ok" || row.Status == "overwrite" {
 				okCount++
 			}
 		}
@@ -610,9 +609,9 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 			badgeClass := "bg-success"
 			statusText := "Ready"
 			switch row.Status {
-			case "duplicate":
-				badgeClass = "bg-secondary"
-				statusText = "Duplicate"
+			case "overwrite":
+				badgeClass = "bg-warning text-dark"
+				statusText = "Overwrite"
 			case "no_club":
 				badgeClass = "bg-danger"
 				statusText = "Club not found"
@@ -666,7 +665,10 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 		inserted := 0
 		skipped := 0
 		for _, row := range rows {
-			if row.Status != "ok" {
+			if row.Status == "overwrite" {
+				_, _ = s.DB.Exec(ctx, `DELETE FROM submissions WHERE team_id = $1 AND match_date = $2`,
+					row.TeamID, row.MatchDate.Format("2006-01-02"))
+			} else if row.Status != "ok" {
 				skipped++
 				continue
 			}

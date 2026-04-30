@@ -235,7 +235,72 @@ func (r *captainCSVResolver) resolveClub(clubName string) (captainCSVClubRef, bo
 		return matches[0], true
 	}
 
+	// Fuzzy fallback: find the DB club whose canonical key is closest to the CSV name.
+	// Only accept if distance <= 2 and there's a single best match.
+	csvKey := normalizeCaptainCSVClubKey(clubName)
+	if csvKey == "" {
+		return captainCSVClubRef{}, false
+	}
+	bestDist := 3
+	var bestMatch captainCSVClubRef
+	bestCount := 0
+	for dbKey, clubs := range r.clubsByCanonicalKey {
+		d := levenshtein(csvKey, dbKey)
+		if d < bestDist {
+			bestDist = d
+			bestMatch = clubs[0]
+			bestCount = 1
+		} else if d == bestDist {
+			bestCount++
+		}
+	}
+	if bestDist <= 2 && bestCount == 1 {
+		return bestMatch, true
+	}
+
 	return captainCSVClubRef{}, false
+}
+
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	la, lb := len(ra), len(rb)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	row := make([]int, lb+1)
+	for j := range row {
+		row[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		prev := i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			val := min3(row[j]+1, prev+1, row[j-1]+cost)
+			row[j-1] = prev
+			prev = val
+		}
+		row[lb] = prev
+	}
+	return row[lb]
+}
+
+func min3(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 func resolveCaptainCSVTeam(tr captainCSVTeamResolver, teamName string) (captainCSVTeamRef, bool) {
