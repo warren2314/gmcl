@@ -98,6 +98,8 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 				LEFT JOIN teams ht ON ht.play_cricket_team_id = lf.home_team_pc_id
 				LEFT JOIN teams at ON at.play_cricket_team_id = lf.away_team_pc_id
 				WHERE lf.match_date BETWEEN $1 AND $2
+				  AND lf.home_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
+				  AND lf.away_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
 				ORDER BY lf.match_date, lf.competition_id, lf.home_club_name
 			`, weekStart, weekEnd)
 			if err == nil {
