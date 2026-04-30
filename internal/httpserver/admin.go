@@ -863,7 +863,8 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		defer cancel()
 
 		rows, err := s.DB.Query(ctx, `
-			SELECT w.id, s.name, w.week_number, w.start_date, w.end_date, COUNT(sub.id) AS submissions,
+			SELECT w.id, s.name, w.week_number, w.start_date, w.end_date,
+			       COUNT(DISTINCT sub.team_id) AS submissions,
 			       (CURRENT_DATE BETWEEN w.start_date AND w.end_date) AS is_current
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
