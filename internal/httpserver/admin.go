@@ -492,7 +492,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		var weekBars []weekBar
 		if weekErr == nil {
 			wrows, err := s.DB.Query(ctx, `
-				SELECT w.week_number, COUNT(sub.id)
+				SELECT w.week_number, COUNT(DISTINCT sub.team_id)
 				FROM weeks w
 				LEFT JOIN submissions sub ON sub.week_id = w.id
 				WHERE w.season_id = $1
@@ -536,12 +536,12 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		var clubBars []clubBar
 		if weekErr == nil {
 			crows, err := s.DB.Query(ctx, `
-				SELECT cl.name, COUNT(sub.id)
+				SELECT cl.name, COUNT(DISTINCT sub.team_id)
 				FROM submissions sub
 				JOIN teams t ON sub.team_id = t.id
 				JOIN clubs cl ON t.club_id = cl.id
 				WHERE sub.season_id = $1
-				GROUP BY cl.name ORDER BY COUNT(sub.id) DESC LIMIT 20
+				GROUP BY cl.name ORDER BY COUNT(DISTINCT sub.team_id) DESC, cl.name ASC LIMIT 20
 			`, seasonID)
 			if err == nil {
 				defer crows.Close()
@@ -1427,7 +1427,7 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 
 		rows, err := s.DB.Query(ctx, `
 			SELECT COALESCE(home_cl.name, cl.name)                           AS club_name,
-			       COUNT(sub.id)                                              AS submissions,
+			       COUNT(DISTINCT sub.team_id)                               AS submissions,
 			       ROUND(AVG(sub.pitch_rating)::numeric, 2)                  AS avg_pitch,
 			       ROUND(AVG((sub.form_data->>'unevenness_of_bounce')::numeric)::numeric,2) AS avg_bounce,
 			       ROUND(AVG((sub.form_data->>'seam_movement')::numeric)::numeric,2)        AS avg_seam,

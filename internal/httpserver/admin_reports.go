@@ -801,7 +801,7 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 
 	// Submissions received + avg pitch
 	s.DB.QueryRow(ctx, fmt.Sprintf(`
-		SELECT COUNT(*), COALESCE(AVG(pitch_rating),0) FROM submissions sub %s
+		SELECT COUNT(DISTINCT sub.team_id), COALESCE(AVG(pitch_rating),0) FROM submissions sub %s
 	`, whereExtra), args...).Scan(&rp.SubmissionsReceived, &rp.AvgPitchRating)
 
 	// Expected = active teams
@@ -887,11 +887,11 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 
 	// Club breakdown
 	cbrows, err := s.DB.Query(ctx, fmt.Sprintf(`
-		SELECT cl.name, COUNT(sub.id), COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0)
+		SELECT cl.name, COUNT(DISTINCT sub.team_id), COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0)
 		FROM submissions sub
 		JOIN teams t ON sub.team_id=t.id
 		JOIN clubs cl ON t.club_id=cl.id
-		%s GROUP BY cl.name ORDER BY COUNT(sub.id) DESC
+		%s GROUP BY cl.name ORDER BY COUNT(DISTINCT sub.team_id) DESC, cl.name ASC
 	`, whereExtra), args...)
 	if err == nil {
 		defer cbrows.Close()
@@ -906,7 +906,7 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 	// Weekly trend (for monthly/season reports)
 	if reportType != "weekly" {
 		trows, err := s.DB.Query(ctx, `
-			SELECT w.week_number, COUNT(sub.id), COALESCE(AVG(sub.pitch_rating),0)
+			SELECT w.week_number, COUNT(DISTINCT sub.team_id), COALESCE(AVG(sub.pitch_rating),0)
 			FROM weeks w
 			LEFT JOIN submissions sub ON sub.week_id=w.id AND sub.season_id=$1
 			WHERE w.season_id=$1
