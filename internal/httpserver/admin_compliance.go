@@ -71,6 +71,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			TeamName      string
 			HasSubmitted  bool
 			HasDraft      bool
+			HasFixture    bool
 			HasSanction   bool
 			YellowCount   int64
 			RedCount      int64
@@ -80,12 +81,27 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		var submitted, missing int
 
 		if weekID > 0 {
+			// week date range for fixture lookup
+			var weekStart, weekEnd time.Time
+			s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id=$1`, weekID).Scan(&weekStart, &weekEnd)
+
 			crows, err := s.DB.Query(ctx, `
 				WITH submitted AS (
 				    SELECT DISTINCT team_id FROM submissions WHERE week_id=$1
 				),
 				drafted AS (
 				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
+				),
+				has_fixture AS (
+				    SELECT DISTINCT t.id AS team_id
+				    FROM teams t
+				    JOIN league_fixtures lf ON (
+				        lf.home_team_pc_id = t.play_cricket_team_id OR
+				        lf.away_team_pc_id = t.play_cricket_team_id
+				    )
+				    WHERE t.play_cricket_team_id IS NOT NULL
+				      AND t.play_cricket_team_id <> ''
+				      AND lf.match_date BETWEEN $3 AND $4
 				),
 				sanctioned AS (
 				    SELECT DISTINCT team_id FROM sanctions
@@ -107,27 +123,29 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    t.id,
 				    cl.name  AS club,
 				    t.name   AS team,
-				    (s.team_id IS NOT NULL)  AS has_submitted,
+				    (s.team_id  IS NOT NULL) AS has_submitted,
 				    (dr.team_id IS NOT NULL) AS has_draft,
+				    (hf.team_id IS NOT NULL OR t.play_cricket_team_id IS NULL OR t.play_cricket_team_id = '') AS has_fixture,
 				    (sa.team_id IS NOT NULL) AS has_sanction,
 				    COALESCE(yc.cnt, 0)      AS yellow_count,
 				    COALESCE(rc.cnt, 0)      AS red_count
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
-				LEFT JOIN submitted    s  ON s.team_id  = t.id
-				LEFT JOIN drafted      dr ON dr.team_id = t.id
-				LEFT JOIN sanctioned   sa ON sa.team_id = t.id
+				LEFT JOIN submitted     s  ON s.team_id  = t.id
+				LEFT JOIN drafted       dr ON dr.team_id = t.id
+				LEFT JOIN has_fixture   hf ON hf.team_id = t.id
+				LEFT JOIN sanctioned    sa ON sa.team_id = t.id
 				LEFT JOIN yellow_counts yc ON yc.team_id = t.id
 				LEFT JOIN red_counts    rc ON rc.team_id = t.id
 				WHERE t.active = TRUE
 				ORDER BY has_submitted DESC, cl.name, t.name
-			`, weekID, seasonID)
+			`, weekID, seasonID, weekStart, weekEnd)
 			if err == nil {
 				defer crows.Close()
 				for crows.Next() {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
-						&cr.HasSubmitted, &cr.HasDraft, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
+						&cr.HasSubmitted, &cr.HasDraft, &cr.HasFixture, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
 					totalOffences := cr.YellowCount + cr.RedCount
 					if (totalOffences+1)%3 == 0 {
 						cr.SuggestedCard = "red"
@@ -137,7 +155,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 						rows = append(rows, cr)
 						if cr.HasSubmitted {
 							submitted++
-						} else {
+						} else if cr.HasFixture {
 							missing++
 						}
 					}
@@ -262,17 +280,21 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			actionCell := ""
 
 			if !cr.HasSubmitted {
-				rowClass = "compliance-missing"
-				statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
-				if cr.HasDraft {
-					statusBadge = `<span class="badge bg-warning text-dark">&#9998; Draft saved</span>`
-				}
-				if cr.HasSanction {
-					actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
+				if !cr.HasFixture {
+					rowClass = "compliance-no-fixture"
+					statusBadge = `<span class="badge bg-secondary">No fixture</span>`
 				} else {
-					draftBtn := ""
+					rowClass = "compliance-missing"
+					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
 					if cr.HasDraft {
-						draftBtn = fmt.Sprintf(`
+						statusBadge = `<span class="badge bg-warning text-dark">&#9998; Draft saved</span>`
+					}
+					if cr.HasSanction {
+						actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
+					} else {
+						draftBtn := ""
+						if cr.HasDraft {
+							draftBtn = fmt.Sprintf(`
 <form method="POST" action="/admin/compliance/submit-draft" class="d-inline me-1">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="team_id" value="%d">
@@ -280,8 +302,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <button type="submit" class="btn btn-success btn-sm py-0"
           onclick="return confirm('Submit saved draft on behalf of this captain?')">Submit Draft</button>
 </form>`, csrfToken, cr.TeamID, weekID)
-					}
-					actionCell = draftBtn + fmt.Sprintf(`
+						}
+						actionCell = draftBtn + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="team_id" value="%d">
@@ -290,6 +312,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <input type="hidden" name="reason" value="non_submission">
   <button type="submit" class="btn btn-warning btn-sm py-0">Issue Card</button>
 </form>`, csrfToken, cr.TeamID, weekID, seasonID)
+					}
 				}
 			}
 
@@ -302,7 +325,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			if cr.HasSanction {
 				sanctionCell = `<span class="badge badge-yellow-card">Active</span>`
 			}
-			if cr.HasSubmitted {
+			if cr.HasSubmitted || !cr.HasFixture {
 				priorCell = `<span class="text-muted">—</span>`
 				suggestedCell = `<span class="text-muted">—</span>`
 			}
