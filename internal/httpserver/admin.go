@@ -985,7 +985,28 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			CreatedAt       time.Time
 		}
 
-		rows, err := s.DB.Query(ctx, `
+		clubFilter := strings.TrimSpace(r.URL.Query().Get("club"))
+
+		// Load clubs that have submissions this week for the filter dropdown
+		var clubNames []string
+		clubRows, _ := s.DB.Query(ctx, `
+			SELECT DISTINCT cl.name FROM submissions sub
+			JOIN teams t ON t.id = sub.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			WHERE sub.week_id = $1
+			ORDER BY cl.name
+		`, weekID)
+		if clubRows != nil {
+			defer clubRows.Close()
+			for clubRows.Next() {
+				var n string
+				if clubRows.Scan(&n) == nil {
+					clubNames = append(clubNames, n)
+				}
+			}
+		}
+
+		query := `
 			SELECT sub.id, cl.name, t.name, c.full_name,
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
 			       COALESCE(sub.form_data->>'opposition',''), COALESCE(sub.form_data->>'venue',''),
@@ -999,9 +1020,15 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			JOIN captains c ON c.id = sub.captain_id
 			JOIN teams t ON t.id = sub.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE sub.week_id = $1
-			ORDER BY sub.submitted_at
-		`, weekID)
+			WHERE sub.week_id = $1`
+		args := []any{weekID}
+		if clubFilter != "" {
+			query += ` AND cl.name = $2`
+			args = append(args, clubFilter)
+		}
+		query += ` ORDER BY cl.name, t.name`
+
+		rows, err := s.DB.Query(ctx, query, args...)
 		if err != nil {
 			http.Error(w, "error loading submissions", http.StatusInternalServerError)
 			return
@@ -1035,6 +1062,24 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
   <h3 class="mb-0">Week %d &mdash; %s &ndash; %s <span class="fs-6 text-muted fw-normal">(%s)</span></h3>
 </div>
 `, int(weekNum), startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), seasonName)
+
+		// Club filter dropdown
+		fmt.Fprintf(w, `<form method="GET" action="/admin/weeks/%d" class="d-flex align-items-center gap-2 mb-3">
+  <label class="form-label mb-0 text-muted small">Filter by club:</label>
+  <select name="club" class="form-select form-select-sm" style="max-width:280px" onchange="this.form.submit()">
+    <option value="">All clubs</option>`, weekNum)
+		for _, cn := range clubNames {
+			sel := ""
+			if cn == clubFilter {
+				sel = " selected"
+			}
+			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(cn), sel, escapeHTML(cn))
+		}
+		fmt.Fprint(w, `  </select>`)
+		if clubFilter != "" {
+			fmt.Fprintf(w, `  <a href="/admin/weeks/%d" class="btn btn-outline-secondary btn-sm">Clear</a>`, weekNum)
+		}
+		fmt.Fprint(w, `</form>`)
 
 		if len(subs) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-info">No submissions for this week yet.</div>`)
