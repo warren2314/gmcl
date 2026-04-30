@@ -120,7 +120,15 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
             <li><a class="dropdown-item" href="/admin/rankings/umpires">Umpire Rankings</a></li>
           </ul>
         </li>
-        %s
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
+            Reports
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="/admin/reports/exec">Executive Report</a></li>
+            <li><a class="dropdown-item" href="/admin/reports">Generated Reports</a></li>
+          </ul>
+        </li>
         %s
         %s
         %s
@@ -143,8 +151,8 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 		navLink("/admin/dashboard", "Dashboard"),
 		dropdownActive("/admin/weeks", "/admin/compliance"),
 		dropdownActive("/admin/rankings"),
+		dropdownActive("/admin/reports"),
 		navLink("/admin/sanctions", "Sanctions"),
-		navLink("/admin/reports", "Reports"),
 		navLink("/admin/play-cricket", "Play-Cricket"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),

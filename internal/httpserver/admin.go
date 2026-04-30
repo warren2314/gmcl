@@ -100,6 +100,8 @@ func (s *Server) adminRouter() http.Handler {
 		// Reports
 		r.Get("/reports", s.handleAdminReports())
 		r.Post("/reports/generate", s.handleAdminReportGenerate())
+		r.Get("/reports/exec", s.handleAdminExecReport())
+		r.Get("/reports/exec/print", s.handleAdminExecReportPrint())
 		r.Get("/reports/{id}", s.handleAdminReportView())
 		r.Get("/reports/{id}/status", s.handleAdminReportStatus())
 		r.Get("/reports/{id}/download", s.handleAdminReportDownload())
@@ -1007,6 +1009,14 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		}
 
 		query := `
+			WITH latest AS (
+			    SELECT DISTINCT ON (sub.team_id, sub.match_date)
+			        sub.id, sub.team_id, sub.captain_id, sub.match_date,
+			        sub.form_data, sub.submitted_by_role, sub.submitted_at
+			    FROM submissions sub
+			    WHERE sub.week_id = $1
+			    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
+			)
 			SELECT sub.id, cl.name, t.name, c.full_name,
 			       sub.match_date, COALESCE(sub.form_data->>'match_outcome','played'),
 			       COALESCE(sub.form_data->>'opposition',''), COALESCE(sub.form_data->>'venue',''),
@@ -1016,14 +1026,13 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			       COALESCE((sub.form_data->>'carry_bounce')::int, 0),
 			       COALESCE((sub.form_data->>'turn')::int, 0),
 			       COALESCE(sub.submitted_by_role,'captain'), sub.submitted_at
-			FROM submissions sub
+			FROM latest sub
 			JOIN captains c ON c.id = sub.captain_id
 			JOIN teams t ON t.id = sub.team_id
-			JOIN clubs cl ON cl.id = t.club_id
-			WHERE sub.week_id = $1`
+			JOIN clubs cl ON cl.id = t.club_id`
 		args := []any{weekID}
 		if clubFilter != "" {
-			query += ` AND cl.name = $2`
+			query += ` WHERE cl.name = $2`
 			args = append(args, clubFilter)
 		}
 		query += ` ORDER BY cl.name, t.name`
