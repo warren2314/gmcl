@@ -2,9 +2,11 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"cricket-ground-feedback/internal/middleware"
@@ -68,6 +70,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			ClubName      string
 			TeamName      string
 			HasSubmitted  bool
+			HasDraft      bool
 			HasSanction   bool
 			YellowCount   int64
 			RedCount      int64
@@ -80,6 +83,9 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			crows, err := s.DB.Query(ctx, `
 				WITH submitted AS (
 				    SELECT DISTINCT team_id FROM submissions WHERE week_id=$1
+				),
+				drafted AS (
+				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
 				),
 				sanctioned AS (
 				    SELECT DISTINCT team_id FROM sanctions
@@ -102,12 +108,14 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    cl.name  AS club,
 				    t.name   AS team,
 				    (s.team_id IS NOT NULL)  AS has_submitted,
+				    (dr.team_id IS NOT NULL) AS has_draft,
 				    (sa.team_id IS NOT NULL) AS has_sanction,
 				    COALESCE(yc.cnt, 0)      AS yellow_count,
 				    COALESCE(rc.cnt, 0)      AS red_count
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
 				LEFT JOIN submitted    s  ON s.team_id  = t.id
+				LEFT JOIN drafted      dr ON dr.team_id = t.id
 				LEFT JOIN sanctioned   sa ON sa.team_id = t.id
 				LEFT JOIN yellow_counts yc ON yc.team_id = t.id
 				LEFT JOIN red_counts    rc ON rc.team_id = t.id
@@ -119,7 +127,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				for crows.Next() {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
-						&cr.HasSubmitted, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
+						&cr.HasSubmitted, &cr.HasDraft, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
 					totalOffences := cr.YellowCount + cr.RedCount
 					if (totalOffences+1)%3 == 0 {
 						cr.SuggestedCard = "red"
@@ -256,10 +264,24 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			if !cr.HasSubmitted {
 				rowClass = "compliance-missing"
 				statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
+				if cr.HasDraft {
+					statusBadge = `<span class="badge bg-warning text-dark">&#9998; Draft saved</span>`
+				}
 				if cr.HasSanction {
 					actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
 				} else {
-					actionCell = fmt.Sprintf(`
+					draftBtn := ""
+					if cr.HasDraft {
+						draftBtn = fmt.Sprintf(`
+<form method="POST" action="/admin/compliance/submit-draft" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="team_id" value="%d">
+  <input type="hidden" name="week_id" value="%d">
+  <button type="submit" class="btn btn-success btn-sm py-0"
+          onclick="return confirm('Submit saved draft on behalf of this captain?')">Submit Draft</button>
+</form>`, csrfToken, cr.TeamID, weekID)
+					}
+					actionCell = draftBtn + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="team_id" value="%d">
@@ -300,6 +322,122 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 </div>
 </div>`)
 		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		teamID, _ := strconv.Atoi(r.FormValue("team_id"))
+		weekID, _ := strconv.Atoi(r.FormValue("week_id"))
+		if teamID == 0 || weekID == 0 {
+			http.Error(w, "invalid params", http.StatusBadRequest)
+			return
+		}
+
+		// Load draft
+		var seasonID, captainID int32
+		var draftDataRaw []byte
+		err := s.DB.QueryRow(ctx, `
+			SELECT season_id, captain_id, draft_data
+			FROM drafts WHERE team_id=$1 AND week_id=$2
+		`, teamID, weekID).Scan(&seasonID, &captainID, &draftDataRaw)
+		if err != nil {
+			http.Error(w, "draft not found", http.StatusNotFound)
+			return
+		}
+
+		var fd map[string]any
+		if err := json.Unmarshal(draftDataRaw, &fd); err != nil {
+			http.Error(w, "invalid draft data", http.StatusInternalServerError)
+			return
+		}
+
+		getStr := func(key string) string {
+			if v, ok := fd[key]; ok {
+				switch s := v.(type) {
+				case string:
+					return strings.TrimSpace(s)
+				}
+			}
+			return ""
+		}
+		getInt := func(key string) int {
+			if v, ok := fd[key]; ok {
+				switch n := v.(type) {
+				case float64:
+					return int(n)
+				case int:
+					return n
+				}
+			}
+			return 0
+		}
+		clamp := func(v, lo, hi int) int {
+			if v < lo {
+				return lo
+			}
+			if v > hi {
+				return hi
+			}
+			return v
+		}
+
+		matchDateStr := getStr("match_date")
+		matchDate, err := time.Parse("2006-01-02", matchDateStr)
+		if err != nil {
+			http.Error(w, "draft has no valid match date", http.StatusBadRequest)
+			return
+		}
+
+		unevenness := clamp(getInt("unevenness_of_bounce"), 1, 6)
+		seam := clamp(getInt("seam_movement"), 1, 6)
+		carry := clamp(getInt("carry_bounce"), 1, 6)
+		turn := clamp(getInt("turn"), 1, 6)
+		pitchRating := clamp(7-unevenness, 1, 5)
+		outfieldRating := clamp(7-seam, 1, 5)
+		facilitiesRating := clamp((7-carry+7-turn)/2, 1, 5)
+
+		u1Type := getStr("umpire1_type")
+		if u1Type != "panel" && u1Type != "club" {
+			u1Type = "panel"
+		}
+		u2Type := getStr("umpire2_type")
+		if u2Type != "panel" && u2Type != "club" {
+			u2Type = "panel"
+		}
+
+		comments := buildCombinedUmpireComments(getStr("umpire1_reason"), getStr("umpire2_reason"))
+		if comments == "" {
+			comments = getStr("umpire_comments")
+		}
+
+		formDataJSON, _ := json.Marshal(fd)
+
+		_, err = s.DB.Exec(ctx, `
+			INSERT INTO submissions (
+				season_id, week_id, team_id, captain_id, match_date,
+				pitch_rating, outfield_rating, facilities_rating, comments, form_data,
+				submitted_by_name, submitted_by_email, submitted_by_role,
+				umpire1_type, umpire2_type
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Admin','','admin',$11,$12)
+		`, seasonID, weekID, teamID, captainID, matchDate.Format("2006-01-02"),
+			pitchRating, outfieldRating, facilitiesRating, comments, formDataJSON,
+			u1Type, u2Type)
+		if err != nil {
+			http.Error(w, "could not save submission: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.DB.Exec(ctx, `DELETE FROM drafts WHERE team_id=$1 AND week_id=$2`, teamID, weekID)
+		s.audit(ctx, r, "admin", nil, "submit_draft_on_behalf", "submission", nil, map[string]any{
+			"team_id": teamID,
+			"week_id": weekID,
+		})
+
+		http.Redirect(w, r, fmt.Sprintf("/admin/compliance?week_id=%d", weekID), http.StatusSeeOther)
 	}
 }
 
