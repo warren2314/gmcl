@@ -456,7 +456,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		if weekErr == nil {
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM weeks
-				WHERE season_id=$1 AND end_date <= CURRENT_DATE
+				WHERE season_id=$1 AND start_date <= CURRENT_DATE
 				  AND week_number >= $2
 			`, seasonID, complianceStartWeek).Scan(&weeksElapsed)
 			var trackingSubs int64
@@ -464,7 +464,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 				SELECT COUNT(DISTINCT (sub.team_id, sub.week_id)) FROM submissions sub
 				JOIN weeks w ON sub.week_id = w.id
 				WHERE sub.season_id=$1 AND w.week_number >= $2
-				  AND w.end_date <= CURRENT_DATE
+				  AND w.start_date <= CURRENT_DATE
 			`, seasonID, complianceStartWeek).Scan(&trackingSubs)
 			if weeksElapsed > 0 && activeTeams > 0 {
 				complianceRate = float64(trackingSubs) / float64(weeksElapsed*activeTeams) * 100
