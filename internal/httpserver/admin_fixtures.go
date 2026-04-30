@@ -66,17 +66,17 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 
 		// Fixtures for the selected week, grouped by date then competition
 		type fixtureRow struct {
-			MatchDate    time.Time
-			Competition  string
-			HomeClub     string
-			HomeTeam     string
-			AwayClub     string
-			AwayTeam     string
-			Ground       string
-			Umpire1      string
-			Umpire2      string
-			LocalTeamID  *int32
-			LocalTeamName string
+			MatchDate         time.Time
+			Competition       string
+			HomeClub          string
+			HomeTeam          string
+			AwayClub          string
+			AwayTeam          string
+			Ground            string
+			Umpire1           string
+			Umpire2           string
+			LinkedHomeTeam    string
+			LinkedAwayTeam    string
 		}
 		var fixtures []fixtureRow
 
@@ -92,13 +92,11 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 				    COALESCE(lf.ground_name, ''),
 				    COALESCE(lf.umpire_1_name, ''),
 				    COALESCE(lf.umpire_2_name, ''),
-				    t.id,
-				    COALESCE(t.name, '')
+				    COALESCE(ht.name, ''),
+				    COALESCE(at.name, '')
 				FROM league_fixtures lf
-				LEFT JOIN teams t ON (
-				    t.play_cricket_team_id = lf.home_team_pc_id OR
-				    t.play_cricket_team_id = lf.away_team_pc_id
-				)
+				LEFT JOIN teams ht ON ht.play_cricket_team_id = lf.home_team_pc_id
+				LEFT JOIN teams at ON at.play_cricket_team_id = lf.away_team_pc_id
 				WHERE lf.match_date BETWEEN $1 AND $2
 				ORDER BY lf.match_date, lf.competition_id, lf.home_club_name
 			`, weekStart, weekEnd)
@@ -110,7 +108,7 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 						&f.HomeClub, &f.HomeTeam,
 						&f.AwayClub, &f.AwayTeam,
 						&f.Ground, &f.Umpire1, &f.Umpire2,
-						&f.LocalTeamID, &f.LocalTeamName) == nil {
+						&f.LinkedHomeTeam, &f.LinkedAwayTeam) == nil {
 						fixtures = append(fixtures, f)
 					}
 				}
@@ -177,8 +175,14 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 			}
 
 			linkedCell := `<span class="text-muted small">—</span>`
-			if f.LocalTeamID != nil {
-				linkedCell = fmt.Sprintf(`<span class="badge bg-success small">%s</span>`, escapeHTML(f.LocalTeamName))
+			if f.LinkedHomeTeam != "" || f.LinkedAwayTeam != "" {
+				linkedCell = ""
+				if f.LinkedHomeTeam != "" {
+					linkedCell += fmt.Sprintf(`<span class="badge bg-success small me-1">H: %s</span>`, escapeHTML(f.LinkedHomeTeam))
+				}
+				if f.LinkedAwayTeam != "" {
+					linkedCell += fmt.Sprintf(`<span class="badge bg-primary small">A: %s</span>`, escapeHTML(f.LinkedAwayTeam))
+				}
 			}
 
 			u1 := f.Umpire1
