@@ -73,26 +73,35 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 
 		if seasonID > 0 {
 			urows, err := s.DB.Query(ctx, `
-				WITH ratings AS (
-				    SELECT lower(trim(form_data->>'umpire1_name'))  AS key,
-				           trim(form_data->>'umpire1_name')         AS display,
-				           form_data->>'umpire1_performance'        AS perf,
-				           COALESCE(form_data->>'umpire_comments','') AS comment
+				WITH deduped AS (
+				    SELECT DISTINCT ON (team_id, match_date)
+				        form_data->>'umpire1_name'        AS u1name,
+				        form_data->>'umpire1_performance' AS u1perf,
+				        form_data->>'umpire2_name'        AS u2name,
+				        form_data->>'umpire2_performance' AS u2perf,
+				        COALESCE(form_data->>'umpire_comments','') AS comment
 				    FROM submissions
 				    WHERE season_id = $1
-				      AND (form_data->>'umpire1_name') IS NOT NULL
-				      AND trim(form_data->>'umpire1_name') <> ''
-				      AND (form_data->>'umpire1_performance') IS NOT NULL
+				    ORDER BY team_id, match_date, submitted_at DESC
+				),
+				ratings AS (
+				    SELECT lower(trim(u1name))  AS key,
+				           trim(u1name)         AS display,
+				           u1perf               AS perf,
+				           comment
+				    FROM deduped
+				    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
+				      AND u1perf IS NOT NULL
+				      AND u1perf IN ('Good','Average','Poor')
 				    UNION ALL
-				    SELECT lower(trim(form_data->>'umpire2_name')),
-				           trim(form_data->>'umpire2_name'),
-				           form_data->>'umpire2_performance',
-				           COALESCE(form_data->>'umpire_comments','')
-				    FROM submissions
-				    WHERE season_id = $1
-				      AND (form_data->>'umpire2_name') IS NOT NULL
-				      AND trim(form_data->>'umpire2_name') <> ''
-				      AND (form_data->>'umpire2_performance') IS NOT NULL
+				    SELECT lower(trim(u2name)),
+				           trim(u2name),
+				           u2perf,
+				           comment
+				    FROM deduped
+				    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
+				      AND u2perf IS NOT NULL
+				      AND u2perf IN ('Good','Average','Poor')
 				),
 				scored AS (
 				    SELECT
@@ -383,24 +392,23 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 		var comments []commentRow
 
 		crows, err := s.DB.Query(ctx, `
-			SELECT sub.id, sub.match_date, cl.name,
-			       COALESCE(sub.form_data->>'umpire_comments', '') AS comment
-			FROM submissions sub
-			JOIN teams t  ON sub.team_id  = t.id
-			JOIN clubs cl ON t.club_id    = cl.id
-			WHERE sub.season_id = $1
-			  AND lower(trim(sub.form_data->>'umpire1_name')) = lower($2)
-			  AND COALESCE(sub.form_data->>'umpire_comments','') <> ''
-			UNION ALL
-			SELECT sub.id, sub.match_date, cl.name,
-			       COALESCE(sub.form_data->>'umpire_comments', '')
-			FROM submissions sub
-			JOIN teams t  ON sub.team_id  = t.id
-			JOIN clubs cl ON t.club_id    = cl.id
-			WHERE sub.season_id = $1
-			  AND lower(trim(sub.form_data->>'umpire2_name')) = lower($2)
-			  AND COALESCE(sub.form_data->>'umpire_comments','') <> ''
-			ORDER BY match_date DESC
+			WITH latest AS (
+			    SELECT DISTINCT ON (team_id, match_date)
+			        id, team_id, match_date,
+			        COALESCE(form_data->>'umpire_comments','') AS comment,
+			        lower(trim(form_data->>'umpire1_name'))    AS u1,
+			        lower(trim(form_data->>'umpire2_name'))    AS u2
+			    FROM submissions
+			    WHERE season_id = $1
+			    ORDER BY team_id, match_date, submitted_at DESC
+			)
+			SELECT l.id, l.match_date, cl.name, l.comment
+			FROM latest l
+			JOIN teams t  ON t.id  = l.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			WHERE (l.u1 = lower($2) OR l.u2 = lower($2))
+			  AND l.comment <> ''
+			ORDER BY l.match_date DESC
 		`, seasonID, umpireName)
 		if err == nil {
 			defer crows.Close()
