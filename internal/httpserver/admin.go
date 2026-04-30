@@ -443,8 +443,8 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		if weekErr == nil {
 			s.DB.QueryRow(ctx, `
 				SELECT
-				  (SELECT COUNT(*) FROM submissions WHERE week_id=$1)   AS week_subs,
-				  (SELECT COUNT(*) FROM submissions WHERE season_id=$2) AS season_subs,
+				  (SELECT COUNT(DISTINCT team_id) FROM submissions WHERE week_id=$1)   AS week_subs,
+				  (SELECT COUNT(DISTINCT team_id) FROM submissions WHERE season_id=$2) AS season_subs,
 				  (SELECT COUNT(*) FROM teams WHERE active=TRUE)        AS active_teams,
 				  COALESCE((SELECT AVG(pitch_rating) FROM submissions WHERE season_id=$2),0) AS avg_pitch
 			`, weekID, seasonID).Scan(&weekSubs, &seasonSubs, &activeTeams, &avgPitch)
@@ -456,14 +456,15 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		if weekErr == nil {
 			s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM weeks
-				WHERE season_id=$1 AND end_date < CURRENT_DATE
+				WHERE season_id=$1 AND end_date <= CURRENT_DATE
 				  AND week_number >= $2
 			`, seasonID, complianceStartWeek).Scan(&weeksElapsed)
 			var trackingSubs int64
 			s.DB.QueryRow(ctx, `
-				SELECT COUNT(*) FROM submissions sub
+				SELECT COUNT(DISTINCT (sub.team_id, sub.week_id)) FROM submissions sub
 				JOIN weeks w ON sub.week_id = w.id
 				WHERE sub.season_id=$1 AND w.week_number >= $2
+				  AND w.end_date <= CURRENT_DATE
 			`, seasonID, complianceStartWeek).Scan(&trackingSubs)
 			if weeksElapsed > 0 && activeTeams > 0 {
 				complianceRate = float64(trackingSubs) / float64(weeksElapsed*activeTeams) * 100
