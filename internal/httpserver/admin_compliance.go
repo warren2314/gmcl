@@ -422,7 +422,7 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 				pitch_rating, outfield_rating, facilities_rating, comments, form_data,
 				submitted_by_name, submitted_by_email, submitted_by_role,
 				umpire1_type, umpire2_type
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Admin','','admin',$11,$12)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Admin (submitted by league)','','captain',$11,$12)
 		`, seasonID, weekID, teamID, captainID, matchDate.Format("2006-01-02"),
 			pitchRating, outfieldRating, facilitiesRating, comments, formDataJSON,
 			u1Type, u2Type)
