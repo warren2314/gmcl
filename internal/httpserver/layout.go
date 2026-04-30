@@ -145,6 +145,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 		navLink("/admin/sanctions", "Sanctions"),
 		navLink("/admin/reports", "Reports"),
 		navLink("/admin/play-cricket", "Play-Cricket"),
+		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),
 		navLink("/admin/security", "Security & Privacy"),
 		navLink("/admin/gdpr", "GDPR"),
