@@ -129,6 +129,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
         %s
         %s
         %s
+        %s
       </ul>
       <form method="POST" action="/admin/logout" class="d-flex">
         <input type="hidden" name="csrf_token" value="%s">
