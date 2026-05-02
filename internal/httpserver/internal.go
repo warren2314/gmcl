@@ -110,14 +110,16 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 	dateStr := matchDate.Format("2006-01-02")
 
 	type captainTarget struct {
-		TeamID    int32
-		WeekID    int32
-		SeasonID  int32
-		CaptainID int32
-		FullName  string
-		Email     string
-		ClubName  string
-		TeamName  string
+		TeamID     int32
+		WeekID     int32
+		SeasonID   int32
+		CaptainID  int32
+		FullName   string
+		Email      string
+		ClubName   string
+		TeamName   string
+		Opposition string
+		IsHome     bool
 	}
 
 	rows, err := s.DB.Query(ctx, `
@@ -129,7 +131,12 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		    c.full_name,
 		    c.email,
 		    cl.name     AS club_name,
-		    t.name      AS team_name
+		    t.name      AS team_name,
+		    CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		         THEN COALESCE(TRIM(lf.away_club_name),'') || ' ' || COALESCE(TRIM(lf.away_team_name),'')
+		         ELSE COALESCE(TRIM(lf.home_club_name),'') || ' ' || COALESCE(TRIM(lf.home_team_name),'')
+		    END         AS opposition,
+		    TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) AS is_home
 		FROM league_fixtures lf
 		JOIN teams t ON (t.play_cricket_team_id = lf.home_team_pc_id
 		              OR t.play_cricket_team_id = lf.away_team_pc_id)
@@ -156,9 +163,11 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 	for rows.Next() {
 		var ct captainTarget
 		if e := rows.Scan(&ct.TeamID, &ct.WeekID, &ct.SeasonID, &ct.CaptainID,
-			&ct.FullName, &ct.Email, &ct.ClubName, &ct.TeamName); e != nil {
+			&ct.FullName, &ct.Email, &ct.ClubName, &ct.TeamName,
+			&ct.Opposition, &ct.IsHome); e != nil {
 			return 0, 0, e
 		}
+		ct.Opposition = strings.TrimSpace(ct.Opposition)
 		targets = append(targets, ct)
 	}
 	if err := rows.Err(); err != nil {
@@ -178,7 +187,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		}
 
 		link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
-		subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, link)
+		subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, ct.Opposition, ct.IsHome, link)
 
 		if err := mailer.Send(ct.Email, subject, body); err != nil {
 			skipped++
@@ -618,7 +627,7 @@ func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
 			if t == "" {
 				t = "game_day"
 			}
-			subject, body = buildReminderEmail(t, "Joe Bloggs", "Example CC", "Example CC - 1st XI", "26 April 2026", link)
+			subject, body = buildReminderEmail(t, "Joe Bloggs", "Example CC", "Example CC - 1st XI", "26 April 2026", "Opponents CC 1st XI", true, link)
 		}
 
 		if req.SendTo != "" {
@@ -648,10 +657,19 @@ func nextWednesdayMidnight(matchDate time.Time) time.Time {
 }
 
 // buildReminderEmail returns subject and plain-text body for a captain reminder.
-func buildReminderEmail(reminderType, captainName, clubName, teamName, matchDate, link string) (subject, body string) {
+func buildReminderEmail(reminderType, captainName, clubName, teamName, matchDate, opposition string, isHome bool, link string) (subject, body string) {
 	firstName := strings.SplitN(strings.TrimSpace(captainName), " ", 2)[0]
 	if firstName == "" {
 		firstName = "Captain"
+	}
+
+	venue := "Away"
+	if isHome {
+		venue = "Home"
+	}
+	fixtureDesc := teamName
+	if opposition != "" {
+		fixtureDesc = fmt.Sprintf("%s v %s (%s)", teamName, opposition, venue)
 	}
 
 	const expiredLinkNote = `If your link appears to have expired or is not working, you can access a fresh submission form directly at:
@@ -662,7 +680,7 @@ Simply select your club and team from the filters on the home page to retrieve y
 
 	switch reminderType {
 	case "game_day":
-		subject = "GMCL Captain's Report — Please Submit Today"
+		subject = fmt.Sprintf("GMCL Captain's Report — %s, %s", fixtureDesc, matchDate)
 		body = fmt.Sprintf(`Dear %s,
 
 Thank you for playing today (%s) for %s — %s.
@@ -682,7 +700,7 @@ Kind regards,
 Greater Manchester Cricket League`, firstName, matchDate, clubName, teamName, link, expiredLinkNote)
 
 	case "monday":
-		subject = "GMCL Captain's Report — Reminder"
+		subject = fmt.Sprintf("GMCL Captain's Report — Reminder: %s, %s", fixtureDesc, matchDate)
 		body = fmt.Sprintf(`Dear %s,
 
 This is a reminder that your captain's report for %s — %s (match played %s) has not yet been submitted.
@@ -700,7 +718,7 @@ Kind regards,
 Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link, expiredLinkNote)
 
 	case "wednesday":
-		subject = "GMCL Captain's Report — Final Reminder (Deadline Tonight)"
+		subject = fmt.Sprintf("GMCL Captain's Report — Final Reminder: %s, %s", fixtureDesc, matchDate)
 		body = fmt.Sprintf(`Dear %s,
 
 This is a final reminder that your captain's report for %s — %s (match played %s) must be submitted by tonight at midnight.
