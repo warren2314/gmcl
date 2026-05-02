@@ -23,6 +23,7 @@ type MagicToken struct {
 	CaptainID     int32
 	SeasonID      int32
 	WeekID        int32
+	MatchDate     *time.Time
 	DelegateName  string
 	DelegateEmail string
 }
@@ -34,15 +35,20 @@ func GenerateAndStoreMagicToken(ctx context.Context, pool *db.Pool, captainID, s
 }
 
 // GenerateAndStoreMagicTokenWithRevocation invalidates any existing unused tokens for the same
-// captain/week, then inserts a new token with the given expiresAt. Call this when you want
-// "latest link wins" and an explicit expiry (e.g. next Wednesday 23:59:59).
+// captain/week (and match_date if provided), then inserts a new token.
 func GenerateAndStoreMagicTokenWithRevocation(ctx context.Context, pool *db.Pool, captainID, seasonID, weekID int32, expiresAt time.Time, ip, ua string) (string, error) {
-	return GenerateAndStoreMagicTokenWithDelegate(ctx, pool, captainID, seasonID, weekID, expiresAt, ip, ua, "", "")
+	return GenerateAndStoreMagicTokenWithDelegate(ctx, pool, captainID, seasonID, weekID, nil, expiresAt, ip, ua, "", "")
 }
 
-// GenerateAndStoreMagicTokenWithDelegate creates or replaces the token for a captain/week and
-// can optionally attach delegate identity (for stand-in captain access).
-func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, captainID, seasonID, weekID int32, expiresAt time.Time, ip, ua, delegateName, delegateEmail string) (string, error) {
+// GenerateAndStoreMagicTokenForDate is like GenerateAndStoreMagicTokenWithRevocation but scopes
+// revocation to a specific match_date so tokens for different fixtures in the same week coexist.
+func GenerateAndStoreMagicTokenForDate(ctx context.Context, pool *db.Pool, captainID, seasonID, weekID int32, matchDate time.Time, expiresAt time.Time, ip, ua string) (string, error) {
+	return GenerateAndStoreMagicTokenWithDelegate(ctx, pool, captainID, seasonID, weekID, &matchDate, expiresAt, ip, ua, "", "")
+}
+
+// GenerateAndStoreMagicTokenWithDelegate creates or replaces the token for a captain/week
+// (scoped to matchDate when non-nil) and can optionally attach delegate identity.
+func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, captainID, seasonID, weekID int32, matchDate *time.Time, expiresAt time.Time, ip, ua, delegateName, delegateEmail string) (string, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return "", err
@@ -50,12 +56,20 @@ func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, 
 	defer tx.Rollback(ctx)
 
 	now := time.Now()
-	_, err = tx.Exec(ctx, `
-		UPDATE magic_link_tokens
-		SET used_at = $1
-		WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
-		  AND used_at IS NULL AND expires_at > $1
-	`, now, captainID, seasonID, weekID)
+	// Revoke existing unused tokens for the same captain/week/date scope.
+	if matchDate != nil {
+		_, err = tx.Exec(ctx, `
+			UPDATE magic_link_tokens SET used_at = $1
+			WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+			  AND match_date = $5 AND used_at IS NULL AND expires_at > $1
+		`, now, captainID, seasonID, weekID, matchDate)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE magic_link_tokens SET used_at = $1
+			WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+			  AND match_date IS NULL AND used_at IS NULL AND expires_at > $1
+		`, now, captainID, seasonID, weekID)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -68,9 +82,10 @@ func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, 
 	hash := sha256.Sum256([]byte(token))
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO magic_link_tokens (captain_id, season_id, week_id, token_hash, expires_at, request_ip, request_user_agent, delegate_name, delegate_email)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::inet, $7, NULLIF($8, ''), NULLIF($9, ''))
-	`, captainID, seasonID, weekID, hash[:], expiresAt, ip, ua, delegateName, delegateEmail)
+		INSERT INTO magic_link_tokens
+		    (captain_id, season_id, week_id, match_date, token_hash, expires_at, request_ip, request_user_agent, delegate_name, delegate_email)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, '')::inet, $8, NULLIF($9, ''), NULLIF($10, ''))
+	`, captainID, seasonID, weekID, matchDate, hash[:], expiresAt, ip, ua, delegateName, delegateEmail)
 	if err != nil {
 		return "", err
 	}
@@ -92,10 +107,10 @@ func ValidateMagicToken(ctx context.Context, pool *db.Pool, token string) (*Magi
 	var usedAt sql.NullTime
 
 	err := pool.QueryRow(ctx, `
-		SELECT captain_id, season_id, week_id, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
+		SELECT captain_id, season_id, week_id, match_date, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
 		FROM magic_link_tokens
 		WHERE token_hash = $1
-	`, hash[:]).Scan(&t.CaptainID, &t.SeasonID, &t.WeekID, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
+	`, hash[:]).Scan(&t.CaptainID, &t.SeasonID, &t.WeekID, &t.MatchDate, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrTokenInvalid

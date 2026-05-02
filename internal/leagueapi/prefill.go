@@ -96,6 +96,83 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 	}, true
 }
 
+// LookupFixturePrefillByDate looks up a fixture for a specific match date (exact match).
+// Used when the magic link token carries a known match_date.
+func LookupFixturePrefillByDate(ctx context.Context, pool *db.Pool, teamID int32, matchDate time.Time) (FixturePrefill, bool) {
+	var pcID *string
+	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
+	if pcID == nil || strings.TrimSpace(*pcID) == "" {
+		return FixturePrefill{}, false
+	}
+	id := strings.TrimSpace(*pcID)
+
+	var (
+		md           time.Time
+		homeTeamPCID *string
+		awayTeamPCID *string
+		homeClubName *string
+		homeTeamName *string
+		awayClubName *string
+		awayTeamName *string
+		groundName   *string
+		umpire1      *string
+		umpire2      *string
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT match_date,
+		       home_team_pc_id, away_team_pc_id,
+		       home_club_name, home_team_name,
+		       away_club_name, away_team_name,
+		       ground_name, umpire_1_name, umpire_2_name
+		FROM league_fixtures
+		WHERE match_date = $1
+		  AND (TRIM(home_team_pc_id) = $2 OR TRIM(away_team_pc_id) = $2)
+		ORDER BY fetched_at DESC
+		LIMIT 1
+	`, matchDate.Format("2006-01-02"), id).Scan(
+		&md,
+		&homeTeamPCID, &awayTeamPCID,
+		&homeClubName, &homeTeamName,
+		&awayClubName, &awayTeamName,
+		&groundName, &umpire1, &umpire2,
+	)
+	if err != nil {
+		return FixturePrefill{}, false
+	}
+
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return strings.TrimSpace(*s)
+	}
+
+	isHome := str(homeTeamPCID) == id
+	var opposition, venue string
+	if isHome {
+		opposition = strings.TrimSpace(str(awayClubName) + " " + str(awayTeamName))
+		venue = str(groundName)
+		if venue == "" {
+			venue = str(homeClubName)
+		}
+	} else {
+		opposition = strings.TrimSpace(str(homeClubName) + " " + str(homeTeamName))
+		venue = str(groundName)
+		if venue == "" {
+			venue = str(homeClubName)
+		}
+	}
+
+	return FixturePrefill{
+		MatchDate:  md.Format("2006-01-02"),
+		Opposition: opposition,
+		Venue:      venue,
+		Umpire1:    str(umpire1),
+		Umpire2:    str(umpire2),
+		IsHome:     isHome,
+	}, true
+}
+
 // LookupHomeClubID returns the club ID of the home team for a given match.
 // It joins league_fixtures → teams → clubs via play_cricket_team_id.
 // Returns 0 if the fixture cannot be found or the home team is not mapped locally.

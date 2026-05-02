@@ -25,17 +25,18 @@ import (
 
 // captainSession holds the minimal identity needed for captain actions.
 type captainSession struct {
-	CaptainID      int32  `json:"cid"`
-	SeasonID       int32  `json:"sid"`
-	WeekID         int32  `json:"wid"`
-	TeamID         int32  `json:"tid"`
-	SubmitterName  string `json:"sname"`
-	SubmitterEmail string `json:"semail"`
-	SubmitterRole  string `json:"srole"`
-	Expiry         int64  `json:"exp"`
-	Aud            string `json:"aud"`
-	JTI            string `json:"jti"`
-	IssuedAt       int64  `json:"iat"`
+	CaptainID      int32      `json:"cid"`
+	SeasonID       int32      `json:"sid"`
+	WeekID         int32      `json:"wid"`
+	TeamID         int32      `json:"tid"`
+	MatchDate      *time.Time `json:"mdate,omitempty"`
+	SubmitterName  string     `json:"sname"`
+	SubmitterEmail string     `json:"semail"`
+	SubmitterRole  string     `json:"srole"`
+	Expiry         int64      `json:"exp"`
+	Aud            string     `json:"aud"`
+	JTI            string     `json:"jti"`
+	IssuedAt       int64      `json:"iat"`
 }
 
 const captainSessionCookie = "cap_sess"
@@ -470,6 +471,7 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 			SeasonID:       mt.SeasonID,
 			WeekID:         mt.WeekID,
 			TeamID:         teamID,
+			MatchDate:      mt.MatchDate,
 			SubmitterName:  "",
 			SubmitterEmail: "",
 			SubmitterRole:  "captain",
@@ -550,36 +552,44 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			_ = json.Unmarshal(draftJSON, &draft)
 		}
 
-		// Look up the week's date range to find the fixture (not just today's date).
-		var weekStart, weekEnd time.Time
-		_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
-
-		if !weekStart.IsZero() {
-			if fp, ok := leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd); ok {
-				filled := false
-				if formVal(draft, "match_date") == "" && fp.MatchDate != "" {
-					draft["match_date"] = fp.MatchDate
-					filled = true
-				}
-				if formVal(draft, "umpire1_name") == "" && fp.Umpire1 != "" {
-					draft["umpire1_name"] = fp.Umpire1
-					filled = true
-				}
-				if formVal(draft, "umpire2_name") == "" && fp.Umpire2 != "" {
-					draft["umpire2_name"] = fp.Umpire2
-					filled = true
-				}
-				if formVal(draft, "opposition") == "" && fp.Opposition != "" {
-					draft["opposition"] = fp.Opposition
-					filled = true
-				}
-				if formVal(draft, "venue") == "" && fp.Venue != "" {
-					draft["venue"] = fp.Venue
-					filled = true
-				}
-				if filled {
-					draft["prefill_source"] = "league_api"
-				}
+		// Pre-fill from the fixture. If the token carries a specific match_date (set by
+		// the reminder system), look up that exact fixture. Otherwise fall back to
+		// searching the week range for the most recent played/today fixture.
+		var fp leagueapi.FixturePrefill
+		var fpOK bool
+		if sess.MatchDate != nil {
+			fp, fpOK = leagueapi.LookupFixturePrefillByDate(ctx, s.DB, sess.TeamID, *sess.MatchDate)
+		} else {
+			var weekStart, weekEnd time.Time
+			_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
+			if !weekStart.IsZero() {
+				fp, fpOK = leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd)
+			}
+		}
+		if fpOK {
+			filled := false
+			if formVal(draft, "match_date") == "" && fp.MatchDate != "" {
+				draft["match_date"] = fp.MatchDate
+				filled = true
+			}
+			if formVal(draft, "umpire1_name") == "" && fp.Umpire1 != "" {
+				draft["umpire1_name"] = fp.Umpire1
+				filled = true
+			}
+			if formVal(draft, "umpire2_name") == "" && fp.Umpire2 != "" {
+				draft["umpire2_name"] = fp.Umpire2
+				filled = true
+			}
+			if formVal(draft, "opposition") == "" && fp.Opposition != "" {
+				draft["opposition"] = fp.Opposition
+				filled = true
+			}
+			if formVal(draft, "venue") == "" && fp.Venue != "" {
+				draft["venue"] = fp.Venue
+				filled = true
+			}
+			if filled {
+				draft["prefill_source"] = "league_api"
 			}
 		}
 
@@ -650,7 +660,7 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 		}
 		expiresAt := timeutil.NextWednesdayExpiry(now, loc)
 		token, err := auth.GenerateAndStoreMagicTokenWithDelegate(
-			ctx, s.DB, sess.CaptainID, sess.SeasonID, sess.WeekID, expiresAt, r.RemoteAddr, r.UserAgent(), delegateName, delegateEmail,
+			ctx, s.DB, sess.CaptainID, sess.SeasonID, sess.WeekID, nil, expiresAt, r.RemoteAddr, r.UserAgent(), delegateName, delegateEmail,
 		)
 		if err != nil {
 			http.Error(w, "could not create invite", http.StatusInternalServerError)

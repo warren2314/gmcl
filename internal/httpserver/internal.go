@@ -169,8 +169,8 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 	weekExpiry := nextWednesdayMidnight(matchDate)
 
 	for _, ct := range targets {
-		token, err := auth.GenerateAndStoreMagicTokenWithRevocation(
-			ctx, s.DB, ct.CaptainID, ct.SeasonID, ct.WeekID, weekExpiry, "", "n8n-reminder",
+		token, err := auth.GenerateAndStoreMagicTokenForDate(
+			ctx, s.DB, ct.CaptainID, ct.SeasonID, ct.WeekID, matchDate, weekExpiry, "", "n8n-reminder",
 		)
 		if err != nil {
 			skipped++
