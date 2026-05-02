@@ -427,8 +427,13 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
-			ORDER BY w.start_date LIMIT 1
+			WHERE s.is_archived = FALSE
+			ORDER BY
+			    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
+			         WHEN w.start_date > CURRENT_DATE THEN 1
+			         ELSE 2 END,
+			    abs(w.start_date - CURRENT_DATE)
+			LIMIT 1
 		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
 
 		// Display week offset: if compliance tracking starts at week N,
@@ -872,9 +877,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			JOIN seasons s ON w.season_id = s.id
 			LEFT JOIN submissions sub ON sub.week_id = w.id
 			WHERE s.id = (
-			    SELECT id FROM seasons
-			    WHERE CURRENT_DATE BETWEEN start_date AND end_date
-			    ORDER BY start_date DESC LIMIT 1
+			    SELECT id FROM seasons WHERE is_archived = FALSE ORDER BY id DESC LIMIT 1
 			)
 			GROUP BY w.id, s.name, w.week_number, w.start_date, w.end_date
 			ORDER BY w.week_number
@@ -957,11 +960,8 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			SELECT w.id, s.name, w.start_date, w.end_date
 			FROM weeks w JOIN seasons s ON s.id = w.season_id
 			WHERE w.week_number = $1
-			  AND s.id = (
-			      SELECT id FROM seasons
-			      WHERE CURRENT_DATE BETWEEN start_date AND end_date
-			      ORDER BY start_date DESC LIMIT 1
-			  )
+			  AND s.is_archived = FALSE
+			ORDER BY s.id DESC
 		`, int32(weekNum)).Scan(&weekID, &seasonName, &startDate, &endDate)
 		if err != nil {
 			http.Error(w, "week not found", http.StatusNotFound)
@@ -1413,7 +1413,7 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		if seasonID == 0 {
 			s.DB.QueryRow(ctx, `
 				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+				WHERE s.is_archived = FALSE ORDER BY s.id DESC LIMIT 1
 			`).Scan(&seasonID, &seasonName)
 		}
 
@@ -1657,7 +1657,7 @@ func (s *Server) handleAdminClubDetail() http.HandlerFunc {
 		if seasonID == 0 {
 			s.DB.QueryRow(r.Context(), `
 				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+				WHERE s.is_archived = FALSE ORDER BY s.id DESC LIMIT 1
 			`).Scan(&seasonID, &seasonName)
 		}
 

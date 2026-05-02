@@ -113,7 +113,13 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
 		s.DB.QueryRow(ctx, `
 			SELECT s.id, s.name, w.id, w.week_number
 			FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+			WHERE s.is_archived = FALSE
+			ORDER BY
+			    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
+			         WHEN w.start_date > CURRENT_DATE THEN 1
+			         ELSE 2 END,
+			    abs(w.start_date - CURRENT_DATE)
+			LIMIT 1
 		`).Scan(&currentSeasonID, &currentSeasonName, &currentWeekID, &currentWeekNum)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
