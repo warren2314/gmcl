@@ -102,13 +102,6 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 	if formVal(draft, "prefill_source") == "league_api" {
 		fmt.Fprint(w, `<div class="alert alert-secondary mb-3">Umpire names were prefilled from the league fixture feed. Please confirm they match your match.</div>`)
 	}
-	if matchDateVal > time.Now().Format("2006-01-02") {
-		fmt.Fprintf(w, `<div class="alert alert-warning mb-3">
-  <strong>Your fixture is scheduled for %s.</strong>
-  You cannot submit this report until after the match.
-  You can <strong>Save Draft</strong> now to keep your details, then return and submit once the match has been played.
-</div>`, escapeHTML(matchDateVal))
-	}
 	fmt.Fprint(w, `<div id="form-validation-alert" class="alert alert-danger d-none" role="alert">
 Please complete all required fields before submitting. The page will scroll to the first missing answer.
 </div>`)

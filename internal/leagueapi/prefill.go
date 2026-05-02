@@ -48,8 +48,9 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 		       ground_name, umpire_1_name, umpire_2_name
 		FROM league_fixtures
 		WHERE match_date BETWEEN $1 AND $2
+		  AND match_date <= CURRENT_DATE
 		  AND (TRIM(home_team_pc_id) = $3 OR TRIM(away_team_pc_id) = $3)
-		ORDER BY fetched_at DESC
+		ORDER BY match_date DESC, fetched_at DESC
 		LIMIT 1
 	`, weekStart.Format("2006-01-02"), weekEnd.Format("2006-01-02"), id).Scan(
 		&matchDate,
