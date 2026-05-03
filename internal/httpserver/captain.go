@@ -552,19 +552,51 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			_ = json.Unmarshal(draftJSON, &draft)
 		}
 
-		// Pre-fill from the fixture. If the token carries a specific match_date (set by
-		// the reminder system), look up that exact fixture. Otherwise fall back to
-		// searching the week range for the most recent played/today fixture.
+		// Determine which fixture to pre-fill.
+		// Priority: (1) token match_date, (2) ?match_date= query param, (3) auto-select.
+		var weekStart, weekEnd time.Time
+		_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
+
+		now := time.Now()
+
+		// Resolve target match date
+		var targetDate *time.Time
+		if sess.MatchDate != nil {
+			targetDate = sess.MatchDate
+		} else if qd := r.URL.Query().Get("match_date"); qd != "" {
+			if pd, err := time.Parse("2006-01-02", qd); err == nil {
+				targetDate = &pd
+			}
+		}
+
+		// Load all valid fixtures for the week so we can show a chooser if needed.
+		var weekFixtures []leagueapi.WeekFixture
+		if !weekStart.IsZero() {
+			weekFixtures, _ = leagueapi.LookupWeekFixtures(ctx, s.DB, sess.TeamID, weekStart, weekEnd, now)
+		}
+
+		// Auto-select: pick first unsubmitted fixture if no target specified.
+		if targetDate == nil && len(weekFixtures) > 0 {
+			for i := range weekFixtures {
+				if !weekFixtures[i].Submitted {
+					d := weekFixtures[i].MatchDate
+					targetDate = &d
+					break
+				}
+			}
+			// All submitted — pick most recent.
+			if targetDate == nil {
+				d := weekFixtures[len(weekFixtures)-1].MatchDate
+				targetDate = &d
+			}
+		}
+
 		var fp leagueapi.FixturePrefill
 		var fpOK bool
-		if sess.MatchDate != nil {
-			fp, fpOK = leagueapi.LookupFixturePrefillByDate(ctx, s.DB, sess.TeamID, *sess.MatchDate)
-		} else {
-			var weekStart, weekEnd time.Time
-			_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
-			if !weekStart.IsZero() {
-				fp, fpOK = leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd)
-			}
+		if targetDate != nil {
+			fp, fpOK = leagueapi.LookupFixturePrefillByDate(ctx, s.DB, sess.TeamID, *targetDate)
+		} else if !weekStart.IsZero() {
+			fp, fpOK = leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd)
 		}
 		if fpOK {
 			filled := false
@@ -597,13 +629,45 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			draft["match_date"] = time.Now().Format("2006-01-02")
 		}
 
+		// Build fixture chooser HTML when multiple fixtures exist in the week.
+		var fixtureChooser string
+		if len(weekFixtures) > 1 {
+			activeDateStr := ""
+			if targetDate != nil {
+				activeDateStr = targetDate.Format("2006-01-02")
+			}
+			fixtureChooser = `<div class="alert alert-info mb-3"><strong>You have multiple fixtures this week.</strong> Select the match you are reporting on:<div class="d-flex flex-wrap gap-2 mt-2">`
+			for _, wf := range weekFixtures {
+				ds := wf.MatchDate.Format("2006-01-02")
+				venue := "Away"
+				if wf.IsHome {
+					venue = "Home"
+				}
+				label := wf.MatchDate.Format("Mon 2 Jan")
+				if wf.Opposition != "" {
+					label += " — " + wf.Opposition + " (" + venue + ")"
+				}
+				btnClass := "btn btn-outline-primary btn-sm"
+				if ds == activeDateStr {
+					btnClass = "btn btn-primary btn-sm"
+				}
+				tick := ""
+				if wf.Submitted {
+					tick = " ✓"
+					btnClass = "btn btn-outline-success btn-sm"
+				}
+				fixtureChooser += fmt.Sprintf(`<a href="/captain/form?match_date=%s" class="%s">%s%s</a>`, ds, btnClass, escapeHTML(label), tick)
+			}
+			fixtureChooser += `</div></div>`
+		}
+
 		csrfToken := middleware.CSRFToken(r)
 
 		today := time.Now().Format("2006-01-02")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 		umpires := s.loadUmpires(ctx)
-		s.renderGMCLForm(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft, umpires)
+		s.renderGMCLFormWithChooser(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft, umpires, fixtureChooser)
 	}
 }
 

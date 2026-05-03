@@ -49,8 +49,17 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 		FROM league_fixtures
 		WHERE match_date BETWEEN $1 AND $2
 		  AND match_date <= CURRENT_DATE
+		  AND EXTRACT(DOW FROM match_date) <> 5
 		  AND (TRIM(home_team_pc_id) = $3 OR TRIM(away_team_pc_id) = $3)
-		ORDER BY match_date DESC, fetched_at DESC
+		ORDER BY
+		    EXISTS(
+		        SELECT 1 FROM submissions s
+		        JOIN teams t2 ON t2.id = s.team_id
+		        WHERE t2.play_cricket_team_id = $3
+		          AND s.match_date = league_fixtures.match_date
+		    ) ASC,
+		    match_date ASC,
+		    fetched_at DESC
 		LIMIT 1
 	`, weekStart.Format("2006-01-02"), weekEnd.Format("2006-01-02"), id).Scan(
 		&matchDate,
@@ -94,6 +103,75 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 		Umpire2:    str(umpire2),
 		IsHome:     isHome,
 	}, true
+}
+
+// WeekFixture is a slim fixture summary used for the multi-fixture chooser on the captain form.
+type WeekFixture struct {
+	MatchDate  time.Time
+	Opposition string
+	IsHome     bool
+	Submitted  bool
+}
+
+// LookupWeekFixtures returns all non-Friday fixtures for the team within the week that are on or
+// before the cutoff time. On Sunday before 21:00 UTC the cutoff is end-of-Saturday; after 21:00
+// (or any other day) the cutoff is now.
+func LookupWeekFixtures(ctx context.Context, pool *db.Pool, teamID int32, weekStart, weekEnd, now time.Time) ([]WeekFixture, error) {
+	var pcID *string
+	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
+	if pcID == nil || strings.TrimSpace(*pcID) == "" {
+		return nil, nil
+	}
+	id := strings.TrimSpace(*pcID)
+
+	// On Sunday before 21:00, cap to Saturday only.
+	cutoff := now
+	if now.Weekday() == time.Sunday && now.Hour() < 21 {
+		// end of Saturday = yesterday midnight + 23:59:59
+		sat := now.AddDate(0, 0, -1).Truncate(24 * time.Hour).Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		cutoff = sat
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT DISTINCT ON (match_date)
+		    match_date,
+		    home_team_pc_id, away_team_pc_id,
+		    COALESCE(away_club_name,'') || ' ' || COALESCE(away_team_name,'') AS away_opp,
+		    COALESCE(home_club_name,'') || ' ' || COALESCE(home_team_name,'') AS home_opp,
+		    EXISTS(
+		        SELECT 1 FROM submissions s
+		        JOIN teams t2 ON t2.id = s.team_id
+		        WHERE t2.play_cricket_team_id = $3
+		          AND s.match_date = league_fixtures.match_date
+		    ) AS submitted
+		FROM league_fixtures
+		WHERE match_date BETWEEN $1 AND $2
+		  AND match_date <= $4
+		  AND EXTRACT(DOW FROM match_date) <> 5
+		  AND (TRIM(home_team_pc_id) = $3 OR TRIM(away_team_pc_id) = $3)
+		ORDER BY match_date ASC, fetched_at DESC
+	`, weekStart.Format("2006-01-02"), weekEnd.Format("2006-01-02"), id, cutoff.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var fixtures []WeekFixture
+	for rows.Next() {
+		var wf WeekFixture
+		var homePCID, awayPCID, awayOpp, homeOpp string
+		if err := rows.Scan(&wf.MatchDate, &homePCID, &awayPCID, &awayOpp, &homeOpp, &wf.Submitted); err != nil {
+			continue
+		}
+		wf.IsHome = strings.TrimSpace(homePCID) == id
+		if wf.IsHome {
+			wf.Opposition = strings.TrimSpace(awayOpp)
+		} else {
+			wf.Opposition = strings.TrimSpace(homeOpp)
+		}
+		fixtures = append(fixtures, wf)
+	}
+	return fixtures, rows.Err()
 }
 
 // LookupFixturePrefillByDate looks up a fixture for a specific match date (exact match).

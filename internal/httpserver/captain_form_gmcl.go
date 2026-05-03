@@ -46,7 +46,7 @@ func selStr(current, want string) string {
 }
 
 // renderGMCLForm writes the GMCL Captain's Report questionnaire.
-func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any, umpires []umpireRow) {
+func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any, umpires []umpireRow, fixtureChooser string) {
 	val := func(k string) string { return formVal(draft, k) }
 	rad := func(k string, want string) string {
 		if formVal(draft, k) == want {
@@ -99,6 +99,9 @@ func (s *Server) renderGMCLForm(w io.Writer, seasonID int32, csrfToken, clubName
 <form id="feedback-form" method="POST" action="/captain/form/submit">
   <input type="hidden" name="csrf_token" value="`+csrfToken+`">
 `)
+	if fixtureChooser != "" {
+		fmt.Fprint(w, fixtureChooser)
+	}
 	if formVal(draft, "prefill_source") == "league_api" {
 		fmt.Fprint(w, `<div class="alert alert-secondary mb-3">Umpire names were prefilled from the league fixture feed. Please confirm they match your match.</div>`)
 	}
