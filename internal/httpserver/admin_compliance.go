@@ -69,99 +69,110 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			}
 		}
 
-		// Compliance query: all active teams left-joined to submissions this week
+		// Compliance query: per-fixture tracking so double-headers are counted correctly.
 		type compRow struct {
-			TeamID        int32
-			ClubName      string
-			TeamName      string
-			HasSubmitted  bool
-			HasDraft      bool
-			HasFixture    bool
-			HasSanction   bool
-			YellowCount   int64
-			RedCount      int64
-			SuggestedCard string
+			TeamID         int32
+			ClubName       string
+			TeamName       string
+			FixtureCount   int  // non-Friday fixtures this week (0 = no fixture)
+			SubmitCount    int  // distinct match_dates submitted this week
+			HasDraft       bool
+			HasSanction    bool
+			YellowCount    int64
+			RedCount       int64
+			SuggestedCard  string
 		}
 		var rows []compRow
-		var submitted, missing int
+		// KPI counters in fixture-report units, not team units
+		var fixturesExpected, fixturesSubmitted, fixturesMissing int
 
 		if weekID > 0 {
-			// week date range for fixture lookup
 			var weekStart, weekEnd time.Time
 			s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id=$1`, weekID).Scan(&weekStart, &weekEnd)
 
 			crows, err := s.DB.Query(ctx, `
-				WITH submitted AS (
-				    SELECT DISTINCT team_id FROM submissions WHERE week_id=$1
-				),
-				drafted AS (
-				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
-				),
-				has_fixture AS (
-				    SELECT DISTINCT t.id AS team_id
+				WITH fixture_counts AS (
+				    SELECT t.id AS team_id,
+				           COUNT(DISTINCT lf.match_date) AS fixture_count
 				    FROM teams t
 				    JOIN league_fixtures lf ON (
 				        lf.home_team_pc_id = t.play_cricket_team_id OR
 				        lf.away_team_pc_id = t.play_cricket_team_id
 				    )
-				    WHERE t.play_cricket_team_id IS NOT NULL
-				      AND t.play_cricket_team_id <> ''
+				    WHERE t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 				      AND lf.match_date BETWEEN $3 AND $4
+				      AND EXTRACT(DOW FROM lf.match_date) <> 5
+				    GROUP BY t.id
+				),
+				submit_counts AS (
+				    SELECT team_id,
+				           COUNT(DISTINCT match_date) AS submit_count
+				    FROM submissions WHERE week_id=$1
+				    GROUP BY team_id
+				),
+				drafted AS (
+				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
 				),
 				sanctioned AS (
 				    SELECT DISTINCT team_id FROM sanctions
 				    WHERE season_id=$2 AND week_id=$1 AND reason='non_submission' AND status IN ('active','served')
 				),
 				yellow_counts AS (
-				    SELECT team_id, COUNT(*) AS cnt
-				    FROM sanctions
+				    SELECT team_id, COUNT(*) AS cnt FROM sanctions
 				    WHERE season_id=$2 AND reason='non_submission' AND colour='yellow' AND status IN ('active','served')
 				    GROUP BY team_id
 				),
 				red_counts AS (
-				    SELECT team_id, COUNT(*) AS cnt
-				    FROM sanctions
+				    SELECT team_id, COUNT(*) AS cnt FROM sanctions
 				    WHERE season_id=$2 AND reason='non_submission' AND colour='red' AND status IN ('active','served')
 				    GROUP BY team_id
 				)
 				SELECT
 				    t.id,
-				    cl.name  AS club,
-				    t.name   AS team,
-				    (s.team_id  IS NOT NULL) AS has_submitted,
-				    (dr.team_id IS NOT NULL) AS has_draft,
-				    (hf.team_id IS NOT NULL OR t.play_cricket_team_id IS NULL OR t.play_cricket_team_id = '') AS has_fixture,
-				    (sa.team_id IS NOT NULL) AS has_sanction,
-				    COALESCE(yc.cnt, 0)      AS yellow_count,
-				    COALESCE(rc.cnt, 0)      AS red_count
+				    cl.name,
+				    t.name,
+				    COALESCE(fc.fixture_count, 0)  AS fixture_count,
+				    COALESCE(sc.submit_count, 0)   AS submit_count,
+				    (dr.team_id IS NOT NULL)        AS has_draft,
+				    (sa.team_id IS NOT NULL)        AS has_sanction,
+				    COALESCE(yc.cnt, 0),
+				    COALESCE(rc.cnt, 0)
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
-				LEFT JOIN submitted     s  ON s.team_id  = t.id
-				LEFT JOIN drafted       dr ON dr.team_id = t.id
-				LEFT JOIN has_fixture   hf ON hf.team_id = t.id
-				LEFT JOIN sanctioned    sa ON sa.team_id = t.id
-				LEFT JOIN yellow_counts yc ON yc.team_id = t.id
-				LEFT JOIN red_counts    rc ON rc.team_id = t.id
+				LEFT JOIN fixture_counts fc ON fc.team_id = t.id
+				LEFT JOIN submit_counts  sc ON sc.team_id = t.id
+				LEFT JOIN drafted        dr ON dr.team_id = t.id
+				LEFT JOIN sanctioned     sa ON sa.team_id = t.id
+				LEFT JOIN yellow_counts  yc ON yc.team_id = t.id
+				LEFT JOIN red_counts     rc ON rc.team_id = t.id
 				WHERE t.active = TRUE
-				ORDER BY has_submitted DESC, cl.name, t.name
+				ORDER BY
+				    CASE WHEN COALESCE(fc.fixture_count,0) = 0 THEN 2
+				         WHEN COALESCE(sc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
+				         ELSE 1 END,
+				    cl.name, t.name
 			`, weekID, seasonID, weekStart, weekEnd)
 			if err == nil {
 				defer crows.Close()
 				for crows.Next() {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
-						&cr.HasSubmitted, &cr.HasDraft, &cr.HasFixture, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
-					totalOffences := cr.YellowCount + cr.RedCount
-					if (totalOffences+1)%3 == 0 {
-						cr.SuggestedCard = "red"
-					} else {
-						cr.SuggestedCard = "yellow"
-					}
+						&cr.FixtureCount, &cr.SubmitCount,
+						&cr.HasDraft, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
+						totalOffences := cr.YellowCount + cr.RedCount
+						if (totalOffences+1)%3 == 0 {
+							cr.SuggestedCard = "red"
+						} else {
+							cr.SuggestedCard = "yellow"
+						}
 						rows = append(rows, cr)
-						if cr.HasSubmitted {
-							submitted++
-						} else if cr.HasFixture {
-							missing++
+						if cr.FixtureCount > 0 {
+							fixturesExpected += cr.FixtureCount
+							fixturesSubmitted += cr.SubmitCount
+							outstanding := cr.FixtureCount - cr.SubmitCount
+							if outstanding > 0 {
+								fixturesMissing += outstanding
+							}
 						}
 					}
 				}
@@ -218,17 +229,16 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		}
 
 		// Summary badges
-		total := submitted + missing
 		compliancePct := 0.0
-		if total > 0 {
-			compliancePct = float64(submitted) / float64(total) * 100
+		if fixturesExpected > 0 {
+			compliancePct = float64(fixturesSubmitted) / float64(fixturesExpected) * 100
 		}
 		fmt.Fprintf(w, `
 <div class="row g-3 mb-4">
   <div class="col-auto">
     <div class="card card-kpi kpi-blue p-3 text-center" style="min-width:110px">
       <div class="kpi-number">%d</div>
-      <div class="kpi-label">Total Teams</div>
+      <div class="kpi-label">Fixtures Expected</div>
     </div>
   </div>
   <div class="col-auto">
@@ -240,7 +250,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <div class="col-auto">
     <div class="card card-kpi kpi-red p-3 text-center" style="min-width:110px">
       <div class="kpi-number text-danger">%d</div>
-      <div class="kpi-label">Missing</div>
+      <div class="kpi-label">Missing Reports</div>
     </div>
   </div>
   <div class="col-auto">
@@ -250,10 +260,10 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
     </div>
   </div>
 </div>
-`, total, submitted, missing, compliancePct)
+`, fixturesExpected, fixturesSubmitted, fixturesMissing, compliancePct)
 
 		// Bulk issue button
-		if missing > 0 {
+		if fixturesMissing > 0 {
 			fmt.Fprintf(w, `
 <form method="POST" action="/admin/sanctions/bulk-issue" class="mb-3">
   <input type="hidden" name="csrf_token" value="%s">
@@ -264,7 +274,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
     Issue Yellow Cards to All %d Missing Teams
   </button>
 </form>
-`, csrfToken, weekID, seasonID, missing, missing)
+`, csrfToken, weekID, seasonID, fixturesMissing, fixturesMissing)
 		}
 
 		// Compliance table
@@ -280,14 +290,21 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 `, escapeHTML(seasonName), weekNum)
 
 		for _, cr := range rows {
+			fullySubmitted := cr.FixtureCount > 0 && cr.SubmitCount >= cr.FixtureCount
+			partiallySubmitted := cr.SubmitCount > 0 && cr.SubmitCount < cr.FixtureCount
+			hasFixture := cr.FixtureCount > 0
+
 			rowClass := "compliance-submitted"
 			statusBadge := `<span class="badge bg-success">&#10003; Submitted</span>`
 			actionCell := ""
 
-			if !cr.HasSubmitted {
-				if !cr.HasFixture {
+			if !fullySubmitted {
+				if !hasFixture {
 					rowClass = "compliance-no-fixture"
 					statusBadge = `<span class="badge bg-secondary">No fixture</span>`
+				} else if partiallySubmitted {
+					rowClass = "compliance-missing"
+					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span>`, cr.SubmitCount, cr.FixtureCount)
 				} else {
 					rowClass = "compliance-missing"
 					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
@@ -330,7 +347,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			if cr.HasSanction {
 				sanctionCell = `<span class="badge badge-yellow-card">Active</span>`
 			}
-			if cr.HasSubmitted || !cr.HasFixture {
+			if fullySubmitted || !hasFixture {
 				priorCell = `<span class="text-muted">—</span>`
 				suggestedCell = `<span class="text-muted">—</span>`
 			}
