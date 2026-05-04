@@ -149,6 +149,10 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
 		  AND NOT EXISTS (
+		      SELECT 1 FROM submissions
+		      WHERE team_id = t.id AND match_date = $1
+		  )
+		  AND NOT EXISTS (
 		      SELECT 1 FROM captain_reminder_log
 		      WHERE team_id = t.id AND match_date = $1 AND reminder_type = $2
 		  )
