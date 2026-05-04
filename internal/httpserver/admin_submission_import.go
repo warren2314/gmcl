@@ -580,9 +580,13 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 		}
 
 		okCount := 0
+		overwriteCount := 0
 		for _, row := range rows {
-			if row.Status == "ok" || row.Status == "overwrite" {
+			if row.Status == "ok" {
 				okCount++
+			} else if row.Status == "overwrite" {
+				okCount++
+				overwriteCount++
 			}
 		}
 
@@ -596,37 +600,82 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 <form method="POST" action="/admin/submissions/import/apply">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="raw_csv" value="%s">
-  <button class="btn btn-success mb-3" type="submit">Import %d submissions</button>
-</form>`, csrfToken, escapeHTML(string(rawJSON)), okCount)
-		}
+  <div class="d-flex align-items-center gap-3 mb-3">
+    <button class="btn btn-success" type="submit">Import selected submissions</button>`, csrfToken, escapeHTML(string(rawJSON)))
 
-		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-bordered small">
+			if overwriteCount > 0 {
+				fmt.Fprintf(w, `
+    <span class="text-muted small">%d rows will overwrite existing submissions — uncheck to skip them.</span>`, overwriteCount)
+			}
+
+			fmt.Fprint(w, `
+  </div>
+<div class="table-responsive"><table class="table table-sm table-bordered small">
+<thead class="table-light"><tr>
+  <th>#</th><th>Date</th><th>Club</th><th>Captain</th><th>Umpires</th><th>Status</th><th class="text-center">Import?</th>
+</tr></thead><tbody>`)
+
+			for _, row := range rows {
+				badgeClass := "bg-success"
+				statusText := "Ready"
+				switch row.Status {
+				case "overwrite":
+					badgeClass = "bg-warning text-dark"
+					statusText = "Will overwrite"
+				case "no_club":
+					badgeClass = "bg-danger"
+					statusText = "Club not found"
+				case "no_week":
+					badgeClass = "bg-warning text-dark"
+					statusText = "No week"
+				case "error":
+					badgeClass = "bg-danger"
+					statusText = "Error"
+				}
+				detail := ""
+				if row.StatusMsg != "" {
+					detail = fmt.Sprintf(`<br><span class="text-muted">%s</span>`, escapeHTML(row.StatusMsg))
+				}
+				checkboxCell := `<td></td>`
+				if row.Status == "ok" || row.Status == "overwrite" {
+					checked := "checked"
+					checkboxCell = fmt.Sprintf(`<td class="text-center"><input type="checkbox" name="include_row" value="%d" %s></td>`, row.RowNum, checked)
+				}
+				fmt.Fprintf(w, `<tr>
+  <td>%d</td>
+  <td class="text-nowrap">%s</td>
+  <td>%s</td>
+  <td>%s</td>
+  <td>%s / %s</td>
+  <td><span class="badge %s">%s</span>%s</td>
+  %s
+</tr>`, row.RowNum, row.MatchDate.Format("2 Jan 2006"),
+					escapeHTML(row.ClubName), escapeHTML(row.CaptainName),
+					escapeHTML(row.Umpire1Name), escapeHTML(row.Umpire2Name),
+					badgeClass, statusText, detail, checkboxCell)
+			}
+			fmt.Fprint(w, `</tbody></table></div>
+</form>`)
+		} else {
+			fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-bordered small">
 <thead class="table-light"><tr>
   <th>#</th><th>Date</th><th>Club</th><th>Captain</th><th>Umpires</th><th>Status</th>
 </tr></thead><tbody>`)
-
-		for _, row := range rows {
-			badgeClass := "bg-success"
-			statusText := "Ready"
-			switch row.Status {
-			case "overwrite":
-				badgeClass = "bg-warning text-dark"
-				statusText = "Overwrite"
-			case "no_club":
-				badgeClass = "bg-danger"
-				statusText = "Club not found"
-			case "no_week":
-				badgeClass = "bg-warning text-dark"
-				statusText = "No week"
-			case "error":
-				badgeClass = "bg-danger"
-				statusText = "Error"
-			}
-			detail := ""
-			if row.StatusMsg != "" {
-				detail = fmt.Sprintf(`<br><span class="text-muted">%s</span>`, escapeHTML(row.StatusMsg))
-			}
-			fmt.Fprintf(w, `<tr>
+			for _, row := range rows {
+				badgeClass := "bg-danger"
+				statusText := "Error"
+				switch row.Status {
+				case "no_club":
+					statusText = "Club not found"
+				case "no_week":
+					badgeClass = "bg-warning text-dark"
+					statusText = "No week"
+				}
+				detail := ""
+				if row.StatusMsg != "" {
+					detail = fmt.Sprintf(`<br><span class="text-muted">%s</span>`, escapeHTML(row.StatusMsg))
+				}
+				fmt.Fprintf(w, `<tr>
   <td>%d</td>
   <td class="text-nowrap">%s</td>
   <td>%s</td>
@@ -634,17 +683,24 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
   <td>%s / %s</td>
   <td><span class="badge %s">%s</span>%s</td>
 </tr>`, row.RowNum, row.MatchDate.Format("2 Jan 2006"),
-				escapeHTML(row.ClubName), escapeHTML(row.CaptainName),
-				escapeHTML(row.Umpire1Name), escapeHTML(row.Umpire2Name),
-				badgeClass, statusText, detail)
+					escapeHTML(row.ClubName), escapeHTML(row.CaptainName),
+					escapeHTML(row.Umpire1Name), escapeHTML(row.Umpire2Name),
+					badgeClass, statusText, detail)
+			}
+			fmt.Fprint(w, `</tbody></table></div>`)
 		}
-		fmt.Fprint(w, `</tbody></table></div></div>`)
+
+		fmt.Fprint(w, `</div>`)
 		pageFooter(w)
 	}
 }
 
 func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
 		rawJSON := r.FormValue("raw_csv")
 		if rawJSON == "" {
 			http.Error(w, "missing data", http.StatusBadRequest)
@@ -654,6 +710,14 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 		if err := json.Unmarshal([]byte(rawJSON), &allRecords); err != nil {
 			http.Error(w, "invalid data", http.StatusBadRequest)
 			return
+		}
+
+		// Build set of row numbers the admin chose to include
+		includedRows := map[int]bool{}
+		for _, v := range r.Form["include_row"] {
+			if n, err := strconv.Atoi(v); err == nil {
+				includedRows[n] = true
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -666,9 +730,16 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 		skipped := 0
 		for _, row := range rows {
 			if row.Status == "overwrite" {
+				if !includedRows[row.RowNum] {
+					skipped++
+					continue
+				}
 				_, _ = s.DB.Exec(ctx, `DELETE FROM submissions WHERE team_id = $1 AND match_date = $2`,
 					row.TeamID, row.MatchDate.Format("2006-01-02"))
 			} else if row.Status != "ok" {
+				skipped++
+				continue
+			} else if !includedRows[row.RowNum] {
 				skipped++
 				continue
 			}
