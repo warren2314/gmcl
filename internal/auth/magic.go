@@ -40,10 +40,26 @@ func GenerateAndStoreMagicTokenWithRevocation(ctx context.Context, pool *db.Pool
 	return GenerateAndStoreMagicTokenWithDelegate(ctx, pool, captainID, seasonID, weekID, nil, expiresAt, ip, ua, "", "")
 }
 
-// GenerateAndStoreMagicTokenForDate is like GenerateAndStoreMagicTokenWithRevocation but scopes
-// revocation to a specific match_date so tokens for different fixtures in the same week coexist.
+// GenerateAndStoreMagicTokenForDate inserts a new token scoped to a specific match_date
+// without revoking any existing tokens. Used by reminder emails so that captains can
+// still use links from earlier emails even after a new reminder is sent.
 func GenerateAndStoreMagicTokenForDate(ctx context.Context, pool *db.Pool, captainID, seasonID, weekID int32, matchDate time.Time, expiresAt time.Time, ip, ua string) (string, error) {
-	return GenerateAndStoreMagicTokenWithDelegate(ctx, pool, captainID, seasonID, weekID, &matchDate, expiresAt, ip, ua, "", "")
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	hash := sha256.Sum256([]byte(token))
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO magic_link_tokens
+		    (captain_id, season_id, week_id, match_date, token_hash, expires_at, request_ip, request_user_agent)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, '')::inet, $8)
+	`, captainID, seasonID, weekID, matchDate, hash[:], expiresAt, ip, ua)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // GenerateAndStoreMagicTokenWithDelegate creates or replaces the token for a captain/week
