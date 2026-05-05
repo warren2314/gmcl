@@ -148,7 +148,7 @@ func toHTML(body string) string {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "https://") {
 			fmt.Fprintf(&b,
-				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#1a4f8a;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+
+				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#cc0000;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+
 					`<p style="word-break:break-all;font-size:12px;color:#666">%s</p>`,
 				trimmed, trimmed)
 		} else if trimmed == "" {
