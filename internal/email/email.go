@@ -151,6 +151,11 @@ func toHTML(body string) string {
 				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#cc0000;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+
 					`<p style="word-break:break-all;font-size:12px;color:#666">%s</p>`,
 				trimmed, trimmed)
+		} else if strings.HasPrefix(trimmed, "NOTE:") {
+			msg := strings.TrimSpace(strings.TrimPrefix(trimmed, "NOTE:"))
+			fmt.Fprintf(&b,
+				`<p style="background:#fff3cd;border-left:4px solid #cc0000;padding:12px 16px;border-radius:4px;font-size:14px;color:#333">%s</p>`,
+				msg)
 		} else if trimmed == "" {
 			b.WriteString(`<br>`)
 		} else {

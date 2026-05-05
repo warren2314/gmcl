@@ -680,7 +680,9 @@ func buildReminderEmail(reminderType, captainName, clubName, teamName, matchDate
 
 https://gmcl.co.uk
 
-Simply select your club and team from the filters on the home page to retrieve your personalised link.`
+Simply select your club and team from the filters on the home page to retrieve your personalised link.
+
+NOTE: Having trouble opening the link? If you are on a work computer or work Wi-Fi, your organisation may be blocking this site. Try opening the link on your mobile phone using mobile data instead.`
 
 	switch reminderType {
 	case "game_day":
