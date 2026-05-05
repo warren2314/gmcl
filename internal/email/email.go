@@ -3,6 +3,7 @@ package email
 import (
 	"crypto/tls"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/mail"
@@ -111,9 +112,9 @@ func (c *Client) Send(to, subject, body string) error {
 		"To: " + to + "\r\n" +
 		"Subject: " + subject + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=UTF-8\r\n" +
+		"Content-Type: text/html; charset=UTF-8\r\n" +
 		"\r\n" +
-		body + "\r\n"
+		toHTML(body) + "\r\n"
 
 	if _, err := fmt.Fprint(w, msg); err != nil {
 		return fmt.Errorf("2fa_email_failed: write: %w", err)
@@ -134,4 +135,28 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// toHTML converts a plain-text email body to HTML. Lines that are a bare
+// https:// URL are replaced with a styled button so the link is never
+// split across lines by an SMTP relay or email client.
+func toHTML(body string) string {
+	lines := strings.Split(html.EscapeString(body), "\n")
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px">`)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "https://") {
+			fmt.Fprintf(&b,
+				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#1a4f8a;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+
+					`<p style="word-break:break-all;font-size:12px;color:#666">%s</p>`,
+				trimmed, trimmed)
+		} else if trimmed == "" {
+			b.WriteString(`<br>`)
+		} else {
+			b.WriteString(`<p>` + line + `</p>`)
+		}
+	}
+	b.WriteString(`</body></html>`)
+	return b.String()
 }
