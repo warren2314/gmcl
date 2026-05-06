@@ -168,12 +168,13 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 						}
 						rows = append(rows, cr)
 						if cr.FixtureCount > 0 {
-							fixturesExpected += cr.FixtureCount
-							fixturesSubmitted += cr.SubmitCount
-							outstanding := cr.FixtureCount - cr.SubmitCount
-							if outstanding > 0 {
-								fixturesMissing += outstanding
+							submitted := cr.SubmitCount
+							if submitted > cr.FixtureCount {
+								submitted = cr.FixtureCount
 							}
+							fixturesExpected += cr.FixtureCount
+							fixturesSubmitted += submitted
+							fixturesMissing += cr.FixtureCount - submitted
 						}
 					}
 				}
