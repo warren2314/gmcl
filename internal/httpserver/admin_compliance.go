@@ -304,9 +304,11 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					rowClass = "compliance-no-fixture"
 					statusBadge = `<span class="badge bg-secondary">No fixture</span>`
 				} else if partiallySubmitted {
+					outstanding := s.outstandingFixtures(ctx, cr.TeamID, weekStart, weekEnd)
+					missing := missingDatesLabel(outstanding)
 					rowClass = "compliance-missing"
-					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span>`, cr.SubmitCount, cr.FixtureCount)
-					actionCell = s.byeButtons(ctx, csrfToken, cr.TeamID, weekID, weekStart, weekEnd)
+					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span><br><small class="text-muted">Missing: %s</small>`, cr.SubmitCount, cr.FixtureCount, escapeHTML(missing))
+					actionCell = byeButtons(csrfToken, weekID, outstanding)
 				} else {
 					rowClass = "compliance-missing"
 					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
@@ -488,13 +490,13 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 	}
 }
 
-// byeButtons returns HTML for "Mark as bye" buttons for each outstanding fixture date for a team.
-func (s *Server) byeButtons(ctx context.Context, csrfToken string, teamID, weekID int32, weekStart, weekEnd time.Time) string {
-	type outstandingFixture struct {
-		ID         int64
-		MatchDate  time.Time
-		Opposition string
-	}
+type outstandingFixture struct {
+	ID         int64
+	MatchDate  time.Time
+	Opposition string
+}
+
+func (s *Server) outstandingFixtures(ctx context.Context, teamID int32, weekStart, weekEnd time.Time) []outstandingFixture {
 	frows, err := s.DB.Query(ctx, `
 		SELECT lf.id, lf.match_date,
 		       CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
@@ -511,20 +513,27 @@ func (s *Server) byeButtons(ctx context.Context, csrfToken string, teamID, weekI
 		ORDER BY lf.match_date
 	`, teamID, weekStart, weekEnd)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer frows.Close()
-
-	var b strings.Builder
+	var fixtures []outstandingFixture
 	for frows.Next() {
 		var f outstandingFixture
-		if frows.Scan(&f.ID, &f.MatchDate, &f.Opposition) != nil {
-			continue
+		if frows.Scan(&f.ID, &f.MatchDate, &f.Opposition) == nil {
+			f.Opposition = strings.TrimSpace(f.Opposition)
+			if f.Opposition == "" {
+				f.Opposition = "Unknown opponent"
+			}
+			fixtures = append(fixtures, f)
 		}
-		opp := strings.TrimSpace(f.Opposition)
-		if opp == "" {
-			opp = "Unknown opponent"
-		}
+	}
+	return fixtures
+}
+
+// byeButtons returns HTML "Mark as bye" buttons for each outstanding fixture.
+func byeButtons(csrfToken string, weekID int32, fixtures []outstandingFixture) string {
+	var b strings.Builder
+	for _, f := range fixtures {
 		fmt.Fprintf(&b, `
 <form method="POST" action="/admin/compliance/mark-bye" class="d-inline me-1">
   <input type="hidden" name="csrf_token" value="%s">
@@ -532,13 +541,22 @@ func (s *Server) byeButtons(ctx context.Context, csrfToken string, teamID, weekI
   <input type="hidden" name="week_id" value="%d">
   <button type="submit" class="btn btn-outline-secondary btn-sm py-0"
           onclick="return confirm('Mark %s (%s) as a bye? This will remove it from the outstanding count.')">
-    Bye: %s %s
+    Bye: %s
   </button>
 </form>`, csrfToken, f.ID, weekID,
-			escapeHTML(opp), f.MatchDate.Format("2 Jan"),
-			f.MatchDate.Format("2 Jan"), escapeHTML(opp))
+			escapeHTML(f.Opposition), f.MatchDate.Format("2 Jan"),
+			f.MatchDate.Format("2 Jan"))
 	}
 	return b.String()
+}
+
+// missingDatesLabel returns a short human-readable list of missing match dates.
+func missingDatesLabel(fixtures []outstandingFixture) string {
+	var parts []string
+	for _, f := range fixtures {
+		parts = append(parts, f.MatchDate.Format("Mon 2 Jan"))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *Server) handleAdminComplianceMarkBye() http.HandlerFunc {
