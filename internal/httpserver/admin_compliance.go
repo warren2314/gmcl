@@ -24,9 +24,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		var weekNum int32
 
 		var complianceStartWeek int32 = 1
-		var leagueCompetitionIDs []string
 		s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week, s.league_competition_ids
+			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
 			FROM weeks w JOIN seasons s ON w.season_id=s.id
 			WHERE s.is_archived = FALSE
 			ORDER BY
@@ -35,15 +34,15 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			         ELSE 2 END,
 			    abs(w.start_date - CURRENT_DATE)
 			LIMIT 1
-		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek, &leagueCompetitionIDs)
+		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
 
 		if wid := r.URL.Query().Get("week_id"); wid != "" {
 			if n, err := strconv.Atoi(wid); err == nil {
 				weekID = int32(n)
 				s.DB.QueryRow(ctx, `
-					SELECT s.id, s.name, w.week_number, s.compliance_start_week, s.league_competition_ids
+					SELECT s.id, s.name, w.week_number, s.compliance_start_week
 					FROM weeks w JOIN seasons s ON w.season_id=s.id WHERE w.id=$1
-				`, weekID).Scan(&seasonID, &seasonName, &weekNum, &complianceStartWeek, &leagueCompetitionIDs)
+				`, weekID).Scan(&seasonID, &seasonName, &weekNum, &complianceStartWeek)
 			}
 		}
 
@@ -103,7 +102,6 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    WHERE t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 				      AND lf.match_date BETWEEN $3 AND $4
 				      AND EXTRACT(DOW FROM lf.match_date) <> 5
-				      AND (array_length($5::text[], 1) IS NULL OR lf.competition_id = ANY($5::text[]))
 				    GROUP BY t.id
 				),
 				submit_counts AS (
@@ -153,7 +151,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				         WHEN COALESCE(sc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
 				         ELSE 1 END,
 				    cl.name, t.name
-			`, weekID, seasonID, weekStart, weekEnd, leagueCompetitionIDs)
+			`, weekID, seasonID, weekStart, weekEnd)
 			if err == nil {
 				defer crows.Close()
 				for crows.Next() {
@@ -205,13 +203,11 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
       <input type="hidden" name="season_id" value="%d">
       <label class="form-label mb-0 small text-muted text-nowrap">Track from week</label>
       <input type="number" name="start_week" value="%d" min="1" class="form-control form-control-sm" style="width:70px">
-      <label class="form-label mb-0 small text-muted text-nowrap ms-2">League competition IDs</label>
-      <input type="text" name="league_competition_ids" value="%s" placeholder="e.g. 134922,134923" class="form-control form-control-sm" style="width:180px" title="Comma-separated Play-Cricket competition IDs. Leave empty to include all.">
       <button class="btn btn-outline-secondary btn-sm">Save</button>
     </form>
     <form method="GET" action="/admin/compliance" class="d-flex gap-2 align-items-center">
     <select name="week_id" class="form-select form-select-sm" onchange="this.form.submit()">
-`, csrfToken, seasonID, complianceStartWeek, strings.Join(leagueCompetitionIDs, ","))
+`, csrfToken, seasonID, complianceStartWeek)
 		for _, wo := range weekOpts {
 			sel := ""
 			if wo.ID == weekID {
@@ -498,15 +494,7 @@ func (s *Server) handleAdminComplianceStartWeek() http.HandlerFunc {
 		seasonID, _ := strconv.Atoi(r.FormValue("season_id"))
 		startWeek, _ := strconv.Atoi(r.FormValue("start_week"))
 		if seasonID > 0 && startWeek >= 1 {
-			// Parse comma-separated competition IDs, filtering empty entries.
-			var compIDs []string
-			for _, part := range strings.Split(r.FormValue("league_competition_ids"), ",") {
-				if p := strings.TrimSpace(part); p != "" {
-					compIDs = append(compIDs, p)
-				}
-			}
-			s.DB.Exec(ctx, `UPDATE seasons SET compliance_start_week=$1, league_competition_ids=$2 WHERE id=$3`,
-				startWeek, compIDs, seasonID)
+			s.DB.Exec(ctx, `UPDATE seasons SET compliance_start_week=$1 WHERE id=$2`, startWeek, seasonID)
 		}
 		http.Redirect(w, r, "/admin/compliance", http.StatusSeeOther)
 	}
