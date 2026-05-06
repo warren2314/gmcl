@@ -135,6 +135,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/users", s.handleAdminUsers())
 		r.Post("/users/invite", s.handleAdminUserInvite())
 		r.Post("/users/{id}/deactivate", s.handleAdminUserDeactivate())
+		r.Post("/users/{id}/resend-invite", s.handleAdminUserResendInvite())
+		r.Post("/users/{id}/delete", s.handleAdminUserDelete())
 	})
 
 	r.Post("/logout", func(w http.ResponseWriter, r *http.Request) {

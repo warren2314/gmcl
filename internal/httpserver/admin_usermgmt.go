@@ -275,14 +275,29 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 				invitedAt = u.InvitedAt.Format("02 Jan 2006")
 			}
 
-			// Don't allow deactivating yourself
 			actions := ""
-			if sess != nil && u.ID != sess.AdminID && u.IsActive {
-				actions = fmt.Sprintf(`
-<form method="POST" action="/admin/users/%d/deactivate" class="d-inline">
+			if sess == nil || u.ID == sess.AdminID {
+				actions = `<span class="text-muted small">—</span>`
+			} else {
+				if u.IsActive {
+					actions += fmt.Sprintf(`
+<form method="POST" action="/admin/users/%d/deactivate" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-secondary py-0"
+          onclick="return confirm('Deactivate %s?')">Deactivate</button>
+</form>`, u.ID, csrfToken, escapeHTML(u.Username))
+				}
+				actions += fmt.Sprintf(`
+<form method="POST" action="/admin/users/%d/resend-invite" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-primary py-0"
+          onclick="return confirm('Resend invite email to %s? A new temporary password will be generated.')">Resend Invite</button>
+</form>`, u.ID, csrfToken, escapeHTML(u.Username))
+				actions += fmt.Sprintf(`
+<form method="POST" action="/admin/users/%d/delete" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <button type="submit" class="btn btn-sm btn-outline-danger py-0"
-          onclick="return confirm('Deactivate %s?')">Deactivate</button>
+          onclick="return confirm('Permanently delete %s? This cannot be undone.')">Delete</button>
 </form>`, u.ID, csrfToken, escapeHTML(u.Username))
 			}
 
@@ -417,6 +432,117 @@ func (s *Server) handleAdminUserDeactivate() http.HandlerFunc {
 		eid := int64(targetID)
 		s.audit(ctx, r, "admin", &sess.AdminID, "admin_user_deactivated", "admin_user", &eid,
 			map[string]any{})
+
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	}
+}
+
+// ── Resend invite ──────────────────────────────────────────────────────────────
+
+func (s *Server) handleAdminUserResendInvite() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		targetID, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil || targetID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		var username, emailAddr string
+		if err := s.DB.QueryRow(ctx, `SELECT username, email FROM admin_users WHERE id=$1`, targetID).
+			Scan(&username, &emailAddr); err != nil {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+
+		tmpPassword := generateTempPassword()
+		hash, err := auth.HashPassword(tmpPassword)
+		if err != nil {
+			http.Error(w, "hash error", http.StatusInternalServerError)
+			return
+		}
+
+		if _, err := s.DB.Exec(ctx, `
+			UPDATE admin_users SET password_hash=$1, force_password_change=TRUE, is_active=TRUE WHERE id=$2
+		`, hash, targetID); err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+
+		appURL := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+		if appURL == "" {
+			appURL = strings.TrimSpace(os.Getenv("APP_URL"))
+		}
+		if appURL == "" {
+			appURL = "https://gmcl.co.uk"
+		}
+		body := fmt.Sprintf(`You have been invited to the GMCL Admin Portal.
+
+Login URL: %s/admin/login
+Username:  %s
+Temporary password: %s
+
+You will be required to change your password immediately after logging in.
+
+If you did not expect this email, please ignore it.
+
+— GMCL`, appURL, username, tmpPassword)
+
+		emailClient := email.NewFromEnv()
+		if err := emailClient.Send(emailAddr, "Your GMCL Admin Portal invitation", body); err != nil {
+			http.Error(w, "email send failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		inviterSess, _ := getAdminSessionFromRequest(r)
+		var inviterID *int32
+		if inviterSess != nil {
+			inviterID = &inviterSess.AdminID
+		}
+		eid := int64(targetID)
+		s.audit(ctx, r, "admin", inviterID, "admin_user_invite_resent", "admin_user", &eid,
+			map[string]any{"username": username, "email": emailAddr})
+
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	}
+}
+
+// ── Delete ─────────────────────────────────────────────────────────────────────
+
+func (s *Server) handleAdminUserDelete() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		targetID, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil || targetID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		sess, err := getAdminSessionFromRequest(r)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+		if int32(targetID) == sess.AdminID {
+			http.Error(w, "cannot delete yourself", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var username string
+		s.DB.QueryRow(ctx, `SELECT username FROM admin_users WHERE id=$1`, targetID).Scan(&username)
+
+		if _, err := s.DB.Exec(ctx, `DELETE FROM admin_users WHERE id=$1`, targetID); err != nil {
+			// FK constraint — fall back to deactivation
+			s.DB.Exec(ctx, `UPDATE admin_users SET is_active=FALSE WHERE id=$1`, targetID)
+		}
+
+		eid := int64(targetID)
+		s.audit(ctx, r, "admin", &sess.AdminID, "admin_user_deleted", "admin_user", &eid,
+			map[string]any{"username": username})
 
 		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 	}
