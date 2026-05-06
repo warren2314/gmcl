@@ -308,7 +308,19 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					missing := missingDatesLabel(outstanding)
 					rowClass = "compliance-missing"
 					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span><br><small class="text-muted">Missing: %s</small>`, cr.SubmitCount, cr.FixtureCount, escapeHTML(missing))
-					actionCell = byeButtons(csrfToken, weekID, outstanding)
+					if cr.HasSanction {
+						actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
+					} else {
+						actionCell = byeButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
+<form method="POST" action="/admin/sanctions/issue" class="d-inline">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="team_id" value="%d">
+  <input type="hidden" name="week_id" value="%d">
+  <input type="hidden" name="season_id" value="%d">
+  <input type="hidden" name="reason" value="non_submission">
+  <button type="submit" class="btn btn-warning btn-sm py-0">Issue Card</button>
+</form>`, csrfToken, cr.TeamID, weekID, seasonID)
+					}
 				} else {
 					rowClass = "compliance-missing"
 					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`

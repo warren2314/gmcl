@@ -389,12 +389,22 @@ func (s *Server) handleAdminSanctionBulkIssue() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		// Find teams that haven't submitted and don't have a non_submission sanction yet
+		// Find teams with a fixture this week that haven't fully submitted (including partial),
+		// and don't already have a non_submission sanction for this week.
 		rows, err := s.DB.Query(ctx, `
 			SELECT t.id
 			FROM teams t
+			JOIN weeks w ON w.id = $1
 			WHERE t.active = TRUE
-			  AND t.id NOT IN (SELECT team_id FROM submissions WHERE week_id=$1)
+			  AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
+			  AND EXISTS (
+			      SELECT 1 FROM league_fixtures lf
+			      WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
+			        AND lf.match_date BETWEEN w.start_date AND w.end_date
+			        AND EXTRACT(DOW FROM lf.match_date) <> 5
+			        AND NOT lf.is_bye
+			        AND NOT EXISTS (SELECT 1 FROM submissions WHERE team_id = t.id AND match_date = lf.match_date)
+			  )
 			  AND t.id NOT IN (
 			      SELECT team_id FROM sanctions
 			      WHERE week_id=$1 AND season_id=$2 AND reason='non_submission'
