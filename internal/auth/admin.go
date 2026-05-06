@@ -144,7 +144,8 @@ func StartAdminLogin(ctx context.Context, pool *db.Pool, mailer *email.Client, u
 		return 0, err
 	}
 
-	if err := mailer.Send(emailAddr, "Your admin login code", "Your one-time code is: "+code); err != nil {
+	body := "Your GMCL admin login code is:\n\nCODE: " + code + "\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you did not attempt to log in, please contact the league office immediately."
+	if err := mailer.Send(emailAddr, "Your GMCL admin login code", body); err != nil {
 		return 0, fmt.Errorf("2fa_email_failed: %w", err)
 	}
 
