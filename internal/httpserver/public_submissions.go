@@ -104,15 +104,16 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		SeasonName string
 	}
 	var wk weekInfo
+	var leagueCompetitionIDs []string
 	err := s.DB.QueryRow(ctx, `
-		SELECT w.id, w.week_number, w.start_date, w.end_date, se.name
+		SELECT w.id, w.week_number, w.start_date, w.end_date, se.name, se.league_competition_ids
 		FROM weeks w
 		JOIN seasons se ON se.id = w.season_id
 		WHERE se.is_archived = FALSE
 		  AND w.start_date <= CURRENT_DATE
 		  AND w.end_date   >= CURRENT_DATE
 		LIMIT 1
-	`).Scan(&wk.ID, &wk.Number, &wk.Start, &wk.End, &wk.SeasonName)
+	`).Scan(&wk.ID, &wk.Number, &wk.Start, &wk.End, &wk.SeasonName, &leagueCompetitionIDs)
 	if err != nil {
 		fmt.Fprint(w, `<div class="alert alert-warning">No active week found — check back during the season.</div>`)
 		return
@@ -143,6 +144,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		             AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 		             AND lf.match_date BETWEEN $3 AND $4
 		             AND EXTRACT(DOW FROM lf.match_date) <> 5
+		             AND (array_length($5::text[], 1) IS NULL OR lf.competition_id = ANY($5::text[]))
 		       ), 0) AS fixture_count,
 		       COALESCE((
 		           SELECT COUNT(DISTINCT sub.match_date)
@@ -155,7 +157,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		    AND c.active_from <= CURRENT_DATE
 		WHERE t.club_id = $1 AND t.active = TRUE
 		ORDER BY t.name
-	`, clubID, wk.ID, wk.Start, wk.End)
+	`, clubID, wk.ID, wk.Start, wk.End, leagueCompetitionIDs)
 	if err != nil {
 		fmt.Fprint(w, `<div class="alert alert-danger">Error loading teams.</div>`)
 		return

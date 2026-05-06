@@ -146,8 +146,10 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		    AND TRIM(c.email) <> ''
 		JOIN weeks w ON $1 BETWEEN w.start_date AND w.end_date
 		    AND w.season_id = (SELECT id FROM seasons WHERE is_archived = FALSE ORDER BY id DESC LIMIT 1)
+		JOIN seasons se ON se.id = w.season_id
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
+		  AND (array_length(se.league_competition_ids, 1) IS NULL OR lf.competition_id = ANY(se.league_competition_ids))
 		  AND NOT EXISTS (
 		      SELECT 1 FROM submissions
 		      WHERE team_id = t.id AND match_date = $1
