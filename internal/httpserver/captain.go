@@ -559,14 +559,17 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 
 		now := time.Now()
 
-		// Resolve target match date
+		// Resolve target match date.
+		// Explicit ?match_date= from the fixture chooser takes priority so captains
+		// with a double-header can switch between games even when their token is
+		// scoped to a specific date.
 		var targetDate *time.Time
-		if sess.MatchDate != nil {
-			targetDate = sess.MatchDate
-		} else if qd := r.URL.Query().Get("match_date"); qd != "" {
+		if qd := r.URL.Query().Get("match_date"); qd != "" {
 			if pd, err := time.Parse("2006-01-02", qd); err == nil {
 				targetDate = &pd
 			}
+		} else if sess.MatchDate != nil {
+			targetDate = sess.MatchDate
 		}
 
 		// Load all valid fixtures for the week so we can show a chooser if needed.
