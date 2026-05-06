@@ -85,9 +85,9 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		var rows []compRow
 		// KPI counters in fixture-report units, not team units
 		var fixturesExpected, fixturesSubmitted, fixturesMissing int
+		var weekStart, weekEnd time.Time
 
 		if weekID > 0 {
-			var weekStart, weekEnd time.Time
 			s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id=$1`, weekID).Scan(&weekStart, &weekEnd)
 
 			crows, err := s.DB.Query(ctx, `
@@ -102,6 +102,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    WHERE t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 				      AND lf.match_date BETWEEN $3 AND $4
 				      AND EXTRACT(DOW FROM lf.match_date) <> 5
+				      AND NOT lf.is_bye
 				    GROUP BY t.id
 				),
 				submit_counts AS (
@@ -305,6 +306,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				} else if partiallySubmitted {
 					rowClass = "compliance-missing"
 					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span>`, cr.SubmitCount, cr.FixtureCount)
+					actionCell = s.byeButtons(ctx, csrfToken, cr.TeamID, weekID, weekStart, weekEnd)
 				} else {
 					rowClass = "compliance-missing"
 					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
@@ -483,6 +485,77 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 		})
 
 		http.Redirect(w, r, fmt.Sprintf("/admin/compliance?week_id=%d", weekID), http.StatusSeeOther)
+	}
+}
+
+// byeButtons returns HTML for "Mark as bye" buttons for each outstanding fixture date for a team.
+func (s *Server) byeButtons(ctx context.Context, csrfToken string, teamID, weekID int32, weekStart, weekEnd time.Time) string {
+	type outstandingFixture struct {
+		ID         int64
+		MatchDate  time.Time
+		Opposition string
+	}
+	frows, err := s.DB.Query(ctx, `
+		SELECT lf.id, lf.match_date,
+		       CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		            THEN COALESCE(TRIM(lf.away_club_name),'') || ' ' || COALESCE(TRIM(lf.away_team_name),'')
+		            ELSE COALESCE(TRIM(lf.home_club_name),'') || ' ' || COALESCE(TRIM(lf.home_team_name),'')
+		       END AS opposition
+		FROM league_fixtures lf
+		JOIN teams t ON t.id = $1
+		WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
+		  AND lf.match_date BETWEEN $2 AND $3
+		  AND EXTRACT(DOW FROM lf.match_date) <> 5
+		  AND NOT lf.is_bye
+		  AND NOT EXISTS (SELECT 1 FROM submissions WHERE team_id = $1 AND match_date = lf.match_date)
+		ORDER BY lf.match_date
+	`, teamID, weekStart, weekEnd)
+	if err != nil {
+		return ""
+	}
+	defer frows.Close()
+
+	var b strings.Builder
+	for frows.Next() {
+		var f outstandingFixture
+		if frows.Scan(&f.ID, &f.MatchDate, &f.Opposition) != nil {
+			continue
+		}
+		opp := strings.TrimSpace(f.Opposition)
+		if opp == "" {
+			opp = "Unknown opponent"
+		}
+		fmt.Fprintf(&b, `
+<form method="POST" action="/admin/compliance/mark-bye" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="fixture_id" value="%d">
+  <input type="hidden" name="week_id" value="%d">
+  <button type="submit" class="btn btn-outline-secondary btn-sm py-0"
+          onclick="return confirm('Mark %s (%s) as a bye? This will remove it from the outstanding count.')">
+    Bye: %s %s
+  </button>
+</form>`, csrfToken, f.ID, weekID,
+			escapeHTML(opp), f.MatchDate.Format("2 Jan"),
+			f.MatchDate.Format("2 Jan"), escapeHTML(opp))
+	}
+	return b.String()
+}
+
+func (s *Server) handleAdminComplianceMarkBye() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		fixtureID, _ := strconv.ParseInt(r.FormValue("fixture_id"), 10, 64)
+		weekID, _ := strconv.Atoi(r.FormValue("week_id"))
+		if fixtureID > 0 {
+			s.DB.Exec(ctx, `UPDATE league_fixtures SET is_bye = TRUE WHERE id = $1`, fixtureID)
+		}
+		redirect := "/admin/compliance"
+		if weekID > 0 {
+			redirect = fmt.Sprintf("/admin/compliance?week_id=%d", weekID)
+		}
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
 }
 

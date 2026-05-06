@@ -148,6 +148,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		    AND w.season_id = (SELECT id FROM seasons WHERE is_archived = FALSE ORDER BY id DESC LIMIT 1)
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
+		  AND NOT lf.is_bye
 		  AND NOT EXISTS (
 		      SELECT 1 FROM submissions
 		      WHERE team_id = t.id AND match_date = $1
@@ -242,6 +243,7 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 			JOIN weeks w ON lf.match_date BETWEEN w.start_date AND w.end_date
 			WHERE lf.match_date IN ($1, $2)
 			  AND t.active = TRUE
+			  AND NOT lf.is_bye
 			  AND NOT EXISTS (
 			      SELECT 1 FROM submissions s
 			      WHERE s.team_id = t.id AND s.match_date = lf.match_date

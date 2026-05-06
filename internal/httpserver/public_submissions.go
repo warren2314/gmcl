@@ -143,6 +143,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		             AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 		             AND lf.match_date BETWEEN $3 AND $4
 		             AND EXTRACT(DOW FROM lf.match_date) <> 5
+			             AND NOT lf.is_bye
 		       ), 0) AS fixture_count,
 		       COALESCE((
 		           SELECT COUNT(DISTINCT sub.match_date)
