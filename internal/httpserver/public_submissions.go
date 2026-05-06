@@ -125,26 +125,37 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		return
 	}
 
-	// Load teams with submission status
+	// Load teams with submission status, using fixture data so teams without a
+	// game this week are not shown as outstanding.
 	type teamRow struct {
-		Name      string
-		Captain   string
-		Submitted bool
+		Name         string
+		Captain      string
+		FixtureCount int
+		SubmitCount  int
 	}
 	rows, err := s.DB.Query(ctx, `
 		SELECT t.name,
 		       COALESCE(c.full_name, ''),
-		       EXISTS (
-		           SELECT 1 FROM submissions sub
+		       COALESCE((
+		           SELECT COUNT(DISTINCT lf.match_date)
+		           FROM league_fixtures lf
+		           WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
+		             AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
+		             AND lf.match_date BETWEEN $3 AND $4
+		             AND EXTRACT(DOW FROM lf.match_date) <> 5
+		       ), 0) AS fixture_count,
+		       COALESCE((
+		           SELECT COUNT(DISTINCT sub.match_date)
+		           FROM submissions sub
 		           WHERE sub.team_id = t.id AND sub.week_id = $2
-		       ) AS submitted
+		       ), 0) AS submit_count
 		FROM teams t
 		LEFT JOIN captains c ON c.team_id = t.id
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    AND c.active_from <= CURRENT_DATE
 		WHERE t.club_id = $1 AND t.active = TRUE
 		ORDER BY t.name
-	`, clubID, wk.ID)
+	`, clubID, wk.ID, wk.Start, wk.End)
 	if err != nil {
 		fmt.Fprint(w, `<div class="alert alert-danger">Error loading teams.</div>`)
 		return
@@ -154,7 +165,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 	var teams []teamRow
 	for rows.Next() {
 		var t teamRow
-		if err := rows.Scan(&t.Name, &t.Captain, &t.Submitted); err != nil {
+		if err := rows.Scan(&t.Name, &t.Captain, &t.FixtureCount, &t.SubmitCount); err != nil {
 			continue
 		}
 		teams = append(teams, t)
@@ -165,10 +176,14 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		return
 	}
 
-	submitted := 0
+	// KPI: count only teams that have a fixture
+	teamsWithFixture, teamsSubmitted := 0, 0
 	for _, t := range teams {
-		if t.Submitted {
-			submitted++
+		if t.FixtureCount > 0 {
+			teamsWithFixture++
+			if t.SubmitCount >= t.FixtureCount {
+				teamsSubmitted++
+			}
 		}
 	}
 
@@ -179,7 +194,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
     <span class="small">Week %d &mdash; %s to %s (%s)</span>
   </div>
   <div class="card-body p-0">
-    <div class="px-3 py-2 border-bottom text-muted small">%d of %d teams submitted</div>
+    <div class="px-3 py-2 border-bottom text-muted small">%d of %d teams with fixtures submitted</div>
     <table class="table table-hover mb-0">
       <thead class="table-light">
         <tr><th>Team</th><th>Captain</th><th>Status</th></tr>
@@ -190,14 +205,19 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		wk.Start.Format("2 Jan"),
 		wk.End.Format("2 Jan 2006"),
 		wk.SeasonName,
-		submitted, len(teams),
+		teamsSubmitted, teamsWithFixture,
 	)
 
 	for _, t := range teams {
 		var badge string
-		if t.Submitted {
+		switch {
+		case t.FixtureCount == 0:
+			badge = `<span class="badge bg-secondary">No fixture</span>`
+		case t.SubmitCount >= t.FixtureCount:
 			badge = `<span class="badge bg-success">&#10003; Submitted</span>`
-		} else {
+		case t.SubmitCount > 0:
+			badge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span>`, t.SubmitCount, t.FixtureCount)
+		default:
 			badge = `<span class="badge bg-danger">&#10007; Not submitted</span>`
 		}
 		captain := t.Captain
