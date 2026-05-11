@@ -318,11 +318,20 @@ function updatePeriod() {
 			if rr.Status == "ready" {
 				viewLink = fmt.Sprintf(`<a href="/admin/reports/%d" class="btn btn-sm btn-outline-primary py-0">View</a>`, rr.ID)
 			}
+			actions := fmt.Sprintf(`<div class="d-flex gap-1 justify-content-end">%s
+<form method="POST" action="/admin/reports/%d/regenerate" class="d-inline">
+  <input type="hidden" name="csrf_token" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-secondary py-0">Regenerate</button>
+</form>
+<form method="POST" action="/admin/reports/%d/delete" class="d-inline" onsubmit="return confirm('Delete this generated report?');">
+  <input type="hidden" name="csrf_token" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-danger py-0">Delete</button>
+</form></div>`, viewLink, rr.ID, escapeHTML(csrfToken), rr.ID, escapeHTML(csrfToken))
 			fmt.Fprintf(w,
 				`<tr class="%s"><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td class="text-muted small">%s</td><td class="text-muted small">%s</td><td>%s</td></tr>`,
 				cardClass, escapeHTML(rr.SeasonName), escapeHTML(typeLabel),
 				escapeHTML(rr.Period), statusBadge,
-				rr.GeneratedAt.Format("02 Jan 15:04"), escapeHTML(rr.GeneratedBy), viewLink)
+				rr.GeneratedAt.Format("02 Jan 15:04"), escapeHTML(rr.GeneratedBy), actions)
 		}
 		if len(reports) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No reports generated yet.</td></tr>`)
@@ -425,6 +434,68 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleAdminReportRegenerate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reportID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		var seasonID int32
+		var weekID *int32
+		var reportType, period string
+		if err := s.DB.QueryRow(ctx, `
+			SELECT season_id, week_id, report_type, report_period
+			FROM generated_reports
+			WHERE id=$1
+		`, reportID).Scan(&seasonID, &weekID, &reportType, &period); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		adminID := s.resolveAdminID(r)
+		if _, err := s.DB.Exec(ctx, `
+			UPDATE generated_reports
+			SET status='generating',
+			    payload_json=NULL,
+			    error_message=NULL,
+			    generated_by_admin_id=$2,
+			    generated_at=now(),
+			    completed_at=NULL
+			WHERE id=$1
+		`, reportID, adminID); err != nil {
+			http.Error(w, "failed to regenerate report", http.StatusInternalServerError)
+			return
+		}
+
+		go s.generateReport(reportID, seasonID, weekID, reportType, period)
+		http.Redirect(w, r, fmt.Sprintf("/admin/reports/%d", reportID), http.StatusSeeOther)
+	}
+}
+
+func (s *Server) handleAdminReportDelete() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reportID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		if _, err := s.DB.Exec(ctx, `DELETE FROM generated_reports WHERE id=$1`, reportID); err != nil {
+			http.Error(w, "failed to delete report", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/reports", http.StatusSeeOther)
+	}
+}
+
 // handleAdminReportView renders a completed report.
 func (s *Server) handleAdminReportView() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -505,7 +576,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
 				pageFooter(w)
 				return
 			}
-			s.renderAIExecutiveReport(w, rp, reportID)
+			s.renderAIExecutiveReport(w, rp, reportID, csrfToken)
 			return
 		}
 
@@ -902,7 +973,7 @@ func (s *Server) handleAdminReportDownload() http.HandlerFunc {
 	}
 }
 
-func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveReportPayload, reportID int64) {
+func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveReportPayload, reportID int64, csrfToken string) {
 	fmt.Fprintf(w, `
 <div class="exec-report">
 <section class="exec-report-cover">
@@ -917,6 +988,14 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
       </div>
     </div>
     <div class="col-lg-4 exec-report-actions">
+      <form method="POST" action="/admin/reports/%d/regenerate">
+        <input type="hidden" name="csrf_token" value="%s">
+        <button type="submit" class="btn btn-outline-primary btn-sm">Regenerate</button>
+      </form>
+      <form method="POST" action="/admin/reports/%d/delete" onsubmit="return confirm('Delete this generated report?');">
+        <input type="hidden" name="csrf_token" value="%s">
+        <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+      </form>
       <a href="/admin/reports/%d/print" target="_blank" class="btn btn-outline-secondary btn-sm">Print / Save as PDF</a>
       <a href="/admin/reports/%d/download" class="btn btn-outline-primary btn-sm">Download JSON</a>
     </div>
@@ -924,7 +1003,7 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 </section>
 `, escapeHTML(rp.Cover.PreparedFor), escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName),
 		rp.GeneratedAt.Format("02 Jan 2006 15:04"), escapeHTML(rp.Cover.LatestPeriod),
-		escapeHTML(rp.Cover.SeasonPeriod), reportID, reportID)
+		escapeHTML(rp.Cover.SeasonPeriod), reportID, escapeHTML(csrfToken), reportID, escapeHTML(csrfToken), reportID, reportID)
 
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))

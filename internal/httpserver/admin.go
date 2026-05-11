@@ -105,6 +105,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/reports/exec", s.handleAdminExecReport())
 		r.Get("/reports/exec/print", s.handleAdminExecReportPrint())
 		r.Get("/reports/{id}", s.handleAdminReportView())
+		r.Post("/reports/{id}/regenerate", s.handleAdminReportRegenerate())
+		r.Post("/reports/{id}/delete", s.handleAdminReportDelete())
 		r.Get("/reports/{id}/status", s.handleAdminReportStatus())
 		r.Get("/reports/{id}/download", s.handleAdminReportDownload())
 		r.Get("/reports/{id}/print", s.handleAdminReportPrint())
@@ -1145,12 +1147,12 @@ func (s *Server) handleAdminSubmissionsList() http.HandlerFunc {
 		club := strings.TrimSpace(r.URL.Query().Get("club"))
 
 		type subRow struct {
-			ID        int64
-			Club      string
-			Team      string
-			Captain   string
-			Week      int32
-			MatchDate string
+			ID          int64
+			Club        string
+			Team        string
+			Captain     string
+			Week        int32
+			MatchDate   string
 			SubmittedAt string
 		}
 
@@ -1669,18 +1671,18 @@ func (s *Server) handleAdminClubDetail() http.HandlerFunc {
 		defer cancel()
 
 		type subRow struct {
-			ID           int64
-			MatchDate    time.Time
+			ID             int64
+			MatchDate      time.Time
 			SubmittingClub string
-			Team         string
-			Umpire1      string
-			Umpire2      string
-			Pitch        int32
-			Bounce       float64
-			Seam         float64
-			Carry        float64
-			Turn         float64
-			HomeFlag     bool
+			Team           string
+			Umpire1        string
+			Umpire2        string
+			Pitch          int32
+			Bounce         float64
+			Seam           float64
+			Carry          float64
+			Turn           float64
+			HomeFlag       bool
 		}
 
 		rows, err := s.DB.Query(ctx, `
