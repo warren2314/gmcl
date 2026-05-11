@@ -1039,7 +1039,7 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, win aiExecutiveWindow) {
 	expectedLabel := "Expected"
 	if title == "Latest Report" {
-		expectedLabel = "Active Teams"
+		expectedLabel = "Fixtures Expected"
 	}
 	fmt.Fprintf(w, `
 <section class="exec-report-section">

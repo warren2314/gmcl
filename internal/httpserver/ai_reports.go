@@ -53,16 +53,22 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 		},
 	}
 
-	latestExpected := s.loadAIExpectedReports(ctx, seasonID, weekStart, weekEnd)
+	latestExpected, latestSubmitted, latestMissing := s.loadAIWeeklyCompliance(ctx, *weekID, seasonID, weekStart, weekEnd)
 	seasonExpected := s.loadAIExpectedReports(ctx, seasonID, time.Time{}, weekEnd)
 
 	rp.Latest = s.loadAIExecutiveWindow(ctx, "Latest Report", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, latestExpected, &seasonID, weekID)
+	rp.Latest.SubmissionsReceived = latestSubmitted
+	if latestExpected > 0 {
+		rp.Latest.ComplianceRate = float64(latestSubmitted) / float64(latestExpected) * 100
+		if rp.Latest.ComplianceRate > 100 {
+			rp.Latest.ComplianceRate = 100
+		}
+	}
 	rp.SeasonToDate = s.loadAIExecutiveWindow(ctx, "Season Report", rp.Cover.SeasonPeriod,
 		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, seasonExpected, &seasonID, nil)
 	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrend(ctx, seasonID, weekEnd)
-	rp.Latest.MissingTeams = s.loadAIExecutiveMissingTeams(ctx, *weekID, weekStart, weekEnd)
-	s.alignLatestComplianceWithDashboard(ctx, &rp.Latest, *weekID)
+	rp.Latest.MissingTeams = latestMissing
 	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Latest Umpire Reports", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID})
 	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Report", rp.Cover.SeasonPeriod,
@@ -118,21 +124,6 @@ func (s *Server) loadAIExecutiveWindow(ctx context.Context, title, period, where
 	win.ConcernClubs = s.loadAIExecutiveClubRows(ctx, whereSQL, args, "ASC")
 	win.RepresentativeNotes = s.loadAIExecutiveNotes(ctx, whereSQL, args, "comments")
 	return win
-}
-
-func (s *Server) alignLatestComplianceWithDashboard(ctx context.Context, win *aiExecutiveWindow, weekID int32) {
-	var received, expected int64
-	_ = s.DB.QueryRow(ctx, `SELECT COUNT(DISTINCT team_id) FROM submissions WHERE week_id=$1`, weekID).Scan(&received)
-	_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active=TRUE`).Scan(&expected)
-	if expected <= 0 {
-		return
-	}
-	win.SubmissionsReceived = received
-	win.SubmissionsExpected = expected
-	win.ComplianceRate = float64(received) / float64(expected) * 100
-	if win.ComplianceRate > 100 {
-		win.ComplianceRate = 100
-	}
 }
 
 func (s *Server) loadAIExecutiveClubRows(ctx context.Context, whereSQL string, args []any, direction string) []aiExecutiveClubRow {
@@ -258,7 +249,7 @@ func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, star
 	return expected
 }
 
-func (s *Server) loadAIExecutiveMissingTeams(ctx context.Context, weekID int32, weekStart, weekEnd time.Time) []reportMissing {
+func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID int32, weekStart, weekEnd time.Time) (int64, int64, []reportMissing) {
 	rows, err := s.DB.Query(ctx, `
 		WITH fixture_counts AS (
 		    SELECT t.id AS team_id,
@@ -283,27 +274,46 @@ func (s *Server) loadAIExecutiveMissingTeams(ctx context.Context, weekID int32, 
 		    WHERE week_id=$1
 		    GROUP BY team_id
 		)
-		SELECT t.id, cl.name, t.name
-		FROM fixture_counts fc
-		JOIN teams t ON t.id=fc.team_id
+		SELECT t.id, cl.name, t.name,
+		       fc.fixture_count,
+		       COALESCE(sc.submit_count, 0) AS submit_count
+		FROM teams t
 		JOIN clubs cl ON t.club_id=cl.id
+		LEFT JOIN fixture_counts fc ON fc.team_id=t.id
 		LEFT JOIN submit_counts sc ON sc.team_id=t.id
-		WHERE fc.fixture_count > COALESCE(sc.submit_count, 0)
-		ORDER BY cl.name, t.name
+		WHERE t.active=TRUE
+		ORDER BY
+		    CASE WHEN COALESCE(fc.fixture_count,0) = 0 THEN 2
+		         WHEN COALESCE(sc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
+		         ELSE 1 END,
+		    cl.name, t.name
 	`, weekID, weekStart, weekEnd)
 	if err != nil {
-		return nil
+		return 0, 0, nil
 	}
 	defer rows.Close()
 
 	var missing []reportMissing
+	var expected, submitted int64
 	for rows.Next() {
 		var row reportMissing
-		if rows.Scan(&row.TeamID, &row.ClubName, &row.TeamName) == nil {
-			missing = append(missing, row)
+		var fixtureCount, submitCount int64
+		if rows.Scan(&row.TeamID, &row.ClubName, &row.TeamName, &fixtureCount, &submitCount) == nil {
+			if fixtureCount <= 0 {
+				continue
+			}
+			cappedSubmitted := submitCount
+			if cappedSubmitted > fixtureCount {
+				cappedSubmitted = fixtureCount
+			}
+			expected += fixtureCount
+			submitted += cappedSubmitted
+			if fixtureCount > submitCount {
+				missing = append(missing, row)
+			}
 		}
 	}
-	return missing
+	return expected, submitted, missing
 }
 
 func (s *Server) loadAIExecutiveUmpireWindow(ctx context.Context, title, period, whereSQL string, args []any) aiExecutiveUmpireWindow {
@@ -525,7 +535,7 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 	printWindow := func(title string, win aiExecutiveWindow) {
 		expectedLabel := "Expected"
 		if title == "Latest Report" {
-			expectedLabel = "Active Teams"
+			expectedLabel = "Fixtures Expected"
 		}
 		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
