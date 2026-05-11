@@ -958,19 +958,23 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 }
 
 func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, win aiExecutiveWindow) {
+	expectedLabel := "Expected"
+	if title == "Latest Report" {
+		expectedLabel = "Active Teams"
+	}
 	fmt.Fprintf(w, `
 <section class="exec-report-section">
   <h5 class="fw-bold mb-1">%s</h5>
   <div class="exec-report-subtitle">%s</div>
   <div class="exec-kpi-grid">
     <div class="exec-kpi exec-kpi-blue"><strong>%d</strong><span>Reports</span></div>
-    <div class="exec-kpi"><strong>%d</strong><span>Expected</span></div>
+    <div class="exec-kpi"><strong>%d</strong><span>%s</span></div>
     <div class="exec-kpi exec-kpi-green"><strong>%.1f%%</strong><span>Compliance</span></div>
     <div class="exec-kpi exec-kpi-primary"><strong>%.2f</strong><span>Pitch</span></div>
     <div class="exec-kpi exec-kpi-gold"><strong>%.2f</strong><span>Bounce</span></div>
     <div class="exec-kpi"><strong>%d</strong><span>Sanctions</span></div>
   </div>
-`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, win.ComplianceRate,
+`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), win.ComplianceRate,
 		win.AvgPitch, win.AvgBounce, win.SanctionsIssued)
 
 	writeClubTable := func(title string, rows []aiExecutiveClubRow) {

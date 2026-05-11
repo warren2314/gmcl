@@ -62,6 +62,7 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, seasonExpected, &seasonID, nil)
 	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrend(ctx, seasonID, weekEnd)
 	rp.Latest.MissingTeams = s.loadAIExecutiveMissingTeams(ctx, *weekID, weekStart, weekEnd)
+	s.alignLatestComplianceWithDashboard(ctx, &rp.Latest, *weekID)
 	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Latest Umpire Reports", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID})
 	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Report", rp.Cover.SeasonPeriod,
@@ -117,6 +118,21 @@ func (s *Server) loadAIExecutiveWindow(ctx context.Context, title, period, where
 	win.ConcernClubs = s.loadAIExecutiveClubRows(ctx, whereSQL, args, "ASC")
 	win.RepresentativeNotes = s.loadAIExecutiveNotes(ctx, whereSQL, args, "comments")
 	return win
+}
+
+func (s *Server) alignLatestComplianceWithDashboard(ctx context.Context, win *aiExecutiveWindow, weekID int32) {
+	var received, expected int64
+	_ = s.DB.QueryRow(ctx, `SELECT COUNT(DISTINCT team_id) FROM submissions WHERE week_id=$1`, weekID).Scan(&received)
+	_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active=TRUE`).Scan(&expected)
+	if expected <= 0 {
+		return
+	}
+	win.SubmissionsReceived = received
+	win.SubmissionsExpected = expected
+	win.ComplianceRate = float64(received) / float64(expected) * 100
+	if win.ComplianceRate > 100 {
+		win.ComplianceRate = 100
+	}
 }
 
 func (s *Server) loadAIExecutiveClubRows(ctx context.Context, whereSQL string, args []any, direction string) []aiExecutiveClubRow {
@@ -507,13 +523,17 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2>%s</section>`, escapeHTML(title), paragraphsHTML(body))
 	}
 	printWindow := func(title string, win aiExecutiveWindow) {
+		expectedLabel := "Expected"
+		if title == "Latest Report" {
+			expectedLabel = "Active Teams"
+		}
 		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Reports</div></div>
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Expected</div></div>
+<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">%s</div></div>
 <div class="kpi"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Compliance</div></div>
 <div class="kpi"><div class="kpi-num">%.2f</div><div class="kpi-label">Pitch</div></div>
-</div>`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, win.ComplianceRate, win.AvgPitch)
+</div>`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), win.ComplianceRate, win.AvgPitch)
 		if len(win.TopClubs) > 0 {
 			fmt.Fprint(w, `<h3>Strongest Rated Clubs/Grounds</h3><table><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr>`)
 			for _, row := range win.TopClubs {
