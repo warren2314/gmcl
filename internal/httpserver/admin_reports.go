@@ -212,6 +212,12 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
 `)
 
 		// Generate panel
+		aiStatusClass := "text-danger"
+		aiStatusText := "AI narrative not configured in this running app process"
+		if openAIReportConfigured() {
+			aiStatusClass = "text-success"
+			aiStatusText = "AI narrative configured"
+		}
 		fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header fw-semibold">Generate New Report</div>
@@ -239,6 +245,7 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
         <button type="submit" class="btn btn-primary btn-sm">Generate</button>
       </div>
     </form>
+    <div class="form-text mt-2 %s">%s</div>
   </div>
 </div>
 <script>
@@ -278,7 +285,7 @@ function updatePeriod() {
 					return fmt.Sprintf("%d-W%02d", y, currentWeekNum)
 				}
 				return ""
-			}())
+			}(), aiStatusClass, aiStatusText)
 
 		// Reports list
 		fmt.Fprint(w, `
@@ -897,30 +904,42 @@ func (s *Server) handleAdminReportDownload() http.HandlerFunc {
 
 func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveReportPayload, reportID int64) {
 	fmt.Fprintf(w, `
-<div class="d-flex align-items-start justify-content-between mb-4">
-  <div>
-    <h4 class="mb-0 fw-bold">%s</h4>
-    <p class="text-muted mb-0 small">%s &mdash; Generated %s</p>
+<div class="exec-report">
+<section class="exec-report-cover">
+  <div class="row g-4 align-items-start">
+    <div class="col-lg-8">
+      <div class="section-heading mb-2">Prepared for %s</div>
+      <h1 class="exec-report-title">%s</h1>
+      <div class="exec-report-meta">%s &middot; Generated %s</div>
+      <div class="mt-4">
+        <div><strong>Latest report:</strong> %s</div>
+        <div><strong>Season report:</strong> %s</div>
+      </div>
+    </div>
+    <div class="col-lg-4 exec-report-actions">
+      <a href="/admin/reports/%d/print" target="_blank" class="btn btn-outline-secondary btn-sm">Print / Save as PDF</a>
+      <a href="/admin/reports/%d/download" class="btn btn-outline-primary btn-sm">Download JSON</a>
+    </div>
   </div>
-  <a href="/admin/reports/%d/print" target="_blank" class="btn btn-sm btn-outline-secondary">Print / Save as PDF</a>
-</div>
-`, escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName), rp.GeneratedAt.Format("02 Jan 2006 15:04"), reportID)
+</section>
+`, escapeHTML(rp.Cover.PreparedFor), escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName),
+		rp.GeneratedAt.Format("02 Jan 2006 15:04"), escapeHTML(rp.Cover.LatestPeriod),
+		escapeHTML(rp.Cover.SeasonPeriod), reportID, reportID)
 
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))
 	} else if rp.AIError != "" {
-		fmt.Fprintf(w, `<div class="alert alert-warning py-2 small">AI narrative was unavailable, so a deterministic executive summary was generated. %s</div>`, escapeHTML(rp.AIError))
+		fmt.Fprintf(w, `<div class="alert alert-warning py-2 small"><strong>AI narrative unavailable in the running app process.</strong> %s</div>`, escapeHTML(rp.AIError))
 	}
 
-	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-body">`)
-	fmt.Fprintf(w, `<h5 class="fw-bold mb-3">Table of Contents</h5><ol class="mb-0">`)
+	fmt.Fprint(w, `<section class="exec-report-section"><h5 class="fw-bold mb-3">Table of Contents</h5><ol class="mb-0">`)
 	for _, item := range rp.TableOfContents {
 		fmt.Fprintf(w, `<li>%s</li>`, escapeHTML(item))
 	}
-	fmt.Fprint(w, `</ol></div></div>`)
+	fmt.Fprint(w, `</ol></section>`)
 
 	renderNarrativeSection := func(title, body string) {
-		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-body"><h5 class="fw-bold mb-3">%s</h5>%s</div></div>`,
+		fmt.Fprintf(w, `<section class="exec-report-section"><h5 class="fw-bold mb-3">%s</h5><div class="exec-report-copy">%s</div></section>`,
 			escapeHTML(title), paragraphsHTML(body))
 	}
 
@@ -940,18 +959,17 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 
 func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, win aiExecutiveWindow) {
 	fmt.Fprintf(w, `
-<div class="card shadow-sm mb-4">
-  <div class="card-header fw-semibold">%s</div>
-  <div class="card-body">
-    <p class="text-muted small mb-3">%s</p>
-    <div class="row g-3 mb-4">
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%d</div><div class="text-muted small">Reports</div></div></div>
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%d</div><div class="text-muted small">Expected</div></div></div>
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%.1f%%</div><div class="text-muted small">Compliance</div></div></div>
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%.2f</div><div class="text-muted small">Pitch</div></div></div>
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%.2f</div><div class="text-muted small">Bounce</div></div></div>
-      <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%d</div><div class="text-muted small">Sanctions</div></div></div>
-    </div>
+<section class="exec-report-section">
+  <h5 class="fw-bold mb-1">%s</h5>
+  <div class="exec-report-subtitle">%s</div>
+  <div class="exec-kpi-grid">
+    <div class="exec-kpi exec-kpi-blue"><strong>%d</strong><span>Reports</span></div>
+    <div class="exec-kpi"><strong>%d</strong><span>Expected</span></div>
+    <div class="exec-kpi exec-kpi-green"><strong>%.1f%%</strong><span>Compliance</span></div>
+    <div class="exec-kpi exec-kpi-primary"><strong>%.2f</strong><span>Pitch</span></div>
+    <div class="exec-kpi exec-kpi-gold"><strong>%.2f</strong><span>Bounce</span></div>
+    <div class="exec-kpi"><strong>%d</strong><span>Sanctions</span></div>
+  </div>
 `, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, win.ComplianceRate,
 		win.AvgPitch, win.AvgBounce, win.SanctionsIssued)
 
@@ -959,7 +977,7 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
 		if len(rows) == 0 {
 			return
 		}
-		fmt.Fprintf(w, `<h6 class="fw-semibold mt-3">%s</h6><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr></thead><tbody>`, escapeHTML(title))
+		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr></thead><tbody>`, escapeHTML(title))
 		for _, row := range rows {
 			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>`,
 				escapeHTML(row.Club), row.Reports, row.AvgPitch, row.AvgBounce, row.AvgSeam, row.AvgCarry, row.AvgTurn)
@@ -970,34 +988,33 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
 	writeClubTable("Lowest Rated Clubs/Grounds", win.ConcernClubs)
 
 	if len(win.MissingTeams) > 0 {
-		fmt.Fprintf(w, `<h6 class="fw-semibold mt-3 text-danger">Missing Submissions</h6><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Club</th><th>Team</th></tr></thead><tbody>`)
+		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4 text-danger">Missing Submissions</h6><div class="table-responsive"><table class="table table-sm exec-report-table mb-0"><thead><tr><th>Club</th><th>Team</th></tr></thead><tbody>`)
 		for _, row := range win.MissingTeams {
 			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td></tr>`, escapeHTML(row.ClubName), escapeHTML(row.TeamName))
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}
-	fmt.Fprint(w, `</div></div>`)
+	fmt.Fprint(w, `</section>`)
 }
 
 func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title string, win aiExecutiveUmpireWindow) {
 	fmt.Fprintf(w, `
-<div class="card shadow-sm mb-4">
-  <div class="card-header fw-semibold">%s</div>
-  <div class="card-body">
-    <p class="text-muted small mb-3">%s</p>
-    <div class="row g-3 mb-4">
-      <div class="col-6 col-lg-3"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4">%d</div><div class="text-muted small">Ratings</div></div></div>
-      <div class="col-6 col-lg-3"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4 text-success">%d</div><div class="text-muted small">Good</div></div></div>
-      <div class="col-6 col-lg-3"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4 text-warning">%d</div><div class="text-muted small">Average</div></div></div>
-      <div class="col-6 col-lg-3"><div class="border rounded p-3 h-100"><div class="fw-bold fs-4 text-danger">%d</div><div class="text-muted small">Poor</div></div></div>
-    </div>
+<section class="exec-report-section">
+  <h5 class="fw-bold mb-1">%s</h5>
+  <div class="exec-report-subtitle">%s</div>
+  <div class="exec-kpi-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+    <div class="exec-kpi exec-kpi-blue"><strong>%d</strong><span>Ratings</span></div>
+    <div class="exec-kpi exec-kpi-green"><strong>%d</strong><span>Good</span></div>
+    <div class="exec-kpi exec-kpi-gold"><strong>%d</strong><span>Average</span></div>
+    <div class="exec-kpi exec-kpi-primary"><strong>%d</strong><span>Poor</span></div>
+  </div>
 `, escapeHTML(title), escapeHTML(win.Period), win.TotalRatings, win.Good, win.Average, win.Poor)
 
 	writeUmpireTable := func(title string, rows []reportUmpire) {
 		if len(rows) == 0 {
 			return
 		}
-		fmt.Fprintf(w, `<h6 class="fw-semibold mt-3">%s</h6><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr></thead><tbody>`, escapeHTML(title))
+		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr></thead><tbody>`, escapeHTML(title))
 		for _, row := range rows {
 			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td><td>%.2f</td></tr>`,
 				escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
@@ -1006,7 +1023,7 @@ func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title stri
 	}
 	writeUmpireTable("Strongest Umpire Feedback", win.TopUmpires)
 	writeUmpireTable("Umpires Requiring Review", win.ConcernUmpires)
-	fmt.Fprint(w, `</div></div>`)
+	fmt.Fprint(w, `</section>`)
 }
 
 func paragraphsHTML(text string) string {

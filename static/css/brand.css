@@ -125,6 +125,120 @@
   border-left: 4px solid #dc3545;
 }
 
+/* Executive report document */
+.exec-report {
+  max-width: 1180px;
+  margin: 0 auto 3rem;
+  color: #212529;
+}
+.exec-report-cover {
+  background: #fff;
+  border-top: 8px solid var(--bs-primary);
+  border-bottom: 1px solid #dee2e6;
+  padding: 2.5rem 2rem;
+  margin-bottom: 1.5rem;
+}
+.exec-report-title {
+  color: var(--bs-primary);
+  font-size: 2rem;
+  font-weight: 750;
+  line-height: 1.15;
+  margin: 0 0 .35rem;
+}
+.exec-report-meta {
+  color: #6c757d;
+  font-size: .95rem;
+}
+.exec-report-actions {
+  display: flex;
+  gap: .5rem;
+  justify-content: flex-end;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.exec-report-section {
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-left: 5px solid var(--bs-primary);
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+.exec-report-section h5,
+.exec-report-section h6 {
+  color: #212529;
+}
+.exec-report-copy {
+  max-width: 900px;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+.exec-report-copy p:last-child {
+  margin-bottom: 0;
+}
+.exec-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: .75rem;
+  margin: 1rem 0 1.25rem;
+}
+.exec-kpi {
+  border: 1px solid #dee2e6;
+  border-top: 3px solid #adb5bd;
+  padding: .9rem;
+  min-height: 86px;
+}
+.exec-kpi strong {
+  display: block;
+  font-size: 1.45rem;
+  line-height: 1.1;
+  color: #212529;
+}
+.exec-kpi span {
+  display: block;
+  margin-top: .35rem;
+  color: #6c757d;
+  font-size: .76rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.exec-kpi-primary { border-top-color: var(--bs-primary); }
+.exec-kpi-blue { border-top-color: var(--gmcl-blue); }
+.exec-kpi-gold { border-top-color: var(--gmcl-gold); }
+.exec-kpi-green { border-top-color: #198754; }
+.exec-report-table th {
+  white-space: nowrap;
+}
+.exec-report-subtitle {
+  color: #6c757d;
+  font-size: .9rem;
+  margin-bottom: .75rem;
+}
+@media (max-width: 991.98px) {
+  .exec-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .exec-report-cover { padding: 1.5rem; }
+  .exec-report-title { font-size: 1.55rem; }
+}
+@media print {
+  .exec-report-actions,
+  .navbar,
+  .breadcrumb,
+  .alert { display: none !important; }
+  .exec-report {
+    max-width: none;
+    margin: 0;
+  }
+  .exec-report-cover,
+  .exec-report-section {
+    border-color: #bbb;
+    box-shadow: none;
+    page-break-inside: avoid;
+  }
+  .exec-report-section {
+    page-break-inside: avoid;
+  }
+}
+
 /* ── Compliance ───────────────────────────────────────────────────────────── */
 .compliance-submitted { background-color: rgba(25,135,84,.08) !important; }
 .compliance-missing   { background-color: rgba(220,53,69,.06) !important; }

@@ -357,6 +357,10 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 	return narrative, model, nil
 }
 
+func openAIReportConfigured() bool {
+	return strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != ""
+}
+
 func buildFallbackExecutiveNarrative(rp aiExecutiveReportPayload) aiExecutiveNarrative {
 	return aiExecutiveNarrative{
 		ExecutiveSummary: fmt.Sprintf("The latest completed reporting period is %s. It recorded %d reports against %d expected submissions, giving %.1f%% compliance. The season-to-date position is %d reports against %d expected submissions, with an average pitch rating of %.2f.",
@@ -403,15 +407,16 @@ func writeAIExecutivePrintReport(w http.ResponseWriter, rp aiExecutiveReportPayl
 <style>
 * { box-sizing: border-box; }
 body { font-family: Arial, sans-serif; color: #222; font-size: 12px; margin: 18mm 15mm; }
-.cover { min-height: 240mm; display: flex; flex-direction: column; justify-content: center; border-top: 8px solid #C41E3A; }
-h1 { font-size: 30px; margin: 0 0 8px; color: #C41E3A; }
-h2 { font-size: 17px; margin: 24px 0 8px; color: #C41E3A; border-bottom: 1px solid #C41E3A; padding-bottom: 4px; page-break-after: avoid; }
+.cover { min-height: 245mm; display: flex; flex-direction: column; justify-content: center; border-top: 10px solid #C41E3A; border-bottom: 1px solid #bbb; }
+h1 { font-size: 34px; margin: 0 0 8px; color: #C41E3A; letter-spacing: 0; }
+h2 { font-size: 18px; margin: 24px 0 8px; color: #C41E3A; border-bottom: 1px solid #C41E3A; padding-bottom: 4px; page-break-after: avoid; }
 h3 { font-size: 13px; margin: 16px 0 6px; }
 p { line-height: 1.45; }
 .meta { color: #555; font-size: 13px; }
 .page-break { page-break-before: always; }
+.section { page-break-inside: avoid; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
-.kpi { border: 1px solid #ddd; padding: 9px; border-radius: 4px; }
+.kpi { border: 1px solid #ddd; border-top: 3px solid #C41E3A; padding: 9px; }
 .kpi-num { font-size: 20px; font-weight: bold; color: #C41E3A; }
 .kpi-label { font-size: 10px; color: #666; text-transform: uppercase; }
 table { border-collapse: collapse; width: 100%%; margin: 8px 0 14px; font-size: 11px; }
@@ -430,7 +435,7 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
   <p><strong>Prepared for:</strong> %s</p>
   <p><strong>Generated:</strong> %s</p>
 </section>
-<section class="page-break"><h2>Table of Contents</h2><ol>`,
+<section class="page-break section"><h2>Table of Contents</h2><ol>`,
 		escapeHTML(rp.Cover.Title), escapeHTML(rp.ReportPeriod),
 		escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName),
 		escapeHTML(rp.Cover.LatestPeriod), escapeHTML(rp.Cover.SeasonPeriod),
@@ -441,10 +446,10 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 	fmt.Fprint(w, `</ol></section>`)
 
 	printNarrative := func(title, body string) {
-		fmt.Fprintf(w, `<section class="page-break"><h2>%s</h2>%s</section>`, escapeHTML(title), paragraphsHTML(body))
+		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2>%s</section>`, escapeHTML(title), paragraphsHTML(body))
 	}
 	printWindow := func(title string, win aiExecutiveWindow) {
-		fmt.Fprintf(w, `<section class="page-break"><h2>%s</h2><p class="meta">%s</p>
+		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Reports</div></div>
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Expected</div></div>
@@ -467,10 +472,17 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 			}
 			fmt.Fprint(w, `</table>`)
 		}
+		if len(win.MissingTeams) > 0 {
+			fmt.Fprint(w, `<h3>Missing Submissions</h3><table><tr><th>Club</th><th>Team</th></tr>`)
+			for _, row := range win.MissingTeams {
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td></tr>`, escapeHTML(row.ClubName), escapeHTML(row.TeamName))
+			}
+			fmt.Fprint(w, `</table>`)
+		}
 		fmt.Fprint(w, `</section>`)
 	}
 	printUmpires := func(title string, win aiExecutiveUmpireWindow) {
-		fmt.Fprintf(w, `<section class="page-break"><h2>%s</h2><p class="meta">%s</p>
+		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Ratings</div></div>
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Good</div></div>
@@ -480,6 +492,14 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 		if len(win.TopUmpires) > 0 {
 			fmt.Fprint(w, `<table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
 			for _, row := range win.TopUmpires {
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
+					escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
+			}
+			fmt.Fprint(w, `</table>`)
+		}
+		if len(win.ConcernUmpires) > 0 {
+			fmt.Fprint(w, `<h3>Umpires Requiring Review</h3><table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
+			for _, row := range win.ConcernUmpires {
 				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
 					escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
 			}
