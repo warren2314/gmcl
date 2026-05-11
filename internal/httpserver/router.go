@@ -48,6 +48,18 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.Use(middleware.Logger())
 	r.Use(middleware.SecurityHeaders())
 
+	r.Get("/manifest.webmanifest", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		http.ServeFile(w, r, "static/manifest.webmanifest")
+	})
+	r.Get("/service-worker.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Service-Worker-Allowed", "/")
+		http.ServeFile(w, r, "static/service-worker.js")
+	})
+
 	// static assets
 	staticFS := http.StripPrefix("/static/", http.FileServer(http.Dir("static")))
 	r.Handle("/static/*", staticFS)

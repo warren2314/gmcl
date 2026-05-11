@@ -20,7 +20,13 @@ func pageHead(w io.Writer, title string) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#C41E3A">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GMCL Admin">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>%s — GMCL Admin</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
   <script src="%s"></script>
@@ -36,7 +42,13 @@ func pageHeadWithCharts(w io.Writer, title string) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#C41E3A">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GMCL Admin">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>%s — GMCL Admin</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
   <script src="%s"></script>
@@ -169,6 +181,13 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 // pageFooter writes the Bootstrap JS bundle and closing HTML tags.
 func pageFooter(w io.Writer) {
 	fmt.Fprintf(w, `<script src="%s"></script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("/service-worker.js").catch(function () {});
+  });
+}
+</script>
 </body>
 </html>
 `, bootstrapJS)
@@ -177,6 +196,13 @@ func pageFooter(w io.Writer) {
 // pageFooterWithScript writes Bootstrap JS, then any inline chart/script code, then closes the page.
 func pageFooterWithScript(w io.Writer, script string) {
 	fmt.Fprintf(w, `<script src="%s"></script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("/service-worker.js").catch(function () {});
+  });
+}
+</script>
 <script>
 %s
 </script>

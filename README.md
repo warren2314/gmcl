@@ -44,6 +44,7 @@ docker-compose.yml
 - Login + 2FA (email code); session Path=`/admin`.
 - CSV upload: DB-backed `csv_preview_tokens` (single-use; apply consumes row with `SELECT ... FOR UPDATE`, sets `used_at`); preview/apply audited; formula injection checks.
 - Dashboard, weekly view, submission detail, rankings (basic).
+- AI Executive reports: latest completed week plus season-to-date club, pitch, and umpire analysis with optional OpenAI narrative generation (`OPENAI_API_KEY`).
 
 ### Internal (n8n)
 

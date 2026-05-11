@@ -91,6 +91,8 @@ Replace **every** `CHANGE_ME_*` value:
 | `SEED_ADMIN_PASSWORD` | Temporary password for `webmaster@gmcl.co.uk` (forced change on first login) |
 | `SMTP_*` | Your SMTP details for sending admin invite emails |
 | `PLAY_CRICKET_API_KEY` | Your Play-Cricket API key |
+| `OPENAI_API_KEY` | Optional. Enables AI-written narrative sections in AI Executive reports |
+| `OPENAI_REPORT_MODEL` | Optional. Model used for AI Executive reports, defaults to `gpt-5.2` |
 | `APP_BASE_URL` | Your full domain, e.g. `https://admin.gmcl.co.uk` |
 
 > **Security**: `.env` is created with `chmod 600` by the setup script. Never commit it to git.
