@@ -354,8 +354,11 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 			"You are writing a professional executive report for a cricket league committee.",
 			"Use only the supplied JSON data. Do not invent figures, clubs, umpires, dates, or trends.",
 			"Write in clear British English for executives. Be direct, measured, and evidence-led.",
+			"Make the season_report analytical rather than static: compare latest-week performance with season-to-date, identify direction of travel from weekly_trend, name notable strongest and concern clubs or grounds, and explain what this means for executive attention.",
+			"Use the representative_notes only as qualitative context, not as facts beyond the supplied text.",
+			"Where there is limited data, say so plainly and focus on what can be concluded from the available ratings.",
 			"Return only valid JSON with keys: executive_summary, latest_report, season_report, latest_umpire_report, season_umpire_report, conclusion.",
-			"Each value should be one or two concise paragraphs. Mention the most important numbers where relevant.",
+			"Each value should be one or two concise paragraphs. Mention the most important numbers, but do not simply repeat KPI values.",
 		}, " "),
 		"input":             "Create the executive narrative sections from this report data:\n" + string(data),
 		"max_output_tokens": 2200,
@@ -410,20 +413,58 @@ func openAIReportConfigured() bool {
 }
 
 func buildFallbackExecutiveNarrative(rp aiExecutiveReportPayload) aiExecutiveNarrative {
+	seasonTrend := "No weekly trend is available yet."
+	if len(rp.SeasonToDate.WeeklyTrend) >= 2 {
+		first := rp.SeasonToDate.WeeklyTrend[0]
+		last := rp.SeasonToDate.WeeklyTrend[len(rp.SeasonToDate.WeeklyTrend)-1]
+		pitchMovement := last.AvgPitch - first.AvgPitch
+		direction := "broadly stable"
+		if pitchMovement >= 0.25 {
+			direction = "improving"
+		} else if pitchMovement <= -0.25 {
+			direction = "softening"
+		}
+		seasonTrend = fmt.Sprintf("The weekly trend is %s: average pitch rating moved from %.2f in week %d to %.2f in week %d.",
+			direction, first.AvgPitch, first.WeekNumber, last.AvgPitch, last.WeekNumber)
+	}
+	strongest := describeExecutiveClubRows(rp.SeasonToDate.TopClubs)
+	concerns := describeExecutiveClubRows(rp.SeasonToDate.ConcernClubs)
+	if strongest == "" {
+		strongest = "No clear strongest club or ground group is available yet"
+	}
+	if concerns == "" {
+		concerns = "No repeated concern group is available yet"
+	}
+
 	return aiExecutiveNarrative{
 		ExecutiveSummary: fmt.Sprintf("The latest completed reporting period is %s. It recorded %d reports against %d expected submissions, giving %.1f%% compliance. The season-to-date position is %d reports against %d expected submissions, with an average pitch rating of %.2f.",
 			rp.Latest.Period, rp.Latest.SubmissionsReceived, rp.Latest.SubmissionsExpected, rp.Latest.ComplianceRate,
 			rp.SeasonToDate.SubmissionsReceived, rp.SeasonToDate.SubmissionsExpected, rp.SeasonToDate.AvgPitch),
 		LatestReport: fmt.Sprintf("For the latest week, the average pitch score was %.2f, with bounce %.2f, seam %.2f, carry %.2f and turn %.2f. There were %d missing submissions and %d sanctions recorded for the period.",
 			rp.Latest.AvgPitch, rp.Latest.AvgBounce, rp.Latest.AvgSeam, rp.Latest.AvgCarry, rp.Latest.AvgTurn, len(rp.Latest.MissingTeams), rp.Latest.SanctionsIssued),
-		SeasonReport: fmt.Sprintf("Across the season to date, compliance is %.1f%% and the average pitch score is %.2f. The cumulative data should be used to identify repeated ground-quality themes rather than isolated weekly outliers.",
-			rp.SeasonToDate.ComplianceRate, rp.SeasonToDate.AvgPitch),
+		SeasonReport: fmt.Sprintf("Across the season to date, compliance is %.1f%% and the average pitch score is %.2f. %s Strongest rated clubs or grounds include %s, while the current concern list includes %s. This gives the committee a clearer split between isolated weekly issues and patterns that may justify club follow-up.",
+			rp.SeasonToDate.ComplianceRate, rp.SeasonToDate.AvgPitch, seasonTrend, strongest, concerns),
 		LatestUmpireReport: fmt.Sprintf("The latest umpire report contains %d individual ratings: %d good, %d average and %d poor. The detailed table highlights the strongest feedback and the officials requiring review.",
 			rp.LatestUmpires.TotalRatings, rp.LatestUmpires.Good, rp.LatestUmpires.Average, rp.LatestUmpires.Poor),
 		SeasonUmpireReport: fmt.Sprintf("Season-to-date umpire feedback contains %d individual ratings: %d good, %d average and %d poor. This should be reviewed alongside appointment context and any repeated comments.",
 			rp.SeasonUmpires.TotalRatings, rp.SeasonUmpires.Good, rp.SeasonUmpires.Average, rp.SeasonUmpires.Poor),
 		Conclusion: "The priority is to use the latest weekly findings for immediate follow-up while using the season-to-date report to identify recurring club, ground and umpire patterns. Clubs with repeated low ratings, missing submissions or sanctions should be reviewed first.",
 	}
+}
+
+func describeExecutiveClubRows(rows []aiExecutiveClubRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	limit := 3
+	if len(rows) < limit {
+		limit = len(rows)
+	}
+	parts := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		parts = append(parts, fmt.Sprintf("%s (%.2f)", rows[i].Club, rows[i].AvgPitch))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func extractJSONObject(text string) string {
@@ -448,6 +489,16 @@ func truncateForReport(s string, max int) string {
 	return strings.TrimSpace(s[:max]) + "..."
 }
 
+func printScoreBadge(score float64, max float64) string {
+	cls := "score-badge score-red"
+	if score >= max*0.8 {
+		cls = "score-badge score-green"
+	} else if score >= max*0.6 {
+		cls = "score-badge score-gold"
+	}
+	return fmt.Sprintf(`<span class="%s">%.2f</span>`, cls, score)
+}
+
 func writeAIExecutivePrintReport(w http.ResponseWriter, rp aiExecutiveReportPayload) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -465,8 +516,16 @@ p { line-height: 1.45; }
 .section { page-break-inside: avoid; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
 .kpi { border: 1px solid #ddd; border-top: 3px solid #C41E3A; padding: 9px; }
+.kpi-green { border-top-color: #198754; background: #eef8f1; }
+.kpi-gold { border-top-color: #ffc107; background: #fff8e1; }
+.kpi-red { border-top-color: #dc3545; background: #fff0f1; }
+.kpi-blue { border-top-color: #0d6efd; background: #eef5ff; }
 .kpi-num { font-size: 20px; font-weight: bold; color: #C41E3A; }
 .kpi-label { font-size: 10px; color: #666; text-transform: uppercase; }
+.score-badge { display: inline-block; min-width: 30px; padding: 1px 5px; border-radius: 10px; font-weight: bold; text-align: center; }
+.score-green { color: #0f5132; background: #dff2e5; }
+.score-gold { color: #664d03; background: #fff0bf; }
+.score-red { color: #842029; background: #f8d7da; }
 table { border-collapse: collapse; width: 100%%; margin: 8px 0 14px; font-size: 11px; }
 th { background: #C41E3A; color: #fff; text-align: left; padding: 5px 7px; }
 td { border-bottom: 1px solid #eee; padding: 4px 7px; }
@@ -501,26 +560,30 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 		if title == "Latest Report" {
 			expectedLabel = "Fixtures Expected"
 		}
+		complianceClass := strings.ReplaceAll(execComplianceClass(win.ComplianceRate), "exec-", "")
+		pitchClass := strings.ReplaceAll(execPitchClass(win.AvgPitch), "exec-", "")
 		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Reports</div></div>
+<div class="kpi kpi-blue"><div class="kpi-num">%d</div><div class="kpi-label">Reports</div></div>
 <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">%s</div></div>
-<div class="kpi"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Compliance</div></div>
-<div class="kpi"><div class="kpi-num">%.2f</div><div class="kpi-label">Pitch</div></div>
-</div>`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), win.ComplianceRate, win.AvgPitch)
+<div class="kpi %s"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Compliance</div></div>
+<div class="kpi %s"><div class="kpi-num">%.2f</div><div class="kpi-label">Pitch</div></div>
+</div>`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), complianceClass, win.ComplianceRate, pitchClass, win.AvgPitch)
 		if len(win.TopClubs) > 0 {
 			fmt.Fprint(w, `<h3>Strongest Rated Clubs/Grounds</h3><table><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr>`)
 			for _, row := range win.TopClubs {
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>`,
-					escapeHTML(row.Club), row.Reports, row.AvgPitch, row.AvgBounce, row.AvgSeam, row.AvgCarry, row.AvgTurn)
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+					escapeHTML(row.Club), row.Reports, printScoreBadge(row.AvgPitch, 5), printScoreBadge(row.AvgBounce, 5),
+					printScoreBadge(row.AvgSeam, 5), printScoreBadge(row.AvgCarry, 5), printScoreBadge(row.AvgTurn, 5))
 			}
 			fmt.Fprint(w, `</table>`)
 		}
 		if len(win.ConcernClubs) > 0 {
 			fmt.Fprint(w, `<h3>Lowest Rated Clubs/Grounds</h3><table><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr>`)
 			for _, row := range win.ConcernClubs {
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>`,
-					escapeHTML(row.Club), row.Reports, row.AvgPitch, row.AvgBounce, row.AvgSeam, row.AvgCarry, row.AvgTurn)
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+					escapeHTML(row.Club), row.Reports, printScoreBadge(row.AvgPitch, 5), printScoreBadge(row.AvgBounce, 5),
+					printScoreBadge(row.AvgSeam, 5), printScoreBadge(row.AvgCarry, 5), printScoreBadge(row.AvgTurn, 5))
 			}
 			fmt.Fprint(w, `</table>`)
 		}
@@ -534,26 +597,30 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 		fmt.Fprint(w, `</section>`)
 	}
 	printUmpires := func(title string, win aiExecutiveUmpireWindow) {
+		poorClass := "kpi-green"
+		if win.Poor > 0 {
+			poorClass = "kpi-red"
+		}
 		fmt.Fprintf(w, `<section class="page-break section"><h2>%s</h2><p class="meta">%s</p>
 <div class="kpis">
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Ratings</div></div>
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Good</div></div>
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Average</div></div>
-<div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Poor</div></div>
-</div>`, escapeHTML(title), escapeHTML(win.Period), win.TotalRatings, win.Good, win.Average, win.Poor)
+<div class="kpi kpi-blue"><div class="kpi-num">%d</div><div class="kpi-label">Ratings</div></div>
+<div class="kpi kpi-green"><div class="kpi-num">%d</div><div class="kpi-label">Good</div></div>
+<div class="kpi kpi-gold"><div class="kpi-num">%d</div><div class="kpi-label">Average</div></div>
+<div class="kpi %s"><div class="kpi-num">%d</div><div class="kpi-label">Poor</div></div>
+</div>`, escapeHTML(title), escapeHTML(win.Period), win.TotalRatings, win.Good, win.Average, poorClass, win.Poor)
 		if len(win.TopUmpires) > 0 {
 			fmt.Fprint(w, `<table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
 			for _, row := range win.TopUmpires {
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
-					escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%s</td></tr>`,
+					escapeHTML(row.Name), row.Ratings, row.Good, row.Average, row.Poor, printScoreBadge(row.Score, 3))
 			}
 			fmt.Fprint(w, `</table>`)
 		}
 		if len(win.ConcernUmpires) > 0 {
 			fmt.Fprint(w, `<h3>Umpires Requiring Review</h3><table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
 			for _, row := range win.ConcernUmpires {
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
-					escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%s</td></tr>`,
+					escapeHTML(row.Name), row.Ratings, row.Good, row.Average, row.Poor, printScoreBadge(row.Score, 3))
 			}
 			fmt.Fprint(w, `</table>`)
 		}

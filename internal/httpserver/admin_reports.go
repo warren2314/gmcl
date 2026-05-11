@@ -1043,6 +1043,12 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
 	if title == "Latest Report" {
 		expectedLabel = "Fixtures Expected"
 	}
+	complianceClass := execComplianceClass(win.ComplianceRate)
+	pitchClass := execPitchClass(win.AvgPitch)
+	sanctionClass := "exec-kpi-green"
+	if win.SanctionsIssued > 0 {
+		sanctionClass = "exec-kpi-red"
+	}
 	fmt.Fprintf(w, `
 <section class="exec-report-section">
   <h5 class="fw-bold mb-1">%s</h5>
@@ -1050,13 +1056,13 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
   <div class="exec-kpi-grid">
     <div class="exec-kpi exec-kpi-blue"><strong>%d</strong><span>Reports</span></div>
     <div class="exec-kpi"><strong>%d</strong><span>%s</span></div>
-    <div class="exec-kpi exec-kpi-green"><strong>%.1f%%</strong><span>Compliance</span></div>
-    <div class="exec-kpi exec-kpi-primary"><strong>%.2f</strong><span>Pitch</span></div>
+    <div class="exec-kpi %s"><strong>%.1f%%</strong><span>Compliance</span></div>
+    <div class="exec-kpi %s"><strong>%.2f</strong><span>Pitch</span></div>
     <div class="exec-kpi exec-kpi-gold"><strong>%.2f</strong><span>Bounce</span></div>
-    <div class="exec-kpi"><strong>%d</strong><span>Sanctions</span></div>
+    <div class="exec-kpi %s"><strong>%d</strong><span>Sanctions</span></div>
   </div>
-`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), win.ComplianceRate,
-		win.AvgPitch, win.AvgBounce, win.SanctionsIssued)
+`, escapeHTML(title), escapeHTML(win.Period), win.SubmissionsReceived, win.SubmissionsExpected, escapeHTML(expectedLabel), complianceClass, win.ComplianceRate,
+		pitchClass, win.AvgPitch, win.AvgBounce, sanctionClass, win.SanctionsIssued)
 
 	writeClubTable := func(title string, rows []aiExecutiveClubRow) {
 		if len(rows) == 0 {
@@ -1064,8 +1070,9 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
 		}
 		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Club/Ground</th><th>Reports</th><th>Pitch</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th></tr></thead><tbody>`, escapeHTML(title))
 		for _, row := range rows {
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>`,
-				escapeHTML(row.Club), row.Reports, row.AvgPitch, row.AvgBounce, row.AvgSeam, row.AvgCarry, row.AvgTurn)
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+				escapeHTML(row.Club), row.Reports, execScoreBadge(row.AvgPitch, 5), execScoreBadge(row.AvgBounce, 5),
+				execScoreBadge(row.AvgSeam, 5), execScoreBadge(row.AvgCarry, 5), execScoreBadge(row.AvgTurn, 5))
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}
@@ -1083,6 +1090,10 @@ func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, wi
 }
 
 func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title string, win aiExecutiveUmpireWindow) {
+	poorClass := "exec-kpi-green"
+	if win.Poor > 0 {
+		poorClass = "exec-kpi-red"
+	}
 	fmt.Fprintf(w, `
 <section class="exec-report-section">
   <h5 class="fw-bold mb-1">%s</h5>
@@ -1091,9 +1102,9 @@ func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title stri
     <div class="exec-kpi exec-kpi-blue"><strong>%d</strong><span>Ratings</span></div>
     <div class="exec-kpi exec-kpi-green"><strong>%d</strong><span>Good</span></div>
     <div class="exec-kpi exec-kpi-gold"><strong>%d</strong><span>Average</span></div>
-    <div class="exec-kpi exec-kpi-primary"><strong>%d</strong><span>Poor</span></div>
+    <div class="exec-kpi %s"><strong>%d</strong><span>Poor</span></div>
   </div>
-`, escapeHTML(title), escapeHTML(win.Period), win.TotalRatings, win.Good, win.Average, win.Poor)
+`, escapeHTML(title), escapeHTML(win.Period), win.TotalRatings, win.Good, win.Average, poorClass, win.Poor)
 
 	writeUmpireTable := func(title string, rows []reportUmpire) {
 		if len(rows) == 0 {
@@ -1101,14 +1112,46 @@ func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title stri
 		}
 		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th><th>Comments</th></tr></thead><tbody>`, escapeHTML(title))
 		for _, row := range rows {
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td><td>%.2f</td><td>%d</td></tr>`,
-				escapeHTML(row.Name), row.Ratings, row.Good, row.Average, row.Poor, row.Score, row.CommentCount)
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td><td>%s</td><td>%d</td></tr>`,
+				escapeHTML(row.Name), row.Ratings, row.Good, row.Average, row.Poor, execScoreBadge(row.Score, 3), row.CommentCount)
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}
 	writeUmpireTable("Strongest Umpire Feedback", win.TopUmpires)
 	writeUmpireTable("Umpires Requiring Review", win.ConcernUmpires)
 	fmt.Fprint(w, `</section>`)
+}
+
+func execComplianceClass(rate float64) string {
+	switch {
+	case rate >= 95:
+		return "exec-kpi-green"
+	case rate >= 85:
+		return "exec-kpi-gold"
+	default:
+		return "exec-kpi-red"
+	}
+}
+
+func execPitchClass(score float64) string {
+	switch {
+	case score >= 4:
+		return "exec-kpi-green"
+	case score >= 3:
+		return "exec-kpi-gold"
+	default:
+		return "exec-kpi-red"
+	}
+}
+
+func execScoreBadge(score float64, max float64) string {
+	cls := "exec-score-badge exec-score-red"
+	if score >= max*0.8 {
+		cls = "exec-score-badge exec-score-green"
+	} else if score >= max*0.6 {
+		cls = "exec-score-badge exec-score-gold"
+	}
+	return fmt.Sprintf(`<span class="%s">%.2f</span>`, cls, score)
 }
 
 func paragraphsHTML(text string) string {

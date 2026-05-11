@@ -186,6 +186,7 @@
   border-top: 3px solid #adb5bd;
   padding: .9rem;
   min-height: 86px;
+  background: #fff;
 }
 .exec-kpi strong {
   display: block;
@@ -206,8 +207,44 @@
 .exec-kpi-blue { border-top-color: var(--gmcl-blue); }
 .exec-kpi-gold { border-top-color: var(--gmcl-gold); }
 .exec-kpi-green { border-top-color: #198754; }
+.exec-kpi-red { border-top-color: #dc3545; }
+.exec-kpi-green {
+  background: linear-gradient(180deg, rgba(25,135,84,.13), #fff 68%);
+}
+.exec-kpi-gold {
+  background: linear-gradient(180deg, rgba(255,193,7,.18), #fff 68%);
+}
+.exec-kpi-red {
+  background: linear-gradient(180deg, rgba(220,53,69,.13), #fff 68%);
+}
+.exec-kpi-blue {
+  background: linear-gradient(180deg, rgba(13,110,253,.10), #fff 68%);
+}
+.exec-kpi-primary {
+  background: linear-gradient(180deg, rgba(196,30,58,.10), #fff 68%);
+}
 .exec-report-table th {
   white-space: nowrap;
+}
+.exec-score-badge {
+  display: inline-block;
+  min-width: 3.25rem;
+  padding: .12rem .4rem;
+  border-radius: 999px;
+  font-weight: 700;
+  text-align: center;
+}
+.exec-score-green {
+  color: #0f5132;
+  background: rgba(25,135,84,.14);
+}
+.exec-score-gold {
+  color: #664d03;
+  background: rgba(255,193,7,.22);
+}
+.exec-score-red {
+  color: #842029;
+  background: rgba(220,53,69,.14);
 }
 .exec-report-subtitle {
   color: #6c757d;
