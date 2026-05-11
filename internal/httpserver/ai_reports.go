@@ -70,9 +70,9 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrend(ctx, seasonID, weekEnd)
 	rp.Latest.MissingTeams = latestMissing
 	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Latest Umpire Reports", rp.Cover.LatestPeriod,
-		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID})
+		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, 1)
 	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Report", rp.Cover.SeasonPeriod,
-		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd})
+		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, 2)
 
 	narrative, model, err := s.callOpenAIExecutiveNarrative(ctx, rp)
 	if err != nil {
@@ -316,50 +316,14 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 	return expected, submitted, missing
 }
 
-func (s *Server) loadAIExecutiveUmpireWindow(ctx context.Context, title, period, whereSQL string, args []any) aiExecutiveUmpireWindow {
+func (s *Server) loadAIExecutiveUmpireWindow(ctx context.Context, title, period, whereSQL string, args []any, minRatings int64) aiExecutiveUmpireWindow {
 	win := aiExecutiveUmpireWindow{Title: title, Period: period}
-	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
-		WITH r AS (
-		    SELECT lower(trim(sub.form_data->>'umpire1_name')) AS name, sub.form_data->>'umpire1_performance' AS perf
-		    FROM submissions sub JOIN weeks w ON w.id=sub.week_id
-		    WHERE %s AND NULLIF(trim(sub.form_data->>'umpire1_name'), '') IS NOT NULL
-		    UNION ALL
-		    SELECT lower(trim(sub.form_data->>'umpire2_name')) AS name, sub.form_data->>'umpire2_performance' AS perf
-		    FROM submissions sub JOIN weeks w ON w.id=sub.week_id
-		    WHERE %s AND NULLIF(trim(sub.form_data->>'umpire2_name'), '') IS NOT NULL
-		),
-		agg AS (
-		    SELECT name,
-		           COUNT(*) FILTER (WHERE perf IN ('Good','Average','Poor')) AS total,
-		           COUNT(*) FILTER (WHERE perf='Good') AS good,
-		           COUNT(*) FILTER (WHERE perf='Average') AS average,
-		           COUNT(*) FILTER (WHERE perf='Poor') AS poor,
-		           COALESCE(ROUND((
-		               COUNT(*) FILTER (WHERE perf='Good') * 3.0 +
-		               COUNT(*) FILTER (WHERE perf='Average') * 2.0 +
-		               COUNT(*) FILTER (WHERE perf='Poor') * 1.0
-		           ) / NULLIF(COUNT(*) FILTER (WHERE perf IN ('Good','Average','Poor')),0), 2), 0) AS score
-		    FROM r WHERE name IS NOT NULL AND name <> '' GROUP BY name
-		)
-		SELECT name, total, good, average, poor, score
-		FROM agg WHERE total > 0
-		ORDER BY score DESC, total DESC, name
-	`, whereSQL, whereSQL), append(args, args...)...)
-	if err != nil {
-		return win
-	}
-	defer rows.Close()
-
-	var all []reportUmpire
-	for rows.Next() {
-		var row reportUmpire
-		if rows.Scan(&row.Name, &row.Ratings, &row.Good, &row.Average, &row.Poor, &row.Score) == nil {
-			all = append(all, row)
-			win.TotalRatings += row.Ratings
-			win.Good += row.Good
-			win.Average += row.Average
-			win.Poor += row.Poor
-		}
+	all := s.loadUmpireRankings(ctx, whereSQL, args, minRatings)
+	for _, row := range all {
+		win.TotalRatings += row.Ratings
+		win.Good += row.Good
+		win.Average += row.Average
+		win.Poor += row.Poor
 	}
 	for i, row := range all {
 		if i < 10 {

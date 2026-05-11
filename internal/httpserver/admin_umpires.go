@@ -12,6 +12,83 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
+func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64) []reportUmpire {
+	if minRatings < 1 {
+		minRatings = 1
+	}
+	qargs := append(append([]any{}, args...), minRatings)
+	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
+		WITH deduped AS (
+		    SELECT DISTINCT ON (sub.team_id, sub.match_date)
+		        trim(sub.form_data->>'umpire1_name')        AS u1name,
+		        sub.form_data->>'umpire1_performance'       AS u1perf,
+		        trim(sub.form_data->>'umpire2_name')        AS u2name,
+		        sub.form_data->>'umpire2_performance'       AS u2perf,
+		        COALESCE(sub.form_data->>'umpire_comments','') AS comment
+		    FROM submissions sub
+		    JOIN weeks w ON w.id=sub.week_id
+		    WHERE %s
+		    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
+		),
+		ratings AS (
+		    SELECT lower(trim(u1name)) AS key,
+		           trim(u1name)        AS display,
+		           u1perf              AS perf,
+		           comment
+		    FROM deduped
+		    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
+		      AND u1perf IS NOT NULL
+		      AND u1perf IN ('Good','Average','Poor')
+		    UNION ALL
+		    SELECT lower(trim(u2name)),
+		           trim(u2name),
+		           u2perf,
+		           comment
+		    FROM deduped
+		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
+		      AND u2perf IS NOT NULL
+		      AND u2perf IN ('Good','Average','Poor')
+		),
+		scored AS (
+		    SELECT
+		        key,
+		        mode() WITHIN GROUP (ORDER BY display)       AS umpire_name,
+		        COUNT(*)                                      AS total,
+		        COUNT(*) FILTER (WHERE perf = 'Good')         AS good,
+		        COUNT(*) FILTER (WHERE perf = 'Average')      AS avg_c,
+		        COUNT(*) FILTER (WHERE perf = 'Poor')         AS poor,
+		        ROUND((
+		            COUNT(*) FILTER (WHERE perf='Good')    * 3.0 +
+		            COUNT(*) FILTER (WHERE perf='Average') * 2.0 +
+		            COUNT(*) FILTER (WHERE perf='Poor')    * 1.0
+		        ) / NULLIF(COUNT(*),0), 3)                   AS score,
+		        COUNT(*) FILTER (WHERE comment <> '')        AS comment_count
+		    FROM ratings
+		    GROUP BY key
+		    HAVING COUNT(*) >= $%d
+		)
+		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count
+		FROM scored
+		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
+	`, whereSQL, len(qargs)), qargs...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var umpires []reportUmpire
+	for rows.Next() {
+		var u reportUmpire
+		if e := rows.Scan(&u.Name, &u.Ratings, &u.Good, &u.Average, &u.Poor, &u.Score, &u.CommentCount); e == nil {
+			if u.Ratings > 0 {
+				u.GoodPct = float64(u.Good) / float64(u.Ratings) * 100
+			}
+			umpires = append(umpires, u)
+		}
+	}
+	return umpires
+}
+
 // handleAdminUmpireRankings renders umpire performance rankings derived from form_data JSONB.
 func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -58,86 +135,14 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		}
 
 		// Umpire performance query
-		type umpireRow struct {
-			Name         string
-			Total        int64
-			Good         int64
-			Average      int64
-			Poor         int64
-			Score        float64
-			GoodPct      float64
-			CommentCount int64
-		}
-		var umpires []umpireRow
+		var umpires []reportUmpire
 		var totalRatings, uniqueUmpires int64
 
 		if seasonID > 0 {
-			urows, err := s.DB.Query(ctx, `
-				WITH deduped AS (
-				    SELECT DISTINCT ON (team_id, match_date)
-				        form_data->>'umpire1_name'        AS u1name,
-				        form_data->>'umpire1_performance' AS u1perf,
-				        form_data->>'umpire2_name'        AS u2name,
-				        form_data->>'umpire2_performance' AS u2perf,
-				        COALESCE(form_data->>'umpire_comments','') AS comment
-				    FROM submissions
-				    WHERE season_id = $1
-				    ORDER BY team_id, match_date, submitted_at DESC
-				),
-				ratings AS (
-				    SELECT lower(trim(u1name))  AS key,
-				           trim(u1name)         AS display,
-				           u1perf               AS perf,
-				           comment
-				    FROM deduped
-				    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
-				      AND u1perf IS NOT NULL
-				      AND u1perf IN ('Good','Average','Poor')
-				    UNION ALL
-				    SELECT lower(trim(u2name)),
-				           trim(u2name),
-				           u2perf,
-				           comment
-				    FROM deduped
-				    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
-				      AND u2perf IS NOT NULL
-				      AND u2perf IN ('Good','Average','Poor')
-				),
-				scored AS (
-				    SELECT
-				        key,
-				        mode() WITHIN GROUP (ORDER BY display)             AS umpire_name,
-				        COUNT(*)                                            AS total,
-				        COUNT(*) FILTER (WHERE perf = 'Good')              AS good,
-				        COUNT(*) FILTER (WHERE perf = 'Average')           AS avg_c,
-				        COUNT(*) FILTER (WHERE perf = 'Poor')              AS poor,
-				        ROUND((
-				            COUNT(*) FILTER (WHERE perf='Good')    * 3.0 +
-				            COUNT(*) FILTER (WHERE perf='Average') * 2.0 +
-				            COUNT(*) FILTER (WHERE perf='Poor')    * 1.0
-				        ) / NULLIF(COUNT(*),0), 3)                         AS score,
-				        COUNT(*) FILTER (WHERE comment <> '')              AS comment_count
-				    FROM ratings
-				    GROUP BY key
-				    HAVING COUNT(*) >= $2
-				)
-				SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count
-				FROM scored
-				ORDER BY score DESC NULLS LAST, total DESC
-			`, seasonID, minRatings)
-			if err == nil {
-				defer urows.Close()
-				for urows.Next() {
-					var u umpireRow
-					if e := urows.Scan(&u.Name, &u.Total, &u.Good, &u.Average, &u.Poor, &u.Score, &u.CommentCount); e == nil {
-						if u.Total > 0 {
-							u.GoodPct = float64(u.Good) / float64(u.Total) * 100
-						}
-						umpires = append(umpires, u)
-						totalRatings += u.Total
-						uniqueUmpires++
-					}
-				}
+			umpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings))
+			for _, u := range umpires {
+				totalRatings += u.Ratings
+				uniqueUmpires++
 			}
 		}
 
@@ -256,8 +261,8 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 			barGood := int(u.GoodPct)
 			barAvg := 0
-			if u.Total > 0 {
-				barAvg = int(float64(u.Average) / float64(u.Total) * 100)
+			if u.Ratings > 0 {
+				barAvg = int(float64(u.Average) / float64(u.Ratings) * 100)
 			}
 			barPoor := 100 - barGood - barAvg
 			if barPoor < 0 {
@@ -286,7 +291,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   </td>
   <td>%s</td>
 </tr>`,
-				i+1, escapeHTML(u.Name), u.Total,
+				i+1, escapeHTML(u.Name), u.Ratings,
 				u.Good, u.Average, u.Poor,
 				scoreClass, u.Score,
 				barGood, barAvg, barPoor,

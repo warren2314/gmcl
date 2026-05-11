@@ -36,12 +36,14 @@ type reportPayload struct {
 }
 
 type reportUmpire struct {
-	Name    string  `json:"name"`
-	Ratings int64   `json:"ratings"`
-	Good    int64   `json:"good"`
-	Average int64   `json:"average"`
-	Poor    int64   `json:"poor"`
-	Score   float64 `json:"score"`
+	Name         string  `json:"name"`
+	Ratings      int64   `json:"ratings"`
+	Good         int64   `json:"good"`
+	Average      int64   `json:"average"`
+	Poor         int64   `json:"poor"`
+	Score        float64 `json:"score"`
+	GoodPct      float64 `json:"good_pct,omitempty"`
+	CommentCount int64   `json:"comment_count,omitempty"`
 }
 
 type reportMissing struct {
@@ -1097,10 +1099,10 @@ func (s *Server) renderAIExecutiveUmpireWindow(w http.ResponseWriter, title stri
 		if len(rows) == 0 {
 			return
 		}
-		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr></thead><tbody>`, escapeHTML(title))
+		fmt.Fprintf(w, `<h6 class="fw-semibold mt-4">%s</h6><div class="table-responsive"><table class="table table-sm table-hover exec-report-table mb-0"><thead><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th><th>Comments</th></tr></thead><tbody>`, escapeHTML(title))
 		for _, row := range rows {
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td><td>%.2f</td></tr>`,
-				escapeHTML(titleCase(row.Name)), row.Ratings, row.Good, row.Average, row.Poor, row.Score)
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td><td>%.2f</td><td>%d</td></tr>`,
+				escapeHTML(row.Name), row.Ratings, row.Good, row.Average, row.Poor, row.Score, row.CommentCount)
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}
