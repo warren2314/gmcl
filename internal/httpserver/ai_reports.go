@@ -31,11 +31,6 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 		return
 	}
 
-	var activeTeams int64
-	_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active=TRUE`).Scan(&activeTeams)
-	var weeksElapsed int64
-	_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM weeks WHERE season_id=$1 AND end_date <= $2`, seasonID, weekEnd).Scan(&weeksElapsed)
-
 	rp := aiExecutiveReportPayload{
 		SeasonID:     seasonID,
 		SeasonName:   seasonName,
@@ -58,12 +53,15 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 		},
 	}
 
+	latestExpected := s.loadAIExpectedReports(ctx, seasonID, weekStart, weekEnd)
+	seasonExpected := s.loadAIExpectedReports(ctx, seasonID, time.Time{}, weekEnd)
+
 	rp.Latest = s.loadAIExecutiveWindow(ctx, "Latest Report", rp.Cover.LatestPeriod,
-		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, activeTeams, &seasonID, weekID)
+		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, latestExpected, &seasonID, weekID)
 	rp.SeasonToDate = s.loadAIExecutiveWindow(ctx, "Season Report", rp.Cover.SeasonPeriod,
-		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, activeTeams*weeksElapsed, &seasonID, nil)
+		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, seasonExpected, &seasonID, nil)
 	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrend(ctx, seasonID, weekEnd)
-	rp.Latest.MissingTeams = s.loadAIExecutiveMissingTeams(ctx, *weekID)
+	rp.Latest.MissingTeams = s.loadAIExecutiveMissingTeams(ctx, *weekID, weekStart, weekEnd)
 	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Latest Umpire Reports", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID})
 	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Report", rp.Cover.SeasonPeriod,
@@ -209,14 +207,74 @@ func (s *Server) loadAIExecutiveWeeklyTrend(ctx context.Context, seasonID int32,
 	return trend
 }
 
-func (s *Server) loadAIExecutiveMissingTeams(ctx context.Context, weekID int32) []reportMissing {
+func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, startDate, endDate time.Time) int64 {
+	if endDate.IsZero() {
+		return 0
+	}
+
+	where := `
+		lf.season_id=$1
+		AND lf.match_date <= $2
+		AND EXTRACT(DOW FROM lf.match_date) <> 5
+		AND NOT lf.is_bye
+		AND t.active=TRUE
+		AND t.play_cricket_team_id IS NOT NULL
+		AND TRIM(t.play_cricket_team_id) <> ''
+	`
+	args := []any{seasonID, endDate}
+	if !startDate.IsZero() {
+		where += ` AND lf.match_date >= $3`
+		args = append(args, startDate)
+	}
+
+	var expected int64
+	_ = s.DB.QueryRow(ctx, fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+		    SELECT DISTINCT t.id, lf.match_date
+		    FROM league_fixtures lf
+		    JOIN teams t ON (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+		        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		    WHERE %s
+		) expected_reports
+	`, where), args...).Scan(&expected)
+	return expected
+}
+
+func (s *Server) loadAIExecutiveMissingTeams(ctx context.Context, weekID int32, weekStart, weekEnd time.Time) []reportMissing {
 	rows, err := s.DB.Query(ctx, `
+		WITH fixture_counts AS (
+		    SELECT t.id AS team_id,
+		           COUNT(DISTINCT lf.match_date) AS fixture_count
+		    FROM teams t
+		    JOIN league_fixtures lf ON (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+		        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		    WHERE t.active=TRUE
+		      AND t.play_cricket_team_id IS NOT NULL
+		      AND TRIM(t.play_cricket_team_id) <> ''
+		      AND lf.match_date BETWEEN $2 AND $3
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		    GROUP BY t.id
+		),
+		submit_counts AS (
+		    SELECT team_id,
+		           COUNT(DISTINCT match_date) AS submit_count
+		    FROM submissions
+		    WHERE week_id=$1
+		    GROUP BY team_id
+		)
 		SELECT t.id, cl.name, t.name
-		FROM teams t JOIN clubs cl ON t.club_id=cl.id
-		WHERE t.active=TRUE
-		  AND t.id NOT IN (SELECT team_id FROM submissions WHERE week_id=$1)
+		FROM fixture_counts fc
+		JOIN teams t ON t.id=fc.team_id
+		JOIN clubs cl ON t.club_id=cl.id
+		LEFT JOIN submit_counts sc ON sc.team_id=t.id
+		WHERE fc.fixture_count > COALESCE(sc.submit_count, 0)
 		ORDER BY cl.name, t.name
-	`, weekID)
+	`, weekID, weekStart, weekEnd)
 	if err != nil {
 		return nil
 	}
