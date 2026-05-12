@@ -134,26 +134,61 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		SubmitCount  int
 	}
 	rows, err := s.DB.Query(ctx, `
+		WITH expected_fixtures AS (
+		    SELECT t.id AS team_id,
+		           lf.play_cricket_match_id,
+		           lf.match_date,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY t.id, lf.match_date
+		               ORDER BY lf.play_cricket_match_id
+		           ) AS fixture_ordinal
+		    FROM teams t
+		    JOIN league_fixtures lf ON (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+		        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		    WHERE t.club_id = $1
+		      AND t.active = TRUE
+		      AND t.play_cricket_team_id IS NOT NULL
+		      AND t.play_cricket_team_id <> ''
+		      AND lf.match_date BETWEEN $3 AND $4
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		),
+		legacy_submissions AS (
+		    SELECT team_id,
+		           match_date,
+		           COUNT(*) AS legacy_count
+		    FROM submissions
+		    WHERE week_id=$2 AND play_cricket_match_id IS NULL
+		    GROUP BY team_id, match_date
+		),
+		fixture_counts AS (
+		    SELECT ef.team_id,
+		           COUNT(*) AS fixture_count,
+		           COUNT(*) FILTER (
+		               WHERE EXISTS (
+		                   SELECT 1 FROM submissions sub
+		                   WHERE sub.week_id=$2
+		                     AND sub.team_id=ef.team_id
+		                     AND sub.play_cricket_match_id=ef.play_cricket_match_id
+		               )
+		               OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		           ) AS submit_count
+		    FROM expected_fixtures ef
+		    LEFT JOIN legacy_submissions ls
+		      ON ls.team_id=ef.team_id AND ls.match_date=ef.match_date
+		    GROUP BY ef.team_id
+		)
 		SELECT t.name,
 		       COALESCE(c.full_name, ''),
-		       COALESCE((
-		           SELECT COUNT(*)
-		           FROM league_fixtures lf
-		           WHERE (TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id))
-		             AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
-		             AND lf.match_date BETWEEN $3 AND $4
-		             AND EXTRACT(DOW FROM lf.match_date) <> 5
-			             AND NOT lf.is_bye
-		       ), 0) AS fixture_count,
-		       COALESCE((
-		           SELECT COUNT(*)
-		           FROM submissions sub
-		           WHERE sub.team_id = t.id AND sub.week_id = $2
-		       ), 0) AS submit_count
+		       COALESCE(fc.fixture_count, 0) AS fixture_count,
+		       COALESCE(fc.submit_count, 0) AS submit_count
 		FROM teams t
 		LEFT JOIN captains c ON c.team_id = t.id
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    AND c.active_from <= CURRENT_DATE
+		LEFT JOIN fixture_counts fc ON fc.team_id = t.id
 		WHERE t.club_id = $1 AND t.active = TRUE
 		ORDER BY t.name
 	`, clubID, wk.ID, wk.Start, wk.End)

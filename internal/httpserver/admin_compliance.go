@@ -91,9 +91,14 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id=$1`, weekID).Scan(&weekStart, &weekEnd)
 
 			crows, err := s.DB.Query(ctx, `
-				WITH fixture_counts AS (
+				WITH expected_fixtures AS (
 				    SELECT t.id AS team_id,
-				           COUNT(*) AS fixture_count
+				           lf.play_cricket_match_id,
+				           lf.match_date,
+				           ROW_NUMBER() OVER (
+				               PARTITION BY t.id, lf.match_date
+				               ORDER BY lf.play_cricket_match_id
+				           ) AS fixture_ordinal
 				    FROM teams t
 				    JOIN league_fixtures lf ON (
 				        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
@@ -103,13 +108,31 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				      AND lf.match_date BETWEEN $3 AND $4
 				      AND EXTRACT(DOW FROM lf.match_date) <> 5
 				      AND NOT lf.is_bye
-				    GROUP BY t.id
 				),
-				submit_counts AS (
+				legacy_submissions AS (
 				    SELECT team_id,
-				           COUNT(*) AS submit_count
-				    FROM submissions WHERE week_id=$1
-				    GROUP BY team_id
+				           match_date,
+				           COUNT(*) AS legacy_count
+				    FROM submissions
+				    WHERE week_id=$1 AND play_cricket_match_id IS NULL
+				    GROUP BY team_id, match_date
+				),
+				fixture_counts AS (
+				    SELECT ef.team_id,
+				           COUNT(*) AS fixture_count,
+				           COUNT(*) FILTER (
+				               WHERE EXISTS (
+				                   SELECT 1 FROM submissions sub
+				                   WHERE sub.week_id=$1
+				                     AND sub.team_id=ef.team_id
+				                     AND sub.play_cricket_match_id=ef.play_cricket_match_id
+				               )
+				               OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+				           ) AS submit_count
+				    FROM expected_fixtures ef
+				    LEFT JOIN legacy_submissions ls
+				      ON ls.team_id=ef.team_id AND ls.match_date=ef.match_date
+				    GROUP BY ef.team_id
 				),
 				drafted AS (
 				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
@@ -133,7 +156,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    cl.name,
 				    t.name,
 				    COALESCE(fc.fixture_count, 0)  AS fixture_count,
-				    COALESCE(sc.submit_count, 0)   AS submit_count,
+				    COALESCE(fc.submit_count, 0)   AS submit_count,
 				    (dr.team_id IS NOT NULL)        AS has_draft,
 				    (sa.team_id IS NOT NULL)        AS has_sanction,
 				    COALESCE(yc.cnt, 0),
@@ -141,7 +164,6 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
 				LEFT JOIN fixture_counts fc ON fc.team_id = t.id
-				LEFT JOIN submit_counts  sc ON sc.team_id = t.id
 				LEFT JOIN drafted        dr ON dr.team_id = t.id
 				LEFT JOIN sanctioned     sa ON sa.team_id = t.id
 				LEFT JOIN yellow_counts  yc ON yc.team_id = t.id
@@ -149,7 +171,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				WHERE t.active = TRUE
 				ORDER BY
 				    CASE WHEN COALESCE(fc.fixture_count,0) = 0 THEN 2
-				         WHEN COALESCE(sc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
+				         WHEN COALESCE(fc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
 				         ELSE 1 END,
 				    cl.name, t.name
 			`, weekID, seasonID, weekStart, weekEnd)

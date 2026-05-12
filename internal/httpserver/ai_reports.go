@@ -249,9 +249,14 @@ func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, star
 
 func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID int32, weekStart, weekEnd time.Time) (int64, int64, []reportMissing) {
 	rows, err := s.DB.Query(ctx, `
-		WITH fixture_counts AS (
+		WITH expected_fixtures AS (
 		    SELECT t.id AS team_id,
-		           COUNT(*) AS fixture_count
+		           lf.play_cricket_match_id,
+		           lf.match_date,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY t.id, lf.match_date
+		               ORDER BY lf.play_cricket_match_id
+		           ) AS fixture_ordinal
 		    FROM teams t
 		    JOIN league_fixtures lf ON (
 		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
@@ -263,26 +268,42 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 		      AND lf.match_date BETWEEN $2 AND $3
 		      AND EXTRACT(DOW FROM lf.match_date) <> 5
 		      AND NOT lf.is_bye
-		    GROUP BY t.id
 		),
-		submit_counts AS (
+		legacy_submissions AS (
 		    SELECT team_id,
-		           COUNT(*) AS submit_count
+		           match_date,
+		           COUNT(*) AS legacy_count
 		    FROM submissions
-		    WHERE week_id=$1
-		    GROUP BY team_id
+		    WHERE week_id=$1 AND play_cricket_match_id IS NULL
+		    GROUP BY team_id, match_date
+		),
+		fixture_counts AS (
+		    SELECT ef.team_id,
+		           COUNT(*) AS fixture_count,
+		           COUNT(*) FILTER (
+		               WHERE EXISTS (
+		                   SELECT 1 FROM submissions sub
+		                   WHERE sub.week_id=$1
+		                     AND sub.team_id=ef.team_id
+		                     AND sub.play_cricket_match_id=ef.play_cricket_match_id
+		               )
+		               OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		           ) AS submit_count
+		    FROM expected_fixtures ef
+		    LEFT JOIN legacy_submissions ls
+		      ON ls.team_id=ef.team_id AND ls.match_date=ef.match_date
+		    GROUP BY ef.team_id
 		)
 		SELECT t.id, cl.name, t.name,
 		       fc.fixture_count,
-		       COALESCE(sc.submit_count, 0) AS submit_count
+		       COALESCE(fc.submit_count, 0) AS submit_count
 		FROM teams t
 		JOIN clubs cl ON t.club_id=cl.id
 		LEFT JOIN fixture_counts fc ON fc.team_id=t.id
-		LEFT JOIN submit_counts sc ON sc.team_id=t.id
 		WHERE t.active=TRUE
 		ORDER BY
 		    CASE WHEN COALESCE(fc.fixture_count,0) = 0 THEN 2
-		         WHEN COALESCE(sc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
+		         WHEN COALESCE(fc.submit_count,0) >= COALESCE(fc.fixture_count,1) THEN 0
 		         ELSE 1 END,
 		    cl.name, t.name
 	`, weekID, weekStart, weekEnd)
