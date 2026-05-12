@@ -120,30 +120,39 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 			weekFixtures, _ = leagueapi.LookupWeekFixtures(ctx, s.DB, int32(teamID), weekStart, weekEnd, now)
 		}
 
+		var targetFixtureID int64
+		if qf := r.URL.Query().Get("fixture_id"); qf != "" {
+			targetFixtureID, _ = strconv.ParseInt(qf, 10, 64)
+		}
 		var targetDate *time.Time
-		if qd := r.URL.Query().Get("match_date"); qd != "" {
+		if targetFixtureID == 0 && r.URL.Query().Get("match_date") != "" {
+			qd := r.URL.Query().Get("match_date")
 			if pd, err := time.Parse("2006-01-02", qd); err == nil {
 				targetDate = &pd
 			}
 		}
-		if targetDate == nil {
+		if targetFixtureID == 0 && targetDate == nil {
 			for i := range weekFixtures {
 				if !weekFixtures[i].Submitted {
 					d := weekFixtures[i].MatchDate
 					targetDate = &d
+					targetFixtureID = weekFixtures[i].PlayCricketMatchID
 					break
 				}
 			}
 			if targetDate == nil && len(weekFixtures) > 0 {
 				d := weekFixtures[len(weekFixtures)-1].MatchDate
 				targetDate = &d
+				targetFixtureID = weekFixtures[len(weekFixtures)-1].PlayCricketMatchID
 			}
 		}
 
 		draft := make(map[string]any)
 		var fp leagueapi.FixturePrefill
 		var fpOK bool
-		if targetDate != nil {
+		if targetFixtureID > 0 {
+			fp, fpOK = leagueapi.LookupFixturePrefillByMatchID(ctx, s.DB, int32(teamID), targetFixtureID)
+		} else if targetDate != nil {
 			fp, fpOK = leagueapi.LookupFixturePrefillByDate(ctx, s.DB, int32(teamID), *targetDate)
 		} else if !weekStart.IsZero() {
 			fp, fpOK = leagueapi.LookupFixturePrefill(ctx, s.DB, int32(teamID), weekStart, weekEnd)
@@ -151,6 +160,9 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 		if fpOK {
 			if fp.MatchDate != "" {
 				draft["match_date"] = fp.MatchDate
+			}
+			if fp.PlayCricketMatchID > 0 {
+				draft["play_cricket_match_id"] = strconv.FormatInt(fp.PlayCricketMatchID, 10)
 			}
 			if fp.Umpire1 != "" {
 				draft["umpire1_name"] = fp.Umpire1
@@ -189,7 +201,7 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 					label += " — " + wf.Opposition + " (" + venue + ")"
 				}
 				btnClass := "btn btn-outline-primary btn-sm"
-				if ds == activeDateStr {
+				if wf.PlayCricketMatchID == targetFixtureID || (targetFixtureID == 0 && ds == activeDateStr) {
 					btnClass = "btn btn-primary btn-sm"
 				}
 				tick := ""
@@ -197,8 +209,8 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 					tick = " ✓"
 					btnClass = "btn btn-outline-success btn-sm"
 				}
-				fixtureChooser += fmt.Sprintf(`<a href="/admin/captain-preview?team_id=%d&match_date=%s" class="%s">%s%s</a>`,
-					teamID, ds, btnClass, escapeHTML(label), tick)
+				fixtureChooser += fmt.Sprintf(`<a href="/admin/captain-preview?team_id=%d&fixture_id=%d" class="%s">%s%s</a>`,
+					teamID, wf.PlayCricketMatchID, btnClass, escapeHTML(label), tick)
 			}
 			fixtureChooser += `</div></div>`
 		}

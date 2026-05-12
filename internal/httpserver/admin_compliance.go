@@ -71,16 +71,16 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 
 		// Compliance query: per-fixture tracking so double-headers are counted correctly.
 		type compRow struct {
-			TeamID         int32
-			ClubName       string
-			TeamName       string
-			FixtureCount   int  // non-Friday fixtures this week (0 = no fixture)
-			SubmitCount    int  // distinct match_dates submitted this week
-			HasDraft       bool
-			HasSanction    bool
-			YellowCount    int64
-			RedCount       int64
-			SuggestedCard  string
+			TeamID        int32
+			ClubName      string
+			TeamName      string
+			FixtureCount  int // non-Friday fixtures this week (0 = no fixture)
+			SubmitCount   int // reports submitted this week, capped to fixture count in KPIs
+			HasDraft      bool
+			HasSanction   bool
+			YellowCount   int64
+			RedCount      int64
+			SuggestedCard string
 		}
 		var rows []compRow
 		// KPI counters in fixture-report units, not team units
@@ -93,11 +93,11 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			crows, err := s.DB.Query(ctx, `
 				WITH fixture_counts AS (
 				    SELECT t.id AS team_id,
-				           COUNT(DISTINCT lf.match_date) AS fixture_count
+				           COUNT(*) AS fixture_count
 				    FROM teams t
 				    JOIN league_fixtures lf ON (
-				        lf.home_team_pc_id = t.play_cricket_team_id OR
-				        lf.away_team_pc_id = t.play_cricket_team_id
+				        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+				        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
 				    )
 				    WHERE t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 				      AND lf.match_date BETWEEN $3 AND $4
@@ -107,7 +107,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				),
 				submit_counts AS (
 				    SELECT team_id,
-				           COUNT(DISTINCT match_date) AS submit_count
+				           COUNT(*) AS submit_count
 				    FROM submissions WHERE week_id=$1
 				    GROUP BY team_id
 				),
@@ -448,6 +448,7 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 		}
 
 		matchDateStr := getStr("match_date")
+		playCricketMatchID, _ := strconv.ParseInt(getStr("play_cricket_match_id"), 10, 64)
 		matchDate, err := time.Parse("2006-01-02", matchDateStr)
 		if err != nil {
 			http.Error(w, "draft has no valid match date", http.StatusBadRequest)
@@ -483,11 +484,11 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 				season_id, week_id, team_id, captain_id, match_date,
 				pitch_rating, outfield_rating, facilities_rating, comments, form_data,
 				submitted_by_name, submitted_by_email, submitted_by_role,
-				umpire1_type, umpire2_type
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Admin (submitted by league)','','captain',$11,$12)
+				umpire1_type, umpire2_type, play_cricket_match_id
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Admin (submitted by league)','','captain',$11,$12,NULLIF($13,0))
 		`, seasonID, weekID, teamID, captainID, matchDate.Format("2006-01-02"),
 			pitchRating, outfieldRating, facilitiesRating, comments, formDataJSON,
-			u1Type, u2Type)
+			u1Type, u2Type, playCricketMatchID)
 		if err != nil {
 			http.Error(w, "could not save submission: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -516,14 +517,30 @@ func (s *Server) outstandingFixtures(ctx context.Context, teamID int32, weekStar
 		            THEN COALESCE(TRIM(lf.away_club_name),'') || ' ' || COALESCE(TRIM(lf.away_team_name),'')
 		            ELSE COALESCE(TRIM(lf.home_club_name),'') || ' ' || COALESCE(TRIM(lf.home_team_name),'')
 		       END AS opposition
-		FROM league_fixtures lf
+		FROM (
+		    SELECT lf.*,
+		           ROW_NUMBER() OVER (PARTITION BY lf.match_date ORDER BY lf.play_cricket_match_id) AS fixture_ordinal
+		    FROM league_fixtures lf
+		    JOIN teams t ON t.id = $1
+		    WHERE (TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id))
+		      AND lf.match_date BETWEEN $2 AND $3
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		) lf
 		JOIN teams t ON t.id = $1
-		WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
-		  AND lf.match_date BETWEEN $2 AND $3
-		  AND EXTRACT(DOW FROM lf.match_date) <> 5
-		  AND NOT lf.is_bye
-		  AND NOT EXISTS (SELECT 1 FROM submissions WHERE team_id = $1 AND match_date = lf.match_date)
-		ORDER BY lf.match_date
+		LEFT JOIN (
+		    SELECT match_date, COUNT(*) AS legacy_count
+		    FROM submissions
+		    WHERE team_id = $1 AND play_cricket_match_id IS NULL
+		    GROUP BY match_date
+		) legacy_subs ON legacy_subs.match_date = lf.match_date
+		WHERE NOT EXISTS (
+		    SELECT 1 FROM submissions sub
+		    WHERE sub.team_id = $1
+		      AND sub.play_cricket_match_id = lf.play_cricket_match_id
+		)
+		  AND lf.fixture_ordinal > COALESCE(legacy_subs.legacy_count, 0)
+		ORDER BY lf.match_date, lf.play_cricket_match_id
 	`, teamID, weekStart, weekEnd)
 	if err != nil {
 		return nil

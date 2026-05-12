@@ -137,16 +137,16 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		SELECT t.name,
 		       COALESCE(c.full_name, ''),
 		       COALESCE((
-		           SELECT COUNT(DISTINCT lf.match_date)
+		           SELECT COUNT(*)
 		           FROM league_fixtures lf
-		           WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
+		           WHERE (TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id))
 		             AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 		             AND lf.match_date BETWEEN $3 AND $4
 		             AND EXTRACT(DOW FROM lf.match_date) <> 5
 			             AND NOT lf.is_bye
 		       ), 0) AS fixture_count,
 		       COALESCE((
-		           SELECT COUNT(DISTINCT sub.match_date)
+		           SELECT COUNT(*)
 		           FROM submissions sub
 		           WHERE sub.team_id = t.id AND sub.week_id = $2
 		       ), 0) AS submit_count

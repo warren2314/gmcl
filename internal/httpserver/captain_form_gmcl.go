@@ -98,6 +98,7 @@ func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToke
 	fmt.Fprint(w, `
 <form id="feedback-form" method="POST" action="/captain/form/submit">
   <input type="hidden" name="csrf_token" value="`+csrfToken+`">
+  <input type="hidden" name="play_cricket_match_id" value="`+escapeHTML(val("play_cricket_match_id"))+`">
 `)
 	if fixtureChooser != "" {
 		fmt.Fprint(w, fixtureChooser)
@@ -162,11 +163,11 @@ Please complete all required fields before submitting. The page will scroll to t
       <div class="col-md-6">
         <label class="form-label">Match Status *</label>
         <select class="form-select" name="match_outcome" id="match-outcome" required>
-          <option value="played"` + selStr(val("match_outcome"), "played") + `>Played</option>
-          <option value="play_started_abandoned"` + selStr(val("match_outcome"), "play_started_abandoned") + `>Play Started - Match Abandoned</option>
-          <option value="no_play"` + selStr(val("match_outcome"), "no_play") + `>No Play</option>
-          <option value="conceded_other_team"` + selStr(val("match_outcome"), "conceded_other_team") + `>Conceded - Other Team</option>
-          <option value="conceded_our_team"` + selStr(val("match_outcome"), "conceded_our_team") + `>Conceded - Our Team</option>
+          <option value="played"`+selStr(val("match_outcome"), "played")+`>Played</option>
+          <option value="play_started_abandoned"`+selStr(val("match_outcome"), "play_started_abandoned")+`>Play Started - Match Abandoned</option>
+          <option value="no_play"`+selStr(val("match_outcome"), "no_play")+`>No Play</option>
+          <option value="conceded_other_team"`+selStr(val("match_outcome"), "conceded_other_team")+`>Conceded - Other Team</option>
+          <option value="conceded_our_team"`+selStr(val("match_outcome"), "conceded_our_team")+`>Conceded - Our Team</option>
         </select>
       </div>
     </div>

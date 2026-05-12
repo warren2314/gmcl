@@ -236,15 +236,13 @@ func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, star
 
 	var expected int64
 	_ = s.DB.QueryRow(ctx, fmt.Sprintf(`
-		SELECT COUNT(*) FROM (
-		    SELECT DISTINCT t.id, lf.match_date
-		    FROM league_fixtures lf
-		    JOIN teams t ON (
-		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
-		        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
-		    )
-		    WHERE %s
-		) expected_reports
+		SELECT COUNT(*)
+		FROM league_fixtures lf
+		JOIN teams t ON (
+		    TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+		    TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		)
+		WHERE %s
 	`, where), args...).Scan(&expected)
 	return expected
 }
@@ -253,7 +251,7 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 	rows, err := s.DB.Query(ctx, `
 		WITH fixture_counts AS (
 		    SELECT t.id AS team_id,
-		           COUNT(DISTINCT lf.match_date) AS fixture_count
+		           COUNT(*) AS fixture_count
 		    FROM teams t
 		    JOIN league_fixtures lf ON (
 		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
@@ -269,7 +267,7 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 		),
 		submit_counts AS (
 		    SELECT team_id,
-		           COUNT(DISTINCT match_date) AS submit_count
+		           COUNT(*) AS submit_count
 		    FROM submissions
 		    WHERE week_id=$1
 		    GROUP BY team_id

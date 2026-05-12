@@ -553,22 +553,29 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 		}
 
 		// Determine which fixture to pre-fill.
-		// Priority: (1) token match_date, (2) ?match_date= query param, (3) auto-select.
+		// Priority: (1) ?fixture_id= query param, (2) token match_date, (3) ?match_date= legacy query param, (4) auto-select.
 		var weekStart, weekEnd time.Time
 		_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id = $1`, sess.WeekID).Scan(&weekStart, &weekEnd)
 
 		now := time.Now()
 
-		// Resolve target match date.
-		// Explicit ?match_date= from the fixture chooser takes priority so captains
-		// with a double-header can switch between games even when their token is
-		// scoped to a specific date.
+		var targetFixtureID int64
+		if qf := r.URL.Query().Get("fixture_id"); qf != "" {
+			targetFixtureID, _ = strconv.ParseInt(qf, 10, 64)
+		}
+		if targetFixtureID > 0 && formVal(draft, "play_cricket_match_id") != strconv.FormatInt(targetFixtureID, 10) {
+			draft = make(map[string]any)
+		}
+
+		// Resolve target match date for legacy links/tokens. The fixture chooser uses
+		// Play-Cricket match ids so double-headers on the same date remain distinct.
 		var targetDate *time.Time
-		if qd := r.URL.Query().Get("match_date"); qd != "" {
+		if targetFixtureID == 0 && r.URL.Query().Get("match_date") != "" {
+			qd := r.URL.Query().Get("match_date")
 			if pd, err := time.Parse("2006-01-02", qd); err == nil {
 				targetDate = &pd
 			}
-		} else if sess.MatchDate != nil {
+		} else if targetFixtureID == 0 && sess.MatchDate != nil {
 			targetDate = sess.MatchDate
 		}
 
@@ -579,11 +586,12 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 		}
 
 		// Auto-select: pick first unsubmitted fixture if no target specified.
-		if targetDate == nil && len(weekFixtures) > 0 {
+		if targetFixtureID == 0 && targetDate == nil && len(weekFixtures) > 0 {
 			for i := range weekFixtures {
 				if !weekFixtures[i].Submitted {
 					d := weekFixtures[i].MatchDate
 					targetDate = &d
+					targetFixtureID = weekFixtures[i].PlayCricketMatchID
 					break
 				}
 			}
@@ -591,12 +599,15 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			if targetDate == nil {
 				d := weekFixtures[len(weekFixtures)-1].MatchDate
 				targetDate = &d
+				targetFixtureID = weekFixtures[len(weekFixtures)-1].PlayCricketMatchID
 			}
 		}
 
 		var fp leagueapi.FixturePrefill
 		var fpOK bool
-		if targetDate != nil {
+		if targetFixtureID > 0 {
+			fp, fpOK = leagueapi.LookupFixturePrefillByMatchID(ctx, s.DB, sess.TeamID, targetFixtureID)
+		} else if targetDate != nil {
 			fp, fpOK = leagueapi.LookupFixturePrefillByDate(ctx, s.DB, sess.TeamID, *targetDate)
 		} else if !weekStart.IsZero() {
 			fp, fpOK = leagueapi.LookupFixturePrefill(ctx, s.DB, sess.TeamID, weekStart, weekEnd)
@@ -605,6 +616,10 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			filled := false
 			if formVal(draft, "match_date") == "" && fp.MatchDate != "" {
 				draft["match_date"] = fp.MatchDate
+				filled = true
+			}
+			if formVal(draft, "play_cricket_match_id") == "" && fp.PlayCricketMatchID > 0 {
+				draft["play_cricket_match_id"] = strconv.FormatInt(fp.PlayCricketMatchID, 10)
 				filled = true
 			}
 			if formVal(draft, "umpire1_name") == "" && fp.Umpire1 != "" {
@@ -651,7 +666,7 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 					label += " — " + wf.Opposition + " (" + venue + ")"
 				}
 				btnClass := "btn btn-outline-primary btn-sm"
-				if ds == activeDateStr {
+				if wf.PlayCricketMatchID == targetFixtureID || (targetFixtureID == 0 && ds == activeDateStr) {
 					btnClass = "btn btn-primary btn-sm"
 				}
 				tick := ""
@@ -659,7 +674,7 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 					tick = " ✓"
 					btnClass = "btn btn-outline-success btn-sm"
 				}
-				fixtureChooser += fmt.Sprintf(`<a href="/captain/form?match_date=%s" class="%s">%s%s</a>`, ds, btnClass, escapeHTML(label), tick)
+				fixtureChooser += fmt.Sprintf(`<a href="/captain/form?fixture_id=%d" class="%s">%s%s</a>`, wf.PlayCricketMatchID, btnClass, escapeHTML(label), tick)
 			}
 			fixtureChooser += `</div></div>`
 		}
@@ -850,6 +865,7 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 
 		// Required GMCL fields
 		matchDateStr := r.FormValue("match_date")
+		playCricketMatchID, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("play_cricket_match_id")), 10, 64)
 		matchOutcome := strings.TrimSpace(r.FormValue("match_outcome"))
 		if matchOutcome == "" {
 			matchOutcome = "played"
@@ -958,6 +974,9 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 
 		// Store resolved umpire names into formData keys the rest of the code expects
 		formData := buildGMCLDraftFromRequest(r)
+		if playCricketMatchID > 0 {
+			formData["play_cricket_match_id"] = strconv.FormatInt(playCricketMatchID, 10)
+		}
 		formData["umpire1_name"] = umpire1
 		formData["umpire2_name"] = umpire2
 		comments := ""
@@ -1008,7 +1027,13 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			submittedByName = strings.TrimSpace(sess.SubmitterName)
 			submittedByEmail = strings.TrimSpace(sess.SubmitterEmail)
 		}
-		homeClubID := leagueapi.LookupHomeClubID(ctx, s.DB, sess.TeamID, matchDate)
+		homeClubID := int32(0)
+		if playCricketMatchID > 0 {
+			homeClubID = leagueapi.LookupHomeClubIDByMatchID(ctx, s.DB, sess.TeamID, playCricketMatchID)
+		}
+		if homeClubID == 0 {
+			homeClubID = leagueapi.LookupHomeClubID(ctx, s.DB, sess.TeamID, matchDate)
+		}
 		var homeClubIDArg any
 		if homeClubID > 0 {
 			homeClubIDArg = homeClubID
@@ -1017,13 +1042,13 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			INSERT INTO submissions (season_id, week_id, team_id, captain_id, match_date,
 			                         pitch_rating, outfield_rating, facilities_rating, comments, form_data,
 			                         submitted_by_name, submitted_by_email, submitted_by_role, umpire1_type, umpire2_type,
-			                         home_club_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15, $16)
+			                         home_club_id, play_cricket_match_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15, $16, NULLIF($17, 0))
 			RETURNING id
 		`, sess.SeasonID, sess.WeekID, sess.TeamID, sess.CaptainID, matchDate.Format("2006-01-02"),
 			pitchRating, outfieldRating, facilitiesRating, comments, formDataJSON,
 			submittedByName, submittedByEmail, submittedByRole, umpire1Type, umpire2Type,
-			homeClubIDArg).Scan(&submissionID)
+			homeClubIDArg, playCricketMatchID).Scan(&submissionID)
 		if err != nil {
 			http.Error(w, "could not save submission", http.StatusInternalServerError)
 			return

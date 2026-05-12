@@ -10,12 +10,13 @@ import (
 
 // FixturePrefill holds data pre-populated from league_fixtures for the captain form.
 type FixturePrefill struct {
-	MatchDate   string // YYYY-MM-DD
-	Opposition  string // opposing club + team name
-	Venue       string // ground name
-	Umpire1     string
-	Umpire2     string
-	IsHome      bool
+	PlayCricketMatchID int64
+	MatchDate          string // YYYY-MM-DD
+	Opposition         string // opposing club + team name
+	Venue              string // ground name
+	Umpire1            string
+	Umpire2            string
+	IsHome             bool
 }
 
 // LookupFixturePrefill finds the fixture for this team within the given week date range
@@ -29,19 +30,20 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 	id := strings.TrimSpace(*pcID)
 
 	var (
-		matchDate    time.Time
-		homeTeamPCID *string
-		awayTeamPCID *string
-		homeClubName *string
-		homeTeamName *string
-		awayClubName *string
-		awayTeamName *string
-		groundName   *string
-		umpire1      *string
-		umpire2      *string
+		playCricketMatchID int64
+		matchDate          time.Time
+		homeTeamPCID       *string
+		awayTeamPCID       *string
+		homeClubName       *string
+		homeTeamName       *string
+		awayClubName       *string
+		awayTeamName       *string
+		groundName         *string
+		umpire1            *string
+		umpire2            *string
 	)
 	err := pool.QueryRow(ctx, `
-		SELECT match_date,
+		SELECT play_cricket_match_id, match_date,
 		       home_team_pc_id, away_team_pc_id,
 		       home_club_name, home_team_name,
 		       away_club_name, away_team_name,
@@ -50,6 +52,7 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 		WHERE match_date BETWEEN $1 AND $2
 		  AND match_date <= CURRENT_DATE
 		  AND EXTRACT(DOW FROM match_date) <> 5
+		  AND NOT is_bye
 		  AND (TRIM(home_team_pc_id) = $3 OR TRIM(away_team_pc_id) = $3)
 		ORDER BY
 		    EXISTS(
@@ -62,6 +65,7 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 		    fetched_at DESC
 		LIMIT 1
 	`, weekStart.Format("2006-01-02"), weekEnd.Format("2006-01-02"), id).Scan(
+		&playCricketMatchID,
 		&matchDate,
 		&homeTeamPCID, &awayTeamPCID,
 		&homeClubName, &homeTeamName,
@@ -96,21 +100,23 @@ func LookupFixturePrefill(ctx context.Context, pool *db.Pool, teamID int32, week
 	}
 
 	return FixturePrefill{
-		MatchDate:  matchDate.Format("2006-01-02"),
-		Opposition: opposition,
-		Venue:      venue,
-		Umpire1:    str(umpire1),
-		Umpire2:    str(umpire2),
-		IsHome:     isHome,
+		PlayCricketMatchID: playCricketMatchID,
+		MatchDate:          matchDate.Format("2006-01-02"),
+		Opposition:         opposition,
+		Venue:              venue,
+		Umpire1:            str(umpire1),
+		Umpire2:            str(umpire2),
+		IsHome:             isHome,
 	}, true
 }
 
 // WeekFixture is a slim fixture summary used for the multi-fixture chooser on the captain form.
 type WeekFixture struct {
-	MatchDate  time.Time
-	Opposition string
-	IsHome     bool
-	Submitted  bool
+	PlayCricketMatchID int64
+	MatchDate          time.Time
+	Opposition         string
+	IsHome             bool
+	Submitted          bool
 }
 
 // LookupWeekFixtures returns all non-Friday fixtures for the team within the week that are on or
@@ -133,7 +139,8 @@ func LookupWeekFixtures(ctx context.Context, pool *db.Pool, teamID int32, weekSt
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT DISTINCT ON (match_date)
+		SELECT
+		    play_cricket_match_id,
 		    match_date,
 		    home_team_pc_id, away_team_pc_id,
 		    COALESCE(away_club_name,'') || ' ' || COALESCE(away_team_name,'') AS away_opp,
@@ -142,14 +149,29 @@ func LookupWeekFixtures(ctx context.Context, pool *db.Pool, teamID int32, weekSt
 		        SELECT 1 FROM submissions s
 		        JOIN teams t2 ON t2.id = s.team_id
 		        WHERE t2.play_cricket_team_id = $3
-		          AND s.match_date = league_fixtures.match_date
+		          AND (
+		              s.play_cricket_match_id = league_fixtures.play_cricket_match_id
+		              OR (
+		                  s.play_cricket_match_id IS NULL
+		                  AND s.match_date = league_fixtures.match_date
+		                  AND NOT EXISTS (
+		                      SELECT 1 FROM league_fixtures lf2
+		                      WHERE lf2.play_cricket_match_id <> league_fixtures.play_cricket_match_id
+		                        AND lf2.match_date = league_fixtures.match_date
+		                        AND (TRIM(lf2.home_team_pc_id) = $3 OR TRIM(lf2.away_team_pc_id) = $3)
+		                        AND EXTRACT(DOW FROM lf2.match_date) <> 5
+		                        AND NOT lf2.is_bye
+		                  )
+		              )
+		          )
 		    ) AS submitted
 		FROM league_fixtures
 		WHERE match_date BETWEEN $1 AND $2
 		  AND match_date <= $4
 		  AND EXTRACT(DOW FROM match_date) <> 5
+		  AND NOT is_bye
 		  AND (TRIM(home_team_pc_id) = $3 OR TRIM(away_team_pc_id) = $3)
-		ORDER BY match_date ASC, fetched_at DESC
+		ORDER BY match_date ASC, play_cricket_match_id ASC
 	`, weekStart.Format("2006-01-02"), weekEnd.Format("2006-01-02"), id, cutoff.Format("2006-01-02"))
 	if err != nil {
 		return nil, err
@@ -160,7 +182,7 @@ func LookupWeekFixtures(ctx context.Context, pool *db.Pool, teamID int32, weekSt
 	for rows.Next() {
 		var wf WeekFixture
 		var homePCID, awayPCID, awayOpp, homeOpp string
-		if err := rows.Scan(&wf.MatchDate, &homePCID, &awayPCID, &awayOpp, &homeOpp, &wf.Submitted); err != nil {
+		if err := rows.Scan(&wf.PlayCricketMatchID, &wf.MatchDate, &homePCID, &awayPCID, &awayOpp, &homeOpp, &wf.Submitted); err != nil {
 			continue
 		}
 		wf.IsHome = strings.TrimSpace(homePCID) == id
@@ -174,12 +196,10 @@ func LookupWeekFixtures(ctx context.Context, pool *db.Pool, teamID int32, weekSt
 	return fixtures, rows.Err()
 }
 
-// LookupFixturePrefillByDate looks up a fixture for a specific match date (exact match).
-// Used when the magic link token carries a known match_date.
-func LookupFixturePrefillByDate(ctx context.Context, pool *db.Pool, teamID int32, matchDate time.Time) (FixturePrefill, bool) {
+func LookupFixturePrefillByMatchID(ctx context.Context, pool *db.Pool, teamID int32, playCricketMatchID int64) (FixturePrefill, bool) {
 	var pcID *string
 	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
-	if pcID == nil || strings.TrimSpace(*pcID) == "" {
+	if pcID == nil || strings.TrimSpace(*pcID) == "" || playCricketMatchID == 0 {
 		return FixturePrefill{}, false
 	}
 	id := strings.TrimSpace(*pcID)
@@ -203,11 +223,10 @@ func LookupFixturePrefillByDate(ctx context.Context, pool *db.Pool, teamID int32
 		       away_club_name, away_team_name,
 		       ground_name, umpire_1_name, umpire_2_name
 		FROM league_fixtures
-		WHERE match_date = $1
+		WHERE play_cricket_match_id = $1
 		  AND (TRIM(home_team_pc_id) = $2 OR TRIM(away_team_pc_id) = $2)
-		ORDER BY fetched_at DESC
 		LIMIT 1
-	`, matchDate.Format("2006-01-02"), id).Scan(
+	`, playCricketMatchID, id).Scan(
 		&md,
 		&homeTeamPCID, &awayTeamPCID,
 		&homeClubName, &homeTeamName,
@@ -242,12 +261,94 @@ func LookupFixturePrefillByDate(ctx context.Context, pool *db.Pool, teamID int32
 	}
 
 	return FixturePrefill{
-		MatchDate:  md.Format("2006-01-02"),
-		Opposition: opposition,
-		Venue:      venue,
-		Umpire1:    str(umpire1),
-		Umpire2:    str(umpire2),
-		IsHome:     isHome,
+		PlayCricketMatchID: playCricketMatchID,
+		MatchDate:          md.Format("2006-01-02"),
+		Opposition:         opposition,
+		Venue:              venue,
+		Umpire1:            str(umpire1),
+		Umpire2:            str(umpire2),
+		IsHome:             isHome,
+	}, true
+}
+
+// LookupFixturePrefillByDate looks up a fixture for a specific match date (exact match).
+// Used when the magic link token carries a known match_date.
+func LookupFixturePrefillByDate(ctx context.Context, pool *db.Pool, teamID int32, matchDate time.Time) (FixturePrefill, bool) {
+	var pcID *string
+	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
+	if pcID == nil || strings.TrimSpace(*pcID) == "" {
+		return FixturePrefill{}, false
+	}
+	id := strings.TrimSpace(*pcID)
+
+	var (
+		playCricketMatchID int64
+		md                 time.Time
+		homeTeamPCID       *string
+		awayTeamPCID       *string
+		homeClubName       *string
+		homeTeamName       *string
+		awayClubName       *string
+		awayTeamName       *string
+		groundName         *string
+		umpire1            *string
+		umpire2            *string
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT play_cricket_match_id, match_date,
+		       home_team_pc_id, away_team_pc_id,
+		       home_club_name, home_team_name,
+		       away_club_name, away_team_name,
+		       ground_name, umpire_1_name, umpire_2_name
+		FROM league_fixtures
+		WHERE match_date = $1
+		  AND NOT is_bye
+		  AND (TRIM(home_team_pc_id) = $2 OR TRIM(away_team_pc_id) = $2)
+		ORDER BY fetched_at DESC
+		LIMIT 1
+	`, matchDate.Format("2006-01-02"), id).Scan(
+		&playCricketMatchID,
+		&md,
+		&homeTeamPCID, &awayTeamPCID,
+		&homeClubName, &homeTeamName,
+		&awayClubName, &awayTeamName,
+		&groundName, &umpire1, &umpire2,
+	)
+	if err != nil {
+		return FixturePrefill{}, false
+	}
+
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return strings.TrimSpace(*s)
+	}
+
+	isHome := str(homeTeamPCID) == id
+	var opposition, venue string
+	if isHome {
+		opposition = strings.TrimSpace(str(awayClubName) + " " + str(awayTeamName))
+		venue = str(groundName)
+		if venue == "" {
+			venue = str(homeClubName)
+		}
+	} else {
+		opposition = strings.TrimSpace(str(homeClubName) + " " + str(homeTeamName))
+		venue = str(groundName)
+		if venue == "" {
+			venue = str(homeClubName)
+		}
+	}
+
+	return FixturePrefill{
+		PlayCricketMatchID: playCricketMatchID,
+		MatchDate:          md.Format("2006-01-02"),
+		Opposition:         opposition,
+		Venue:              venue,
+		Umpire1:            str(umpire1),
+		Umpire2:            str(umpire2),
+		IsHome:             isHome,
 	}, true
 }
 
@@ -274,6 +375,32 @@ func LookupHomeClubID(ctx context.Context, pool *db.Pool, teamID int32, matchDat
 		ORDER BY lf.fetched_at DESC
 		LIMIT 1
 	`, matchDate.Format("2006-01-02"), id).Scan(&homeClubID)
+
+	if homeClubID == nil {
+		return 0
+	}
+	return *homeClubID
+}
+
+func LookupHomeClubIDByMatchID(ctx context.Context, pool *db.Pool, teamID int32, playCricketMatchID int64) int32 {
+	var pcID *string
+	_ = pool.QueryRow(ctx, `SELECT play_cricket_team_id FROM teams WHERE id = $1`, teamID).Scan(&pcID)
+	if pcID == nil || strings.TrimSpace(*pcID) == "" || playCricketMatchID == 0 {
+		return 0
+	}
+	id := strings.TrimSpace(*pcID)
+
+	var homeClubID *int32
+	_ = pool.QueryRow(ctx, `
+		SELECT cl.id
+		FROM league_fixtures lf
+		JOIN teams ht ON TRIM(ht.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+		JOIN clubs cl ON cl.id = ht.club_id
+		WHERE lf.play_cricket_match_id = $1
+		  AND (TRIM(lf.home_team_pc_id) = $2 OR TRIM(lf.away_team_pc_id) = $2)
+		  AND TRIM(COALESCE(lf.home_team_pc_id, '')) <> ''
+		LIMIT 1
+	`, playCricketMatchID, id).Scan(&homeClubID)
 
 	if homeClubID == nil {
 		return 0
