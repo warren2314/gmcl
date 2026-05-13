@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/auth"
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 )
@@ -29,6 +31,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 		}
 
 		type row struct {
+			TeamID      int32
 			ClubName    string
 			TeamName    string
 			CaptainName string
@@ -42,6 +45,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 		// All active teams with a fixture on this date, plus their submission/reminder status
 		rows, _ := s.DB.Query(ctx, `
 			SELECT
+			    t.id                                             AS team_id,
 			    cl.name                                           AS club,
 			    t.name                                           AS team,
 			    COALESCE(c.full_name, '(no captain)')           AS captain,
@@ -72,7 +76,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			defer rows.Close()
 			for rows.Next() {
 				var rr row
-				if rows.Scan(&rr.ClubName, &rr.TeamName, &rr.CaptainName, &rr.Email,
+				if rows.Scan(&rr.TeamID, &rr.ClubName, &rr.TeamName, &rr.CaptainName, &rr.Email,
 					&rr.HasFixture, &rr.HasSubmit, &rr.AlreadySent) == nil {
 					rr.WouldSend = rr.HasFixture && !rr.HasSubmit && !rr.AlreadySent && rr.Email != ""
 					results = append(results, rr)
@@ -164,6 +168,12 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-success">Reminder send completed: %s sent, %s skipped.</div>`,
 				escapeHTML(sentRaw), escapeHTML(r.URL.Query().Get("skipped")))
 		}
+		if msg := strings.TrimSpace(r.URL.Query().Get("msg")); msg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
+		}
+		if errMsg := strings.TrimSpace(r.URL.Query().Get("error")); errMsg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(errMsg))
+		}
 
 		// Summary badges
 		wouldSend := 0
@@ -234,7 +244,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Club</th><th>Team</th><th>Captain</th><th>Email</th><th>Submitted?</th><th>Reminder sent?</th><th>Will receive email?</th>
+        <th>Club</th><th>Team</th><th>Captain</th><th>Email</th><th>Submitted?</th><th>Reminder sent?</th><th>Will receive email?</th><th></th>
       </tr></thead>
       <tbody>
 `)
@@ -257,9 +267,18 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 				} else if rr.Email == "" {
 					willSend = `<span class="badge bg-danger">No email</span>`
 				}
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+				actionCell := `<span class="text-muted">-</span>`
+				if rr.WouldSend {
+					actionCell = fmt.Sprintf(`<form method="POST" action="/admin/reminders/send-team" class="d-inline" onsubmit="return confirm('Send reminder to %s?')">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="date" value="%s">
+  <input type="hidden" name="team_id" value="%d">
+  <button type="submit" class="btn btn-warning btn-sm py-0">Send now</button>
+</form>`, escapeHTML(rr.Email), escapeHTML(csrfToken), escapeHTML(dateStr), rr.TeamID)
+				}
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 					escapeHTML(rr.ClubName), escapeHTML(rr.TeamName), escapeHTML(rr.CaptainName),
-					escapeHTML(rr.Email), submitBadge, sentBadge, willSend)
+					escapeHTML(rr.Email), submitBadge, sentBadge, willSend, actionCell)
 			}
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
@@ -355,6 +374,120 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 		})
 		http.Redirect(w, r, fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", dateStr, sent, skipped), http.StatusSeeOther)
 	}
+}
+
+func (s *Server) handleAdminReminderSendTeam() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		dateStr := strings.TrimSpace(r.FormValue("date"))
+		matchDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			http.Error(w, "invalid date", http.StatusBadRequest)
+			return
+		}
+		teamID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("team_id")), 10, 32)
+		if err != nil || teamID <= 0 {
+			http.Error(w, "invalid team", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		emailAddr, err := s.sendReminderForTeamDate(ctx, email.NewFromEnv(), int32(teamID), matchDate, "game_day")
+		redirect := "/admin/reminders/preview?date=" + url.QueryEscape(dateStr)
+		if err != nil {
+			http.Redirect(w, r, redirect+"&error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
+		s.audit(ctx, r, "admin", nil, "admin_send_team_game_day_reminder", "reminder", nil, map[string]any{
+			"match_date": dateStr,
+			"team_id":    teamID,
+			"email":      emailAddr,
+		})
+		http.Redirect(w, r, redirect+"&msg="+url.QueryEscape("Reminder sent to "+emailAddr), http.StatusSeeOther)
+	}
+}
+
+func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Client, teamID int32, matchDate time.Time, reminderType string) (string, error) {
+	dateStr := matchDate.Format("2006-01-02")
+	var ct struct {
+		TeamID     int32
+		WeekID     int32
+		SeasonID   int32
+		CaptainID  int32
+		FullName   string
+		Email      string
+		ClubName   string
+		TeamName   string
+		Opposition string
+		IsHome     bool
+	}
+	err := s.DB.QueryRow(ctx, `
+		SELECT DISTINCT ON (t.id)
+		    t.id,
+		    w.id,
+		    w.season_id,
+		    c.id,
+		    c.full_name,
+		    TRIM(c.email),
+		    cl.name,
+		    t.name,
+		    CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		         THEN COALESCE(TRIM(lf.away_club_name),'') || ' ' || COALESCE(TRIM(lf.away_team_name),'')
+		         ELSE COALESCE(TRIM(lf.home_club_name),'') || ' ' || COALESCE(TRIM(lf.home_team_name),'')
+		    END,
+		    TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		FROM league_fixtures lf
+		JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+		              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
+		JOIN clubs cl ON cl.id = t.club_id
+		JOIN captains c ON c.team_id = t.id
+		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		    AND TRIM(c.email) <> ''
+		JOIN weeks w ON $1 BETWEEN w.start_date AND w.end_date
+		    AND w.season_id = (SELECT id FROM seasons WHERE is_archived = FALSE ORDER BY id DESC LIMIT 1)
+		WHERE lf.match_date = $1
+		  AND t.id = $2
+		  AND t.active = TRUE
+		  AND NOT lf.is_bye
+		  AND NOT EXISTS (
+		      SELECT 1 FROM submissions
+		      WHERE team_id = t.id AND match_date = $1
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM captain_reminder_log
+		      WHERE team_id = t.id AND match_date = $1 AND reminder_type = $3
+		  )
+		ORDER BY t.id, c.active_from DESC
+	`, matchDate, teamID, reminderType).Scan(
+		&ct.TeamID, &ct.WeekID, &ct.SeasonID, &ct.CaptainID, &ct.FullName, &ct.Email,
+		&ct.ClubName, &ct.TeamName, &ct.Opposition, &ct.IsHome,
+	)
+	if err != nil {
+		return "", fmt.Errorf("no eligible reminder target found for this team/date")
+	}
+
+	token, err := auth.GenerateAndStoreMagicTokenForDate(
+		ctx, s.DB, ct.CaptainID, ct.SeasonID, ct.WeekID, matchDate, nextWednesdayMidnight(matchDate), "", "admin-reminder",
+	)
+	if err != nil {
+		return ct.Email, fmt.Errorf("could not create magic link: %w", err)
+	}
+	link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
+	subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, strings.TrimSpace(ct.Opposition), ct.IsHome, link)
+	if err := mailer.Send(ct.Email, subject, body); err != nil {
+		return ct.Email, fmt.Errorf("email send failed for %s: %w", ct.Email, err)
+	}
+	_, _ = s.DB.Exec(ctx, `
+		INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
+	`, ct.TeamID, ct.WeekID, matchDate, reminderType, ct.Email)
+	return ct.Email, nil
 }
 
 func (s *Server) handleAdminReminderMapFixtureSide() http.HandlerFunc {
