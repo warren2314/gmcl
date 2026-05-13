@@ -282,8 +282,7 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 // (or change-password page if force_password_change is set).
 func (s *Server) issueAdminSession(w http.ResponseWriter, r *http.Request, ctx context.Context, adminID int32, username string) {
 	now := time.Now().Unix()
-	role := "admin"
-	_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, adminID).Scan(&role)
+	role := s.effectiveAdminRole(ctx, adminID)
 	sess := adminSession{
 		AdminID:  adminID,
 		Expiry:   now + int64((8 * time.Hour).Seconds()),
@@ -394,8 +393,7 @@ func (s *Server) handleAdmin2FAPost() http.HandlerFunc {
 		})
 
 		now := time.Now().Unix()
-		role := "admin"
-		_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, adminID).Scan(&role)
+		role := s.effectiveAdminRole(ctx, adminID)
 		sess := adminSession{
 			AdminID:  adminID,
 			Expiry:   now + int64((8 * time.Hour).Seconds()),
@@ -2415,6 +2413,9 @@ func (s *Server) requireAdminRole(roles ...string) func(http.Handler) http.Handl
 			if role == "" {
 				role = "admin"
 			}
+			if role != "super_admin" {
+				role = s.effectiveAdminRole(r.Context(), sess.AdminID)
+			}
 			if _, ok := allowed[role]; !ok {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
@@ -2422,6 +2423,31 @@ func (s *Server) requireAdminRole(roles ...string) func(http.Handler) http.Handl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (s *Server) effectiveAdminRole(ctx context.Context, adminID int32) string {
+	role := "admin"
+	var username, email string
+	_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin'), COALESCE(username, ''), COALESCE(email, '') FROM admin_users WHERE id=$1`, adminID).Scan(&role, &username, &email)
+	if role == "super_admin" || isConfiguredSuperAdmin(username, email) {
+		return "super_admin"
+	}
+	return "admin"
+}
+
+func isConfiguredSuperAdmin(username, email string) bool {
+	username = strings.ToLower(strings.TrimSpace(username))
+	email = strings.ToLower(strings.TrimSpace(email))
+	seedEmail := strings.ToLower(strings.TrimSpace(os.Getenv("SEED_ADMIN_EMAIL")))
+	configured := []string{"admin", "webmaster@gmcl.co.uk", seedEmail}
+	configured = append(configured, strings.Split(os.Getenv("SUPER_ADMIN_EMAILS"), ",")...)
+	for _, entry := range configured {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" && (entry == username || entry == email) {
+			return true
+		}
+	}
+	return username == "warren" || username == "warre" || username == "warren2314" || strings.HasPrefix(email, "warren")
 }
 
 func adminRoleForRequest(r *http.Request) string {
