@@ -108,11 +108,13 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 // who played on matchDate and haven't already received this reminder type.
 func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client, matchDate time.Time, reminderType string) (sent, skipped int, err error) {
 	dateStr := matchDate.Format("2006-01-02")
+	seasonID, weekID, err := s.reminderWeekForDate(ctx, matchDate)
+	if err != nil {
+		return 0, 0, err
+	}
 
 	type captainTarget struct {
 		TeamID     int32
-		WeekID     int32
-		SeasonID   int32
 		CaptainID  int32
 		FullName   string
 		Email      string
@@ -125,8 +127,6 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 	rows, err := s.DB.Query(ctx, `
 		SELECT DISTINCT ON (t.id)
 		    t.id        AS team_id,
-		    w.id        AS week_id,
-		    w.season_id,
 		    c.id        AS captain_id,
 		    c.full_name,
 		    c.email,
@@ -144,8 +144,6 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		JOIN captains c ON c.team_id = t.id
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    AND TRIM(c.email) <> ''
-		JOIN weeks w ON $1 BETWEEN w.start_date AND w.end_date
-		JOIN seasons se ON se.id = w.season_id AND se.is_archived = FALSE
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
 		  AND NOT lf.is_bye
@@ -167,7 +165,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 	var targets []captainTarget
 	for rows.Next() {
 		var ct captainTarget
-		if e := rows.Scan(&ct.TeamID, &ct.WeekID, &ct.SeasonID, &ct.CaptainID,
+		if e := rows.Scan(&ct.TeamID, &ct.CaptainID,
 			&ct.FullName, &ct.Email, &ct.ClubName, &ct.TeamName,
 			&ct.Opposition, &ct.IsHome); e != nil {
 			return 0, 0, e
@@ -184,7 +182,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 
 	for _, ct := range targets {
 		token, err := auth.GenerateAndStoreMagicTokenForDate(
-			ctx, s.DB, ct.CaptainID, ct.SeasonID, ct.WeekID, matchDate, weekExpiry, "", "n8n-reminder",
+			ctx, s.DB, ct.CaptainID, seasonID, weekID, matchDate, weekExpiry, "", "n8n-reminder",
 		)
 		if err != nil {
 			skipped++
@@ -203,12 +201,27 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 			INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-		`, ct.TeamID, ct.WeekID, matchDate, reminderType, ct.Email)
+		`, ct.TeamID, weekID, matchDate, reminderType, ct.Email)
 
 		sent++
 	}
 
 	return sent, skipped, nil
+}
+
+func (s *Server) reminderWeekForDate(ctx context.Context, matchDate time.Time) (seasonID, weekID int32, err error) {
+	err = s.DB.QueryRow(ctx, `
+		SELECT w.season_id, w.id
+		FROM weeks w
+		JOIN seasons se ON se.id = w.season_id
+		WHERE $1::date BETWEEN w.start_date AND w.end_date
+		ORDER BY se.is_archived ASC, se.start_date DESC, w.week_number DESC
+		LIMIT 1
+	`, matchDate.Format("2006-01-02")).Scan(&seasonID, &weekID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("no week found covering %s; generate weeks from Play-Cricket fixtures first", matchDate.Format("2006-01-02"))
+	}
+	return seasonID, weekID, nil
 }
 
 // handleInternalGenerateSanctions runs at Wed 23:59 to auto-draft sanction notices

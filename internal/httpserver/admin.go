@@ -89,6 +89,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/reminders/preview", s.handleAdminReminderPreview())
 		r.Post("/reminders/send-date", s.handleAdminReminderSendDate())
 		r.Post("/reminders/send-team", s.handleAdminReminderSendTeam())
+		r.Post("/reminders/unmark-bye", s.handleAdminReminderUnmarkBye())
 		r.With(s.requireAdminRole("super_admin")).Post("/reminders/map-fixture-side", s.handleAdminReminderMapFixtureSide())
 		r.Get("/captain-preview", s.handleAdminCaptainPreview())
 

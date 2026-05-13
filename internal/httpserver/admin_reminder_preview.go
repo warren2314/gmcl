@@ -39,6 +39,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			HasFixture  bool
 			HasSubmit   bool
 			AlreadySent bool
+			IsBye       bool
 			WouldSend   bool
 		}
 
@@ -59,7 +60,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			    EXISTS(
 			        SELECT 1 FROM captain_reminder_log rl
 			        WHERE rl.team_id = t.id AND rl.match_date = $1
-			    )                                               AS already_sent
+			    )                                               AS already_sent,
+			    lf.is_bye                                       AS is_bye
 			FROM league_fixtures lf
 			JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
 			              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
@@ -77,8 +79,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			for rows.Next() {
 				var rr row
 				if rows.Scan(&rr.TeamID, &rr.ClubName, &rr.TeamName, &rr.CaptainName, &rr.Email,
-					&rr.HasFixture, &rr.HasSubmit, &rr.AlreadySent) == nil {
-					rr.WouldSend = rr.HasFixture && !rr.HasSubmit && !rr.AlreadySent && rr.Email != ""
+					&rr.HasFixture, &rr.HasSubmit, &rr.AlreadySent, &rr.IsBye) == nil {
+					rr.WouldSend = rr.HasFixture && !rr.IsBye && !rr.HasSubmit && !rr.AlreadySent && rr.Email != ""
 					results = append(results, rr)
 				}
 			}
@@ -184,6 +186,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			switch {
 			case rr.HasSubmit:
 				submitted++
+			case rr.IsBye:
+				alreadySent++
 			case rr.AlreadySent:
 				alreadySent++
 			case rr.Email == "":
@@ -260,6 +264,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 				willSend := `<span class="text-muted">—</span>`
 				if rr.WouldSend {
 					willSend = `<span class="badge bg-warning text-dark">&#x2713; Yes</span>`
+				} else if rr.IsBye {
+					willSend = `<span class="badge bg-secondary">Marked bye</span>`
 				} else if rr.HasSubmit {
 					willSend = `<span class="text-muted small">Submitted</span>`
 				} else if rr.AlreadySent {
@@ -275,6 +281,13 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
   <input type="hidden" name="team_id" value="%d">
   <button type="submit" class="btn btn-warning btn-sm py-0">Send now</button>
 </form>`, escapeHTML(rr.Email), escapeHTML(csrfToken), escapeHTML(dateStr), rr.TeamID)
+				} else if rr.IsBye {
+					actionCell = fmt.Sprintf(`<form method="POST" action="/admin/reminders/unmark-bye" class="d-inline" onsubmit="return confirm('Unmark this fixture as a bye?')">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="date" value="%s">
+  <input type="hidden" name="team_id" value="%d">
+  <button type="submit" class="btn btn-outline-secondary btn-sm py-0">Unmark bye</button>
+</form>`, escapeHTML(csrfToken), escapeHTML(dateStr), rr.TeamID)
 				}
 				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 					escapeHTML(rr.ClubName), escapeHTML(rr.TeamName), escapeHTML(rr.CaptainName),
@@ -412,12 +425,56 @@ func (s *Server) handleAdminReminderSendTeam() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleAdminReminderUnmarkBye() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		dateStr := strings.TrimSpace(r.FormValue("date"))
+		matchDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			http.Error(w, "invalid date", http.StatusBadRequest)
+			return
+		}
+		teamID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("team_id")), 10, 32)
+		if err != nil || teamID <= 0 {
+			http.Error(w, "invalid team", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		tag, err := s.DB.Exec(ctx, `
+			UPDATE league_fixtures lf
+			SET is_bye = FALSE
+			FROM teams t
+			WHERE t.id = $2
+			  AND lf.match_date = $1
+			  AND (TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+			       OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id))
+		`, matchDate, int32(teamID))
+		if err != nil {
+			http.Redirect(w, r, "/admin/reminders/preview?date="+url.QueryEscape(dateStr)+"&error="+url.QueryEscape("Could not unmark bye: "+err.Error()), http.StatusSeeOther)
+			return
+		}
+		s.audit(ctx, r, "admin", nil, "fixture_unmarked_bye", "league_fixture", nil, map[string]any{
+			"match_date": dateStr,
+			"team_id":    teamID,
+			"updated":    tag.RowsAffected(),
+		})
+		http.Redirect(w, r, "/admin/reminders/preview?date="+url.QueryEscape(dateStr)+"&msg="+url.QueryEscape("Fixture unmarked as bye. You can now send the reminder."), http.StatusSeeOther)
+	}
+}
+
 func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Client, teamID int32, matchDate time.Time, reminderType string) (string, error) {
 	dateStr := matchDate.Format("2006-01-02")
+	seasonID, weekID, err := s.reminderWeekForDate(ctx, matchDate)
+	if err != nil {
+		return "", err
+	}
 	var ct struct {
 		TeamID     int32
-		WeekID     int32
-		SeasonID   int32
 		CaptainID  int32
 		FullName   string
 		Email      string
@@ -426,11 +483,9 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		Opposition string
 		IsHome     bool
 	}
-	err := s.DB.QueryRow(ctx, `
+	err = s.DB.QueryRow(ctx, `
 		SELECT DISTINCT ON (t.id)
 		    t.id,
-		    w.id,
-		    w.season_id,
 		    c.id,
 		    c.full_name,
 		    TRIM(c.email),
@@ -448,8 +503,6 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		JOIN captains c ON c.team_id = t.id
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    AND TRIM(c.email) <> ''
-		JOIN weeks w ON $1 BETWEEN w.start_date AND w.end_date
-		JOIN seasons se ON se.id = w.season_id AND se.is_archived = FALSE
 		WHERE lf.match_date = $1
 		  AND t.id = $2
 		  AND t.active = TRUE
@@ -464,7 +517,7 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		  )
 		ORDER BY t.id, c.active_from DESC
 	`, matchDate, teamID, reminderType).Scan(
-		&ct.TeamID, &ct.WeekID, &ct.SeasonID, &ct.CaptainID, &ct.FullName, &ct.Email,
+		&ct.TeamID, &ct.CaptainID, &ct.FullName, &ct.Email,
 		&ct.ClubName, &ct.TeamName, &ct.Opposition, &ct.IsHome,
 	)
 	if err != nil {
@@ -472,7 +525,7 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 	}
 
 	token, err := auth.GenerateAndStoreMagicTokenForDate(
-		ctx, s.DB, ct.CaptainID, ct.SeasonID, ct.WeekID, matchDate, nextWednesdayMidnight(matchDate), "", "admin-reminder",
+		ctx, s.DB, ct.CaptainID, seasonID, weekID, matchDate, nextWednesdayMidnight(matchDate), "", "admin-reminder",
 	)
 	if err != nil {
 		return ct.Email, fmt.Errorf("could not create magic link: %w", err)
@@ -486,7 +539,7 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-	`, ct.TeamID, ct.WeekID, matchDate, reminderType, ct.Email)
+	`, ct.TeamID, weekID, matchDate, reminderType, ct.Email)
 	return ct.Email, nil
 }
 
