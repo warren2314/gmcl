@@ -79,7 +79,11 @@ func writeCaptainNav(w io.Writer) {
 }
 
 // writeAdminNav writes the admin navbar with dropdowns, active-link highlighting, and logout.
-func writeAdminNav(w io.Writer, csrfToken, activePath string) {
+func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string) {
+	role := "admin"
+	if len(roleOpt) > 0 && roleOpt[0] != "" {
+		role = roleOpt[0]
+	}
 	navLink := func(href, label string) string {
 		active := ""
 		if strings.HasPrefix(activePath, href) {
@@ -98,26 +102,13 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 		return ""
 	}
 
-	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-0 shadow-sm">
-  <div class="container-fluid px-3">
-    <a class="navbar-brand d-flex align-items-center" href="/admin/dashboard">
-      <img src="/images/logo.webp" alt="GMCL" height="40" class="me-2">
-      <span class="fw-semibold fs-6 d-none d-lg-inline">Admin</span>
-    </a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#adminNav"
-            aria-controls="adminNav" aria-expanded="false" aria-label="Toggle navigation">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="adminNav">
-      <ul class="navbar-nav me-auto mb-2 mb-md-0">
-        %s
+	opsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
             Submissions
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
             <li><a class="dropdown-item" href="/admin/submissions">Search by Club</a></li>
-            <li><a class="dropdown-item" href="/admin/submissions/import">Import Legacy CSV</a></li>
             <li><a class="dropdown-item" href="/admin/weeks">Weeks</a></li>
             <li><a class="dropdown-item" href="/admin/compliance">Compliance</a></li>
             <li><a class="dropdown-item" href="/admin/reminders/preview">Reminder Preview</a></li>
@@ -144,12 +135,52 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
         </li>
         %s
         %s
+        %s`,
+		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
+		dropdownActive("/admin/rankings"),
+		dropdownActive("/admin/reports"),
+		navLink("/admin/sanctions", "Sanctions"),
+		navLink("/admin/fixtures", "Fixtures"),
+		navLink("/admin/teams-captains", "Teams & Captains"),
+	)
+
+	superMenu := fmt.Sprintf(`
         %s
-        %s
-        %s
-        %s
-        %s
-        %s
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
+            System
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="/admin/email-health">Email Health</a></li>
+            <li><a class="dropdown-item" href="/admin/play-cricket">Play-Cricket</a></li>
+            <li><a class="dropdown-item" href="/admin/security">Security & Privacy</a></li>
+            <li><a class="dropdown-item" href="/admin/gdpr">GDPR</a></li>
+            <li><a class="dropdown-item" href="/admin/form-settings">Form Settings</a></li>
+            <li><a class="dropdown-item" href="/admin/users">Admin Users</a></li>
+            <li><a class="dropdown-item" href="/admin/csv/captains">CSV Upload</a></li>
+          </ul>
+        </li>`,
+		navLink("/admin/dashboard", "Dashboard"),
+		dropdownActive("/admin/email-health", "/admin/play-cricket", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/csv"),
+	)
+
+	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
+	if role == "super_admin" {
+		menu = superMenu
+	}
+
+	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-0 shadow-sm">
+  <div class="container-fluid px-3">
+    <a class="navbar-brand d-flex align-items-center" href="/admin/dashboard">
+      <img src="/images/logo.webp" alt="GMCL" height="40" class="me-2">
+      <span class="fw-semibold fs-6 d-none d-lg-inline">Admin</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#adminNav"
+            aria-controls="adminNav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="adminNav">
+      <ul class="navbar-nav me-auto mb-2 mb-md-0">
         %s
       </ul>
       <form method="POST" action="/admin/logout" class="d-flex">
@@ -161,19 +192,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string) {
 </nav>
 <div class="mb-4"></div>
 `,
-		navLink("/admin/dashboard", "Dashboard"),
-		dropdownActive("/admin/weeks", "/admin/compliance"),
-		dropdownActive("/admin/rankings"),
-		dropdownActive("/admin/reports"),
-		navLink("/admin/sanctions", "Sanctions"),
-		navLink("/admin/play-cricket", "Play-Cricket"),
-		navLink("/admin/fixtures", "Fixtures"),
-		navLink("/admin/teams-captains", "Teams & Captains"),
-		navLink("/admin/security", "Security & Privacy"),
-		navLink("/admin/gdpr", "GDPR"),
-		navLink("/admin/form-settings", "Form Settings"),
-		navLink("/admin/users", "Admin Users"),
-		navLink("/admin/csv/captains", "CSV Upload"),
+		menu,
 		csrfToken,
 	)
 }

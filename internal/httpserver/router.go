@@ -77,6 +77,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.With(middleware.RateLimit(60)).Get("/api/clubs/search", s.handleClubSearch())
 	r.With(middleware.RateLimit(60)).Get("/api/teams", s.handleTeamsByClub())
 	r.With(middleware.RateLimit(60)).Get("/api/captain", s.handleCaptainByTeam())
+	r.With(middleware.RateLimit(60)).Post("/webhooks/aws/ses", s.handleSESEventWebhook())
 
 	// public captain flow
 	r.Get("/", s.handlePublicEntry())

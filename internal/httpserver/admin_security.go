@@ -202,7 +202,7 @@ func (s *Server) renderAdminSecurityPage(w http.ResponseWriter, r *http.Request,
 	csrfToken := middleware.CSRFToken(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Security & Privacy")
-	writeAdminNav(w, csrfToken, r.URL.Path)
+	writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 	statusBadge := func(ok bool, goodLabel, badLabel string) string {
 		if ok {

@@ -214,7 +214,7 @@ func (s *Server) renderAdminGDPRPage(w http.ResponseWriter, r *http.Request, dat
 	csrfToken := middleware.CSRFToken(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "GDPR")
-	writeAdminNav(w, csrfToken, r.URL.Path)
+	writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 	fmt.Fprint(w, `<div class="container-fluid"><div class="d-flex align-items-center justify-content-between mb-4"><div><h3 class="mb-1">GDPR</h3><p class="text-muted mb-0">Search captains, export a data package, and anonymise a captain while preserving league reporting history.</p></div></div>`)
 	if data.SuccessMsg != "" {
 		fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(data.SuccessMsg))

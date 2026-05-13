@@ -179,6 +179,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			ID          int32
 			Username    string
 			Email       string
+			Role        string
 			IsActive    bool
 			ForceChange bool
 			LastLogin   *time.Time
@@ -186,7 +187,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 		}
 		var users []userRow
 		rows, err := s.DB.Query(ctx, `
-			SELECT id, username, email, is_active, force_password_change,
+			SELECT id, username, email, COALESCE(role, 'admin'), is_active, force_password_change,
 			       last_login_at, invited_at
 			FROM admin_users
 			ORDER BY invited_at DESC NULLS LAST, id
@@ -195,7 +196,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			defer rows.Close()
 			for rows.Next() {
 				var u userRow
-				if rows.Scan(&u.ID, &u.Username, &u.Email, &u.IsActive,
+				if rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.IsActive,
 					&u.ForceChange, &u.LastLogin, &u.InvitedAt) == nil {
 					users = append(users, u)
 				}
@@ -210,7 +211,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Admin Users")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprint(w, `
@@ -234,10 +235,17 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
         <input type="text" name="username" class="form-control form-control-sm"
                placeholder="e.g. jsmith" required>
       </div>
-      <div class="col-md-5">
+      <div class="col-md-4">
         <label class="form-label small fw-semibold">Email address</label>
         <input type="email" name="email" class="form-control form-control-sm"
                placeholder="e.g. jsmith@gmcl.co.uk" required>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small fw-semibold">Role</label>
+        <select name="role" class="form-select form-select-sm">
+          <option value="admin">Admin</option>
+          <option value="super_admin">Super admin</option>
+        </select>
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">Send Invite</button>
@@ -253,7 +261,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Username</th><th>Email</th><th>Status</th>
+        <th>Username</th><th>Email</th><th>Role</th><th>Status</th>
         <th>Last Login</th><th>Invited</th><th></th>
       </tr></thead>
       <tbody>
@@ -270,6 +278,13 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			if u.LastLogin != nil {
 				lastLogin = u.LastLogin.Format("02 Jan 2006 15:04")
 			}
+			roleLabel := "Admin"
+			roleClass := "text-bg-secondary"
+			if u.Role == "super_admin" {
+				roleLabel = "Super admin"
+				roleClass = "text-bg-dark"
+			}
+			roleCell := fmt.Sprintf(`<span class="badge %s">%s</span>`, roleClass, roleLabel)
 			invitedAt := `<span class="text-muted">—</span>`
 			if u.InvitedAt != nil {
 				invitedAt = u.InvitedAt.Format("02 Jan 2006")
@@ -280,6 +295,12 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 				actions = `<span class="text-muted small">—</span>`
 			} else {
 				if u.IsActive {
+					actions += fmt.Sprintf(`
+<form method="POST" action="/admin/users/%d/role" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="role" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-dark py-0">Make %s</button>
+</form>`, u.ID, csrfToken, oppositeAdminRole(u.Role), escapeHTML(oppositeAdminRoleLabel(u.Role)))
 					actions += fmt.Sprintf(`
 <form method="POST" action="/admin/users/%d/deactivate" class="d-inline me-1">
   <input type="hidden" name="csrf_token" value="%s">
@@ -302,12 +323,12 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			}
 
 			fmt.Fprintf(w,
-				`<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td class="small text-muted">%s</td><td class="small text-muted">%s</td><td>%s</td></tr>`,
+				`<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td class="small text-muted">%s</td><td class="small text-muted">%s</td><td>%s</td></tr>`,
 				escapeHTML(u.Username), escapeHTML(u.Email),
-				statusBadge, lastLogin, invitedAt, actions)
+				roleCell, statusBadge, lastLogin, invitedAt, actions)
 		}
 		if len(users) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No admin users found.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No admin users found.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
@@ -329,6 +350,7 @@ func (s *Server) handleAdminUserInvite() http.HandlerFunc {
 
 		username := strings.TrimSpace(r.FormValue("username"))
 		emailAddr := strings.TrimSpace(r.FormValue("email"))
+		role := normaliseAdminRole(r.FormValue("role"))
 		if username == "" || emailAddr == "" {
 			http.Error(w, "username and email required", http.StatusBadRequest)
 			return
@@ -355,11 +377,11 @@ func (s *Server) handleAdminUserInvite() http.HandlerFunc {
 		err = s.DB.QueryRow(ctx, `
 			INSERT INTO admin_users
 			    (username, password_hash, email, is_active, force_password_change,
-			     invited_by_admin_id, invited_at)
-			VALUES ($1, $2, $3, TRUE, TRUE, $4, now())
+			     invited_by_admin_id, invited_at, role)
+			VALUES ($1, $2, $3, TRUE, TRUE, $4, now(), $5)
 			ON CONFLICT (username) DO NOTHING
 			RETURNING id
-		`, username, hash, emailAddr, inviterID).Scan(&newAdminID)
+		`, username, hash, emailAddr, inviterID, role).Scan(&newAdminID)
 		if err != nil || newAdminID == 0 {
 			http.Error(w, "username already exists or DB error", http.StatusConflict)
 			return
@@ -393,13 +415,43 @@ If you did not expect this email, please ignore it.
 
 		eid := int64(newAdminID)
 		s.audit(ctx, r, "admin", inviterID, "admin_user_invited", "admin_user", &eid,
-			map[string]any{"username": username, "email": emailAddr})
+			map[string]any{"username": username, "email": emailAddr, "role": role})
 
 		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 	}
 }
 
 // ── Deactivate ─────────────────────────────────────────────────────────────────
+
+func (s *Server) handleAdminUserRoleUpdate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		targetID, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil || targetID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		sess, err := getAdminSessionFromRequest(r)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+		if int32(targetID) == sess.AdminID {
+			http.Error(w, "cannot change your own role", http.StatusBadRequest)
+			return
+		}
+		role := normaliseAdminRole(r.FormValue("role"))
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if _, err := s.DB.Exec(ctx, `UPDATE admin_users SET role=$1 WHERE id=$2`, role, targetID); err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		eid := int64(targetID)
+		s.audit(ctx, r, "admin", &sess.AdminID, "admin_user_role_updated", "admin_user", &eid, map[string]any{"role": role})
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	}
+}
 
 func (s *Server) handleAdminUserDeactivate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -577,6 +629,27 @@ func generateTempPassword() string {
 		pwd[i], pwd[j] = pwd[j], pwd[i]
 	}
 	return string(pwd)
+}
+
+func normaliseAdminRole(role string) string {
+	if strings.TrimSpace(role) == "super_admin" {
+		return "super_admin"
+	}
+	return "admin"
+}
+
+func oppositeAdminRole(role string) string {
+	if role == "super_admin" {
+		return "admin"
+	}
+	return "super_admin"
+}
+
+func oppositeAdminRoleLabel(role string) string {
+	if role == "super_admin" {
+		return "admin"
+	}
+	return "super admin"
 }
 
 // validatePasswordStrength enforces minimum password policy.

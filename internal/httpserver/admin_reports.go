@@ -201,7 +201,7 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Reports")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprint(w, `
@@ -535,7 +535,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Report: "+period)
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <nav aria-label="breadcrumb" class="mb-3">

@@ -106,7 +106,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Reminder Preview")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprintf(w, `

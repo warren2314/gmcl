@@ -515,7 +515,7 @@ func (s *Server) handleAdminSubmissionImportGet() http.HandlerFunc {
 			csrfToken = c.Value
 		}
 		pageHead(w, "Import Submissions")
-		writeAdminNav(w, csrfToken, "/admin/submissions/import")
+		writeAdminNav(w, csrfToken, "/admin/submissions/import", adminRoleForRequest(r))
 		fmt.Fprint(w, `<div class="container-fluid px-4">
 <h4 class="mb-4">Import Legacy Submissions (CSV)</h4>
 <div class="card shadow-sm mb-4">
@@ -591,7 +591,7 @@ func (s *Server) handleAdminSubmissionImportPreview() http.HandlerFunc {
 		}
 
 		pageHead(w, "Import Preview")
-		writeAdminNav(w, csrfToken, "/admin/submissions/import")
+		writeAdminNav(w, csrfToken, "/admin/submissions/import", adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <h4 class="mb-3">Import Preview — %d rows, %d ready to import</h4>`, len(rows), okCount)
 
@@ -811,7 +811,7 @@ func (s *Server) handleAdminSubmissionImportApply() http.HandlerFunc {
 			csrfToken = c.Value
 		}
 		pageHead(w, "Import Complete")
-		writeAdminNav(w, csrfToken, "/admin/submissions/import")
+		writeAdminNav(w, csrfToken, "/admin/submissions/import", adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <div class="alert alert-success mt-4">
   <strong>Import complete.</strong> %d submissions inserted, %d skipped.

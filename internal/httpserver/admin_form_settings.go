@@ -143,7 +143,7 @@ func (s *Server) renderCaptainFormSettingsPage(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Form Settings")
-	writeAdminNav(w, csrfToken, r.URL.Path)
+	writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 	fmt.Fprint(w, `<div class="container-fluid" style="max-width:980px">
 <h3 class="mb-3">Captain Form Settings</h3>

@@ -93,7 +93,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprintf(w, `
@@ -536,7 +536,7 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
 		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanction Email")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		cardLabel := "Yellow Card"
 		if sd.Colour == "red" {

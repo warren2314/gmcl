@@ -262,7 +262,7 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Executive Report")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 

@@ -361,7 +361,7 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Play-Cricket")
-	writeAdminNav(w, csrfToken, r.URL.Path)
+	writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 	fmt.Fprint(w, `<div class="container-fluid">
 <div class="d-flex align-items-center justify-content-between mb-4">

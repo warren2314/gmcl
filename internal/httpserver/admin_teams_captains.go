@@ -506,7 +506,7 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 	csrfToken := middleware.CSRFToken(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Teams & Captains")
-	writeAdminNav(w, csrfToken, r.URL.Path)
+	writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 	fmt.Fprint(w, `<div class="container-fluid">`)
 	fmt.Fprint(w, `<div class="d-flex align-items-center justify-content-between mb-4"><div><h3 class="mb-1">Teams & Captains</h3><p class="text-muted mb-0">Manage clubs, teams, current captain records, and Play-Cricket team IDs in one place.</p></div></div>`)

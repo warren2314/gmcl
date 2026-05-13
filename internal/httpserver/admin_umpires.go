@@ -170,7 +170,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Umpire Rankings")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 
@@ -432,7 +432,7 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Umpire Comments")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <nav aria-label="breadcrumb" class="mb-3">

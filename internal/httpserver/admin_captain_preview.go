@@ -59,7 +59,7 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 			// Show selector page
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			pageHead(w, "Captain Form Preview")
-			writeAdminNav(w, csrfToken, r.URL.Path)
+			writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 			fmt.Fprint(w, `<div class="container-fluid px-4">`)
 			fmt.Fprint(w, `
 <div class="d-flex align-items-center justify-content-between mb-4">

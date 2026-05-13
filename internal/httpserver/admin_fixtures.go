@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,12 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 		var weekStart, weekEnd time.Time
 		var weekNum int32
 		var seasonName string
+		dateFilter := strings.TrimSpace(r.URL.Query().Get("date"))
+		queryFilter := strings.TrimSpace(r.URL.Query().Get("q"))
+		var selectedDate time.Time
+		if dateFilter != "" {
+			selectedDate, _ = time.Parse("2006-01-02", dateFilter)
+		}
 
 		if wid := r.URL.Query().Get("week_id"); wid != "" {
 			if n, err := strconv.Atoi(wid); err == nil {
@@ -74,23 +81,52 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 
 		// Fixtures for the selected week, grouped by date then competition
 		type fixtureRow struct {
-			MatchDate         time.Time
-			Competition       string
-			HomeClub          string
-			HomeTeam          string
-			AwayClub          string
-			AwayTeam          string
-			Ground            string
-			Umpire1           string
-			Umpire2           string
-			LinkedHomeTeam    string
-			LinkedAwayTeam    string
+			MatchID        int64
+			MatchDate      time.Time
+			Competition    string
+			HomeClub       string
+			HomeTeam       string
+			AwayClub       string
+			AwayTeam       string
+			Ground         string
+			Umpire1        string
+			Umpire2        string
+			LinkedHomeTeam string
+			LinkedAwayTeam string
 		}
 		var fixtures []fixtureRow
 
-		if weekID > 0 {
+		if weekID > 0 || !selectedDate.IsZero() {
+			whereSQL := `
+				WHERE lf.home_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
+				  AND lf.away_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
+			`
+			var args []any
+			if !selectedDate.IsZero() {
+				args = append(args, selectedDate)
+				whereSQL += fmt.Sprintf(" AND lf.match_date = $%d", len(args))
+			} else {
+				args = append(args, weekStart, weekEnd)
+				whereSQL += fmt.Sprintf(" AND lf.match_date BETWEEN $%d AND $%d", len(args)-1, len(args))
+			}
+			if queryFilter != "" {
+				args = append(args, "%"+queryFilter+"%")
+				whereSQL += fmt.Sprintf(` AND (
+					COALESCE(lf.home_club_name,'') ILIKE $%d OR
+					COALESCE(lf.home_team_name,'') ILIKE $%d OR
+					COALESCE(lf.away_club_name,'') ILIKE $%d OR
+					COALESCE(lf.away_team_name,'') ILIKE $%d OR
+					COALESCE(lf.ground_name,'') ILIKE $%d OR
+					COALESCE(lf.umpire_1_name,'') ILIKE $%d OR
+					COALESCE(lf.umpire_2_name,'') ILIKE $%d OR
+					COALESCE(lf.competition_id,'') ILIKE $%d OR
+					CAST(lf.play_cricket_match_id AS TEXT) ILIKE $%d
+				)`, len(args), len(args), len(args), len(args), len(args), len(args), len(args), len(args), len(args))
+			}
+
 			frows, err := s.DB.Query(ctx, `
 				SELECT
+				    lf.play_cricket_match_id,
 				    lf.match_date,
 				    lf.competition_id,
 				    COALESCE(lf.home_club_name, ''),
@@ -105,16 +141,14 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 				FROM league_fixtures lf
 				LEFT JOIN teams ht ON ht.play_cricket_team_id = lf.home_team_pc_id
 				LEFT JOIN teams at ON at.play_cricket_team_id = lf.away_team_pc_id
-				WHERE lf.match_date BETWEEN $1 AND $2
-				  AND lf.home_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
-				  AND lf.away_team_name !~* 'U/?9\b|U/?11\b|U/?13\b|U/?15\b|U/?18\b|under.?9\b|under.?11\b|under.?13\b|under.?15\b|under.?18\b'
+				`+whereSQL+`
 				ORDER BY lf.match_date, lf.competition_id, lf.home_club_name
-			`, weekStart, weekEnd)
+			`, args...)
 			if err == nil {
 				defer frows.Close()
 				for frows.Next() {
 					var f fixtureRow
-					if frows.Scan(&f.MatchDate, &f.Competition,
+					if frows.Scan(&f.MatchID, &f.MatchDate, &f.Competition,
 						&f.HomeClub, &f.HomeTeam,
 						&f.AwayClub, &f.AwayTeam,
 						&f.Ground, &f.Umpire1, &f.Umpire2,
@@ -132,7 +166,7 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Fixtures")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprintf(w, `
@@ -141,8 +175,11 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
     <h4 class="mb-0 fw-bold">Fixtures</h4>
     <p class="text-muted mb-0 small">Synced from Play-Cricket</p>
   </div>
-  <form method="GET" action="/admin/fixtures" class="d-flex gap-2 align-items-center">
-    <select name="week_id" class="form-select form-select-sm" onchange="this.form.submit()">`)
+  <form method="GET" action="/admin/fixtures" class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
+    <input type="date" name="date" class="form-control form-control-sm" value="%s" style="width:150px" title="Specific match date">
+    <input type="search" name="q" class="form-control form-control-sm" value="%s" placeholder="Club, team, ground, umpire..." style="width:240px">
+    <select name="week_id" class="form-select form-select-sm" onchange="this.form.submit()" style="width:260px">
+      <option value="">Selected week</option>`, escapeHTML(dateFilter), escapeHTML(queryFilter))
 
 		for _, wo := range weekOpts {
 			sel := ""
@@ -153,11 +190,13 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 				wo.ID, sel, wo.Num, wo.Start.Format("2 Jan"), wo.End.Format("2 Jan 2006"))
 		}
 		fmt.Fprint(w, `    </select>
+    <button class="btn btn-primary btn-sm" type="submit">Search</button>
+    <a class="btn btn-outline-secondary btn-sm" href="/admin/fixtures">Clear</a>
   </form>
 </div>`)
 
 		if weekID == 0 || len(fixtures) == 0 {
-			fmt.Fprint(w, `<div class="alert alert-info">No fixtures found for this week.</div>`)
+			fmt.Fprint(w, `<div class="alert alert-info">No fixtures found for the selected filters.</div>`)
 			fmt.Fprint(w, `</div>`)
 			pageFooter(w)
 			return
@@ -178,7 +217,7 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
     <table class="table table-sm table-hover mb-0">
       <thead class="table-light">
         <tr>
-          <th>Home</th><th>Away</th><th>Ground</th><th>Umpires</th><th>Linked Team</th>
+          <th>Match</th><th>Home</th><th>Away</th><th>Ground</th><th>Umpires</th><th>Linked Team</th>
         </tr>
       </thead>
       <tbody>`, f.MatchDate.Format("Monday 2 January 2006"))
@@ -203,12 +242,14 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 			}
 
 			fmt.Fprintf(w, `<tr>
+  <td class="small text-muted">%d<br>%s</td>
   <td class="small">%s<br><span class="text-muted">%s</span></td>
   <td class="small">%s<br><span class="text-muted">%s</span></td>
   <td class="small text-muted">%s</td>
   <td>%s</td>
   <td>%s</td>
 </tr>`,
+				f.MatchID, escapeHTML(f.Competition),
 				escapeHTML(f.HomeClub), escapeHTML(f.HomeTeam),
 				escapeHTML(f.AwayClub), escapeHTML(f.AwayTeam),
 				escapeHTML(f.Ground),

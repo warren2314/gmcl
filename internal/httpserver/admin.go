@@ -32,6 +32,7 @@ type adminSession struct {
 	AdminID  int32  `json:"aid"`
 	Expiry   int64  `json:"exp"`
 	Name     string `json:"name"`
+	Role     string `json:"role,omitempty"`
 	Aud      string `json:"aud"`
 	JTI      string `json:"jti"`
 	IssuedAt int64  `json:"iat"`
@@ -68,9 +69,9 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/weeks", s.handleAdminWeeks())
 		r.Get("/weeks/{weekNum}", s.handleAdminWeekDetail())
 		r.Get("/submissions", s.handleAdminSubmissionsList())
-		r.Get("/submissions/import", s.handleAdminSubmissionImportGet())
-		r.Post("/submissions/import/preview", s.handleAdminSubmissionImportPreview())
-		r.Post("/submissions/import/apply", s.handleAdminSubmissionImportApply())
+		r.With(s.requireAdminRole("super_admin")).Get("/submissions/import", s.handleAdminSubmissionImportGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/preview", s.handleAdminSubmissionImportPreview())
+		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/apply", s.handleAdminSubmissionImportApply())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
 		r.Post("/submissions/{id}/fix-date", s.handleAdminSubmissionFixDate())
 
@@ -111,34 +112,36 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/reports/{id}/download", s.handleAdminReportDownload())
 		r.Get("/reports/{id}/print", s.handleAdminReportPrint())
 
-		r.Get("/csv/captains", s.handleAdminCSVGet())
-		r.Post("/csv/captains/preview", s.handleAdminCSVPreview())
-		r.Post("/csv/captains/apply", s.handleAdminCSVApply())
-		r.Get("/play-cricket", s.handleAdminPlayCricketGet())
-		r.Post("/play-cricket/sync", s.handleAdminPlayCricketSync())
-		r.Post("/play-cricket/team-mapping/apply", s.handleAdminPlayCricketMappingApply())
-		r.Post("/play-cricket/generate-weeks", s.handleAdminPlayCricketGenerateWeeks())
+		r.With(s.requireAdminRole("super_admin")).Get("/csv/captains", s.handleAdminCSVGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/csv/captains/preview", s.handleAdminCSVPreview())
+		r.With(s.requireAdminRole("super_admin")).Post("/csv/captains/apply", s.handleAdminCSVApply())
+		r.With(s.requireAdminRole("super_admin")).Get("/play-cricket", s.handleAdminPlayCricketGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/play-cricket/sync", s.handleAdminPlayCricketSync())
+		r.With(s.requireAdminRole("super_admin")).Post("/play-cricket/team-mapping/apply", s.handleAdminPlayCricketMappingApply())
+		r.With(s.requireAdminRole("super_admin")).Post("/play-cricket/generate-weeks", s.handleAdminPlayCricketGenerateWeeks())
 		r.Get("/fixtures", s.handleAdminFixtures())
 		r.Get("/teams-captains", s.handleAdminTeamsCaptainsGet())
-		r.Get("/security", s.handleAdminSecurityGet())
-		r.Get("/gdpr", s.handleAdminGDPRGet())
-		r.Get("/gdpr/export", s.handleAdminGDPRExport())
-		r.Post("/gdpr/captains/{id}/anonymise", s.handleAdminGDPRAnonymise())
-		r.Post("/security/cleanup", s.handleAdminSecurityCleanupPost())
+		r.With(s.requireAdminRole("super_admin")).Get("/security", s.handleAdminSecurityGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/security/cleanup", s.handleAdminSecurityCleanupPost())
+		r.With(s.requireAdminRole("super_admin")).Get("/email-health", s.handleAdminEmailHealth())
+		r.With(s.requireAdminRole("super_admin")).Get("/gdpr", s.handleAdminGDPRGet())
+		r.With(s.requireAdminRole("super_admin")).Get("/gdpr/export", s.handleAdminGDPRExport())
+		r.With(s.requireAdminRole("super_admin")).Post("/gdpr/captains/{id}/anonymise", s.handleAdminGDPRAnonymise())
 		r.Post("/clubs/save", s.handleAdminClubSave())
 		r.Post("/teams/save", s.handleAdminTeamSave())
 		r.Post("/teams/{id}/toggle-active", s.handleAdminTeamToggleActive())
 		r.Post("/captains/save", s.handleAdminCaptainSave())
 		r.Post("/captains/{id}/deactivate", s.handleAdminCaptainDeactivate())
-		r.Get("/form-settings", s.handleAdminCaptainFormSettingsGet())
-		r.Post("/form-settings", s.handleAdminCaptainFormSettingsPost())
+		r.With(s.requireAdminRole("super_admin")).Get("/form-settings", s.handleAdminCaptainFormSettingsGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/form-settings", s.handleAdminCaptainFormSettingsPost())
 
 		// Admin user management
-		r.Get("/users", s.handleAdminUsers())
-		r.Post("/users/invite", s.handleAdminUserInvite())
-		r.Post("/users/{id}/deactivate", s.handleAdminUserDeactivate())
-		r.Post("/users/{id}/resend-invite", s.handleAdminUserResendInvite())
-		r.Post("/users/{id}/delete", s.handleAdminUserDelete())
+		r.With(s.requireAdminRole("super_admin")).Get("/users", s.handleAdminUsers())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/invite", s.handleAdminUserInvite())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/role", s.handleAdminUserRoleUpdate())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/deactivate", s.handleAdminUserDeactivate())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/resend-invite", s.handleAdminUserResendInvite())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/delete", s.handleAdminUserDelete())
 	})
 
 	r.Post("/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -279,10 +282,13 @@ func (s *Server) handleAdminLoginPost() http.HandlerFunc {
 // (or change-password page if force_password_change is set).
 func (s *Server) issueAdminSession(w http.ResponseWriter, r *http.Request, ctx context.Context, adminID int32, username string) {
 	now := time.Now().Unix()
+	role := "admin"
+	_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, adminID).Scan(&role)
 	sess := adminSession{
 		AdminID:  adminID,
 		Expiry:   now + int64((8 * time.Hour).Seconds()),
 		Name:     username,
+		Role:     role,
 		Aud:      "adm",
 		JTI:      fmt.Sprintf("%d-%d", adminID, time.Now().UnixNano()),
 		IssuedAt: now,
@@ -388,10 +394,13 @@ func (s *Server) handleAdmin2FAPost() http.HandlerFunc {
 		})
 
 		now := time.Now().Unix()
+		role := "admin"
+		_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, adminID).Scan(&role)
 		sess := adminSession{
 			AdminID:  adminID,
 			Expiry:   now + int64((8 * time.Hour).Seconds()),
 			Name:     username,
+			Role:     role,
 			Aud:      "adm",
 			JTI:      fmt.Sprintf("%d-%d", adminID, time.Now().UnixNano()),
 			IssuedAt: now,
@@ -621,7 +630,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Dashboard")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 
@@ -920,7 +929,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Weeks")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<div class="container-fluid">
 <h3 class="mb-4">Weekly Submissions</h3>
 <div class="card card-gmcl shadow-sm">
@@ -1070,7 +1079,7 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, fmt.Sprintf("Week %d Submissions", weekNum))
-		writeAdminNav(w, csrfToken, "/admin/weeks")
+		writeAdminNav(w, csrfToken, "/admin/weeks", adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="d-flex align-items-center gap-3 mb-3">
   <a href="/admin/weeks" class="btn btn-outline-secondary btn-sm">&larr; All Weeks</a>
@@ -1191,7 +1200,7 @@ func (s *Server) handleAdminSubmissionsList() http.HandlerFunc {
 
 		csrfToken := middleware.CSRFToken(r)
 		pageHead(w, "Submissions Search")
-		writeAdminNav(w, csrfToken, "/admin/submissions")
+		writeAdminNav(w, csrfToken, "/admin/submissions", adminRoleForRequest(r))
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 		fmt.Fprint(w, `<h4 class="mb-4">Submissions</h4>`)
 
@@ -1285,7 +1294,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, fmt.Sprintf("Submission %d", id))
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Submission %d</h3>
 <div class="card card-gmcl shadow-sm mb-4">
@@ -1529,7 +1538,7 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Club Rankings")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 
 		// Header + season selector
@@ -1756,7 +1765,7 @@ func (s *Server) handleAdminClubDetail() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, clubName+" — Rankings Detail")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		backURL := fmt.Sprintf("/admin/rankings?season_id=%d", seasonID)
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
@@ -1896,7 +1905,7 @@ func (s *Server) handleAdminCSVGet() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "CSV Upload")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Upload Captains CSV</h3>
 <div class="card card-gmcl shadow-sm" style="max-width:600px">
@@ -2091,7 +2100,7 @@ func (s *Server) handleAdminCSVPreview() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "CSV Preview")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Preview Captains CSV</h3>
 <p>Rows: <strong>%d</strong> &nbsp;|&nbsp; Valid: <strong class="text-success">%d</strong> &nbsp;|&nbsp; Skipped/errors: <strong class="text-danger">%d</strong></p>
@@ -2355,7 +2364,7 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "CSV Applied")
-		writeAdminNav(w, csrfToken, r.URL.Path)
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="alert alert-success">
   <strong>Applied captains CSV.</strong> Created: %d, Updated: %d
@@ -2388,6 +2397,39 @@ func (s *Server) requireAdmin() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (s *Server) requireAdminRole(roles ...string) func(http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		allowed[role] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sess, err := getAdminSessionFromRequest(r)
+			if err != nil {
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
+			}
+			role := sess.Role
+			if role == "" {
+				role = "admin"
+			}
+			if _, ok := allowed[role]; !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func adminRoleForRequest(r *http.Request) string {
+	sess, err := getAdminSessionFromRequest(r)
+	if err != nil || sess.Role == "" {
+		return "admin"
+	}
+	return sess.Role
 }
 
 func getAdminSessionFromRequest(r *http.Request) (*adminSession, error) {
