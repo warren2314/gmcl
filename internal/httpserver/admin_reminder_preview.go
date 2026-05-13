@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -264,6 +265,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 		}
 
 		if len(unmappedFixtures) > 0 {
+			adminRole := adminRoleForRequest(r)
 			fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4 border-danger">
   <div class="card-header fw-semibold text-danger">%d Play-Cricket fixture(s) are not fully mapped locally</div>
@@ -277,17 +279,30 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 				if missing == "" {
 					missing = "unknown"
 				}
+				mapActions := missing
+				if adminRole == "super_admin" {
+					var actionParts []string
+					if strings.Contains(missing, "home") && strings.TrimSpace(f.HomePCID) != "" {
+						actionParts = append(actionParts, fixtureSideMapButton(csrfToken, f.MatchID, "home", dateStr, f.HomeClub, f.HomeTeam))
+					}
+					if strings.Contains(missing, "away") && strings.TrimSpace(f.AwayPCID) != "" {
+						actionParts = append(actionParts, fixtureSideMapButton(csrfToken, f.MatchID, "away", dateStr, f.AwayClub, f.AwayTeam))
+					}
+					if len(actionParts) > 0 {
+						mapActions = strings.Join(actionParts, " ")
+					}
+				}
 				fmt.Fprintf(w, `<tr>
   <td class="small text-muted">%d</td>
   <td>%s<br><span class="text-muted small">%s / PC %s</span></td>
   <td>%s<br><span class="text-muted small">%s / PC %s</span></td>
   <td class="small text-muted">%s</td>
-  <td><span class="badge bg-danger">%s</span></td>
+  <td>%s</td>
 </tr>`,
 					f.MatchID,
 					escapeHTML(f.HomeClub), escapeHTML(f.HomeTeam), escapeHTML(f.HomePCID),
 					escapeHTML(f.AwayClub), escapeHTML(f.AwayTeam), escapeHTML(f.AwayPCID),
-					escapeHTML(f.Ground), escapeHTML(missing))
+					escapeHTML(f.Ground), mapActions)
 			}
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
@@ -340,4 +355,104 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 		})
 		http.Redirect(w, r, fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", dateStr, sent, skipped), http.StatusSeeOther)
 	}
+}
+
+func (s *Server) handleAdminReminderMapFixtureSide() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		matchID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("match_id")), 10, 64)
+		if err != nil || matchID <= 0 {
+			http.Error(w, "invalid match", http.StatusBadRequest)
+			return
+		}
+		side := strings.TrimSpace(r.FormValue("side"))
+		if side != "home" && side != "away" {
+			http.Error(w, "invalid side", http.StatusBadRequest)
+			return
+		}
+		dateStr := strings.TrimSpace(r.FormValue("date"))
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		var matchDate time.Time
+		var homeClub, homeTeam, homePCID, awayClub, awayTeam, awayPCID string
+		err = s.DB.QueryRow(ctx, `
+			SELECT match_date,
+			       COALESCE(home_club_name,''), COALESCE(home_team_name,''), COALESCE(home_team_pc_id,''),
+			       COALESCE(away_club_name,''), COALESCE(away_team_name,''), COALESCE(away_team_pc_id,'')
+			FROM league_fixtures
+			WHERE play_cricket_match_id = $1
+		`, matchID).Scan(&matchDate, &homeClub, &homeTeam, &homePCID, &awayClub, &awayTeam, &awayPCID)
+		if err != nil {
+			http.Error(w, "fixture not found", http.StatusNotFound)
+			return
+		}
+		if dateStr == "" {
+			dateStr = matchDate.Format("2006-01-02")
+		}
+
+		clubName, teamName, pcID := homeClub, homeTeam, strings.TrimSpace(homePCID)
+		if side == "away" {
+			clubName, teamName, pcID = awayClub, awayTeam, strings.TrimSpace(awayPCID)
+		}
+		if pcID == "" {
+			http.Error(w, "fixture side has no Play-Cricket team ID", http.StatusBadRequest)
+			return
+		}
+
+		resolver, err := newPlayCricketResolver(ctx, s)
+		if err != nil {
+			http.Error(w, "resolver failed", http.StatusInternalServerError)
+			return
+		}
+		local, ok := resolver.resolve(clubName, teamName)
+		if !ok {
+			http.Error(w, "no unique local team match for "+clubName+" "+teamName, http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(local.CurrentID) != "" && strings.TrimSpace(local.CurrentID) != pcID {
+			http.Error(w, "local team already has a different Play-Cricket ID", http.StatusConflict)
+			return
+		}
+
+		_, err = s.DB.Exec(ctx, `
+			UPDATE teams
+			SET play_cricket_team_id = $1
+			WHERE id = $2
+			  AND (play_cricket_team_id IS NULL OR TRIM(play_cricket_team_id) = '' OR TRIM(play_cricket_team_id) = $1)
+		`, pcID, local.ID)
+		if err != nil {
+			http.Error(w, "could not update team mapping", http.StatusInternalServerError)
+			return
+		}
+
+		s.audit(ctx, r, "admin", nil, "play_cricket_fixture_side_mapped", "team", func() *int64 {
+			v := int64(local.ID)
+			return &v
+		}(), map[string]any{
+			"match_id": matchID,
+			"side":     side,
+			"pc_id":    pcID,
+			"club":     clubName,
+			"team":     teamName,
+		})
+
+		http.Redirect(w, r, "/admin/reminders/preview?date="+dateStr, http.StatusSeeOther)
+	}
+}
+
+func fixtureSideMapButton(csrfToken string, matchID int64, side, dateStr, clubName, teamName string) string {
+	label := "Map " + side
+	title := "Map " + clubName + " " + teamName
+	return fmt.Sprintf(`<form method="POST" action="/admin/reminders/map-fixture-side" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="match_id" value="%d">
+  <input type="hidden" name="side" value="%s">
+  <input type="hidden" name="date" value="%s">
+  <button type="submit" class="btn btn-outline-danger btn-sm py-0" title="%s">%s</button>
+</form>`, escapeHTML(csrfToken), matchID, escapeHTML(side), escapeHTML(dateStr), escapeHTML(title), escapeHTML(label))
 }
