@@ -144,8 +144,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		navLink("/admin/teams-captains", "Teams & Captains"),
 	)
 
-	superMenu := fmt.Sprintf(`
-        %s
+	systemMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
             System
@@ -160,14 +159,23 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             <li><a class="dropdown-item" href="/admin/csv/captains">CSV Upload</a></li>
           </ul>
         </li>`,
-		navLink("/admin/dashboard", "Dashboard"),
 		dropdownActive("/admin/email-health", "/admin/play-cricket", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/csv"),
 	)
 
 	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
 	if role == "super_admin" {
-		menu = superMenu
+		menu += systemMenu
 	}
+	accountMenu := fmt.Sprintf(`
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
+            Account
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+            <li><a class="dropdown-item" href="/admin/change-password">Change Password</a></li>
+          </ul>
+        </li>`, dropdownActive("/admin/change-password"))
+	menu += accountMenu
 
 	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-0 shadow-sm">
   <div class="container-fluid px-3">

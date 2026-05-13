@@ -2438,8 +2438,7 @@ func (s *Server) effectiveAdminRole(ctx context.Context, adminID int32) string {
 func isConfiguredSuperAdmin(username, email string) bool {
 	username = strings.ToLower(strings.TrimSpace(username))
 	email = strings.ToLower(strings.TrimSpace(email))
-	seedEmail := strings.ToLower(strings.TrimSpace(os.Getenv("SEED_ADMIN_EMAIL")))
-	configured := []string{"admin", "webmaster@gmcl.co.uk", seedEmail}
+	configured := []string{"warren2314"}
 	configured = append(configured, strings.Split(os.Getenv("SUPER_ADMIN_EMAILS"), ",")...)
 	for _, entry := range configured {
 		entry = strings.ToLower(strings.TrimSpace(entry))
@@ -2447,7 +2446,7 @@ func isConfiguredSuperAdmin(username, email string) bool {
 			return true
 		}
 	}
-	return username == "warren" || username == "warre" || username == "warren2314" || strings.HasPrefix(email, "warren")
+	return username == "warren2314"
 }
 
 func adminRoleForRequest(r *http.Request) string {
