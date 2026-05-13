@@ -152,14 +152,15 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
           <ul class="dropdown-menu dropdown-menu-dark">
             <li><a class="dropdown-item" href="/admin/email-health">Email Health</a></li>
             <li><a class="dropdown-item" href="/admin/play-cricket">Play-Cricket</a></li>
+            <li><a class="dropdown-item" href="/admin/submissions/import">Import Legacy Submissions</a></li>
             <li><a class="dropdown-item" href="/admin/security">Security & Privacy</a></li>
             <li><a class="dropdown-item" href="/admin/gdpr">GDPR</a></li>
             <li><a class="dropdown-item" href="/admin/form-settings">Form Settings</a></li>
             <li><a class="dropdown-item" href="/admin/users">Admin Users</a></li>
-            <li><a class="dropdown-item" href="/admin/csv/captains">CSV Upload</a></li>
+            <li><a class="dropdown-item" href="/admin/csv/captains">Captain CSV Upload</a></li>
           </ul>
         </li>`,
-		dropdownActive("/admin/email-health", "/admin/play-cricket", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/csv"),
+		dropdownActive("/admin/email-health", "/admin/play-cricket", "/admin/submissions/import", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/csv"),
 	)
 
 	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
