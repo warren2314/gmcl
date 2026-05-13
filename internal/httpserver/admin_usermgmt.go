@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -65,11 +67,42 @@ func (s *Server) handleAdminChangePasswordGet() http.HandlerFunc {
 		pageHead(w, "Change Password")
 		writeCaptainNav(w) // plain nav — not full admin nav to avoid confusion during forced change
 
+		pendingID := strings.TrimSpace(r.URL.Query().Get("pending"))
+		codeSent := r.URL.Query().Get("sent") == "1"
 		banner := ""
 		if force {
 			banner = `<div class="alert alert-warning mb-4">
   <strong>Password change required.</strong> You must set a new password before continuing.
 </div>`
+		}
+		if codeSent {
+			banner += `<div class="alert alert-info mb-4">
+  <strong>Verification code sent.</strong> Check your admin email and enter the code below to finish changing your password.
+</div>`
+		}
+
+		if pendingID != "" {
+			fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
+<div class="card shadow-sm">
+  <div class="card-header fw-semibold">Verify Password Change</div>
+  <div class="card-body">
+    %s
+    <form method="POST" action="/admin/change-password">
+      <input type="hidden" name="csrf_token" value="%s">
+      <input type="hidden" name="pending_id" value="%s">
+      <div class="mb-4">
+        <label class="form-label">One-time code</label>
+        <input type="text" name="otp_code" class="form-control form-control-lg text-center" required inputmode="numeric" autocomplete="one-time-code" maxlength="10" autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary w-100">Confirm Password Change</button>
+      <a href="/admin/change-password" class="btn btn-link w-100 mt-2">Start again</a>
+    </form>
+  </div>
+</div>
+</div>
+`, banner, csrfToken, escapeHTML(pendingID))
+			pageFooter(w)
+			return
 		}
 
 		fmt.Fprintf(w, `<div class="container" style="max-width:480px;margin-top:3rem">
@@ -94,7 +127,7 @@ func (s *Server) handleAdminChangePasswordGet() http.HandlerFunc {
         <input type="password" name="confirm_password" class="form-control" required autocomplete="new-password"
                id="confirmPwd">
       </div>
-      <button type="submit" class="btn btn-primary w-100">Update Password</button>
+      <button type="submit" class="btn btn-primary w-100">Email Verification Code</button>
     </form>
   </div>
 </div>
@@ -114,6 +147,13 @@ func (s *Server) handleAdminChangePasswordPost() http.HandlerFunc {
 		sess, err := getAdminSessionFromRequest(r)
 		if err != nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+
+		pendingID := strings.TrimSpace(r.FormValue("pending_id"))
+		otpCode := strings.TrimSpace(r.FormValue("otp_code"))
+		if pendingID != "" || otpCode != "" {
+			s.confirmAdminPasswordChangeOTP(w, r, sess, pendingID, otpCode)
 			return
 		}
 
@@ -150,22 +190,115 @@ func (s *Server) handleAdminChangePasswordPost() http.HandlerFunc {
 			return
 		}
 
-		_, err = s.DB.Exec(ctx, `
-			UPDATE admin_users
-			SET password_hash = $1, force_password_change = FALSE
-			WHERE id = $2
-		`, newHash, sess.AdminID)
+		code := generateAdminOTPCode(6)
+		codeHash := sha256.Sum256([]byte(code))
+		expiresAt := time.Now().Add(10 * time.Minute)
+
+		tx, err := s.DB.Begin(ctx)
 		if err != nil {
-			http.Error(w, "update failed", http.StatusInternalServerError)
+			http.Error(w, "otp setup failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback(ctx)
+
+		_, _ = tx.Exec(ctx, `UPDATE admin_password_change_otps SET used_at = now() WHERE admin_user_id=$1 AND used_at IS NULL`, sess.AdminID)
+
+		var requestID int64
+		err = tx.QueryRow(ctx, `
+			INSERT INTO admin_password_change_otps (admin_user_id, code_hash, new_password_hash, expires_at)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id
+		`, sess.AdminID, codeHash[:], newHash, expiresAt).Scan(&requestID)
+		if err != nil {
+			http.Error(w, "otp setup failed", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			http.Error(w, "otp setup failed", http.StatusInternalServerError)
 			return
 		}
 
-		s.audit(ctx, r, "admin", &sess.AdminID, "admin_password_changed", "admin_user",
+		var emailAddr string
+		_ = s.DB.QueryRow(ctx, `SELECT email FROM admin_users WHERE id=$1`, sess.AdminID).Scan(&emailAddr)
+		body := fmt.Sprintf(`A password change was requested for your GMCL Admin account.
+
+Your one-time verification code is:
+
+CODE: %s
+
+This code expires in 10 minutes. If you did not request this change, contact the league office immediately.`, code)
+		if err := email.NewFromEnv().Send(emailAddr, "GMCL Admin password change code", body); err != nil {
+			http.Error(w, "could not send verification code", http.StatusInternalServerError)
+			return
+		}
+
+		s.audit(ctx, r, "admin", &sess.AdminID, "admin_password_change_otp_sent", "admin_user",
 			func() *int64 { v := int64(sess.AdminID); return &v }(),
 			map[string]any{})
 
-		http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/change-password?pending=%d&sent=1", requestID), http.StatusSeeOther)
 	}
+}
+
+func (s *Server) confirmAdminPasswordChangeOTP(w http.ResponseWriter, r *http.Request, sess *adminSession, pendingID, code string) {
+	id, err := strconv.ParseInt(pendingID, 10, 64)
+	if err != nil || id <= 0 || code == "" {
+		http.Error(w, "invalid verification code", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	codeHash := sha256.Sum256([]byte(code))
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		http.Error(w, "verification failed", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var storedHash, newHash []byte
+	var expiresAt time.Time
+	var usedAt sql.NullTime
+	err = tx.QueryRow(ctx, `
+		SELECT code_hash, new_password_hash, expires_at, used_at
+		FROM admin_password_change_otps
+		WHERE id=$1 AND admin_user_id=$2
+		FOR UPDATE
+	`, id, sess.AdminID).Scan(&storedHash, &newHash, &expiresAt, &usedAt)
+	if err != nil {
+		http.Error(w, "verification failed", http.StatusBadRequest)
+		return
+	}
+	if usedAt.Valid || time.Now().After(expiresAt) || subtle.ConstantTimeCompare(storedHash, codeHash[:]) != 1 {
+		http.Error(w, "invalid or expired verification code", http.StatusUnauthorized)
+		return
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE admin_users
+		SET password_hash=$1, force_password_change=FALSE
+		WHERE id=$2
+	`, newHash, sess.AdminID)
+	if err != nil {
+		http.Error(w, "update failed", http.StatusInternalServerError)
+		return
+	}
+	if _, err = tx.Exec(ctx, `UPDATE admin_password_change_otps SET used_at=now() WHERE id=$1`, id); err != nil {
+		http.Error(w, "update failed", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		http.Error(w, "update failed", http.StatusInternalServerError)
+		return
+	}
+
+	s.audit(ctx, r, "admin", &sess.AdminID, "admin_password_changed", "admin_user",
+		func() *int64 { v := int64(sess.AdminID); return &v }(),
+		map[string]any{"otp": true})
+
+	http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
 }
 
 // ── Admin user list ────────────────────────────────────────────────────────────
@@ -629,6 +762,22 @@ func generateTempPassword() string {
 		pwd[i], pwd[j] = pwd[j], pwd[i]
 	}
 	return string(pwd)
+}
+
+func generateAdminOTPCode(length int) string {
+	if length <= 0 {
+		length = 6
+	}
+	buf := make([]byte, length)
+	if _, err := rand.Read(buf); err != nil {
+		for i := range buf {
+			buf[i] = byte(i)
+		}
+	}
+	for i := range buf {
+		buf[i] = '0' + (buf[i] % 10)
+	}
+	return string(buf)
 }
 
 func normaliseAdminRole(role string) string {
