@@ -138,8 +138,8 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		    END         AS opposition,
 		    TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) AS is_home
 		FROM league_fixtures lf
-		JOIN teams t ON (t.play_cricket_team_id = lf.home_team_pc_id
-		              OR t.play_cricket_team_id = lf.away_team_pc_id)
+		JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+		              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 		JOIN clubs cl ON cl.id = t.club_id
 		JOIN captains c ON c.team_id = t.id
 		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
@@ -237,8 +237,8 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 			SELECT DISTINCT ON (t.id, lf.match_date)
 			    t.id, t.club_id, w.id, w.season_id, lf.match_date, cl.name, t.name
 			FROM league_fixtures lf
-			JOIN teams t ON (t.play_cricket_team_id = lf.home_team_pc_id
-			              OR t.play_cricket_team_id = lf.away_team_pc_id)
+		JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+			              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 			JOIN clubs cl ON cl.id = t.club_id
 			JOIN weeks w ON lf.match_date BETWEEN w.start_date AND w.end_date
 			WHERE lf.match_date IN ($1, $2)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 )
 
@@ -46,17 +48,16 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			    TRUE                                            AS has_fixture,
 			    EXISTS(
 			        SELECT 1 FROM submissions sub
-			        JOIN weeks w ON sub.week_id = w.id
 			        WHERE sub.team_id = t.id
-			          AND $1 BETWEEN w.start_date AND w.end_date
+			          AND sub.match_date = $1
 			    )                                               AS has_submit,
 			    EXISTS(
 			        SELECT 1 FROM captain_reminder_log rl
 			        WHERE rl.team_id = t.id AND rl.match_date = $1
 			    )                                               AS already_sent
 			FROM league_fixtures lf
-			JOIN teams t ON (t.play_cricket_team_id = lf.home_team_pc_id
-			              OR t.play_cricket_team_id = lf.away_team_pc_id)
+			JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+			              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 			JOIN clubs cl ON cl.id = t.club_id
 			LEFT JOIN captains c ON c.team_id = t.id
 			    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
@@ -99,6 +100,42 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			}
 		}
 
+		type unmappedFixtureRow struct {
+			MatchID  int64
+			HomeClub string
+			HomeTeam string
+			HomePCID string
+			AwayClub string
+			AwayTeam string
+			AwayPCID string
+			Ground   string
+			Missing  string
+		}
+		unmappedFixturesRows, _ := s.DB.Query(ctx, `
+			SELECT lf.play_cricket_match_id,
+			       COALESCE(lf.home_club_name,''), COALESCE(lf.home_team_name,''), COALESCE(lf.home_team_pc_id,''),
+			       COALESCE(lf.away_club_name,''), COALESCE(lf.away_team_name,''), COALESCE(lf.away_team_pc_id,''),
+			       COALESCE(lf.ground_name,''),
+			       TRIM(CASE WHEN ht.id IS NULL THEN 'home ' ELSE '' END || CASE WHEN at.id IS NULL THEN 'away' ELSE '' END)
+			FROM league_fixtures lf
+			LEFT JOIN teams ht ON TRIM(ht.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+			LEFT JOIN teams at ON TRIM(at.play_cricket_team_id) = TRIM(lf.away_team_pc_id)
+			WHERE lf.match_date = $1
+			  AND NOT lf.is_bye
+			  AND (ht.id IS NULL OR at.id IS NULL)
+			ORDER BY lf.home_club_name, lf.away_club_name
+		`, matchDate)
+		var unmappedFixtures []unmappedFixtureRow
+		if unmappedFixturesRows != nil {
+			defer unmappedFixturesRows.Close()
+			for unmappedFixturesRows.Next() {
+				var row unmappedFixtureRow
+				if unmappedFixturesRows.Scan(&row.MatchID, &row.HomeClub, &row.HomeTeam, &row.HomePCID, &row.AwayClub, &row.AwayTeam, &row.AwayPCID, &row.Ground, &row.Missing) == nil {
+					unmappedFixtures = append(unmappedFixtures, row)
+				}
+			}
+		}
+
 		csrfToken := ""
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
@@ -122,6 +159,10 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
   </form>
 </div>
 `, dateStr)
+		if sentRaw := r.URL.Query().Get("sent"); sentRaw != "" {
+			fmt.Fprintf(w, `<div class="alert alert-success">Reminder send completed: %s sent, %s skipped.</div>`,
+				escapeHTML(sentRaw), escapeHTML(r.URL.Query().Get("skipped")))
+		}
 
 		// Summary badges
 		wouldSend := 0
@@ -179,6 +220,13 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 		if len(results) == 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning">No fixtures found in the database for %s. Make sure Play-Cricket fixtures are synced.</div>`, escapeHTML(dateStr))
 		} else {
+			fmt.Fprintf(w, `<div class="mb-3">
+  <form method="POST" action="/admin/reminders/send-date" class="d-inline" onsubmit="return confirm('Send game-day reminders for %s to eligible captains?')">
+    <input type="hidden" name="csrf_token" value="%s">
+    <input type="hidden" name="date" value="%s">
+    <button type="submit" class="btn btn-warning btn-sm">Send game-day reminders for this date</button>
+  </form>
+</div>`, escapeHTML(dateStr), escapeHTML(csrfToken), escapeHTML(dateStr))
 			fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header fw-semibold">Teams with fixtures</div>
@@ -215,6 +263,35 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
 
+		if len(unmappedFixtures) > 0 {
+			fmt.Fprintf(w, `
+<div class="card shadow-sm mb-4 border-danger">
+  <div class="card-header fw-semibold text-danger">%d Play-Cricket fixture(s) are not fully mapped locally</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead><tr><th>Match</th><th>Home</th><th>Away</th><th>Ground</th><th>Missing mapping</th></tr></thead>
+      <tbody>
+`, len(unmappedFixtures))
+			for _, f := range unmappedFixtures {
+				missing := strings.TrimSpace(f.Missing)
+				if missing == "" {
+					missing = "unknown"
+				}
+				fmt.Fprintf(w, `<tr>
+  <td class="small text-muted">%d</td>
+  <td>%s<br><span class="text-muted small">%s / PC %s</span></td>
+  <td>%s<br><span class="text-muted small">%s / PC %s</span></td>
+  <td class="small text-muted">%s</td>
+  <td><span class="badge bg-danger">%s</span></td>
+</tr>`,
+					f.MatchID,
+					escapeHTML(f.HomeClub), escapeHTML(f.HomeTeam), escapeHTML(f.HomePCID),
+					escapeHTML(f.AwayClub), escapeHTML(f.AwayTeam), escapeHTML(f.AwayPCID),
+					escapeHTML(f.Ground), escapeHTML(missing))
+			}
+			fmt.Fprint(w, `</tbody></table></div></div>`)
+		}
+
 		if len(unmappedTeams) > 0 {
 			fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4 border-warning">
@@ -232,5 +309,35 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 
 		fmt.Fprint(w, `</div>`)
 		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		dateStr := strings.TrimSpace(r.FormValue("date"))
+		matchDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			http.Error(w, "invalid date", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		sent, skipped, err := s.sendRemindersForDate(ctx, email.NewFromEnv(), matchDate, "game_day")
+		if err != nil {
+			http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.audit(ctx, r, "admin", nil, "admin_send_game_day_reminders", "reminder", nil, map[string]any{
+			"match_date": dateStr,
+			"sent":       sent,
+			"skipped":    skipped,
+		})
+		http.Redirect(w, r, fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", dateStr, sent, skipped), http.StatusSeeOther)
 	}
 }

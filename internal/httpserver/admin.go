@@ -87,6 +87,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Post("/compliance/mark-bye", s.handleAdminComplianceMarkBye())
 		r.Post("/compliance/submit-draft", s.handleAdminSubmitDraft())
 		r.Get("/reminders/preview", s.handleAdminReminderPreview())
+		r.Post("/reminders/send-date", s.handleAdminReminderSendDate())
 		r.Get("/captain-preview", s.handleAdminCaptainPreview())
 
 		// Sanctions
