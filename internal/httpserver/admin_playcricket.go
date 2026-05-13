@@ -49,6 +49,28 @@ type playCricketMappingPageData struct {
 	ConflictCount      int
 	UnmatchedCount     int
 	Seasons            []playCricketSeasonRef
+	MatchSearch        playCricketMatchSearch
+}
+
+type playCricketMatchSearch struct {
+	Ran          bool
+	Date         string
+	Club         string
+	FetchedCount int
+	Results      []playCricketMatchSearchResult
+	Error        string
+}
+
+type playCricketMatchSearchResult struct {
+	MatchID     string
+	MatchDate   string
+	Competition string
+	HomeClub    string
+	HomeTeam    string
+	AwayClub    string
+	AwayTeam    string
+	Ground      string
+	Umpires     string
 }
 
 type playCricketResolver struct {
@@ -80,6 +102,7 @@ func (s *Server) handleAdminPlayCricketGet() http.HandlerFunc {
 			http.Error(w, "error", http.StatusInternalServerError)
 			return
 		}
+		data.MatchSearch = s.buildPlayCricketMatchSearch(ctx, r)
 		s.renderAdminPlayCricketPage(w, r, data, "", "")
 	}
 }
@@ -431,6 +454,8 @@ func (s *Server) renderAdminPlayCricketPage(w http.ResponseWriter, r *http.Reque
 </div>
 `, escapeHTML(csrfToken), time.Now().In(s.LondonLoc).Format("2006-01-02"), data.FixtureCount, data.DistinctFixtureIDs, data.MappedTeams, data.ReadyCount, escapeHTML(lastFetched))
 
+	s.renderPlayCricketMatchSearch(w, csrfToken, data.MatchSearch)
+
 	fmt.Fprintf(w, `<div class="row g-4 mb-4">
   <div class="col-lg-5">
     <div class="card card-gmcl shadow-sm h-100">
@@ -734,6 +759,174 @@ func (s *Server) buildPlayCricketMappingPageData(ctx context.Context) (playCrick
 	})
 
 	return data, nil
+}
+
+func (s *Server) buildPlayCricketMatchSearch(ctx context.Context, r *http.Request) playCricketMatchSearch {
+	search := playCricketMatchSearch{
+		Date: strings.TrimSpace(r.URL.Query().Get("match_date")),
+		Club: strings.TrimSpace(r.URL.Query().Get("club")),
+	}
+	if r.URL.Query().Get("search") != "1" {
+		return search
+	}
+	search.Ran = true
+	if search.Date == "" {
+		search.Error = "Choose a match date."
+		return search
+	}
+	matchDate, err := time.Parse("2006-01-02", search.Date)
+	if err != nil {
+		search.Error = "Match date must use YYYY-MM-DD."
+		return search
+	}
+
+	client := leagueapi.NewClient(leagueapi.NewConfigFromEnv())
+	details, err := client.FetchMatchesForDate(ctx, matchDate)
+	if err != nil {
+		search.Error = "Play-Cricket search failed: " + err.Error()
+		return search
+	}
+	search.FetchedCount = len(details)
+
+	clubNeedle := normalizePlayCricketSearch(search.Club)
+	for _, detail := range details {
+		dt, err := leagueapi.ParseMatchDate(detail.MatchDate, "")
+		if err == nil && !sameCalendarDate(dt, matchDate) {
+			continue
+		}
+		if clubNeedle != "" && !playCricketDetailMatchesClub(detail, clubNeedle) {
+			continue
+		}
+		search.Results = append(search.Results, playCricketMatchSearchResult{
+			MatchID:     strings.TrimSpace(detail.MatchID),
+			MatchDate:   displayPlayCricketMatchDate(detail.MatchDate),
+			Competition: strings.TrimSpace(detail.CompetitionID),
+			HomeClub:    strings.TrimSpace(detail.HomeClubName),
+			HomeTeam:    strings.TrimSpace(detail.HomeTeamName),
+			AwayClub:    strings.TrimSpace(detail.AwayClubName),
+			AwayTeam:    strings.TrimSpace(detail.AwayTeamName),
+			Ground:      strings.TrimSpace(detail.GroundName),
+			Umpires:     strings.TrimSpace(strings.Join(nonEmptyStrings(detail.Umpire1Name, detail.Umpire2Name, detail.Umpire3Name), " / ")),
+		})
+	}
+	return search
+}
+
+func (s *Server) renderPlayCricketMatchSearch(w http.ResponseWriter, csrfToken string, search playCricketMatchSearch) {
+	fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
+      <div>
+        <h5 class="card-title mb-1">Find Play-Cricket Matches</h5>
+        <p class="text-muted mb-0 small">Search live Play-Cricket data for matches on a specific day and club before syncing or checking compliance.</p>
+      </div>
+      <a class="btn btn-outline-secondary btn-sm" href="/admin/play-cricket">Clear</a>
+    </div>
+    <form method="GET" action="/admin/play-cricket" class="row g-2 align-items-end">
+      <input type="hidden" name="search" value="1">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Match date</label>
+        <input type="date" class="form-control form-control-sm" name="match_date" value="%s" required>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Club</label>
+        <input type="search" class="form-control form-control-sm" name="club" value="%s" placeholder="e.g. Ashton CC, Denton West, Worsley">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">Search Play-Cricket</button>
+      </div>
+    </form>
+  </div>
+</div>`, escapeHTML(search.Date), escapeHTML(search.Club))
+
+	if !search.Ran {
+		return
+	}
+	if search.Error != "" {
+		fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(search.Error))
+		return
+	}
+
+	fmt.Fprintf(w, `<div class="card card-gmcl shadow-sm mb-4">
+  <div class="card-header d-flex align-items-center justify-content-between gap-3 flex-wrap">
+    <span class="fw-semibold">%d matching matches</span>
+    <span class="text-muted small">%d rows fetched from Play-Cricket</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-light">
+        <tr><th>Match</th><th>Date</th><th>Home</th><th>Away</th><th>Ground</th><th>Umpires</th></tr>
+      </thead>
+      <tbody>`, len(search.Results), search.FetchedCount)
+	if len(search.Results) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No Play-Cricket matches matched that date and club.</td></tr>`)
+	} else {
+		for _, row := range search.Results {
+			umpires := row.Umpires
+			if umpires == "" {
+				umpires = "TBC"
+			}
+			fmt.Fprintf(w, `<tr>
+  <td class="small text-muted">%s<br>%s</td>
+  <td class="small">%s</td>
+  <td class="small">%s<br><span class="text-muted">%s</span></td>
+  <td class="small">%s<br><span class="text-muted">%s</span></td>
+  <td class="small text-muted">%s</td>
+  <td class="small">%s</td>
+</tr>`,
+				escapeHTML(row.MatchID), escapeHTML(row.Competition),
+				escapeHTML(row.MatchDate),
+				escapeHTML(row.HomeClub), escapeHTML(row.HomeTeam),
+				escapeHTML(row.AwayClub), escapeHTML(row.AwayTeam),
+				escapeHTML(row.Ground), escapeHTML(umpires))
+		}
+	}
+	fmt.Fprintf(w, `</tbody></table></div>
+  <div class="card-footer bg-white">
+    <form method="POST" action="/admin/play-cricket/sync" class="d-inline">
+      <input type="hidden" name="csrf_token" value="%s">
+      <input type="hidden" name="match_date" value="%s">
+      <button type="submit" class="btn btn-outline-primary btn-sm">Sync this date into fixtures</button>
+    </form>
+  </div>
+</div>`, escapeHTML(csrfToken), escapeHTML(search.Date))
+}
+
+func sameCalendarDate(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
+}
+
+func playCricketDetailMatchesClub(detail leagueapi.MatchDetail, clubNeedle string) bool {
+	for _, value := range []string{detail.HomeClubName, detail.AwayClubName, detail.HomeTeamName, detail.AwayTeamName} {
+		if strings.Contains(normalizePlayCricketSearch(value), clubNeedle) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizePlayCricketSearch(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func displayPlayCricketMatchDate(value string) string {
+	if parsed, err := leagueapi.ParseMatchDate(value, ""); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	return strings.TrimSpace(value)
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func newPlayCricketResolver(ctx context.Context, s *Server) (*playCricketResolver, error) {
