@@ -102,6 +102,11 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		return ""
 	}
 
+	missingReportItem := ""
+	if role == "super_admin" {
+		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions</a></li>`
+	}
+
 	opsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
@@ -130,6 +135,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
             <li><a class="dropdown-item" href="/admin/reports/exec">Executive Report</a></li>
+            %s
             <li><a class="dropdown-item" href="/admin/reports">Generated Reports</a></li>
           </ul>
         </li>
@@ -139,6 +145,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
 		dropdownActive("/admin/rankings"),
 		dropdownActive("/admin/reports"),
+		missingReportItem,
 		navLink("/admin/sanctions", "Sanctions"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),

@@ -108,6 +108,8 @@ func (s *Server) adminRouter() http.Handler {
 		// Reports
 		r.Get("/reports", s.handleAdminReports())
 		r.Post("/reports/generate", s.handleAdminReportGenerate())
+		r.With(s.requireAdminRole("super_admin")).Get("/reports/missing-submissions", s.handleAdminMissingSubmissionsReport())
+		r.With(s.requireAdminRole("super_admin")).Get("/reports/missing-submissions.csv", s.handleAdminMissingSubmissionsReportCSV())
 		r.Get("/reports/exec", s.handleAdminExecReport())
 		r.Get("/reports/exec/print", s.handleAdminExecReportPrint())
 		r.Get("/reports/{id}", s.handleAdminReportView())
