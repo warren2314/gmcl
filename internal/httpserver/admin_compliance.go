@@ -128,6 +128,16 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				                     AND sub.play_cricket_match_id=ef.play_cricket_match_id
 				               )
 				               OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+				               OR EXISTS (
+				                   SELECT 1 FROM report_exemptions re
+				                   WHERE re.week_id=$1
+				                     AND re.team_id=ef.team_id
+				                     AND re.match_date=ef.match_date
+				                     AND (
+				                         re.play_cricket_match_id = ef.play_cricket_match_id
+				                         OR re.play_cricket_match_id IS NULL
+				                     )
+				               )
 				           ) AS submit_count
 				    FROM expected_fixtures ef
 				    LEFT JOIN legacy_submissions ls
@@ -334,7 +344,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					if cr.HasSanction {
 						actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
 					} else {
-						actionCell = byeButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
+						actionCell = resolvedButtons(csrfToken, weekID, outstanding) + byeButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="team_id" value="%d">
@@ -345,6 +355,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 </form>`, csrfToken, cr.TeamID, weekID, seasonID)
 					}
 				} else {
+					outstanding := s.outstandingFixtures(ctx, cr.TeamID, weekStart, weekEnd)
 					rowClass = "compliance-missing"
 					statusBadge = `<span class="badge bg-danger">&#10007; Missing</span>`
 					if cr.HasDraft {
@@ -364,7 +375,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
           onclick="return confirm('Submit saved draft on behalf of this captain?')">Submit Draft</button>
 </form>`, csrfToken, cr.TeamID, weekID)
 						}
-						actionCell = draftBtn + fmt.Sprintf(`
+						actionCell = draftBtn + resolvedButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="team_id" value="%d">
@@ -527,14 +538,16 @@ func (s *Server) handleAdminSubmitDraft() http.HandlerFunc {
 }
 
 type outstandingFixture struct {
-	ID         int64
-	MatchDate  time.Time
-	Opposition string
+	TeamID             int32
+	ID                 int64
+	PlayCricketMatchID int64
+	MatchDate          time.Time
+	Opposition         string
 }
 
 func (s *Server) outstandingFixtures(ctx context.Context, teamID int32, weekStart, weekEnd time.Time) []outstandingFixture {
 	frows, err := s.DB.Query(ctx, `
-		SELECT lf.id, lf.match_date,
+		SELECT $1::integer, lf.id, lf.play_cricket_match_id, lf.match_date,
 		       CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
 		            THEN COALESCE(TRIM(lf.away_club_name),'') || ' ' || COALESCE(TRIM(lf.away_team_name),'')
 		            ELSE COALESCE(TRIM(lf.home_club_name),'') || ' ' || COALESCE(TRIM(lf.home_team_name),'')
@@ -562,6 +575,15 @@ func (s *Server) outstandingFixtures(ctx context.Context, teamID int32, weekStar
 		      AND sub.play_cricket_match_id = lf.play_cricket_match_id
 		)
 		  AND lf.fixture_ordinal > COALESCE(legacy_subs.legacy_count, 0)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM report_exemptions re
+		      WHERE re.team_id = $1
+		        AND re.match_date = lf.match_date
+		        AND (
+		            re.play_cricket_match_id = lf.play_cricket_match_id
+		            OR re.play_cricket_match_id IS NULL
+		        )
+		  )
 		ORDER BY lf.match_date, lf.play_cricket_match_id
 	`, teamID, weekStart, weekEnd)
 	if err != nil {
@@ -571,7 +593,7 @@ func (s *Server) outstandingFixtures(ctx context.Context, teamID int32, weekStar
 	var fixtures []outstandingFixture
 	for frows.Next() {
 		var f outstandingFixture
-		if frows.Scan(&f.ID, &f.MatchDate, &f.Opposition) == nil {
+		if frows.Scan(&f.TeamID, &f.ID, &f.PlayCricketMatchID, &f.MatchDate, &f.Opposition) == nil {
 			f.Opposition = strings.TrimSpace(f.Opposition)
 			if f.Opposition == "" {
 				f.Opposition = "Unknown opponent"
@@ -590,12 +612,34 @@ func byeButtons(csrfToken string, weekID int32, fixtures []outstandingFixture) s
 <form method="POST" action="/admin/compliance/mark-bye" class="d-inline me-1">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="fixture_id" value="%d">
+  <input type="hidden" name="team_id" value="%d">
   <input type="hidden" name="week_id" value="%d">
   <button type="submit" class="btn btn-outline-secondary btn-sm py-0"
           onclick="return confirm('Mark %s (%s) as a bye? This will remove it from the outstanding count.')">
     Bye: %s
   </button>
-</form>`, csrfToken, f.ID, weekID,
+</form>`, csrfToken, f.ID, f.TeamID, weekID,
+			escapeHTML(f.Opposition), f.MatchDate.Format("2 Jan"),
+			f.MatchDate.Format("2 Jan"))
+	}
+	return b.String()
+}
+
+func resolvedButtons(csrfToken string, weekID int32, fixtures []outstandingFixture) string {
+	var b strings.Builder
+	for _, f := range fixtures {
+		fmt.Fprintf(&b, `
+<form method="POST" action="/admin/compliance/mark-resolved" class="d-inline-flex gap-1 align-items-center me-1 mb-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="fixture_id" value="%d">
+  <input type="hidden" name="team_id" value="%d">
+  <input type="hidden" name="week_id" value="%d">
+  <input type="text" name="reason" class="form-control form-control-sm py-0" style="width:190px" placeholder="Reason" value="Admin accepted - captain contact issue">
+  <button type="submit" class="btn btn-outline-success btn-sm py-0"
+          onclick="return confirm('Mark %s (%s) as resolved with no card?')">
+    Mark done: %s
+  </button>
+</form>`, csrfToken, f.ID, f.TeamID, weekID,
 			escapeHTML(f.Opposition), f.MatchDate.Format("2 Jan"),
 			f.MatchDate.Format("2 Jan"))
 	}
@@ -626,6 +670,70 @@ func (s *Server) handleAdminComplianceMarkBye() http.HandlerFunc {
 			redirect = fmt.Sprintf("/admin/compliance?week_id=%d", weekID)
 		}
 		http.Redirect(w, r, redirect, http.StatusSeeOther)
+	}
+}
+
+func (s *Server) handleAdminComplianceMarkResolved() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		fixtureID, _ := strconv.ParseInt(r.FormValue("fixture_id"), 10, 64)
+		formTeamID, _ := strconv.Atoi(r.FormValue("team_id"))
+		weekID, _ := strconv.Atoi(r.FormValue("week_id"))
+		reason := strings.TrimSpace(r.FormValue("reason"))
+		if reason == "" {
+			reason = "Admin accepted"
+		}
+		if fixtureID <= 0 || formTeamID <= 0 || weekID <= 0 {
+			http.Error(w, "invalid fixture", http.StatusBadRequest)
+			return
+		}
+
+		var seasonID, teamID int32
+		var matchDate time.Time
+		var playCricketMatchID int64
+		err := s.DB.QueryRow(ctx, `
+			SELECT w.season_id,
+			       t.id,
+			       lf.match_date,
+			       lf.play_cricket_match_id
+			FROM league_fixtures lf
+			JOIN weeks w ON w.id = $2 AND lf.match_date BETWEEN w.start_date AND w.end_date
+			JOIN teams t ON t.id = $3
+			  AND (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+			       OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
+			WHERE lf.id = $1
+			ORDER BY t.id
+			LIMIT 1
+		`, fixtureID, weekID, int32(formTeamID)).Scan(&seasonID, &teamID, &matchDate, &playCricketMatchID)
+		if err != nil {
+			http.Error(w, "fixture not found", http.StatusNotFound)
+			return
+		}
+
+		adminID := s.resolveAdminID(r)
+		_, err = s.DB.Exec(ctx, `
+			INSERT INTO report_exemptions
+			    (season_id, week_id, team_id, play_cricket_match_id, match_date, reason, created_by_admin_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (team_id, play_cricket_match_id)
+			WHERE play_cricket_match_id IS NOT NULL
+			DO UPDATE SET reason=EXCLUDED.reason, created_by_admin_id=EXCLUDED.created_by_admin_id, created_at=now()
+		`, seasonID, weekID, teamID, playCricketMatchID, matchDate, reason, adminID)
+		if err != nil {
+			http.Error(w, "could not mark resolved: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.audit(ctx, r, "admin", adminID, "report_marked_resolved", "league_fixture", &fixtureID, map[string]any{
+			"team_id":               teamID,
+			"week_id":               weekID,
+			"play_cricket_match_id": playCricketMatchID,
+			"reason":                reason,
+		})
+
+		http.Redirect(w, r, fmt.Sprintf("/admin/compliance?week_id=%d", weekID), http.StatusSeeOther)
 	}
 }
 

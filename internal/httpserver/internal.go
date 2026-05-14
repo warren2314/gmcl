@@ -152,6 +152,15 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		      WHERE team_id = t.id AND match_date = $1
 		  )
 		  AND NOT EXISTS (
+		      SELECT 1 FROM report_exemptions re
+		      WHERE re.team_id = t.id
+		        AND re.match_date = lf.match_date
+		        AND (
+		            re.play_cricket_match_id = lf.play_cricket_match_id
+		            OR re.play_cricket_match_id IS NULL
+		        )
+		  )
+		  AND NOT EXISTS (
 		      SELECT 1 FROM captain_reminder_log
 		      WHERE team_id = t.id AND match_date = $1 AND reminder_type = $2
 		  )
@@ -260,6 +269,15 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 			  AND NOT EXISTS (
 			      SELECT 1 FROM submissions s
 			      WHERE s.team_id = t.id AND s.match_date = lf.match_date
+			  )
+			  AND NOT EXISTS (
+			      SELECT 1 FROM report_exemptions re
+			      WHERE re.team_id = t.id
+			        AND re.match_date = lf.match_date
+			        AND (
+			            re.play_cricket_match_id = lf.play_cricket_match_id
+			            OR re.play_cricket_match_id IS NULL
+			        )
 			  )
 			  AND NOT EXISTS (
 			      SELECT 1 FROM sanctions sa

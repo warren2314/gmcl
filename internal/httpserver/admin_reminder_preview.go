@@ -40,6 +40,7 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			HasSubmit   bool
 			AlreadySent bool
 			IsBye       bool
+			IsResolved  bool
 			WouldSend   bool
 		}
 
@@ -61,7 +62,16 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			        SELECT 1 FROM captain_reminder_log rl
 			        WHERE rl.team_id = t.id AND rl.match_date = $1
 			    )                                               AS already_sent,
-			    lf.is_bye                                       AS is_bye
+			    lf.is_bye                                       AS is_bye,
+			    EXISTS(
+			        SELECT 1 FROM report_exemptions re
+			        WHERE re.team_id = t.id
+			          AND re.match_date = lf.match_date
+			          AND (
+			              re.play_cricket_match_id = lf.play_cricket_match_id
+			              OR re.play_cricket_match_id IS NULL
+			          )
+			    )                                               AS is_resolved
 			FROM league_fixtures lf
 			JOIN teams t ON (TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
 			              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
@@ -79,8 +89,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			for rows.Next() {
 				var rr row
 				if rows.Scan(&rr.TeamID, &rr.ClubName, &rr.TeamName, &rr.CaptainName, &rr.Email,
-					&rr.HasFixture, &rr.HasSubmit, &rr.AlreadySent, &rr.IsBye) == nil {
-					rr.WouldSend = rr.HasFixture && !rr.IsBye && !rr.HasSubmit && !rr.AlreadySent && rr.Email != ""
+					&rr.HasFixture, &rr.HasSubmit, &rr.AlreadySent, &rr.IsBye, &rr.IsResolved) == nil {
+					rr.WouldSend = rr.HasFixture && !rr.IsBye && !rr.IsResolved && !rr.HasSubmit && !rr.AlreadySent && rr.Email != ""
 					results = append(results, rr)
 				}
 			}
@@ -186,6 +196,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			switch {
 			case rr.HasSubmit:
 				submitted++
+			case rr.IsResolved:
+				submitted++
 			case rr.IsBye:
 				alreadySent++
 			case rr.AlreadySent:
@@ -264,6 +276,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 				willSend := `<span class="text-muted">—</span>`
 				if rr.WouldSend {
 					willSend = `<span class="badge bg-warning text-dark">&#x2713; Yes</span>`
+				} else if rr.IsResolved {
+					willSend = `<span class="badge bg-success">Marked done</span>`
 				} else if rr.IsBye {
 					willSend = `<span class="badge bg-secondary">Marked bye</span>`
 				} else if rr.HasSubmit {
@@ -510,6 +524,15 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		  AND NOT EXISTS (
 		      SELECT 1 FROM submissions
 		      WHERE team_id = t.id AND match_date = $1
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM report_exemptions re
+		      WHERE re.team_id = t.id
+		        AND re.match_date = lf.match_date
+		        AND (
+		            re.play_cricket_match_id = lf.play_cricket_match_id
+		            OR re.play_cricket_match_id IS NULL
+		        )
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM captain_reminder_log

@@ -35,18 +35,18 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		}
 
 		type sanRow struct {
-			ID             int64
-			Week           int32
-			Club           string
-			Team           string
-			Colour         string
-			Reason         string
-			Notes          string
-			Status         string
-			IssuedAt       time.Time
-			IssuedBy       string
-			EmailStatus    string
-			PointsDeduct   *int32
+			ID           int64
+			Week         int32
+			Club         string
+			Team         string
+			Colour       string
+			Reason       string
+			Notes        string
+			Status       string
+			IssuedAt     time.Time
+			IssuedBy     string
+			EmailStatus  string
+			PointsDeduct *int32
 		}
 		var sanctions []sanRow
 		var yellowCount, redCount, activeCount int64
@@ -399,11 +399,21 @@ func (s *Server) handleAdminSanctionBulkIssue() http.HandlerFunc {
 			  AND t.play_cricket_team_id IS NOT NULL AND t.play_cricket_team_id <> ''
 			  AND EXISTS (
 			      SELECT 1 FROM league_fixtures lf
-			      WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
+			      WHERE (TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+			             OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id))
 			        AND lf.match_date BETWEEN w.start_date AND w.end_date
 			        AND EXTRACT(DOW FROM lf.match_date) <> 5
 			        AND NOT lf.is_bye
 			        AND NOT EXISTS (SELECT 1 FROM submissions WHERE team_id = t.id AND match_date = lf.match_date)
+			        AND NOT EXISTS (
+			            SELECT 1 FROM report_exemptions re
+			            WHERE re.team_id = t.id
+			              AND re.match_date = lf.match_date
+			              AND (
+			                  re.play_cricket_match_id = lf.play_cricket_match_id
+			                  OR re.play_cricket_match_id IS NULL
+			              )
+			        )
 			  )
 			  AND t.id NOT IN (
 			      SELECT team_id FROM sanctions
@@ -506,15 +516,15 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
 		defer cancel()
 
 		type sanctionDetail struct {
-			ID             int64
-			Club           string
-			Team           string
-			Colour         string
-			MatchWeek      int32
-			EmailSubject   string
-			EmailBody      string
-			EmailStatus    string
-			PointsDeduct   *int32
+			ID           int64
+			Club         string
+			Team         string
+			Colour       string
+			MatchWeek    int32
+			EmailSubject string
+			EmailBody    string
+			EmailStatus  string
+			PointsDeduct *int32
 		}
 		var sd sanctionDetail
 		err = s.DB.QueryRow(ctx, `
