@@ -41,7 +41,7 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 		defer cancel()
 
 		mailer := email.NewFromEnv()
-		now := time.Now().UTC()
+		sat, sun := mostRecentWeekendDates(time.Now(), s.LondonLoc)
 
 		var matchDates []time.Time
 
@@ -59,16 +59,10 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 			matchDates = []time.Time{d}
 		case "monday":
 			// Monday 10:00 → last Saturday and Sunday
-			matchDates = []time.Time{
-				now.AddDate(0, 0, -2).Truncate(24 * time.Hour),
-				now.AddDate(0, 0, -1).Truncate(24 * time.Hour),
-			}
+			matchDates = []time.Time{sat, sun}
 		case "wednesday":
 			// Wednesday 10:00 → last Saturday and Sunday
-			matchDates = []time.Time{
-				now.AddDate(0, 0, -4).Truncate(24 * time.Hour),
-				now.AddDate(0, 0, -3).Truncate(24 * time.Hour),
-			}
+			matchDates = []time.Time{sat, sun}
 		default:
 			http.Error(w, "unknown type", http.StatusBadRequest)
 			return
@@ -240,11 +234,7 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		now := time.Now().UTC()
-		// Wednesday 23:59 → last Saturday = today-4, last Sunday = today-3
-		sat := now.AddDate(0, 0, -4).Truncate(24 * time.Hour)
-		sun := now.AddDate(0, 0, -3).Truncate(24 * time.Hour)
-
+		sat, sun := mostRecentWeekendDates(time.Now(), s.LondonLoc)
 		type missedTeam struct {
 			TeamID    int32
 			ClubID    int32
@@ -354,10 +344,26 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":  "ok",
-			"drafted": drafted,
+			"status":       "ok",
+			"drafted":      drafted,
+			"target_dates": []string{sat.Format("2006-01-02"), sun.Format("2006-01-02")},
 		})
 	}
+}
+
+func mostRecentWeekendDates(now time.Time, loc *time.Location) (time.Time, time.Time) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	y, m, d := local.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	sunday := today.AddDate(0, 0, -int(today.Weekday()))
+	saturday := sunday.AddDate(0, 0, -1)
+
+	sy, sm, sd := saturday.Date()
+	uy, um, ud := sunday.Date()
+	return time.Date(sy, sm, sd, 0, 0, 0, 0, time.UTC), time.Date(uy, um, ud, 0, 0, 0, 0, time.UTC)
 }
 
 // handleInternalGenerateWeeklyReport computes weekly stats and stores AI summary skeleton.
