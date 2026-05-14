@@ -20,6 +20,11 @@ type sendRemindersRequest struct {
 	MatchDate string `json:"match_date"` // YYYY-MM-DD, required for game_day
 }
 
+type generateSanctionsRequest struct {
+	WeekendStart string `json:"weekend_start"` // Saturday YYYY-MM-DD
+	MatchDate    string `json:"match_date"`    // any date; resolves to that date's latest weekend
+}
+
 type internalResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
@@ -234,7 +239,11 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		sat, sun := mostRecentWeekendDates(time.Now(), s.LondonLoc)
+		sat, sun, targetSource, err := resolveGenerateSanctionsDates(r, s.LondonLoc)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		type missedTeam struct {
 			TeamID    int32
 			ClubID    int32
@@ -344,11 +353,97 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":       "ok",
-			"drafted":      drafted,
-			"target_dates": []string{sat.Format("2006-01-02"), sun.Format("2006-01-02")},
+			"status":        "ok",
+			"drafted":       drafted,
+			"target_dates":  []string{sat.Format("2006-01-02"), sun.Format("2006-01-02")},
+			"target_source": targetSource,
 		})
 	}
+}
+
+func resolveGenerateSanctionsDates(r *http.Request, loc *time.Location) (time.Time, time.Time, string, error) {
+	weekendStart := strings.TrimSpace(r.URL.Query().Get("weekend_start"))
+	matchDate := strings.TrimSpace(r.URL.Query().Get("match_date"))
+
+	if weekendStart == "" && matchDate == "" && r.Body != nil {
+		data, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil {
+			return time.Time{}, time.Time{}, "", fmt.Errorf("could not read request body")
+		}
+		if strings.TrimSpace(string(data)) != "" {
+			var req generateSanctionsRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return time.Time{}, time.Time{}, "", fmt.Errorf("invalid JSON body")
+			}
+			weekendStart = strings.TrimSpace(req.WeekendStart)
+			matchDate = strings.TrimSpace(req.MatchDate)
+		}
+	}
+
+	if weekendStart != "" {
+		sat, sun, err := weekendStartingOn(weekendStart, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, "", err
+		}
+		return sat, sun, "weekend_start", nil
+	}
+	if matchDate != "" {
+		d, err := parseLocalDate(matchDate, loc)
+		if err != nil {
+			return time.Time{}, time.Time{}, "", fmt.Errorf("invalid match_date; use YYYY-MM-DD")
+		}
+		sat, sun := weekendForLocalDate(d, loc)
+		return sat, sun, "match_date", nil
+	}
+
+	sat, sun := mostRecentWeekendDates(time.Now(), loc)
+	return sat, sun, "default", nil
+}
+
+func weekendStartingOn(dateStr string, loc *time.Location) (time.Time, time.Time, error) {
+	sat, err := parseLocalDate(dateStr, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid weekend_start; use YYYY-MM-DD")
+	}
+	if sat.Weekday() != time.Saturday {
+		return time.Time{}, time.Time{}, fmt.Errorf("weekend_start must be a Saturday")
+	}
+	return dateOnlyUTC(sat), dateOnlyUTC(sat.AddDate(0, 0, 1)), nil
+}
+
+func parseLocalDate(dateStr string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	d, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	y, m, day := d.Date()
+	return time.Date(y, m, day, 0, 0, 0, 0, loc), nil
+}
+
+func weekendForLocalDate(d time.Time, loc *time.Location) (time.Time, time.Time) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := d.In(loc)
+	y, m, day := local.Date()
+	date := time.Date(y, m, day, 0, 0, 0, 0, loc)
+	switch date.Weekday() {
+	case time.Saturday:
+		return dateOnlyUTC(date), dateOnlyUTC(date.AddDate(0, 0, 1))
+	case time.Sunday:
+		sat := date.AddDate(0, 0, -1)
+		return dateOnlyUTC(sat), dateOnlyUTC(date)
+	default:
+		return mostRecentWeekendDates(date, loc)
+	}
+}
+
+func dateOnlyUTC(d time.Time) time.Time {
+	y, m, day := d.Date()
+	return time.Date(y, m, day, 0, 0, 0, 0, time.UTC)
 }
 
 func mostRecentWeekendDates(now time.Time, loc *time.Location) (time.Time, time.Time) {
