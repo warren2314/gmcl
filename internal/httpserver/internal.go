@@ -328,8 +328,7 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 				pointsDeduction = int(redCount) + 1
 			}
 
-			dateStr := m.MatchDate.Format("2 January 2006")
-			subject, body := buildSanctionEmail(colour, m.ClubName, m.TeamName, dateStr, pointsDeduction)
+			subject, body := buildSanctionEmail(colour, m.ClubName, m.TeamName, m.MatchDate, pointsDeduction)
 
 			var sanctionID int64
 			err := s.DB.QueryRow(ctx, `
@@ -757,9 +756,11 @@ func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
 
 		switch req.Type {
 		case "yellow":
-			subject, body = buildSanctionEmail("yellow", "Example CC", "Example CC - 1st XI", "26 April 2026", 0)
+			matchDate := time.Date(2026, time.April, 26, 0, 0, 0, 0, time.UTC)
+			subject, body = buildSanctionEmail("yellow", "Example CC", "Example CC - 1st XI", matchDate, 0)
 		case "red":
-			subject, body = buildSanctionEmail("red", "Example CC", "Example CC - 1st XI", "26 April 2026", 5)
+			matchDate := time.Date(2026, time.April, 26, 0, 0, 0, 0, time.UTC)
+			subject, body = buildSanctionEmail("red", "Example CC", "Example CC - 1st XI", matchDate, 5)
 		default:
 			t := req.Type
 			if t == "" {
@@ -878,47 +879,77 @@ Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, li
 }
 
 // buildSanctionEmail returns subject and plain-text body for a yellow or red card letter.
-func buildSanctionEmail(colour, clubName, teamName, matchDate string, pointsDeduction int) (subject, body string) {
+func buildSanctionEmail(colour, clubName, teamName string, matchDate time.Time, pointsDeduction int) (subject, body string) {
+	matchDateText := matchDate.Format("2 January 2006")
+	requiredByText := nextWednesdayMidnight(matchDate).Format("2 January 2006")
 	if colour == "yellow" {
-		subject = fmt.Sprintf("GMCL Notice of Yellow Card — %s, %s", clubName, teamName)
+		subject = fmt.Sprintf("GMCL Notice of Yellow Card - %s, %s", clubName, teamName)
 		body = fmt.Sprintf(`Dear %s,
 
-We are writing to inform you that a yellow card has been issued to %s for the match played on %s.
+Notification of issue of yellow card for non-submission of captain's report.
 
-Reason: Non-submission of captain's report.
+Team: %s
+Match date: %s
+Required by: %s at 23:59
+Received: Not received by the deadline
 
-The captain's report deadline is Wednesday at 23:59 following each weekend fixture. All teams are required to ensure their report is submitted on time.
+Reminder: each late or missing submission receives a yellow card penalty. The 3rd penalty will be a red card with a 1 point deduction. The 6th penalty will be a red card with a 2 point deduction.
 
-This is a formal warning. A further failure to submit a captain's report may result in a red card and a points deduction being applied to your team's league record.
-
-If you believe this notice has been issued in error, please contact the GMCL Discipline Committee in writing within seven days of this notice.
+This sanction is non-appealable.
 
 Yours sincerely,
 
 Greater Manchester Cricket League
-Discipline Committee`, clubName, teamName, matchDate)
+Discipline Committee`, clubName, teamName, matchDateText, requiredByText)
 
 	} else {
-		pointsText := ""
+		pointsText := "Points deduction: 0 points"
 		if pointsDeduction > 0 {
-			pointsText = fmt.Sprintf("\n\nAs a result of this red card, a points deduction of %d point(s) has been applied to %s's league record.", pointsDeduction, teamName)
+			pointsText = fmt.Sprintf("Points deduction: %d point(s)", pointsDeduction)
 		}
-		subject = fmt.Sprintf("GMCL Notice of Red Card — %s, %s", clubName, teamName)
+		penaltyNumber := pointsDeduction * 3
+		if penaltyNumber == 0 {
+			penaltyNumber = 3
+		}
+		subject = fmt.Sprintf("GMCL Notice of Red Card - %s, %s", clubName, teamName)
 		body = fmt.Sprintf(`Dear %s,
 
-We are writing to inform you that a red card has been issued to %s for the match played on %s.
+Notification of issue of red card for non-submission of captain's report.
 
-Reason: Repeated non-submission of captain's report.%s
+Team: %s
+Match date: %s
+Required by: %s at 23:59
+Received: Not received by the deadline
 
-This represents a serious breach of league regulations. Further non-compliance may result in additional penalties, including a points deduction or potential exclusion from the league.
+This red card has been issued because this is the %s yellow card penalty for late or missing captain's report submissions.
 
-If you wish to appeal this decision, you must do so in writing within seven days of this notice, addressed to the GMCL Discipline Committee.
+%s
+
+Reminder: each late or missing submission receives a yellow card penalty. The 3rd penalty will be a red card with a 1 point deduction. The 6th penalty will be a red card with a 2 point deduction.
+
+This sanction is non-appealable.
 
 Yours sincerely,
 
 Greater Manchester Cricket League
-Discipline Committee`, clubName, teamName, matchDate, pointsText)
+Discipline Committee`, clubName, teamName, matchDateText, requiredByText, ordinal(penaltyNumber), pointsText)
 	}
 
 	return subject, body
+}
+
+func ordinal(n int) string {
+	if n%100 >= 11 && n%100 <= 13 {
+		return fmt.Sprintf("%dth", n)
+	}
+	switch n % 10 {
+	case 1:
+		return fmt.Sprintf("%dst", n)
+	case 2:
+		return fmt.Sprintf("%dnd", n)
+	case 3:
+		return fmt.Sprintf("%drd", n)
+	default:
+		return fmt.Sprintf("%dth", n)
+	}
 }

@@ -96,3 +96,46 @@ func TestResolveGenerateSanctionsDates_RejectsNonSaturdayWeekendStart(t *testing
 		t.Fatal("expected non-Saturday weekend_start to fail")
 	}
 }
+
+func TestBuildSanctionEmailYellowUsesNonSubmissionWording(t *testing.T) {
+	matchDate := time.Date(2026, time.May, 10, 0, 0, 0, 0, time.UTC)
+
+	subject, body := buildSanctionEmail("yellow", "Example CC", "Example CC - 1st XI", matchDate, 0)
+
+	if subject != "GMCL Notice of Yellow Card - Example CC, Example CC - 1st XI" {
+		t.Fatalf("subject: got %q", subject)
+	}
+	for _, want := range []string{
+		"Notification of issue of yellow card for non-submission of captain's report.",
+		"Required by: 13 May 2026 at 23:59",
+		"Received: Not received by the deadline",
+		"The 3rd penalty will be a red card with a 1 point deduction.",
+		"This sanction is non-appealable.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestBuildSanctionEmailRedUsesPenaltyWording(t *testing.T) {
+	matchDate := time.Date(2026, time.May, 9, 0, 0, 0, 0, time.UTC)
+
+	subject, body := buildSanctionEmail("red", "Example CC", "Example CC - 1st XI", matchDate, 2)
+
+	if subject != "GMCL Notice of Red Card - Example CC, Example CC - 1st XI" {
+		t.Fatalf("subject: got %q", subject)
+	}
+	for _, want := range []string{
+		"Notification of issue of red card for non-submission of captain's report.",
+		"Required by: 13 May 2026 at 23:59",
+		"Received: Not received by the deadline",
+		"this is the 6th yellow card penalty",
+		"Points deduction: 2 point(s)",
+		"This sanction is non-appealable.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
