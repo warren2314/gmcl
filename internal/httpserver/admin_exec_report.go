@@ -13,6 +13,7 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
 		// ── Season ─────────────────────────────────────────────────────────
 		var seasonID int32
@@ -408,7 +409,7 @@ window.__pitchDist=[%d,%d,%d,%d,%d];
 		fmt.Fprint(w, `      </tbody></table></div></div>`)
 
 		// ── Top umpires ─────────────────────────────────────────────────────
-		if len(umpires) > 0 {
+		if canViewUmpireFeedback && len(umpires) > 0 {
 			fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header fw-semibold">Top Umpires (season, min. 2 ratings)</div>
@@ -540,6 +541,7 @@ func (s *Server) handleAdminExecReportPrint() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
 		var seasonID int32
 		var seasonName string
@@ -700,7 +702,7 @@ button.print-btn { float: right; padding: 6px 14px; background: #8b0000; color: 
 		}
 		fmt.Fprint(w, `</table>`)
 
-		if len(umpires) > 0 {
+		if canViewUmpireFeedback && len(umpires) > 0 {
 			fmt.Fprint(w, `<h2>Top Umpires</h2>
 <table><tr><th>#</th><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
 			for i, u := range umpires {

@@ -518,7 +518,7 @@ func printScoreBadge(score float64, max float64) string {
 	return fmt.Sprintf(`<span class="%s">%.2f</span>`, cls, score)
 }
 
-func writeAIExecutivePrintReport(w http.ResponseWriter, rp aiExecutiveReportPayload) {
+func writeAIExecutivePrintReport(w http.ResponseWriter, rp aiExecutiveReportPayload, canViewUmpireFeedback bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>%s - %s</title>
@@ -651,10 +651,12 @@ button { float: right; padding: 6px 12px; border: 0; background: #C41E3A; color:
 	printNarrative("Latest Report Findings", rp.Executive.LatestReport)
 	printWindow("Season Report", rp.SeasonToDate)
 	printNarrative("Season Report Findings", rp.Executive.SeasonReport)
-	printUmpires("Latest Umpire Reports", rp.LatestUmpires)
-	printNarrative("Latest Umpire Findings", rp.Executive.LatestUmpireReport)
-	printUmpires("Season Umpire Report", rp.SeasonUmpires)
-	printNarrative("Season Umpire Findings", rp.Executive.SeasonUmpireReport)
+	if canViewUmpireFeedback {
+		printUmpires("Latest Umpire Reports", rp.LatestUmpires)
+		printNarrative("Latest Umpire Findings", rp.Executive.LatestUmpireReport)
+		printUmpires("Season Umpire Report", rp.SeasonUmpires)
+		printNarrative("Season Umpire Findings", rp.Executive.SeasonUmpireReport)
+	}
 	printNarrative("Conclusion", rp.Executive.Conclusion)
 	fmt.Fprint(w, `</body></html>`)
 }

@@ -77,9 +77,9 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Rankings
 		r.Get("/rankings", s.handleAdminRankings())
-		r.Get("/rankings/umpires", s.handleAdminUmpireRankings())
+		r.With(s.requireAdminPermission("view_umpire_feedback")).Get("/rankings/umpires", s.handleAdminUmpireRankings())
 		r.Get("/rankings/clubs", s.handleAdminClubDetail())
-		r.Get("/umpires/{name}/comments", s.handleAdminUmpireComments())
+		r.With(s.requireAdminPermission("view_umpire_feedback")).Get("/umpires/{name}/comments", s.handleAdminUmpireComments())
 
 		// Compliance
 		r.Get("/compliance", s.handleAdminCompliance())
@@ -146,6 +146,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Get("/users", s.handleAdminUsers())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/invite", s.handleAdminUserInvite())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/role", s.handleAdminUserRoleUpdate())
+		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/permissions", s.handleAdminUserPermissionsUpdate())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/deactivate", s.handleAdminUserDeactivate())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/resend-invite", s.handleAdminUserResendInvite())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/delete", s.handleAdminUserDelete())
@@ -620,7 +621,6 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
 		}
-
 		pitchColour := "#198754"
 		if avgPitch < 3 {
 			pitchColour = "#dc3545"
@@ -931,7 +931,6 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
 		}
-
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Weeks")
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
@@ -1300,6 +1299,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, fmt.Sprintf("Submission %d", id))
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 		fmt.Fprintf(w, `<div class="container-fluid">
 <h3 class="mb-4">Submission %d</h3>
 <div class="card card-gmcl shadow-sm mb-4">
@@ -1322,7 +1322,7 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
 			}
 			return captainName
 		}(), submittedByRole, matchDate.Format("2006-01-02"), pitch, umpire1Type, umpire2Type)
-		if comments != "" {
+		if canViewUmpireFeedback && comments != "" {
 			fmt.Fprintf(w, `      <dt class="col-sm-3">Comments</dt><dd class="col-sm-9">%s</dd>
 `, escapeHTML(comments))
 		}
@@ -1339,9 +1339,12 @@ func (s *Server) handleAdminSubmissionDetail() http.HandlerFunc {
   <div class="card-body">
     <dl class="row mb-0">
 `)
-				for _, key := range []string{"match_date", "umpire1_name", "umpire2_name", "umpire1_type", "umpire2_type", "umpire_names_other", "your_team",
-					"umpire1_performance", "umpire2_performance", "umpire_comments", "umpire_comments_detail",
-					"unevenness_of_bounce", "seam_movement", "carry_bounce", "turn"} {
+				formKeys := []string{"match_date", "umpire1_name", "umpire2_name", "umpire1_type", "umpire2_type", "umpire_names_other", "your_team",
+					"unevenness_of_bounce", "seam_movement", "carry_bounce", "turn"}
+				if canViewUmpireFeedback {
+					formKeys = append(formKeys, "umpire1_performance", "umpire2_performance", "umpire_comments", "umpire_comments_detail")
+				}
+				for _, key := range formKeys {
 					if v, ok := formData[key]; ok && v != nil {
 						fmt.Fprintf(w, `      <dt class="col-sm-4">%s</dt><dd class="col-sm-8">%v</dd>
 `, key, v)
@@ -1544,6 +1547,7 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Club Rankings")
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 
 		// Header + season selector
@@ -1563,11 +1567,15 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 			}
 			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, ss.ID, sel, escapeHTML(ss.Name))
 		}
+		umpireRankingsLink := ""
+		if canViewUmpireFeedback {
+			umpireRankingsLink = `<a href="/admin/rankings/umpires" class="btn btn-sm btn-outline-primary">Umpire Rankings</a>`
+		}
 		fmt.Fprintf(w, `      </select>
     </form>
-    <a href="/admin/rankings/umpires" class="btn btn-sm btn-outline-primary">Umpire Rankings</a>
+    %s
   </div>
-</div>`)
+</div>`, umpireRankingsLink)
 
 		// KPI cards
 		fmt.Fprintf(w, `
@@ -2432,6 +2440,23 @@ func (s *Server) requireAdminRole(roles ...string) func(http.Handler) http.Handl
 	}
 }
 
+func (s *Server) requireAdminPermission(permission string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sess, err := getAdminSessionFromRequest(r)
+			if err != nil {
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
+			}
+			if !s.adminHasPermission(r.Context(), sess.AdminID, permission) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func (s *Server) effectiveAdminRole(ctx context.Context, adminID int32) string {
 	role := "admin"
 	var username, email string
@@ -2440,6 +2465,33 @@ func (s *Server) effectiveAdminRole(ctx context.Context, adminID int32) string {
 		return "super_admin"
 	}
 	return "admin"
+}
+
+func (s *Server) adminHasPermission(ctx context.Context, adminID int32, permission string) bool {
+	if permission == "" {
+		return true
+	}
+	if s.effectiveAdminRole(ctx, adminID) == "super_admin" {
+		return true
+	}
+
+	var ok bool
+	_ = s.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM admin_user_permissions
+			WHERE admin_user_id = $1 AND permission = $2
+		)
+	`, adminID, permission).Scan(&ok)
+	return ok
+}
+
+func adminIDForRequest(r *http.Request) int32 {
+	sess, err := getAdminSessionFromRequest(r)
+	if err != nil || sess == nil {
+		return 0
+	}
+	return sess.AdminID
 }
 
 func isConfiguredSuperAdmin(username, email string) bool {

@@ -532,6 +532,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
 		}
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Report: "+period)
@@ -578,7 +579,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
 				pageFooter(w)
 				return
 			}
-			s.renderAIExecutiveReport(w, rp, reportID, csrfToken)
+			s.renderAIExecutiveReport(w, rp, reportID, csrfToken, canViewUmpireFeedback)
 			return
 		}
 
@@ -706,7 +707,7 @@ window.__pitchDist = [%d,%d,%d,%d,%d];
 		}
 
 		// Umpire summary
-		if len(rp.UmpireSummary) > 0 {
+		if canViewUmpireFeedback && len(rp.UmpireSummary) > 0 {
 			fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header fw-semibold">Umpire Performance</div>
@@ -866,6 +867,7 @@ func (s *Server) handleAdminReportPrint() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
 		if reportType == "ai_executive" {
 			var rp aiExecutiveReportPayload
@@ -873,7 +875,7 @@ func (s *Server) handleAdminReportPrint() http.HandlerFunc {
 				http.Error(w, "corrupt report", http.StatusInternalServerError)
 				return
 			}
-			writeAIExecutivePrintReport(w, rp)
+			writeAIExecutivePrintReport(w, rp, canViewUmpireFeedback)
 			return
 		}
 
@@ -933,7 +935,7 @@ td { padding: 5px 10px; border-bottom: 1px solid #eee; }
 			fmt.Fprint(w, `</table>`)
 		}
 
-		if len(rp.UmpireSummary) > 0 {
+		if canViewUmpireFeedback && len(rp.UmpireSummary) > 0 {
 			fmt.Fprint(w, `<h2>Umpire Summary</h2><table><tr><th>Umpire</th><th>Ratings</th><th>Good</th><th>Average</th><th>Poor</th><th>Score</th></tr>`)
 			for _, u := range rp.UmpireSummary {
 				fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td></tr>`,
@@ -967,6 +969,10 @@ func (s *Server) handleAdminReportDownload() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		if !s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback") {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 
 		filename := fmt.Sprintf("gmcl-report-%s.json", strings.ReplaceAll(period, " ", "-"))
 		w.Header().Set("Content-Type", "application/json")
@@ -975,7 +981,11 @@ func (s *Server) handleAdminReportDownload() http.HandlerFunc {
 	}
 }
 
-func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveReportPayload, reportID int64, csrfToken string) {
+func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveReportPayload, reportID int64, csrfToken string, canViewUmpireFeedback bool) {
+	downloadLink := ""
+	if canViewUmpireFeedback {
+		downloadLink = fmt.Sprintf(`<a href="/admin/reports/%d/download" class="btn btn-outline-primary btn-sm">Download JSON</a>`, reportID)
+	}
 	fmt.Fprintf(w, `
 <div class="exec-report">
 <section class="exec-report-cover">
@@ -999,13 +1009,13 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
         <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
       </form>
       <a href="/admin/reports/%d/print" target="_blank" class="btn btn-outline-secondary btn-sm">Print / Save as PDF</a>
-      <a href="/admin/reports/%d/download" class="btn btn-outline-primary btn-sm">Download JSON</a>
+      %s
     </div>
   </div>
 </section>
 `, escapeHTML(rp.Cover.PreparedFor), escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName),
 		rp.GeneratedAt.Format("02 Jan 2006 15:04"), escapeHTML(rp.Cover.LatestPeriod),
-		escapeHTML(rp.Cover.SeasonPeriod), reportID, escapeHTML(csrfToken), reportID, escapeHTML(csrfToken), reportID, reportID)
+		escapeHTML(rp.Cover.SeasonPeriod), reportID, escapeHTML(csrfToken), reportID, escapeHTML(csrfToken), reportID, downloadLink)
 
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))
@@ -1015,6 +1025,9 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 
 	fmt.Fprint(w, `<section class="exec-report-section"><h5 class="fw-bold mb-3">Table of Contents</h5><ol class="mb-0">`)
 	for _, item := range rp.TableOfContents {
+		if !canViewUmpireFeedback && strings.Contains(strings.ToLower(item), "umpire") {
+			continue
+		}
 		fmt.Fprintf(w, `<li>%s</li>`, escapeHTML(item))
 	}
 	fmt.Fprint(w, `</ol></section>`)
@@ -1029,10 +1042,12 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 	renderNarrativeSection("Latest Report Findings", rp.Executive.LatestReport)
 	s.renderAIExecutiveWindow(w, "Season Report", rp.SeasonToDate)
 	renderNarrativeSection("Season Report Findings", rp.Executive.SeasonReport)
-	s.renderAIExecutiveUmpireWindow(w, "Latest Umpire Reports", rp.LatestUmpires)
-	renderNarrativeSection("Latest Umpire Findings", rp.Executive.LatestUmpireReport)
-	s.renderAIExecutiveUmpireWindow(w, "Season Umpire Report", rp.SeasonUmpires)
-	renderNarrativeSection("Season Umpire Findings", rp.Executive.SeasonUmpireReport)
+	if canViewUmpireFeedback {
+		s.renderAIExecutiveUmpireWindow(w, "Latest Umpire Reports", rp.LatestUmpires)
+		renderNarrativeSection("Latest Umpire Findings", rp.Executive.LatestUmpireReport)
+		s.renderAIExecutiveUmpireWindow(w, "Season Umpire Report", rp.SeasonUmpires)
+		renderNarrativeSection("Season Umpire Findings", rp.Executive.SeasonUmpireReport)
+	}
 	renderNarrativeSection("Conclusion", rp.Executive.Conclusion)
 	fmt.Fprint(w, `</div>`)
 	pageFooter(w)

@@ -313,6 +313,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			Username    string
 			Email       string
 			Role        string
+			UmpireACL   bool
 			IsActive    bool
 			ForceChange bool
 			LastLogin   *time.Time
@@ -321,7 +322,12 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 		var users []userRow
 		rows, err := s.DB.Query(ctx, `
 			SELECT id, username, email, COALESCE(role, 'admin'), is_active, force_password_change,
-			       last_login_at, invited_at
+			       last_login_at, invited_at,
+			       EXISTS (
+			           SELECT 1 FROM admin_user_permissions aup
+			           WHERE aup.admin_user_id = admin_users.id
+			             AND aup.permission = 'view_umpire_feedback'
+			       )
 			FROM admin_users
 			ORDER BY invited_at DESC NULLS LAST, id
 		`)
@@ -330,7 +336,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			for rows.Next() {
 				var u userRow
 				if rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.IsActive,
-					&u.ForceChange, &u.LastLogin, &u.InvitedAt) == nil {
+					&u.ForceChange, &u.LastLogin, &u.InvitedAt, &u.UmpireACL) == nil {
 					users = append(users, u)
 				}
 			}
@@ -394,7 +400,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Username</th><th>Email</th><th>Role</th><th>Status</th>
+        <th>Username</th><th>Email</th><th>Role</th><th>Umpire Feedback</th><th>Status</th>
         <th>Last Login</th><th>Invited</th><th></th>
       </tr></thead>
       <tbody>
@@ -418,6 +424,12 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 				roleClass = "text-bg-dark"
 			}
 			roleCell := fmt.Sprintf(`<span class="badge %s">%s</span>`, roleClass, roleLabel)
+			umpireACLCell := `<span class="badge text-bg-secondary">No access</span>`
+			if u.Role == "super_admin" {
+				umpireACLCell = `<span class="badge text-bg-dark">Allowed by role</span>`
+			} else if u.UmpireACL {
+				umpireACLCell = `<span class="badge text-bg-success">Allowed</span>`
+			}
 			invitedAt := `<span class="text-muted">—</span>`
 			if u.InvitedAt != nil {
 				invitedAt = u.InvitedAt.Format("02 Jan 2006")
@@ -434,6 +446,20 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
   <input type="hidden" name="role" value="%s">
   <button type="submit" class="btn btn-sm btn-outline-dark py-0">Make %s</button>
 </form>`, u.ID, csrfToken, oppositeAdminRole(u.Role), escapeHTML(oppositeAdminRoleLabel(u.Role)))
+					if u.Role != "super_admin" {
+						nextPermission := "1"
+						permissionLabel := "Grant umpire feedback"
+						if u.UmpireACL {
+							nextPermission = "0"
+							permissionLabel = "Revoke umpire feedback"
+						}
+						actions += fmt.Sprintf(`
+<form method="POST" action="/admin/users/%d/permissions" class="d-inline me-1">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="view_umpire_feedback" value="%s">
+  <button type="submit" class="btn btn-sm btn-outline-primary py-0">%s</button>
+</form>`, u.ID, csrfToken, nextPermission, permissionLabel)
+					}
 					actions += fmt.Sprintf(`
 <form method="POST" action="/admin/users/%d/deactivate" class="d-inline me-1">
   <input type="hidden" name="csrf_token" value="%s">
@@ -456,12 +482,12 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 			}
 
 			fmt.Fprintf(w,
-				`<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td class="small text-muted">%s</td><td class="small text-muted">%s</td><td>%s</td></tr>`,
+				`<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="small text-muted">%s</td><td class="small text-muted">%s</td><td>%s</td></tr>`,
 				escapeHTML(u.Username), escapeHTML(u.Email),
-				roleCell, statusBadge, lastLogin, invitedAt, actions)
+				roleCell, umpireACLCell, statusBadge, lastLogin, invitedAt, actions)
 		}
 		if len(users) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No admin users found.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No admin users found.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
@@ -582,6 +608,58 @@ func (s *Server) handleAdminUserRoleUpdate() http.HandlerFunc {
 		}
 		eid := int64(targetID)
 		s.audit(ctx, r, "admin", &sess.AdminID, "admin_user_role_updated", "admin_user", &eid, map[string]any{"role": role})
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	}
+}
+
+func (s *Server) handleAdminUserPermissionsUpdate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		targetID, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil || targetID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		sess, err := getAdminSessionFromRequest(r)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+
+		allowUmpireFeedback := r.FormValue("view_umpire_feedback") == "1"
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var role string
+		if err := s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, targetID).Scan(&role); err != nil {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		if role == "super_admin" {
+			http.Error(w, "super admins already have this permission", http.StatusBadRequest)
+			return
+		}
+
+		if allowUmpireFeedback {
+			_, err = s.DB.Exec(ctx, `
+				INSERT INTO admin_user_permissions (admin_user_id, permission)
+				VALUES ($1, 'view_umpire_feedback')
+				ON CONFLICT DO NOTHING
+			`, targetID)
+		} else {
+			_, err = s.DB.Exec(ctx, `
+				DELETE FROM admin_user_permissions
+				WHERE admin_user_id=$1 AND permission='view_umpire_feedback'
+			`, targetID)
+		}
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+
+		eid := int64(targetID)
+		s.audit(ctx, r, "admin", &sess.AdminID, "admin_user_permissions_updated", "admin_user", &eid,
+			map[string]any{"view_umpire_feedback": allowUmpireFeedback})
 		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 	}
 }
