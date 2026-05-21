@@ -96,15 +96,29 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
+		clearBtn := ""
+		if adminRoleForRequest(r) == "super_admin" && (yellowCount > 0 || redCount > 0) {
+			clearBtn = fmt.Sprintf(`
+<form method="POST" action="/admin/sanctions/clear-all" class="d-inline ms-2">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="season_id" value="%d">
+  <button type="submit" class="btn btn-sm btn-outline-danger"
+          onclick="return confirm('This will permanently DELETE all yellow cards and all non-submission red cards for this season. Continue?')">
+    Clear all non-submission cards
+  </button>
+</form>`, csrfToken, seasonID)
+		}
 		fmt.Fprintf(w, `
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div>
     <h4 class="mb-0 fw-bold">Sanctions</h4>
     <p class="text-muted mb-0 small">%s</p>
   </div>
-  <a href="/admin/compliance" class="btn btn-sm btn-outline-primary">View Compliance</a>
+  <div>
+    <a href="/admin/compliance" class="btn btn-sm btn-outline-primary">View Compliance</a>%s
+  </div>
 </div>
-`, escapeHTML(seasonName))
+`, escapeHTML(seasonName), clearBtn)
 
 		// KPI strip
 		fmt.Fprintf(w, `
@@ -696,6 +710,60 @@ func (s *Server) handleAdminSanctionEmailSkip() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		s.DB.Exec(ctx, `UPDATE sanctions SET email_status='skipped' WHERE id=$1`, sanctionID)
+		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionClearAll permanently deletes every yellow card and every
+// non_submission red (i.e. cards escalated from two yellows) for the current
+// season, so the weekly compliance run can start from a clean slate.
+// Manually-issued reds with reasons other than 'non_submission' are preserved.
+func (s *Server) handleAdminSanctionClearAll() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		var seasonID int32
+		s.DB.QueryRow(ctx, `
+			SELECT s.id FROM weeks w JOIN seasons s ON w.season_id=s.id
+			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
+		`).Scan(&seasonID)
+		if sid := r.FormValue("season_id"); sid != "" {
+			if n, err := strconv.Atoi(sid); err == nil {
+				seasonID = int32(n)
+			}
+		}
+		if seasonID == 0 {
+			http.Error(w, "no active season", http.StatusBadRequest)
+			return
+		}
+
+		var yellowDeleted, redDeleted int64
+		s.DB.QueryRow(ctx, `
+			SELECT COUNT(*) FROM sanctions
+			WHERE season_id=$1 AND colour='yellow'
+		`, seasonID).Scan(&yellowDeleted)
+		s.DB.QueryRow(ctx, `
+			SELECT COUNT(*) FROM sanctions
+			WHERE season_id=$1 AND colour='red' AND reason='non_submission'
+		`, seasonID).Scan(&redDeleted)
+
+		if _, err := s.DB.Exec(ctx, `
+			DELETE FROM sanctions
+			WHERE season_id=$1
+			  AND (colour='yellow' OR (colour='red' AND reason='non_submission'))
+		`, seasonID); err != nil {
+			http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		adminID := s.resolveAdminID(r)
+		s.audit(ctx, r, "admin", adminID, "sanction_cleared_all", "sanction", nil, map[string]any{
+			"season_id":       seasonID,
+			"yellow_deleted":  yellowDeleted,
+			"red_deleted":     redDeleted,
+		})
+
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
 }
