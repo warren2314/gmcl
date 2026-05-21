@@ -12,6 +12,47 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
+// sanctionStatusBadge renders a badge showing both that a card was issued AND
+// what state its letter is in. Avoids the prior confusion where compliance said
+// "Card Issued" but the sanction page still showed the email as Pending.
+func sanctionStatusBadge(colour, emailStatus string, sanctionID *int64) string {
+	cardClass := "badge-yellow-card"
+	cardIcon := "🟡"
+	if colour == "red" {
+		cardClass = "badge-red-card"
+		cardIcon = "🔴"
+	}
+	emailLabel := ""
+	emailClass := ""
+	link := ""
+	if sanctionID != nil {
+		link = fmt.Sprintf("/admin/sanctions/%d/email", *sanctionID)
+	}
+	switch emailStatus {
+	case "sent":
+		emailLabel = "Letter sent"
+		emailClass = "bg-success"
+	case "approved":
+		emailLabel = "Letter approved"
+		emailClass = "bg-info"
+	case "skipped":
+		emailLabel = "Letter skipped"
+		emailClass = "bg-secondary"
+	case "pending", "":
+		emailLabel = "Letter pending"
+		emailClass = "bg-warning text-dark"
+	default:
+		emailLabel = escapeHTML(emailStatus)
+		emailClass = "bg-secondary"
+	}
+	cardBadge := fmt.Sprintf(`<span class="badge %s">%s Card issued</span>`, cardClass, cardIcon)
+	emailBadge := fmt.Sprintf(`<span class="badge %s">%s</span>`, emailClass, emailLabel)
+	if link != "" && (emailStatus == "pending" || emailStatus == "" || emailStatus == "approved") {
+		emailBadge = fmt.Sprintf(`<a href="%s" class="badge %s text-decoration-none">%s</a>`, link, emailClass, emailLabel)
+	}
+	return cardBadge + `<br>` + emailBadge
+}
+
 // handleAdminCompliance shows which teams have and haven't submitted for a given week.
 func (s *Server) handleAdminCompliance() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -71,16 +112,19 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 
 		// Compliance query: per-fixture tracking so double-headers are counted correctly.
 		type compRow struct {
-			TeamID        int32
-			ClubName      string
-			TeamName      string
-			FixtureCount  int // non-Friday fixtures this week (0 = no fixture)
-			SubmitCount   int // reports submitted this week, capped to fixture count in KPIs
-			HasDraft      bool
-			HasSanction   bool
-			YellowCount   int64
-			RedCount      int64
-			SuggestedCard string
+			TeamID              int32
+			ClubName            string
+			TeamName            string
+			FixtureCount        int // non-Friday fixtures this week (0 = no fixture)
+			SubmitCount         int // reports submitted this week, capped to fixture count in KPIs
+			HasDraft            bool
+			HasSanction         bool
+			YellowCount         int64
+			RedCount            int64
+			SuggestedCard       string
+			SanctionID          *int64
+			SanctionColour      string
+			SanctionEmailStatus string
 		}
 		var rows []compRow
 		// KPI counters in fixture-report units, not team units
@@ -148,8 +192,11 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    SELECT DISTINCT team_id FROM drafts WHERE week_id=$1
 				),
 				sanctioned AS (
-				    SELECT DISTINCT team_id FROM sanctions
+				    SELECT DISTINCT ON (team_id)
+				           team_id, id, colour, COALESCE(email_status, 'pending') AS email_status
+				    FROM sanctions
 				    WHERE season_id=$2 AND week_id=$1 AND reason='non_submission' AND status IN ('active','served')
+				    ORDER BY team_id, issued_at DESC
 				),
 				yellow_counts AS (
 				    SELECT team_id, COUNT(*) AS cnt FROM sanctions
@@ -170,7 +217,10 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 				    (dr.team_id IS NOT NULL)        AS has_draft,
 				    (sa.team_id IS NOT NULL)        AS has_sanction,
 				    COALESCE(yc.cnt, 0),
-				    COALESCE(rc.cnt, 0)
+				    COALESCE(rc.cnt, 0),
+				    sa.id,
+				    COALESCE(sa.colour::text, ''),
+				    COALESCE(sa.email_status, '')
 				FROM teams t
 				JOIN clubs cl ON t.club_id = cl.id
 				LEFT JOIN fixture_counts fc ON fc.team_id = t.id
@@ -191,7 +241,8 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					var cr compRow
 					if e := crows.Scan(&cr.TeamID, &cr.ClubName, &cr.TeamName,
 						&cr.FixtureCount, &cr.SubmitCount,
-						&cr.HasDraft, &cr.HasSanction, &cr.YellowCount, &cr.RedCount); e == nil {
+						&cr.HasDraft, &cr.HasSanction, &cr.YellowCount, &cr.RedCount,
+						&cr.SanctionID, &cr.SanctionColour, &cr.SanctionEmailStatus); e == nil {
 						totalOffences := cr.YellowCount + cr.RedCount
 						if (totalOffences+1)%3 == 0 {
 							cr.SuggestedCard = "red"
@@ -342,7 +393,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					rowClass = "compliance-missing"
 					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span><br><small class="text-muted">Missing: %s</small>`, cr.SubmitCount, cr.FixtureCount, escapeHTML(missing))
 					if cr.HasSanction {
-						actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
+						actionCell = sanctionStatusBadge(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID)
 					} else {
 						actionCell = resolvedButtons(csrfToken, weekID, outstanding) + byeButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
@@ -362,7 +413,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 						statusBadge = `<span class="badge bg-warning text-dark">&#9998; Draft saved</span>`
 					}
 					if cr.HasSanction {
-						actionCell = `<span class="badge badge-yellow-card">Card Issued</span>`
+						actionCell = sanctionStatusBadge(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID)
 					} else {
 						draftBtn := ""
 						if cr.HasDraft {
@@ -395,7 +446,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 			}
 			sanctionCell := `<span class="text-muted">—</span>`
 			if cr.HasSanction {
-				sanctionCell = `<span class="badge badge-yellow-card">Active</span>`
+				sanctionCell = sanctionStatusBadge(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID)
 			}
 			if fullySubmitted || !hasFixture {
 				priorCell = `<span class="text-muted">—</span>`
