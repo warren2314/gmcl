@@ -22,6 +22,7 @@ type Client struct {
 	username   string
 	password   string
 	heloDomain string
+	configSet  string
 }
 
 func NewFromEnv() *Client {
@@ -44,6 +45,7 @@ func NewFromEnv() *Client {
 		username:   os.Getenv("SMTP_USERNAME"),
 		password:   os.Getenv("SMTP_PASSWORD"),
 		heloDomain: heloDomain,
+		configSet:  strings.TrimSpace(os.Getenv("SES_CONFIGURATION_SET")),
 	}
 }
 
@@ -110,11 +112,15 @@ func (c *Client) Send(to, subject, body string) error {
 
 	msg := "From: " + c.fromHeader + "\r\n" +
 		"To: " + to + "\r\n" +
-		"Subject: " + subject + "\r\n" +
+		"Subject: " + subject + "\r\n"
+	if c.configSet != "" {
+		msg += "X-SES-CONFIGURATION-SET: " + c.configSet + "\r\n"
+	}
+	msg +=
 		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/html; charset=UTF-8\r\n" +
-		"\r\n" +
-		toHTML(body) + "\r\n"
+			"Content-Type: text/html; charset=UTF-8\r\n" +
+			"\r\n" +
+			toHTML(body) + "\r\n"
 
 	if _, err := fmt.Fprint(w, msg); err != nil {
 		return fmt.Errorf("2fa_email_failed: write: %w", err)

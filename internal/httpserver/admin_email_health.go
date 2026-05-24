@@ -224,6 +224,37 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 			}
 		}
 
+		type reminderFailureRow struct {
+			CreatedAt    time.Time
+			MatchDate    time.Time
+			ReminderType string
+			Recipient    string
+			Stage        string
+			ErrorMessage string
+			Club         string
+			Team         string
+		}
+		var reminderFailures []reminderFailureRow
+		failureRows, err := s.DB.Query(ctx, `
+			SELECT rf.created_at, rf.match_date, rf.reminder_type, rf.captain_email,
+			       rf.stage, rf.error_message, COALESCE(cl.name,''), COALESCE(t.name,'')
+			FROM captain_reminder_failures rf
+			JOIN teams t ON t.id = rf.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			WHERE rf.created_at >= now() - ($1::text || ' days')::interval
+			ORDER BY rf.created_at DESC
+			LIMIT 50
+		`, days)
+		if err == nil {
+			defer failureRows.Close()
+			for failureRows.Next() {
+				var row reminderFailureRow
+				if failureRows.Scan(&row.CreatedAt, &row.MatchDate, &row.ReminderType, &row.Recipient, &row.Stage, &row.ErrorMessage, &row.Club, &row.Team) == nil {
+					reminderFailures = append(reminderFailures, row)
+				}
+			}
+		}
+
 		csrfToken := ""
 		if ck, err := r.Cookie("csrf_token"); err == nil {
 			csrfToken = ck.Value
@@ -253,6 +284,27 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 <div class="col-auto"><div class="card card-kpi kpi-green p-3 text-center" style="min-width:120px"><div class="kpi-number text-success">%d</div><div class="kpi-label">Deliveries</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Other</div></div></div>
 </div>`, c.Bounces, c.Complaints, c.Deliveries, c.Other)
+
+		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Reminder Send Failures</div><div class="table-responsive"><table class="table table-hover table-gmcl mb-0">
+<thead><tr><th>Time</th><th>Match date</th><th>Type</th><th>Recipient</th><th>Club / Team</th><th>Stage</th><th>Error</th></tr></thead><tbody>`)
+		for _, f := range reminderFailures {
+			clubTeam := strings.TrimSpace(f.Club + " " + f.Team)
+			if clubTeam == "" {
+				clubTeam = "-"
+			}
+			fmt.Fprintf(w, `<tr><td class="small text-muted">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><span class="badge text-bg-danger">%s</span></td><td class="small text-muted">%s</td></tr>`,
+				f.CreatedAt.Format("02 Jan 15:04"),
+				f.MatchDate.Format("02 Jan 2006"),
+				escapeHTML(f.ReminderType),
+				escapeHTML(f.Recipient),
+				escapeHTML(clubTeam),
+				escapeHTML(f.Stage),
+				escapeHTML(f.ErrorMessage))
+		}
+		if len(reminderFailures) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No reminder send failures recorded for this period.</td></tr>`)
+		}
+		fmt.Fprint(w, `</tbody></table></div></div>`)
 
 		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-hover table-gmcl mb-0">
 <thead><tr><th>Time</th><th>Event</th><th>Recipient</th><th>Club / Team</th><th>Subject</th><th>Detail</th></tr></thead><tbody>`)

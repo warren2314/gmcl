@@ -77,7 +77,8 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 			              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 			JOIN clubs cl ON cl.id = t.club_id
 			LEFT JOIN captains c ON c.team_id = t.id
-			    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+			    AND c.active_from <= lf.match_date
+			    AND (c.active_to IS NULL OR c.active_to >= lf.match_date)
 			WHERE lf.match_date = $1
 			  AND t.active = TRUE
 			ORDER BY cl.name, t.name
@@ -390,8 +391,9 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 		defer cancel()
 
 		sent, skipped, err := s.sendRemindersForDate(ctx, email.NewFromEnv(), matchDate, "game_day")
+		redirect := fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", url.QueryEscape(dateStr), sent, skipped)
 		if err != nil {
-			http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+			http.Redirect(w, r, redirect+"&error="+url.QueryEscape("Some reminders failed: "+err.Error()), http.StatusSeeOther)
 			return
 		}
 		s.audit(ctx, r, "admin", nil, "admin_send_game_day_reminders", "reminder", nil, map[string]any{
@@ -399,7 +401,7 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 			"sent":       sent,
 			"skipped":    skipped,
 		})
-		http.Redirect(w, r, fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", dateStr, sent, skipped), http.StatusSeeOther)
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
 }
 
@@ -515,7 +517,8 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 		JOIN clubs cl ON cl.id = t.club_id
 		JOIN captains c ON c.team_id = t.id
-		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		    AND c.active_from <= lf.match_date
+		    AND (c.active_to IS NULL OR c.active_to >= lf.match_date)
 		    AND TRIM(c.email) <> ''
 		WHERE lf.match_date = $1
 		  AND t.id = $2
@@ -551,18 +554,23 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		ctx, s.DB, ct.CaptainID, seasonID, weekID, matchDate, nextWednesdayMidnight(matchDate), "", "admin-reminder",
 	)
 	if err != nil {
+		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "magic_link", err)
 		return ct.Email, fmt.Errorf("could not create magic link: %w", err)
 	}
 	link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
 	subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, strings.TrimSpace(ct.Opposition), ct.IsHome, link)
 	if err := mailer.Send(ct.Email, subject, body); err != nil {
+		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "email_send", err)
 		return ct.Email, fmt.Errorf("email send failed for %s: %w", ct.Email, err)
 	}
-	_, _ = s.DB.Exec(ctx, `
+	if _, err := s.DB.Exec(ctx, `
 		INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-	`, ct.TeamID, weekID, matchDate, reminderType, ct.Email)
+	`, ct.TeamID, weekID, matchDate, reminderType, ct.Email); err != nil {
+		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "send_log", err)
+		return ct.Email, fmt.Errorf("could not record send log for %s: %w", ct.Email, err)
+	}
 	return ct.Email, nil
 }
 

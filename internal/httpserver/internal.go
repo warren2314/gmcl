@@ -30,6 +30,44 @@ type internalResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+type reminderSendFailure struct {
+	TeamID   int32
+	ClubName string
+	TeamName string
+	Email    string
+	Stage    string
+	Cause    error
+}
+
+func (f reminderSendFailure) Error() string {
+	target := strings.TrimSpace(f.ClubName + " " + f.TeamName)
+	if target == "" {
+		target = fmt.Sprintf("team %d", f.TeamID)
+	}
+	if f.Email != "" {
+		target += " <" + f.Email + ">"
+	}
+	if f.Cause != nil {
+		return fmt.Sprintf("%s failed for %s: %v", f.Stage, target, f.Cause)
+	}
+	return fmt.Sprintf("%s failed for %s", f.Stage, target)
+}
+
+type reminderSendError struct {
+	Failures []reminderSendFailure
+}
+
+func (e reminderSendError) Error() string {
+	if len(e.Failures) == 0 {
+		return "reminder send failed"
+	}
+	first := e.Failures[0].Error()
+	if len(e.Failures) == 1 {
+		return first
+	}
+	return fmt.Sprintf("%s; %d more failure(s)", first, len(e.Failures)-1)
+}
+
 // handleInternalSendReminders is called by n8n via HMAC-authenticated endpoint.
 // type=game_day  → email captains playing on match_date (Sat/Sun 21:00)
 // type=monday    → remind teams that haven't submitted for last weekend (Mon 10:00)
@@ -141,7 +179,8 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		              OR TRIM(t.play_cricket_team_id) = TRIM(lf.away_team_pc_id))
 		JOIN clubs cl ON cl.id = t.club_id
 		JOIN captains c ON c.team_id = t.id
-		    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		    AND c.active_from <= lf.match_date
+		    AND (c.active_to IS NULL OR c.active_to >= lf.match_date)
 		    AND TRIM(c.email) <> ''
 		WHERE lf.match_date = $1
 		  AND t.active = TRUE
@@ -187,6 +226,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 
 	// Wednesday 23:59 of the week as magic link expiry
 	weekExpiry := nextWednesdayMidnight(matchDate)
+	var failures []reminderSendFailure
 
 	for _, ct := range targets {
 		token, err := auth.GenerateAndStoreMagicTokenForDate(
@@ -194,6 +234,11 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 		)
 		if err != nil {
 			skipped++
+			failures = append(failures, reminderSendFailure{
+				TeamID: ct.TeamID, ClubName: ct.ClubName, TeamName: ct.TeamName, Email: ct.Email,
+				Stage: "magic_link", Cause: err,
+			})
+			_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "magic_link", err)
 			continue
 		}
 
@@ -202,19 +247,48 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 
 		if err := mailer.Send(ct.Email, subject, body); err != nil {
 			skipped++
+			failures = append(failures, reminderSendFailure{
+				TeamID: ct.TeamID, ClubName: ct.ClubName, TeamName: ct.TeamName, Email: ct.Email,
+				Stage: "email_send", Cause: err,
+			})
+			_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "email_send", err)
 			continue
 		}
 
-		_, _ = s.DB.Exec(ctx, `
+		if _, err := s.DB.Exec(ctx, `
 			INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-		`, ct.TeamID, weekID, matchDate, reminderType, ct.Email)
+		`, ct.TeamID, weekID, matchDate, reminderType, ct.Email); err != nil {
+			skipped++
+			failures = append(failures, reminderSendFailure{
+				TeamID: ct.TeamID, ClubName: ct.ClubName, TeamName: ct.TeamName, Email: ct.Email,
+				Stage: "send_log", Cause: err,
+			})
+			_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "send_log", err)
+			continue
+		}
 
 		sent++
 	}
 
+	if len(failures) > 0 {
+		return sent, skipped, reminderSendError{Failures: failures}
+	}
 	return sent, skipped, nil
+}
+
+func (s *Server) recordReminderSendFailure(ctx context.Context, teamID, weekID int32, matchDate time.Time, reminderType, captainEmail, stage string, cause error) error {
+	errorText := ""
+	if cause != nil {
+		errorText = cause.Error()
+	}
+	_, err := s.DB.Exec(ctx, `
+		INSERT INTO captain_reminder_failures
+		    (team_id, week_id, match_date, reminder_type, captain_email, stage, error_message)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, teamID, weekID, matchDate, reminderType, captainEmail, stage, errorText)
+	return err
 }
 
 func (s *Server) reminderWeekForDate(ctx context.Context, matchDate time.Time) (seasonID, weekID int32, err error) {
