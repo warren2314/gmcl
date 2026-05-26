@@ -43,10 +43,11 @@ type linkDiagSend struct {
 }
 
 type linkDiagEmailEvent struct {
-	CreatedAt time.Time
-	EventType string
-	Subject   string
-	Detail    string
+	CreatedAt  time.Time
+	OccurredAt sql.NullTime
+	EventType  string
+	Subject    string
+	Detail     string
 }
 
 type linkDiagSubmission struct {
@@ -247,11 +248,11 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 	}
 
 	eventRows, err := s.DB.Query(ctx, `
-		SELECT created_at, event_type, COALESCE(subject, ''),
+		SELECT created_at, occurred_at, event_type, COALESCE(subject, ''),
 		       COALESCE(NULLIF(diagnostic_code,''), NULLIF(bounce_type,''), NULLIF(complaint_feedback_type,''), '')
 		FROM email_events
 		WHERE LOWER(recipient) = LOWER($1)
-		ORDER BY created_at DESC
+		ORDER BY COALESCE(occurred_at, created_at) DESC
 		LIMIT 20
 	`, filter)
 	if err != nil {
@@ -260,7 +261,7 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 	defer eventRows.Close()
 	for eventRows.Next() {
 		var row linkDiagEmailEvent
-		if err := eventRows.Scan(&row.CreatedAt, &row.EventType, &row.Subject, &row.Detail); err != nil {
+		if err := eventRows.Scan(&row.CreatedAt, &row.OccurredAt, &row.EventType, &row.Subject, &row.Detail); err != nil {
 			return err
 		}
 		data.Events = append(data.Events, row)
@@ -441,12 +442,16 @@ func renderLinkDiagSends(w http.ResponseWriter, rows []linkDiagSend) {
 }
 
 func renderLinkDiagEmailEvents(w http.ResponseWriter, rows []linkDiagEmailEvent) {
-	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">SES Events Stored By App</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Time</th><th>Event</th><th>Subject</th><th>Detail</th></tr></thead><tbody>`)
+	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">SES Events Stored By App</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Event time</th><th>Received by app</th><th>Event</th><th>Subject</th><th>Detail</th></tr></thead><tbody>`)
 	if len(rows) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="4" class="text-center text-muted py-3">No SES events stored for this address. If AWS shows delivery/clicks, the SNS webhook is not feeding the app yet.</td></tr>`)
+		fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No SES events stored for this address. If AWS shows delivery/clicks, the SNS webhook is not feeding the app yet.</td></tr>`)
 	}
 	for _, row := range rows {
-		fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td class="small">%s</td><td class="small text-muted">%s</td></tr>`, row.CreatedAt.Format("02 Jan 15:04"), escapeHTML(row.EventType), escapeHTML(row.Subject), escapeHTML(row.Detail))
+		eventTime := row.CreatedAt.Format("02 Jan 15:04")
+		if row.OccurredAt.Valid {
+			eventTime = row.OccurredAt.Time.Format("02 Jan 15:04")
+		}
+		fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td class="small">%s</td><td class="small text-muted">%s</td></tr>`, eventTime, row.CreatedAt.Format("02 Jan 15:04"), escapeHTML(row.EventType), escapeHTML(row.Subject), escapeHTML(row.Detail))
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }

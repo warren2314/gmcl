@@ -47,6 +47,15 @@ type sesNotification struct {
 	Delivery struct {
 		Recipients []string `json:"recipients"`
 	} `json:"delivery"`
+	Open struct {
+		IPAddress string `json:"ipAddress"`
+		UserAgent string `json:"userAgent"`
+	} `json:"open"`
+	Click struct {
+		IPAddress string `json:"ipAddress"`
+		UserAgent string `json:"userAgent"`
+		Link      string `json:"link"`
+	} `json:"click"`
 }
 
 func (s *Server) handleSESEventWebhook() http.HandlerFunc {
@@ -132,6 +141,18 @@ func (s *Server) storeSESEvent(ctx context.Context, env snsEnvelope, n sesNotifi
 	case "delivery":
 		for _, recipient := range n.Delivery.Recipients {
 			rows = append(rows, row{recipient: recipient})
+		}
+	case "open":
+		for _, recipient := range n.Mail.Destination {
+			rows = append(rows, row{recipient: recipient, diagnostic: strings.TrimSpace(n.Open.IPAddress + " " + n.Open.UserAgent)})
+		}
+	case "click":
+		for _, recipient := range n.Mail.Destination {
+			detail := strings.TrimSpace(n.Click.IPAddress + " " + n.Click.UserAgent)
+			if n.Click.Link != "" {
+				detail = strings.TrimSpace(detail + " " + n.Click.Link)
+			}
+			rows = append(rows, row{recipient: recipient, diagnostic: detail})
 		}
 	default:
 		for _, recipient := range n.Mail.Destination {
