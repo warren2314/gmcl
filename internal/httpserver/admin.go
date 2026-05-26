@@ -132,6 +132,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Get("/security", s.handleAdminSecurityGet())
 		r.With(s.requireAdminRole("super_admin")).Post("/security/cleanup", s.handleAdminSecurityCleanupPost())
 		r.With(s.requireAdminRole("super_admin")).Get("/email-health", s.handleAdminEmailHealth())
+		r.With(s.requireAdminRole("super_admin")).Get("/link-diagnostics", s.handleAdminLinkDiagnostics())
+		r.With(s.requireAdminRole("super_admin")).Post("/link-diagnostics/send", s.handleAdminLinkDiagnosticsSend())
 		r.With(s.requireAdminRole("super_admin")).Get("/gdpr", s.handleAdminGDPRGet())
 		r.With(s.requireAdminRole("super_admin")).Get("/gdpr/export", s.handleAdminGDPRExport())
 		r.With(s.requireAdminRole("super_admin")).Post("/gdpr/captains/{id}/anonymise", s.handleAdminGDPRAnonymise())

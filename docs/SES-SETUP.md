@@ -25,6 +25,37 @@ Use the same AWS Region for all SES and SNS work. For GMCL, use the production S
 4. Add the SES DKIM records to DNS and wait until SES shows the identity as verified.
 5. Make sure `webmaster@gmcl.co.uk` is allowed as the `SMTP_FROM` sender.
 
+CLI alternative:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup-ses-events.ps1 `
+  -Region eu-west-2 `
+  -Domain gmcl.co.uk `
+  -WebhookUrl "https://gmcl.co.uk/webhooks/aws/ses?token=<strong-random-token>" `
+  -PlanOnly
+```
+
+Remove `-PlanOnly` once the output looks right:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup-ses-events.ps1 `
+  -Region eu-west-2 `
+  -Domain gmcl.co.uk `
+  -WebhookUrl "https://gmcl.co.uk/webhooks/aws/ses?token=<strong-random-token>"
+```
+
+If you use a named AWS CLI profile, add `-Profile your-profile-name`.
+
+The script creates/checks:
+
+- SES domain identity
+- SNS topic
+- HTTPS SNS subscription to the app webhook
+- SES configuration set
+- SES event destination for delivery, bounce, complaint, delay, open, and click events
+
+It also prints the DKIM DNS records you must add manually.
+
 ## 2. Create SES SMTP credentials
 
 1. In Amazon SES, open `SMTP settings`.
