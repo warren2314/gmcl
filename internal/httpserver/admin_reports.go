@@ -1020,8 +1020,9 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))
 	} else if rp.AIError != "" {
-		fmt.Fprintf(w, `<div class="alert alert-warning py-2 small"><strong>AI narrative unavailable in the running app process.</strong> %s</div>`, escapeHTML(rp.AIError))
+		fmt.Fprintf(w, `<div class="alert alert-warning py-2 small"><strong>Fallback narrative used.</strong> The AI narrative call did not complete cleanly: %s</div>`, escapeHTML(rp.AIError))
 	}
+	narrative := effectiveAIExecutiveNarrative(rp)
 
 	fmt.Fprint(w, `<section class="exec-report-section"><h5 class="fw-bold mb-3">Table of Contents</h5><ol class="mb-0">`)
 	for _, item := range rp.TableOfContents {
@@ -1037,18 +1038,18 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 			escapeHTML(title), paragraphsHTML(body))
 	}
 
-	renderNarrativeSection("Executive Summary", rp.Executive.ExecutiveSummary)
+	renderNarrativeSection("Executive Summary", narrative.ExecutiveSummary)
 	s.renderAIExecutiveWindow(w, "Latest Report", rp.Latest)
-	renderNarrativeSection("Latest Report Findings", rp.Executive.LatestReport)
+	renderNarrativeSection("Latest Report Findings", narrative.LatestReport)
 	s.renderAIExecutiveWindow(w, "Season Report", rp.SeasonToDate)
-	renderNarrativeSection("Season Report Findings", rp.Executive.SeasonReport)
+	renderNarrativeSection("Season Report Findings", narrative.SeasonReport)
 	if canViewUmpireFeedback {
 		s.renderAIExecutiveUmpireWindow(w, "Latest Umpire Reports", rp.LatestUmpires)
-		renderNarrativeSection("Latest Umpire Findings", rp.Executive.LatestUmpireReport)
+		renderNarrativeSection("Latest Umpire Findings", narrative.LatestUmpireReport)
 		s.renderAIExecutiveUmpireWindow(w, "Season Umpire Report", rp.SeasonUmpires)
-		renderNarrativeSection("Season Umpire Findings", rp.Executive.SeasonUmpireReport)
+		renderNarrativeSection("Season Umpire Findings", narrative.SeasonUmpireReport)
 	}
-	renderNarrativeSection("Conclusion", rp.Executive.Conclusion)
+	renderNarrativeSection("Conclusion", narrative.Conclusion)
 	fmt.Fprint(w, `</div>`)
 	pageFooter(w)
 }
