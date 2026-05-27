@@ -353,7 +353,7 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			VALUES ($1, $2, $3)
 		`, captainID, seasonID, weekID)
 
-		link := fmt.Sprintf("%s/magic-link/confirm?token=%s", publicBaseURL(r), token)
+		link := magicLinkEmailBlock(r, token)
 		if os.Getenv("APP_ENV") == "dev" {
 			fmt.Printf("Magic link for captain %d (%s): %s\n", captainID, captainEmail, link)
 		}
@@ -750,7 +750,7 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 		}
 
 		mailer := email.NewFromEnv()
-		link := fmt.Sprintf("%s/magic-link/confirm?token=%s", publicBaseURL(r), token)
+		link := magicLinkEmailBlock(r, token)
 		body := "You have been invited as a stand-in captain for this match week.\n\n" +
 			"Open this secure link to complete the captain report:\n" + link + "\n\n" +
 			"This link expires automatically."
@@ -1245,18 +1245,6 @@ func setCaptainSessionCookie(w http.ResponseWriter, sess *captainSession) error 
 	}
 	http.SetCookie(w, cookie)
 	return nil
-}
-
-func publicBaseURL(r *http.Request) string {
-	if base := os.Getenv("PUBLIC_BASE_URL"); base != "" {
-		return base
-	}
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	host := r.Host
-	return scheme + "://" + host
 }
 
 func deriveUmpirePerformance(r *http.Request, suffix string) (string, error) {

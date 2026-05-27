@@ -152,7 +152,12 @@ func toHTML(body string) string {
 	b.WriteString(`<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px">`)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "https://") {
+		if strings.HasPrefix(trimmed, "BACKUP_URL:") {
+			backupURL := strings.TrimSpace(strings.TrimPrefix(trimmed, "BACKUP_URL:"))
+			fmt.Fprintf(&b,
+				`<p style="word-break:break-all;font-size:13px;color:#555"><strong>Backup link:</strong> <a href="%s" style="color:#cc0000">%s</a></p>`,
+				backupURL, backupURL)
+		} else if strings.HasPrefix(trimmed, "https://") {
 			fmt.Fprintf(&b,
 				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#cc0000;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+
 					`<p style="word-break:break-all;font-size:12px;color:#666">%s</p>`,

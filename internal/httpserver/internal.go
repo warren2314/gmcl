@@ -115,7 +115,7 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 		skipped := 0
 
 		for _, matchDate := range matchDates {
-			n, sk, err := s.sendRemindersForDate(ctx, mailer, matchDate, req.Type)
+			n, sk, err := s.sendRemindersForDate(r, ctx, mailer, matchDate, req.Type)
 			if err != nil {
 				log.Printf("[reminders] date=%s error: %v", matchDate.Format("2006-01-02"), err)
 				http.Error(w, "error: "+err.Error(), http.StatusInternalServerError)
@@ -143,7 +143,7 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 
 // sendRemindersForDate sends the appropriate reminder email to all captains
 // who played on matchDate and haven't already received this reminder type.
-func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client, matchDate time.Time, reminderType string) (sent, skipped int, err error) {
+func (s *Server) sendRemindersForDate(r *http.Request, ctx context.Context, mailer *email.Client, matchDate time.Time, reminderType string) (sent, skipped int, err error) {
 	dateStr := matchDate.Format("2006-01-02")
 	seasonID, weekID, err := s.reminderWeekForDate(ctx, matchDate)
 	if err != nil {
@@ -242,7 +242,7 @@ func (s *Server) sendRemindersForDate(ctx context.Context, mailer *email.Client,
 			continue
 		}
 
-		link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
+		link := magicLinkEmailBlock(r, token)
 		subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, ct.Opposition, ct.IsHome, link)
 
 		if err := mailer.Send(ct.Email, subject, body); err != nil {
@@ -826,7 +826,7 @@ func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
 		}
 
 		var subject, body string
-		link := "https://gmcl.co.uk/magic-link/confirm?token=EXAMPLE_TOKEN"
+		link := magicLinkEmailBlock(r, "EXAMPLE_TOKEN")
 
 		switch req.Type {
 		case "yellow":

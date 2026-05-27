@@ -390,7 +390,7 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		sent, skipped, err := s.sendRemindersForDate(ctx, email.NewFromEnv(), matchDate, "game_day")
+		sent, skipped, err := s.sendRemindersForDate(r, ctx, email.NewFromEnv(), matchDate, "game_day")
 		redirect := fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", url.QueryEscape(dateStr), sent, skipped)
 		if err != nil {
 			http.Redirect(w, r, redirect+"&error="+url.QueryEscape("Some reminders failed: "+err.Error()), http.StatusSeeOther)
@@ -426,7 +426,7 @@ func (s *Server) handleAdminReminderSendTeam() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		emailAddr, err := s.sendReminderForTeamDate(ctx, email.NewFromEnv(), int32(teamID), matchDate, "game_day")
+		emailAddr, err := s.sendReminderForTeamDate(r, ctx, email.NewFromEnv(), int32(teamID), matchDate, "game_day")
 		redirect := "/admin/reminders/preview?date=" + url.QueryEscape(dateStr)
 		if err != nil {
 			http.Redirect(w, r, redirect+"&error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
@@ -483,7 +483,7 @@ func (s *Server) handleAdminReminderUnmarkBye() http.HandlerFunc {
 	}
 }
 
-func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Client, teamID int32, matchDate time.Time, reminderType string) (string, error) {
+func (s *Server) sendReminderForTeamDate(r *http.Request, ctx context.Context, mailer *email.Client, teamID int32, matchDate time.Time, reminderType string) (string, error) {
 	dateStr := matchDate.Format("2006-01-02")
 	seasonID, weekID, err := s.reminderWeekForDate(ctx, matchDate)
 	if err != nil {
@@ -557,7 +557,7 @@ func (s *Server) sendReminderForTeamDate(ctx context.Context, mailer *email.Clie
 		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "magic_link", err)
 		return ct.Email, fmt.Errorf("could not create magic link: %w", err)
 	}
-	link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
+	link := magicLinkEmailBlock(r, token)
 	subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, strings.TrimSpace(ct.Opposition), ct.IsHome, link)
 	if err := mailer.Send(ct.Email, subject, body); err != nil {
 		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "email_send", err)

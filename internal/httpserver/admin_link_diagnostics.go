@@ -349,7 +349,7 @@ func (s *Server) sendFreshCaptainAccessLink(ctx context.Context, r *http.Request
 		VALUES ($1, $2, $3)
 	`, captainID, seasonID, weekID)
 
-	link := "https://gmcl.co.uk/magic-link/confirm?token=" + token
+	link := magicLinkEmailBlock(r, token)
 	body := "Hello " + captainName + ",\n\n" +
 		"Here is a fresh secure link for your GMCL captain report:\n\n" +
 		link + "\n\n" +
