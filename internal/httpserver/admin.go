@@ -99,6 +99,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Post("/sanctions/issue", s.handleAdminSanctionIssue())
 		r.Post("/sanctions/bulk-issue", s.handleAdminSanctionBulkIssue())
 		r.With(s.requireAdminRole("super_admin")).Post("/sanctions/clear-all", s.handleAdminSanctionClearAll())
+		r.Post("/sanctions/{id}/revoke-yellow", s.handleAdminSanctionRevokeYellow())
 		r.Post("/sanctions/{id}/resolve", s.handleAdminSanctionResolve())
 		r.Get("/sanctions/{id}/email", s.handleAdminSanctionEmailPage())
 		r.Post("/sanctions/{id}/email/approve", s.handleAdminSanctionEmailApprove())

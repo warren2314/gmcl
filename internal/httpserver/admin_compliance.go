@@ -53,11 +53,22 @@ func sanctionStatusBadge(colour, emailStatus string, sanctionID *int64) string {
 	return cardBadge + `<br>` + emailBadge
 }
 
+func sanctionActionCell(colour, emailStatus string, sanctionID *int64, csrfToken, redirect string) string {
+	actionCell := sanctionStatusBadge(colour, emailStatus, sanctionID)
+	if colour == "yellow" && sanctionID != nil {
+		actionCell += `<div class="mt-1">` + revokeYellowCardForm(csrfToken, *sanctionID, redirect) + `</div>`
+	}
+	return actionCell
+}
+
 // handleAdminCompliance shows which teams have and haven't submitted for a given week.
 func (s *Server) handleAdminCompliance() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
+
+		successMsg := strings.TrimSpace(r.URL.Query().Get("success"))
+		errorMsg := strings.TrimSpace(r.URL.Query().Get("error"))
 
 		// Resolve current season/week, allow override via query param
 		var seasonID, weekID int32
@@ -268,6 +279,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
 		}
+		complianceRedirect := fmt.Sprintf("/admin/compliance?week_id=%d", weekID)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Compliance")
@@ -306,6 +318,12 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   </div>
 </div>
 `)
+		if successMsg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(successMsg))
+		}
+		if errorMsg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(errorMsg))
+		}
 
 		if weekID == 0 {
 			fmt.Fprint(w, `<div class="alert alert-warning">No active week found.</div></div>`)
@@ -393,7 +411,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 					rowClass = "compliance-missing"
 					statusBadge = fmt.Sprintf(`<span class="badge bg-warning text-dark">&#9003; Partial (%d/%d)</span><br><small class="text-muted">Missing: %s</small>`, cr.SubmitCount, cr.FixtureCount, escapeHTML(missing))
 					if cr.HasSanction {
-						actionCell = sanctionStatusBadge(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID)
+						actionCell = sanctionActionCell(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID, csrfToken, complianceRedirect)
 					} else {
 						actionCell = resolvedButtons(csrfToken, weekID, outstanding) + byeButtons(csrfToken, weekID, outstanding) + fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/issue" class="d-inline">
@@ -413,7 +431,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 						statusBadge = `<span class="badge bg-warning text-dark">&#9998; Draft saved</span>`
 					}
 					if cr.HasSanction {
-						actionCell = sanctionStatusBadge(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID)
+						actionCell = sanctionActionCell(cr.SanctionColour, cr.SanctionEmailStatus, cr.SanctionID, csrfToken, complianceRedirect)
 					} else {
 						draftBtn := ""
 						if cr.HasDraft {

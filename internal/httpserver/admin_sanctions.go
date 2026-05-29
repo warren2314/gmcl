@@ -20,6 +20,9 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
+		successMsg := strings.TrimSpace(r.URL.Query().Get("success"))
+		errorMsg := strings.TrimSpace(r.URL.Query().Get("error"))
+
 		var seasonID int32
 		var seasonName string
 		s.DB.QueryRow(ctx, `
@@ -90,6 +93,10 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
 		}
+		sanctionsRedirect := "/admin/sanctions"
+		if seasonID > 0 {
+			sanctionsRedirect = fmt.Sprintf("/admin/sanctions?season_id=%d", seasonID)
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions")
@@ -119,6 +126,12 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
   </div>
 </div>
 `, escapeHTML(seasonName), clearBtn)
+		if successMsg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(successMsg))
+		}
+		if errorMsg != "" {
+			fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(errorMsg))
+		}
 
 		// KPI strip
 		fmt.Fprintf(w, `
@@ -186,12 +199,14 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 			}
 
 			actions := ""
-			if sr.Status == "active" {
+			if sr.Colour == "yellow" && (sr.Status == "active" || sr.Status == "served") {
+				actions = revokeYellowCardForm(csrfToken, sr.ID, sanctionsRedirect)
+			} else if sr.Status == "active" {
 				actions = fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/%d/resolve" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
   <button type="submit" class="btn btn-sm btn-outline-success py-0"
-          onclick="return confirm('Mark this sanction as resolved?')">Resolve</button>
+          onclick="return confirm('Overturn this sanction?')">Overturn</button>
 </form>`, sr.ID, csrfToken)
 			}
 
@@ -284,6 +299,33 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 </div>`)
 		pageFooter(w)
 	}
+}
+
+func revokeYellowCardForm(csrfToken string, sanctionID int64, redirect string) string {
+	return fmt.Sprintf(`
+<form method="POST" action="/admin/sanctions/%d/revoke-yellow" class="d-inline">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="hidden" name="redirect" value="%s">
+  <input type="hidden" name="reason" value="">
+  <button type="submit" class="btn btn-sm btn-outline-danger py-0"
+          onclick="const reason = prompt('Reason for revoking this yellow card?'); if (!reason || !reason.trim()) return false; this.form.reason.value = reason.trim(); return confirm('Revoke this yellow card?')">Revoke yellow</button>
+</form>`, sanctionID, escapeHTML(csrfToken), escapeHTML(redirect))
+}
+
+func safeAdminRedirect(raw, fallback string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "/admin/") {
+		return raw
+	}
+	return fallback
+}
+
+func redirectWithMessage(target, key, message string) string {
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	return target + sep + key + "=" + urlQueryEscape(message)
 }
 
 // handleAdminSanctionIssue issues a yellow (or red) card for a team/week.
@@ -515,6 +557,90 @@ func (s *Server) handleAdminSanctionResolve() http.HandlerFunc {
 		s.audit(ctx, r, "admin", adminID, "sanction_resolved", "sanction", &sanctionID, map[string]any{})
 
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+	}
+}
+
+// handleAdminSanctionRevokeYellow overturns a yellow card for a team and keeps
+// the record for audit/history. Overturned yellows are excluded from future
+// offence counts by the compliance and sanctioning queries.
+func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+
+		sanctionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || sanctionID == 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		reason := strings.TrimSpace(r.FormValue("reason"))
+		if reason == "" {
+			http.Error(w, "reason is required", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		adminID := s.resolveAdminID(r)
+
+		type sanctionState struct {
+			TeamID      int32
+			WeekID      int32
+			SeasonID    int32
+			Status      string
+			EmailStatus string
+		}
+		var before sanctionState
+		err = s.DB.QueryRow(ctx, `
+			SELECT team_id, week_id, season_id, status::text, COALESCE(email_status, 'pending')
+			FROM sanctions
+			WHERE id=$1 AND colour='yellow' AND status IN ('active','served')
+		`, sanctionID).Scan(&before.TeamID, &before.WeekID, &before.SeasonID, &before.Status, &before.EmailStatus)
+		if err != nil {
+			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not revocable."), http.StatusSeeOther)
+			return
+		}
+
+		tag, err := s.DB.Exec(ctx, `
+			UPDATE sanctions
+			SET status='overturned',
+			    resolved_at=now(),
+			    resolved_by_admin_id=$1,
+			    notes = CASE
+			        WHEN COALESCE(NULLIF(BTRIM(notes), ''), '') = '' THEN 'Revoked: ' || $3
+			        ELSE notes || E'\nRevoked: ' || $3
+			    END,
+			    email_status = CASE
+			        WHEN COALESCE(email_status, 'pending') IN ('pending', 'approved') THEN 'skipped'
+			        ELSE email_status
+			    END
+			WHERE id=$2 AND colour='yellow' AND status IN ('active','served')
+		`, adminID, sanctionID, reason)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		if tag.RowsAffected() == 0 {
+			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not revocable."), http.StatusSeeOther)
+			return
+		}
+
+		s.audit(ctx, r, "admin", adminID, "yellow_card_revoked", "sanction", &sanctionID, map[string]any{
+			"team_id":               before.TeamID,
+			"week_id":               before.WeekID,
+			"season_id":             before.SeasonID,
+			"reason":                reason,
+			"previous_status":       before.Status,
+			"previous_email_status": before.EmailStatus,
+		})
+
+		redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+		http.Redirect(w, r, redirectWithMessage(redirect, "success", "Yellow card revoked."), http.StatusSeeOther)
 	}
 }
 
@@ -759,9 +885,9 @@ func (s *Server) handleAdminSanctionClearAll() http.HandlerFunc {
 
 		adminID := s.resolveAdminID(r)
 		s.audit(ctx, r, "admin", adminID, "sanction_cleared_all", "sanction", nil, map[string]any{
-			"season_id":       seasonID,
-			"yellow_deleted":  yellowDeleted,
-			"red_deleted":     redDeleted,
+			"season_id":      seasonID,
+			"yellow_deleted": yellowDeleted,
+			"red_deleted":    redDeleted,
 		})
 
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
