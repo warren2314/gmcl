@@ -557,6 +557,7 @@ func (s *Server) sendReminderForTeamDate(r *http.Request, ctx context.Context, m
 		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "magic_link", err)
 		return ct.Email, fmt.Errorf("could not create magic link: %w", err)
 	}
+	tokenID := s.magicTokenIDForPlaintext(ctx, token)
 	link := magicLinkEmailBlock(r, token)
 	subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, strings.TrimSpace(ct.Opposition), ct.IsHome, link)
 	if err := mailer.Send(ct.Email, subject, body); err != nil {
@@ -564,10 +565,10 @@ func (s *Server) sendReminderForTeamDate(r *http.Request, ctx context.Context, m
 		return ct.Email, fmt.Errorf("email send failed for %s: %w", ct.Email, err)
 	}
 	if _, err := s.DB.Exec(ctx, `
-		INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email, token_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-	`, ct.TeamID, weekID, matchDate, reminderType, ct.Email); err != nil {
+	`, ct.TeamID, weekID, matchDate, reminderType, ct.Email, tokenID); err != nil {
 		_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "send_log", err)
 		return ct.Email, fmt.Errorf("could not record send log for %s: %w", ct.Email, err)
 	}

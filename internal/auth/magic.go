@@ -20,6 +20,7 @@ var (
 )
 
 type MagicToken struct {
+	ID            int64
 	CaptainID     int32
 	SeasonID      int32
 	WeekID        int32
@@ -123,10 +124,10 @@ func ValidateMagicToken(ctx context.Context, pool *db.Pool, token string) (*Magi
 	var usedAt sql.NullTime
 
 	err := pool.QueryRow(ctx, `
-		SELECT captain_id, season_id, week_id, match_date, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
+		SELECT id, captain_id, season_id, week_id, match_date, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
 		FROM magic_link_tokens
 		WHERE token_hash = $1
-	`, hash[:]).Scan(&t.CaptainID, &t.SeasonID, &t.WeekID, &t.MatchDate, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
+	`, hash[:]).Scan(&t.ID, &t.CaptainID, &t.SeasonID, &t.WeekID, &t.MatchDate, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrTokenInvalid
@@ -161,10 +162,10 @@ func ConsumeMagicToken(ctx context.Context, pool *db.Pool, token string) (*Magic
 	var usedAt sql.NullTime
 
 	err = tx.QueryRow(ctx, `
-		SELECT captain_id, season_id, week_id, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
+		SELECT id, captain_id, season_id, week_id, COALESCE(delegate_name, ''), COALESCE(delegate_email, ''), expires_at, used_at
 		FROM magic_link_tokens
 		WHERE token_hash = $1
-	`, hash[:]).Scan(&t.CaptainID, &t.SeasonID, &t.WeekID, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
+	`, hash[:]).Scan(&t.ID, &t.CaptainID, &t.SeasonID, &t.WeekID, &t.DelegateName, &t.DelegateEmail, &expiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrTokenInvalid

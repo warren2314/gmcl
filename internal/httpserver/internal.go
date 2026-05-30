@@ -241,6 +241,7 @@ func (s *Server) sendRemindersForDate(r *http.Request, ctx context.Context, mail
 			_ = s.recordReminderSendFailure(ctx, ct.TeamID, weekID, matchDate, reminderType, ct.Email, "magic_link", err)
 			continue
 		}
+		tokenID := s.magicTokenIDForPlaintext(ctx, token)
 
 		link := magicLinkEmailBlock(r, token)
 		subject, body := buildReminderEmail(reminderType, ct.FullName, ct.ClubName, ct.TeamName, dateStr, ct.Opposition, ct.IsHome, link)
@@ -256,10 +257,10 @@ func (s *Server) sendRemindersForDate(r *http.Request, ctx context.Context, mail
 		}
 
 		if _, err := s.DB.Exec(ctx, `
-			INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email)
-			VALUES ($1, $2, $3, $4, $5)
+			INSERT INTO captain_reminder_log (team_id, week_id, match_date, reminder_type, captain_email, token_id)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (team_id, match_date, reminder_type) DO NOTHING
-		`, ct.TeamID, weekID, matchDate, reminderType, ct.Email); err != nil {
+		`, ct.TeamID, weekID, matchDate, reminderType, ct.Email, tokenID); err != nil {
 			skipped++
 			failures = append(failures, reminderSendFailure{
 				TeamID: ct.TeamID, ClubName: ct.ClubName, TeamName: ct.TeamName, Email: ct.Email,

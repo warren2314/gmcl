@@ -346,12 +346,13 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			http.Error(w, "could not process request", http.StatusInternalServerError)
 			return
 		}
+		tokenID := s.magicTokenIDForPlaintext(ctx, token)
 
 		// record send event (after token creation)
 		_, _ = s.DB.Exec(ctx, `
-			INSERT INTO magic_link_send_log (captain_id, season_id, week_id)
-			VALUES ($1, $2, $3)
-		`, captainID, seasonID, weekID)
+			INSERT INTO magic_link_send_log (captain_id, season_id, week_id, token_id)
+			VALUES ($1, $2, $3, $4)
+		`, captainID, seasonID, weekID, tokenID)
 
 		link := magicLinkEmailBlock(r, token)
 		if os.Getenv("APP_ENV") == "dev" {
@@ -393,6 +394,38 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 				http.Error(w, "missing token", http.StatusBadRequest)
 				return
 			}
+			func() {
+				ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+				defer cancel()
+				mt, err := auth.ValidateMagicToken(ctx, s.DB, token)
+				if err != nil {
+					s.audit(ctx, r, "system", nil, "magic_link_click_invalid", "captain", nil, map[string]any{
+						"reason": err.Error(),
+					})
+					return
+				}
+				var teamID int32
+				_ = s.DB.QueryRow(ctx, `SELECT team_id FROM captains WHERE id = $1`, mt.CaptainID).Scan(&teamID)
+				submitterRole := "captain"
+				if strings.TrimSpace(mt.DelegateEmail) != "" {
+					submitterRole = "delegate"
+				}
+				var matchDate string
+				if mt.MatchDate != nil {
+					matchDate = mt.MatchDate.Format("2006-01-02")
+				}
+				s.audit(ctx, r, "system", nil, "magic_link_clicked", "captain", func() *int64 {
+					v := int64(mt.CaptainID)
+					return &v
+				}(), map[string]any{
+					"token_id":       mt.ID,
+					"season_id":      mt.SeasonID,
+					"week_id":        mt.WeekID,
+					"team_id":        teamID,
+					"match_date":     matchDate,
+					"submitter_role": submitterRole,
+				})
+			}()
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			pageHead(w, "Confirm Link")
@@ -685,6 +718,15 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 		umpires := s.loadUmpires(ctx)
+		s.audit(ctx, r, "system", nil, "captain_form_opened", "team", func() *int64 {
+			v := int64(sess.TeamID)
+			return &v
+		}(), map[string]any{
+			"captain_id":     sess.CaptainID,
+			"season_id":      sess.SeasonID,
+			"week_id":        sess.WeekID,
+			"submitter_role": sess.SubmitterRole,
+		})
 		s.renderGMCLFormWithChooser(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft, umpires, fixtureChooser)
 	}
 }
@@ -748,6 +790,7 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 			http.Error(w, "could not create invite", http.StatusInternalServerError)
 			return
 		}
+		tokenID := s.magicTokenIDForPlaintext(ctx, token)
 
 		mailer := email.NewFromEnv()
 		link := magicLinkEmailBlock(r, token)
@@ -760,9 +803,9 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 		}
 
 		_, _ = s.DB.Exec(ctx, `
-			INSERT INTO magic_link_send_log (captain_id, season_id, week_id)
-			VALUES ($1, $2, $3)
-		`, sess.CaptainID, sess.SeasonID, sess.WeekID)
+			INSERT INTO magic_link_send_log (captain_id, season_id, week_id, token_id)
+			VALUES ($1, $2, $3, $4)
+		`, sess.CaptainID, sess.SeasonID, sess.WeekID, tokenID)
 
 		s.audit(ctx, r, "system", nil, "delegate_invited", "captain", func() *int64 {
 			v := int64(sess.CaptainID)

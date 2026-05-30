@@ -47,3 +47,25 @@ func TestMagicLinkEmailBlockDoesNotAddBackupForUnrelatedHost(t *testing.T) {
 		t.Fatalf("unexpected backup link for unrelated host: %s", block)
 	}
 }
+
+func TestMagicLinkTokenFromURL(t *testing.T) {
+	got := magicLinkTokenFromURL("https://gmcl.co.uk/magic-link/confirm?token=abc123")
+	if got != "abc123" {
+		t.Fatalf("token: got %q", got)
+	}
+}
+
+func TestMagicLinkTokenFromNestedTrackingURL(t *testing.T) {
+	got := magicLinkTokenFromURL("https://tracker.example/click?u=https%3A%2F%2Fgmcl.co.uk%2Fmagic-link%2Fconfirm%3Ftoken%3Dabc123")
+	if got != "abc123" {
+		t.Fatalf("token: got %q", got)
+	}
+}
+
+func TestRedactMagicTokenInText(t *testing.T) {
+	got := redactMagicTokenInText("clicked https://gmcl.co.uk/magic-link/confirm?token=abc123&x=1")
+	want := "clicked https://gmcl.co.uk/magic-link/confirm?token=[redacted]&x=1"
+	if got != want {
+		t.Fatalf("redacted: got %q", got)
+	}
+}

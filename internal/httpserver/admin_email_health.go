@@ -121,6 +121,10 @@ func (s *Server) storeSESEvent(ctx context.Context, env snsEnvelope, n sesNotifi
 		bounceSubType         string
 		complaintFeedbackType string
 		diagnostic            string
+		linkURL               string
+		clickIP               string
+		clickUserAgent        string
+		linkContext           *magicLinkEventContext
 	}
 	var rows []row
 	eventType := strings.ToLower(strings.TrimSpace(n.NotificationType))
@@ -147,12 +151,23 @@ func (s *Server) storeSESEvent(ctx context.Context, env snsEnvelope, n sesNotifi
 			rows = append(rows, row{recipient: recipient, diagnostic: strings.TrimSpace(n.Open.IPAddress + " " + n.Open.UserAgent)})
 		}
 	case "click":
+		var linkContext *magicLinkEventContext
+		if ctxData, ok := s.magicLinkContextForURL(ctx, n.Click.Link); ok {
+			linkContext = &ctxData
+		}
 		for _, recipient := range n.Mail.Destination {
 			detail := strings.TrimSpace(n.Click.IPAddress + " " + n.Click.UserAgent)
 			if n.Click.Link != "" {
 				detail = strings.TrimSpace(detail + " " + n.Click.Link)
 			}
-			rows = append(rows, row{recipient: recipient, diagnostic: detail})
+			rows = append(rows, row{
+				recipient:      recipient,
+				diagnostic:     detail,
+				linkURL:        n.Click.Link,
+				clickIP:        n.Click.IPAddress,
+				clickUserAgent: n.Click.UserAgent,
+				linkContext:    linkContext,
+			})
 		}
 	default:
 		for _, recipient := range n.Mail.Destination {
@@ -164,19 +179,35 @@ func (s *Server) storeSESEvent(ctx context.Context, env snsEnvelope, n sesNotifi
 	}
 
 	for _, r := range rows {
+		var tokenID, captainID, teamID, seasonID, weekID, matchDate any
+		if r.linkContext != nil {
+			tokenID = r.linkContext.TokenID
+			captainID = r.linkContext.CaptainID
+			teamID = r.linkContext.TeamID
+			seasonID = r.linkContext.SeasonID
+			weekID = r.linkContext.WeekID
+			if r.linkContext.MatchDate != nil {
+				matchDate = *r.linkContext.MatchDate
+			}
+		}
 		_, err := s.DB.Exec(ctx, `
 			INSERT INTO email_events (
 				provider, event_type, notification_type, message_id, ses_message_id,
 				recipient, source_email, subject, bounce_type, bounce_sub_type,
-				complaint_feedback_type, diagnostic_code, occurred_at, raw_json
+				complaint_feedback_type, diagnostic_code, occurred_at, raw_json,
+				magic_link_token_id, captain_id, team_id, season_id, week_id,
+				match_date, link_url, click_ip, click_user_agent
 			) VALUES (
 				'amazon_ses', $1, $2, $3, $4,
 				NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''),
-				NULLIF($9,''), NULLIF($10,''), NULLIF($11,''), $12, $13
+				NULLIF($9,''), NULLIF($10,''), NULLIF($11,''), $12, $13,
+				$14, $15, $16, $17, $18,
+				$19, NULLIF($20,''), NULLIF($21,'')::inet, NULLIF($22,'')
 			)
 		`, eventType, n.NotificationType, env.MessageID, n.Mail.MessageID,
 			strings.TrimSpace(r.recipient), n.Mail.Source, n.Mail.CommonHeaders.Subject,
-			r.bounceType, r.bounceSubType, r.complaintFeedbackType, r.diagnostic, occurredAt, raw)
+			r.bounceType, r.bounceSubType, r.complaintFeedbackType, r.diagnostic, occurredAt, raw,
+			tokenID, captainID, teamID, seasonID, weekID, matchDate, r.linkURL, r.clickIP, r.clickUserAgent)
 		if err != nil {
 			return err
 		}
@@ -200,6 +231,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 			Bounces    int64
 			Complaints int64
 			Deliveries int64
+			Opens      int64
+			Clicks     int64
 			Other      int64
 		}
 		var c counts
@@ -208,10 +241,12 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				COUNT(*) FILTER (WHERE event_type='bounce'),
 				COUNT(*) FILTER (WHERE event_type='complaint'),
 				COUNT(*) FILTER (WHERE event_type='delivery'),
-				COUNT(*) FILTER (WHERE event_type NOT IN ('bounce','complaint','delivery'))
+				COUNT(*) FILTER (WHERE event_type='open'),
+				COUNT(*) FILTER (WHERE event_type='click'),
+				COUNT(*) FILTER (WHERE event_type NOT IN ('bounce','complaint','delivery','open','click'))
 			FROM email_events
 			WHERE created_at >= now() - ($1::text || ' days')::interval
-		`, days).Scan(&c.Bounces, &c.Complaints, &c.Deliveries, &c.Other)
+		`, days).Scan(&c.Bounces, &c.Complaints, &c.Deliveries, &c.Opens, &c.Clicks, &c.Other)
 
 		type eventRow struct {
 			CreatedAt time.Time
@@ -225,9 +260,18 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 		var events []eventRow
 		rows, err := s.DB.Query(ctx, `
 			SELECT ee.created_at, ee.event_type, COALESCE(ee.recipient,''),
-			       COALESCE(ee.subject,''), COALESCE(NULLIF(ee.diagnostic_code,''), NULLIF(ee.bounce_type,''), NULLIF(ee.complaint_feedback_type,''), ''),
-			       COALESCE(cl.name,''), COALESCE(t.name,'')
+			       COALESCE(ee.subject,''),
+			       COALESCE(
+			           NULLIF(ee.link_url, ''),
+			           NULLIF(ee.diagnostic_code,''),
+			           NULLIF(ee.bounce_type,''),
+			           NULLIF(ee.complaint_feedback_type,''),
+			           ''
+			       ),
+			       COALESCE(ecl.name, cl.name, ''), COALESCE(et.name, t.name, '')
 			FROM email_events ee
+			LEFT JOIN teams et ON et.id = ee.team_id
+			LEFT JOIN clubs ecl ON ecl.id = et.club_id
 			LEFT JOIN captains c ON LOWER(c.email)=LOWER(ee.recipient)
 			LEFT JOIN teams t ON t.id=c.team_id
 			LEFT JOIN clubs cl ON cl.id=t.club_id
@@ -303,8 +347,10 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 <div class="col-auto"><div class="card card-kpi kpi-red p-3 text-center" style="min-width:120px"><div class="kpi-number text-danger">%d</div><div class="kpi-label">Bounces</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-gold p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Complaints</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-green p-3 text-center" style="min-width:120px"><div class="kpi-number text-success">%d</div><div class="kpi-label">Deliveries</div></div></div>
+<div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Opens</div></div></div>
+<div class="col-auto"><div class="card card-kpi kpi-purple p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Clicks</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Other</div></div></div>
-</div>`, c.Bounces, c.Complaints, c.Deliveries, c.Other)
+</div>`, c.Bounces, c.Complaints, c.Deliveries, c.Opens, c.Clicks, c.Other)
 
 		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Reminder Send Failures</div><div class="table-responsive"><table class="table table-hover table-gmcl mb-0">
 <thead><tr><th>Time</th><th>Match date</th><th>Type</th><th>Recipient</th><th>Club / Team</th><th>Stage</th><th>Error</th></tr></thead><tbody>`)
@@ -343,7 +389,7 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				clubTeam = escapeHTML(strings.TrimSpace(e.Club + " " + e.Team))
 			}
 			fmt.Fprintf(w, `<tr><td class="small text-muted">%s</td><td><span class="badge %s">%s</span></td><td>%s</td><td>%s</td><td class="small">%s</td><td class="small text-muted">%s</td></tr>`,
-				e.CreatedAt.Format("02 Jan 15:04"), badge, escapeHTML(e.EventType), escapeHTML(e.Recipient), clubTeam, escapeHTML(e.Subject), escapeHTML(e.Detail))
+				e.CreatedAt.Format("02 Jan 15:04"), badge, escapeHTML(e.EventType), escapeHTML(e.Recipient), clubTeam, escapeHTML(e.Subject), escapeHTML(redactMagicTokenInText(e.Detail)))
 		}
 		if len(events) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No SES events received for this period.</td></tr>`)
