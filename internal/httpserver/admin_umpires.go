@@ -12,18 +12,34 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
-func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64) []reportUmpire {
+func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string) []reportUmpire {
 	if minRatings < 1 {
 		minRatings = 1
 	}
-	qargs := append(append([]any{}, args...), minRatings)
+	qargs := append([]any{}, args...)
+	typeWhere := ""
+	if umpireType == "panel" || umpireType == "club" {
+		typeParam := len(qargs) + 1
+		qargs = append(qargs, umpireType)
+		typeWhere = fmt.Sprintf("AND %%s = $%d", typeParam)
+	}
+	u1TypeWhere := ""
+	u2TypeWhere := ""
+	if typeWhere != "" {
+		u1TypeWhere = fmt.Sprintf(typeWhere, "u1type")
+		u2TypeWhere = fmt.Sprintf(typeWhere, "u2type")
+	}
+	minParam := len(qargs) + 1
+	qargs = append(qargs, minRatings)
 	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
 		WITH deduped AS (
 		    SELECT DISTINCT ON (sub.team_id, sub.match_date)
 		        trim(sub.form_data->>'umpire1_name')        AS u1name,
 		        sub.form_data->>'umpire1_performance'       AS u1perf,
+		        COALESCE(NULLIF(sub.umpire1_type, ''), NULLIF(sub.form_data->>'umpire1_type', ''), 'panel') AS u1type,
 		        trim(sub.form_data->>'umpire2_name')        AS u2name,
 		        sub.form_data->>'umpire2_performance'       AS u2perf,
+		        COALESCE(NULLIF(sub.umpire2_type, ''), NULLIF(sub.form_data->>'umpire2_type', ''), 'panel') AS u2type,
 		        COALESCE(sub.form_data->>'umpire_comments','') AS comment
 		    FROM submissions sub
 		    JOIN weeks w ON w.id=sub.week_id
@@ -34,20 +50,24 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		    SELECT lower(trim(u1name)) AS key,
 		           trim(u1name)        AS display,
 		           u1perf              AS perf,
+		           u1type              AS umpire_type,
 		           comment
 		    FROM deduped
 		    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
 		      AND u1perf IS NOT NULL
 		      AND u1perf IN ('Good','Average','Poor')
+		      %s
 		    UNION ALL
 		    SELECT lower(trim(u2name)),
 		           trim(u2name),
 		           u2perf,
+		           u2type,
 		           comment
 		    FROM deduped
 		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
 		      AND u2perf IS NOT NULL
 		      AND u2perf IN ('Good','Average','Poor')
+		      %s
 		),
 		scored AS (
 		    SELECT
@@ -70,7 +90,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, whereSQL, len(qargs)), qargs...)
+	`, whereSQL, u1TypeWhere, u2TypeWhere, minParam), qargs...)
 	if err != nil {
 		return nil
 	}
@@ -116,6 +136,18 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				minRatings = n
 			}
 		}
+		category := r.URL.Query().Get("category")
+		if category != "club" {
+			category = "panel"
+		}
+		categoryTitle := "Panel Umpires"
+		otherCategory := "club"
+		otherCategoryTitle := "Club Umpires"
+		if category == "club" {
+			categoryTitle = "Club Umpires"
+			otherCategory = "panel"
+			otherCategoryTitle = "Panel Umpires"
+		}
 
 		// All seasons for the selector
 		type season struct {
@@ -134,12 +166,19 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 		}
 
-		// Umpire performance query
-		var umpires []reportUmpire
+		// Umpire performance query, split by whether the captain marked each
+		// official as panel-appointed or club-provided.
+		var umpires, panelUmpires, clubUmpires []reportUmpire
 		var totalRatings, uniqueUmpires int64
 
 		if seasonID > 0 {
-			umpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings))
+			panelUmpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings), "panel")
+			clubUmpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings), "club")
+			if category == "club" {
+				umpires = clubUmpires
+			} else {
+				umpires = panelUmpires
+			}
 			for _, u := range umpires {
 				totalRatings += u.Ratings
 				uniqueUmpires++
@@ -178,12 +217,12 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		fmt.Fprintf(w, `
 <div class="d-flex align-items-start justify-content-between mb-4">
   <div>
-    <h4 class="mb-0 fw-bold">Umpire Rankings</h4>
+    <h4 class="mb-0 fw-bold">%s</h4>
     <p class="text-muted mb-0 small">Performance ratings from captain reports &mdash; min %d ratings to appear</p>
   </div>
   <form method="GET" action="/admin/rankings/umpires" class="d-flex gap-2 align-items-center">
     <select name="season_id" class="form-select form-select-sm" onchange="this.form.submit()">
-`, minRatings)
+`, escapeHTML(categoryTitle), minRatings)
 		for _, ss := range seasons {
 			sel := ""
 			if ss.ID == seasonID {
@@ -193,9 +232,10 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		}
 		fmt.Fprintf(w, `    </select>
     <input type="hidden" name="min_ratings" value="%d">
+    <input type="hidden" name="category" value="%s">
   </form>
 </div>
-`, minRatings)
+`, minRatings, escapeHTML(category))
 
 		// Summary KPI strip
 		fmt.Fprintf(w, `
@@ -203,7 +243,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   <div class="col-6 col-md-3">
     <div class="card card-kpi kpi-blue text-center p-3">
       <div class="kpi-number">%d</div>
-      <div class="kpi-label">Umpires Rated</div>
+      <div class="kpi-label">%s Rated</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
@@ -212,15 +252,33 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
       <div class="kpi-label">Total Ratings</div>
     </div>
   </div>
+  <div class="col-6 col-md-3">
+    <a class="text-decoration-none" href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=panel">
+      <div class="card card-kpi %s text-center p-3">
+        <div class="kpi-number">%d</div>
+        <div class="kpi-label">Panel Umpires</div>
+      </div>
+    </a>
+  </div>
+  <div class="col-6 col-md-3">
+    <a class="text-decoration-none" href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=club">
+      <div class="card card-kpi %s text-center p-3">
+        <div class="kpi-number">%d</div>
+        <div class="kpi-label">Club Umpires</div>
+      </div>
+    </a>
+  </div>
 </div>
-`, uniqueUmpires, totalRatings)
+`, uniqueUmpires, escapeHTML(categoryTitle), totalRatings,
+			seasonID, minRatings, umpireCategoryCardClass(category, "panel"), len(panelUmpires),
+			seasonID, minRatings, umpireCategoryCardClass(category, "club"), len(clubUmpires))
 
 		// Chart
-		fmt.Fprint(w, `
+		fmt.Fprintf(w, `
 <div class="row g-3 mb-4">
   <div class="col-12 col-xl-7">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Top 15 Umpires — Score (1.0–3.0)</div>
+      <div class="card-header fw-semibold">Top 15 %s - Score (1.0-3.0)</div>
       <div class="card-body">
         <div class="chart-container-lg"><canvas id="chartUmpireScore"></canvas></div>
       </div>
@@ -228,19 +286,19 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   </div>
   <div class="col-12 col-xl-5">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Top 15 — Good Rating %</div>
+      <div class="card-header fw-semibold">Top 15 %s - Good Rating %%</div>
       <div class="card-body">
         <div class="chart-container-lg"><canvas id="chartUmpireGood"></canvas></div>
       </div>
     </div>
   </div>
 </div>
-`)
+`, escapeHTML(categoryTitle), escapeHTML(categoryTitle))
 
 		// Rankings table
-		fmt.Fprint(w, `
+		fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
-  <div class="card-header fw-semibold">All Rated Umpires</div>
+  <div class="card-header fw-semibold">All Rated %s</div>
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
@@ -251,7 +309,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
         <th>Score</th><th>Performance Bar</th><th></th>
       </tr></thead>
       <tbody>
-`)
+`, escapeHTML(categoryTitle))
 		for i, u := range umpires {
 			scoreClass := "text-success"
 			if u.Score < 2.0 {
@@ -268,7 +326,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			if barPoor < 0 {
 				barPoor = 0
 			}
-			commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID))
+			commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(category)
 			commentBtn := fmt.Sprintf(`<a href="%s" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a>`, commentURL)
 			if u.CommentCount > 0 {
 				commentBtn = fmt.Sprintf(`<a href="%s" class="btn btn-warning btn-sm py-0 px-2 fw-semibold" style="font-size:.75rem">%d comment(s)</a>`, commentURL, u.CommentCount)
@@ -298,7 +356,8 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				commentBtn)
 		}
 		if len(umpires) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="9" class="text-center text-muted py-3">No umpire ratings found for this season.</td></tr>`)
+			fmt.Fprintf(w, `<tr><td colspan="9" class="text-center text-muted py-3">No %s ratings found for this season. <a href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=%s">View %s</a>.</td></tr>`,
+				escapeHTML(categoryTitle), seasonID, minRatings, escapeHTML(otherCategory), escapeHTML(otherCategoryTitle))
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
@@ -373,6 +432,14 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		category := r.URL.Query().Get("category")
+		if category != "club" {
+			category = "panel"
+		}
+		categoryTitle := "Panel Umpire"
+		if category == "club" {
+			categoryTitle = "Club Umpire"
+		}
 
 		var seasonID int32
 		var seasonName string
@@ -402,7 +469,9 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			        id, team_id, match_date,
 			        COALESCE(form_data->>'umpire_comments','') AS comment,
 			        lower(trim(form_data->>'umpire1_name'))    AS u1,
-			        lower(trim(form_data->>'umpire2_name'))    AS u2
+			        COALESCE(NULLIF(umpire1_type, ''), NULLIF(form_data->>'umpire1_type', ''), 'panel') AS u1type,
+			        lower(trim(form_data->>'umpire2_name'))    AS u2,
+			        COALESCE(NULLIF(umpire2_type, ''), NULLIF(form_data->>'umpire2_type', ''), 'panel') AS u2type
 			    FROM submissions
 			    WHERE season_id = $1
 			    ORDER BY team_id, match_date, submitted_at DESC
@@ -411,10 +480,10 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			FROM latest l
 			JOIN teams t  ON t.id  = l.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE (l.u1 = lower($2) OR l.u2 = lower($2))
+			WHERE ((l.u1 = lower($2) AND l.u1type = $3) OR (l.u2 = lower($2) AND l.u2type = $3))
 			  AND l.comment <> ''
 			ORDER BY l.match_date DESC
-		`, seasonID, umpireName)
+		`, seasonID, umpireName, category)
 		if err == nil {
 			defer crows.Close()
 			for crows.Next() {
@@ -434,16 +503,17 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 		pageHead(w, "Umpire Comments")
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
+		backURL := fmt.Sprintf("/admin/rankings/umpires?season_id=%d&category=%s", seasonID, url.QueryEscape(category))
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="/admin/rankings/umpires">Umpire Rankings</a></li>
+    <li class="breadcrumb-item"><a href="%s">Umpire Rankings</a></li>
     <li class="breadcrumb-item active">%s</li>
   </ol>
 </nav>
 <h4 class="fw-bold mb-1">%s</h4>
-<p class="text-muted mb-4 small">Captain comments &mdash; %s</p>
-`, escapeHTML(umpireName), escapeHTML(umpireName), escapeHTML(seasonName))
+<p class="text-muted mb-4 small">%s comments &mdash; %s</p>
+`, escapeHTML(backURL), escapeHTML(umpireName), escapeHTML(umpireName), escapeHTML(categoryTitle), escapeHTML(seasonName))
 
 		if len(comments) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-info">No comments recorded for this umpire.</div>`)
@@ -475,4 +545,11 @@ func joinStrings(ss []string, sep string) string {
 		result += s
 	}
 	return result
+}
+
+func umpireCategoryCardClass(activeCategory, cardCategory string) string {
+	if activeCategory == cardCategory {
+		return "kpi-green"
+	}
+	return "kpi-blue"
 }
