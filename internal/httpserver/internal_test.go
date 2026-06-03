@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cricket-ground-feedback/internal/leagueapi"
 )
 
 func TestMostRecentWeekendDates_ThursdayRerun(t *testing.T) {
@@ -146,6 +148,26 @@ func TestLeagueFixtureSyncYearsSortedUnique(t *testing.T) {
 	years := leagueFixtureSyncYears(dates)
 	if len(years) != 2 || years[0] != 2026 || years[1] != 2027 {
 		t.Fatalf("unexpected years: %v", years)
+	}
+}
+
+func TestLeagueFixtureDetailMatchesAllowedDate(t *testing.T) {
+	allowed := leagueFixtureSyncDateSet([]time.Time{
+		time.Date(2026, time.May, 30, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, time.June, 7, 0, 0, 0, 0, time.UTC),
+	})
+
+	if !leagueFixtureDetailMatchesAllowedDate(leagueapi.MatchDetail{MatchDate: "30/05/2026"}, allowed) {
+		t.Fatal("expected fixture on target Saturday to be allowed")
+	}
+	if !leagueFixtureDetailMatchesAllowedDate(leagueapi.MatchDetail{MatchDate: "2026-06-07"}, allowed) {
+		t.Fatal("expected rearranged fixture on following Sunday to be allowed")
+	}
+	if leagueFixtureDetailMatchesAllowedDate(leagueapi.MatchDetail{MatchDate: "2026-06-20"}, allowed) {
+		t.Fatal("expected later season fixture to be filtered out")
+	}
+	if leagueFixtureDetailMatchesAllowedDate(leagueapi.MatchDetail{MatchDate: "not-a-date"}, allowed) {
+		t.Fatal("expected invalid fixture date to be filtered out")
 	}
 }
 

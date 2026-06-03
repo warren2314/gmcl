@@ -328,11 +328,15 @@ func (s *Server) syncPlayCricketFixturesForOperationalWindow(ctx context.Context
 	if len(syncDates) == 0 {
 		return 0, nil
 	}
+	allowedDates := leagueFixtureSyncDateSet(syncDates)
 
 	client := leagueapi.NewClient(cfg)
 	seen := make(map[string]leagueapi.MatchDetail)
 	remember := func(details []leagueapi.MatchDetail) {
 		for _, detail := range details {
+			if !leagueFixtureDetailMatchesAllowedDate(detail, allowedDates) {
+				continue
+			}
 			matchID := strings.TrimSpace(detail.MatchID)
 			if matchID == "" {
 				continue
@@ -379,6 +383,29 @@ func (s *Server) syncPlayCricketFixturesForOperationalWindow(ctx context.Context
 
 func leagueFixtureSyncUsesDateTemplate(template string) bool {
 	return strings.Contains(template, "{date}")
+}
+
+func leagueFixtureSyncDateSet(dates []time.Time) map[string]struct{} {
+	out := make(map[string]struct{}, len(dates))
+	for _, d := range dates {
+		if d.IsZero() {
+			continue
+		}
+		out[dateOnlyUTC(d).Format("2006-01-02")] = struct{}{}
+	}
+	return out
+}
+
+func leagueFixtureDetailMatchesAllowedDate(detail leagueapi.MatchDetail, allowedDates map[string]struct{}) bool {
+	if len(allowedDates) == 0 {
+		return false
+	}
+	matchDate, err := leagueapi.ParseMatchDate(detail.MatchDate, "")
+	if err != nil {
+		return false
+	}
+	_, ok := allowedDates[matchDate.Format("2006-01-02")]
+	return ok
 }
 
 func leagueFixtureOperationalSyncDates(targetDates []time.Time, lookaheadDays int) []time.Time {
