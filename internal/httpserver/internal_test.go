@@ -97,6 +97,58 @@ func TestResolveGenerateSanctionsDates_RejectsNonSaturdayWeekendStart(t *testing
 	}
 }
 
+func TestLeagueFixtureOperationalSyncDatesIncludeFollowingSunday(t *testing.T) {
+	targets := []time.Time{
+		time.Date(2026, time.May, 30, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, time.May, 31, 0, 0, 0, 0, time.UTC),
+	}
+
+	dates := leagueFixtureOperationalSyncDates(targets, 8)
+
+	if len(dates) != 10 {
+		t.Fatalf("date count: got %d", len(dates))
+	}
+	if got := dates[0].Format("2006-01-02"); got != "2026-05-30" {
+		t.Fatalf("first date: got %s", got)
+	}
+	if got := dates[len(dates)-1].Format("2006-01-02"); got != "2026-06-08" {
+		t.Fatalf("last date: got %s", got)
+	}
+
+	foundComingSunday := false
+	for _, d := range dates {
+		if d.Format("2006-01-02") == "2026-06-07" {
+			foundComingSunday = true
+			break
+		}
+	}
+	if !foundComingSunday {
+		t.Fatal("expected sync window to include coming Sunday 2026-06-07")
+	}
+}
+
+func TestLeagueFixtureSyncUsesDateTemplate(t *testing.T) {
+	if !leagueFixtureSyncUsesDateTemplate("/api/matches?match_date={date}") {
+		t.Fatal("expected date template to be detected")
+	}
+	if leagueFixtureSyncUsesDateTemplate("/api/v2/matches.json?site_id={siteId}&season={season}") {
+		t.Fatal("season template should not be treated as date-filtered")
+	}
+}
+
+func TestLeagueFixtureSyncYearsSortedUnique(t *testing.T) {
+	dates := []time.Time{
+		time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, time.December, 31, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, time.June, 7, 0, 0, 0, 0, time.UTC),
+	}
+
+	years := leagueFixtureSyncYears(dates)
+	if len(years) != 2 || years[0] != 2026 || years[1] != 2027 {
+		t.Fatalf("unexpected years: %v", years)
+	}
+}
+
 func TestBuildSanctionEmailYellowUsesNonSubmissionWording(t *testing.T) {
 	matchDate := time.Date(2026, time.May, 10, 0, 0, 0, 0, time.UTC)
 

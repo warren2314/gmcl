@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	"cricket-ground-feedback/internal/db"
@@ -73,19 +74,47 @@ func GenerateAndStoreMagicTokenWithDelegate(ctx context.Context, pool *db.Pool, 
 	defer tx.Rollback(ctx)
 
 	now := time.Now()
-	// Revoke existing unused tokens for the same captain/week/date scope.
+	delegateEmail = strings.TrimSpace(delegateEmail)
+
+	// Revoke existing unused tokens for the same captain/week/date and actor scope.
+	// Captain links must not invalidate stand-in links, and a stand-in invite should
+	// only supersede earlier invites for the same stand-in email.
 	if matchDate != nil {
-		_, err = tx.Exec(ctx, `
-			UPDATE magic_link_tokens SET used_at = $1
-			WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
-			  AND match_date = $5 AND used_at IS NULL AND expires_at > $1
-		`, now, captainID, seasonID, weekID, matchDate)
+		if delegateEmail != "" {
+			_, err = tx.Exec(ctx, `
+				UPDATE magic_link_tokens SET used_at = $1
+				WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+				  AND match_date = $5
+				  AND LOWER(delegate_email) = LOWER($6)
+				  AND used_at IS NULL AND expires_at > $1
+			`, now, captainID, seasonID, weekID, matchDate, delegateEmail)
+		} else {
+			_, err = tx.Exec(ctx, `
+				UPDATE magic_link_tokens SET used_at = $1
+				WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+				  AND match_date = $5
+				  AND NULLIF(delegate_email, '') IS NULL
+				  AND used_at IS NULL AND expires_at > $1
+			`, now, captainID, seasonID, weekID, matchDate)
+		}
 	} else {
-		_, err = tx.Exec(ctx, `
-			UPDATE magic_link_tokens SET used_at = $1
-			WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
-			  AND match_date IS NULL AND used_at IS NULL AND expires_at > $1
-		`, now, captainID, seasonID, weekID)
+		if delegateEmail != "" {
+			_, err = tx.Exec(ctx, `
+				UPDATE magic_link_tokens SET used_at = $1
+				WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+				  AND match_date IS NULL
+				  AND LOWER(delegate_email) = LOWER($5)
+				  AND used_at IS NULL AND expires_at > $1
+			`, now, captainID, seasonID, weekID, delegateEmail)
+		} else {
+			_, err = tx.Exec(ctx, `
+				UPDATE magic_link_tokens SET used_at = $1
+				WHERE captain_id = $2 AND season_id = $3 AND week_id = $4
+				  AND match_date IS NULL
+				  AND NULLIF(delegate_email, '') IS NULL
+				  AND used_at IS NULL AND expires_at > $1
+			`, now, captainID, seasonID, weekID)
+		}
 	}
 	if err != nil {
 		return "", err

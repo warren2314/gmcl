@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +39,8 @@ type reminderSendFailure struct {
 	Stage    string
 	Cause    error
 }
+
+const playCricketOperationalSyncLookaheadDays = 8
 
 func (f reminderSendFailure) Error() string {
 	target := strings.TrimSpace(f.ClubName + " " + f.TeamName)
@@ -111,6 +114,13 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 			return
 		}
 
+		syncedFixtures, syncErr := s.syncPlayCricketFixturesForOperationalWindow(ctx, matchDates, playCricketOperationalSyncLookaheadDays)
+		if syncErr != nil {
+			log.Printf("[reminders] play-cricket sync failed: %v", syncErr)
+			http.Error(w, "fixture sync error: "+syncErr.Error(), http.StatusBadGateway)
+			return
+		}
+
 		sent := 0
 		skipped := 0
 
@@ -128,15 +138,16 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 
 		log.Printf("[reminders] type=%s sent=%d skipped=%d", req.Type, sent, skipped)
 		s.audit(ctx, r, "n8n", nil, "send_reminders", "reminder", nil, map[string]any{
-			"type":    req.Type,
-			"sent":    sent,
-			"skipped": skipped,
+			"type":            req.Type,
+			"sent":            sent,
+			"skipped":         skipped,
+			"synced_fixtures": syncedFixtures,
 		})
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(internalResponse{
 			Status:  "ok",
-			Message: fmt.Sprintf("sent=%d skipped=%d", sent, skipped),
+			Message: fmt.Sprintf("sent=%d skipped=%d synced_fixtures=%d", sent, skipped, syncedFixtures),
 		})
 	}
 }
@@ -307,6 +318,113 @@ func (s *Server) reminderWeekForDate(ctx context.Context, matchDate time.Time) (
 	return seasonID, weekID, nil
 }
 
+func (s *Server) syncPlayCricketFixturesForOperationalWindow(ctx context.Context, targetDates []time.Time, lookaheadDays int) (int, error) {
+	cfg := leagueapi.NewConfigFromEnv()
+	if !cfg.Enabled() {
+		return 0, nil
+	}
+
+	syncDates := leagueFixtureOperationalSyncDates(targetDates, lookaheadDays)
+	if len(syncDates) == 0 {
+		return 0, nil
+	}
+
+	client := leagueapi.NewClient(cfg)
+	seen := make(map[string]leagueapi.MatchDetail)
+	remember := func(details []leagueapi.MatchDetail) {
+		for _, detail := range details {
+			matchID := strings.TrimSpace(detail.MatchID)
+			if matchID == "" {
+				continue
+			}
+			seen[matchID] = detail
+		}
+	}
+
+	if leagueFixtureSyncUsesDateTemplate(cfg.MatchesURLTemplate) {
+		for _, matchDate := range syncDates {
+			details, err := client.FetchMatchesForDate(ctx, matchDate)
+			if err != nil {
+				return 0, fmt.Errorf("play-cricket fixture sync for %s: %w", matchDate.Format("2006-01-02"), err)
+			}
+			remember(details)
+		}
+	} else {
+		for _, seasonYear := range leagueFixtureSyncYears(syncDates) {
+			details, err := client.FetchMatchesForSeason(ctx, seasonYear)
+			if err != nil {
+				return 0, fmt.Errorf("play-cricket fixture sync for season %d: %w", seasonYear, err)
+			}
+			remember(details)
+		}
+	}
+
+	if len(seen) == 0 {
+		return 0, nil
+	}
+
+	details := make([]leagueapi.MatchDetail, 0, len(seen))
+	for _, detail := range seen {
+		details = append(details, detail)
+	}
+	sort.Slice(details, func(i, j int) bool {
+		return strings.TrimSpace(details[i].MatchID) < strings.TrimSpace(details[j].MatchID)
+	})
+
+	if err := leagueapi.UpsertFixtureBatch(ctx, s.DB, nil, details); err != nil {
+		return 0, fmt.Errorf("upsert play-cricket fixtures: %w", err)
+	}
+	return len(details), nil
+}
+
+func leagueFixtureSyncUsesDateTemplate(template string) bool {
+	return strings.Contains(template, "{date}")
+}
+
+func leagueFixtureOperationalSyncDates(targetDates []time.Time, lookaheadDays int) []time.Time {
+	if len(targetDates) == 0 {
+		return nil
+	}
+	if lookaheadDays < 0 {
+		lookaheadDays = 0
+	}
+
+	start := dateOnlyUTC(targetDates[0])
+	end := start
+	for _, d := range targetDates[1:] {
+		day := dateOnlyUTC(d)
+		if day.Before(start) {
+			start = day
+		}
+		if day.After(end) {
+			end = day
+		}
+	}
+	end = end.AddDate(0, 0, lookaheadDays)
+
+	var dates []time.Time
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		dates = append(dates, d)
+	}
+	return dates
+}
+
+func leagueFixtureSyncYears(dates []time.Time) []int {
+	seen := make(map[int]struct{})
+	for _, d := range dates {
+		if d.IsZero() {
+			continue
+		}
+		seen[d.Year()] = struct{}{}
+	}
+	years := make([]int, 0, len(seen))
+	for year := range seen {
+		years = append(years, year)
+	}
+	sort.Ints(years)
+	return years
+}
+
 // handleInternalGenerateSanctions runs at Wed 23:59 to auto-draft sanction notices
 // for all teams that played last weekend and haven't submitted.
 func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
@@ -317,6 +435,12 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 		sat, sun, targetSource, err := resolveGenerateSanctionsDates(r, s.LondonLoc)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		syncedFixtures, syncErr := s.syncPlayCricketFixturesForOperationalWindow(ctx, []time.Time{sat, sun}, playCricketOperationalSyncLookaheadDays)
+		if syncErr != nil {
+			log.Printf("[sanctions] play-cricket sync failed: %v", syncErr)
+			http.Error(w, "fixture sync error: "+syncErr.Error(), http.StatusBadGateway)
 			return
 		}
 		type missedTeam struct {
@@ -427,10 +551,11 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":        "ok",
-			"drafted":       drafted,
-			"target_dates":  []string{sat.Format("2006-01-02"), sun.Format("2006-01-02")},
-			"target_source": targetSource,
+			"status":          "ok",
+			"drafted":         drafted,
+			"synced_fixtures": syncedFixtures,
+			"target_dates":    []string{sat.Format("2006-01-02"), sun.Format("2006-01-02")},
+			"target_source":   targetSource,
 		})
 	}
 }

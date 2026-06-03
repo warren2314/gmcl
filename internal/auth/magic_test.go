@@ -46,3 +46,52 @@ func TestMagicTokenLifecycle(t *testing.T) {
 		t.Fatalf("expected error on second consume")
 	}
 }
+
+func TestMagicTokenRevocationKeepsCaptainAndDelegateLinksSeparate(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	expiresAt := time.Now().Add(time.Hour)
+
+	captainToken, err := GenerateAndStoreMagicTokenWithRevocation(ctx, pool, 1, 1, 1, expiresAt, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("generate captain token: %v", err)
+	}
+
+	delegateToken, err := GenerateAndStoreMagicTokenWithDelegate(ctx, pool, 1, 1, 1, nil, expiresAt, "127.0.0.1", "test-agent", "Stand In", "standin@example.test")
+	if err != nil {
+		t.Fatalf("generate delegate token: %v", err)
+	}
+
+	if _, err := ValidateMagicToken(ctx, pool, captainToken); err != nil {
+		t.Fatalf("captain token should remain valid after delegate invite: %v", err)
+	}
+
+	newCaptainToken, err := GenerateAndStoreMagicTokenWithRevocation(ctx, pool, 1, 1, 1, expiresAt, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("generate replacement captain token: %v", err)
+	}
+
+	if _, err := ValidateMagicToken(ctx, pool, captainToken); err == nil {
+		t.Fatalf("old captain token should be invalidated by a newer captain token")
+	}
+	if _, err := ValidateMagicToken(ctx, pool, delegateToken); err != nil {
+		t.Fatalf("delegate token should remain valid after captain link refresh: %v", err)
+	}
+
+	newDelegateToken, err := GenerateAndStoreMagicTokenWithDelegate(ctx, pool, 1, 1, 1, nil, expiresAt, "127.0.0.1", "test-agent", "Stand In", "standin@example.test")
+	if err != nil {
+		t.Fatalf("generate replacement delegate token: %v", err)
+	}
+
+	if _, err := ValidateMagicToken(ctx, pool, delegateToken); err == nil {
+		t.Fatalf("old delegate token should be invalidated by a newer invite for the same delegate")
+	}
+	if _, err := ValidateMagicToken(ctx, pool, newCaptainToken); err != nil {
+		t.Fatalf("current captain token should remain valid after delegate re-invite: %v", err)
+	}
+	if mt, err := ValidateMagicToken(ctx, pool, newDelegateToken); err != nil {
+		t.Fatalf("new delegate token should be valid: %v", err)
+	} else if mt.DelegateEmail != "standin@example.test" {
+		t.Fatalf("unexpected delegate email: %q", mt.DelegateEmail)
+	}
+}
