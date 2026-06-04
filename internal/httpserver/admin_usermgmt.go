@@ -397,13 +397,18 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
 		// User table
 		fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
+  <div class="card-header d-flex align-items-center gap-3 py-2">
+    <span class="fw-semibold me-auto">All Admin Users</span>
+    <input type="search" id="adminSearch" class="form-control form-control-sm" style="max-width:260px"
+           placeholder="Search username or email…" oninput="filterAdmins(this.value)" autocomplete="off">
+  </div>
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
         <th>Username</th><th>Email</th><th>Role</th><th>Umpire Feedback</th><th>Status</th>
         <th>Last Login</th><th>Invited</th><th></th>
       </tr></thead>
-      <tbody>
+      <tbody id="adminTableBody">
 `)
 		for _, u := range users {
 			statusBadge := `<span class="badge bg-success">Active</span>`
@@ -494,7 +499,28 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
   </div>
 </div>
 </div>`)
-		pageFooter(w)
+		pageFooterWithScript(w, `
+function filterAdmins(q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#adminTableBody tr');
+  var visible = 0;
+  rows.forEach(function(row) {
+    var text = row.textContent.toLowerCase();
+    var show = !q || text.indexOf(q) !== -1;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  // Show a "no results" row if nothing matched
+  var noResults = document.getElementById('adminSearchEmpty');
+  if (!noResults) {
+    noResults = document.createElement('tr');
+    noResults.id = 'adminSearchEmpty';
+    noResults.innerHTML = '<td colspan="8" class="text-center text-muted py-3">No admins match your search.</td>';
+    document.getElementById('adminTableBody').appendChild(noResults);
+  }
+  noResults.style.display = (visible === 0 && q) ? '' : 'none';
+}
+`)
 	}
 }
 
