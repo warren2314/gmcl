@@ -1637,15 +1637,23 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 		// Table
 		fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
-  <div class="card-header fw-semibold">All Clubs</div>
+  <div class="card-header d-flex align-items-center gap-3 py-2">
+    <span class="fw-semibold me-auto">All Clubs</span>
+    <input type="search" id="clubSearch" class="form-control form-control-sm" style="max-width:240px"
+           placeholder="Search club name…" oninput="filterClubs(this.value)" autocomplete="off">
+  </div>
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
         <th>#</th><th>Club</th><th>Submissions</th>
-        <th>Avg Pitch ↑</th><th>Bounce</th><th>Seam</th><th>Carry</th><th>Turn</th>
+        <th title="Overall pitch quality mark (1–5)">Avg Pitch ↑</th>
+        <th title="Unevenness of bounce (1–6)">Bounce</th>
+        <th title="Seam movement (1–6)">Seam</th>
+        <th title="Carry / bounce height (1–6)">Carry</th>
+        <th title="Turn (1–6)">Turn</th>
         <th>Sanctions</th>
       </tr></thead>
-      <tbody>
+      <tbody id="clubTableBody">
 `)
 		for i, d := range data {
 			sanBadge := `<span class="text-muted">—</span>`
@@ -1667,7 +1675,26 @@ func (s *Server) handleAdminRankings() http.HandlerFunc {
 </div>
 </div>
 `)
-		pageFooter(w)
+		pageFooterWithScript(w, `
+function filterClubs(q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#clubTableBody tr');
+  var visible = 0;
+  rows.forEach(function(row) {
+    var show = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var empty = document.getElementById('clubSearchEmpty');
+  if (!empty) {
+    empty = document.createElement('tr');
+    empty.id = 'clubSearchEmpty';
+    empty.innerHTML = '<td colspan="9" class="text-center text-muted py-3">No clubs match your search.</td>';
+    document.getElementById('clubTableBody').appendChild(empty);
+  }
+  empty.style.display = (visible === 0 && q) ? '' : 'none';
+}
+`)
 	}
 }
 
