@@ -80,6 +80,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("view_umpire_feedback")).Get("/rankings/umpires", s.handleAdminUmpireRankings())
 		r.Get("/rankings/clubs", s.handleAdminClubDetail())
 		r.With(s.requireAdminPermission("view_umpire_feedback")).Get("/umpires/{name}/comments", s.handleAdminUmpireComments())
+		r.With(s.requireAdminPermission("view_umpire_feedback")).Get("/umpires/{name}/scores", s.handleAdminUmpireScores())
 
 		// Compliance
 		r.Get("/compliance", s.handleAdminCompliance())

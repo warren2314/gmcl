@@ -44,6 +44,7 @@ type reportUmpire struct {
 	Score        float64 `json:"score"`
 	GoodPct      float64 `json:"good_pct,omitempty"`
 	CommentCount int64   `json:"comment_count,omitempty"`
+	AvgScore25   float64 `json:"avg_score_25,omitempty"`
 }
 
 type reportMissing struct {
