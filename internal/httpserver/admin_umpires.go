@@ -313,7 +313,11 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		// Rankings table
 		fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
-  <div class="card-header fw-semibold">All Rated %s</div>
+  <div class="card-header d-flex align-items-center gap-3 py-2">
+    <span class="fw-semibold me-auto">All Rated %s</span>
+    <input type="search" id="umpireSearch" class="form-control form-control-sm" style="max-width:240px"
+           placeholder="Search umpire name…" oninput="filterUmpires(this.value)" autocomplete="off">
+  </div>
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
@@ -323,7 +327,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
         <th class="text-danger">Poor</th>
         <th>Score</th><th title="Average total score out of 25 per game">Avg/25</th><th>Performance Bar</th><th></th>
       </tr></thead>
-      <tbody>
+      <tbody id="umpireTableBody">
 `, escapeHTML(categoryTitle))
 		for i, u := range umpires {
 			scoreClass := "text-success"
@@ -395,6 +399,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 </div>
 </div>`)
 
+
 		script := fmt.Sprintf(`
 Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
 Chart.defaults.color = '#6c757d';
@@ -447,6 +452,26 @@ new Chart(document.getElementById('chartUmpireGood'), {
 });
 `, labelsJSON, scoresJSON, labelsJSON, goodPctJSON)
 
+		script += `
+function filterUmpires(q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#umpireTableBody tr');
+  var visible = 0;
+  rows.forEach(function(row) {
+    var show = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var empty = document.getElementById('umpireSearchEmpty');
+  if (!empty) {
+    empty = document.createElement('tr');
+    empty.id = 'umpireSearchEmpty';
+    empty.innerHTML = '<td colspan="10" class="text-center text-muted py-3">No umpires match your search.</td>';
+    document.getElementById('umpireTableBody').appendChild(empty);
+  }
+  empty.style.display = (visible === 0 && q) ? '' : 'none';
+}
+`
 		pageFooterWithScript(w, script)
 	}
 }
