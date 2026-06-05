@@ -12,7 +12,38 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
-func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string) []reportUmpire {
+// Premier and reserve umpire lists (lowercase keys for SQL matching).
+var premierUmpireKeys = []string{
+	"shahid ahmed", "david bardsley", "david bridge", "paul carter",
+	"david chaloner", "mohammed chowdhury", "james clarke", "steve cullen",
+	"dave faulkner", "ian herbert", "mick holden", "richard hope",
+	"steve kenyon", "asif lohdi", "jon mayor", "billy mcewen",
+	"neil cadd", "linval grant", "shah zeb", "farrukh munir",
+	"philip royle", "stuart russell", "nigel stock", "peter thew",
+	"denver thornton", "david wild", "hafiz yousaf", "stephen kirkbright",
+}
+
+var reserveUmpireKeys = []string{
+	"parth banerjee", "steve coulding", "behzad khan", "bhikhu sukha", "peter mcandrew",
+}
+
+// invalidUmpirePattern is appended to the ratings CTE to match submissions where no
+// real umpire name was recorded. Used as a literal SQL fragment (safe — not user input).
+const invalidUmpirePattern = "AND (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
+const excludeInvalidUmpirePattern = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
+
+// invalidNameMode constants for loadUmpireRankings.
+const (
+	umpireNamesAll     = 0 // no extra name filtering
+	umpireNamesValid   = 1 // exclude invalid/placeholder names
+	umpireNamesInvalid = 2 // only invalid/placeholder names
+)
+
+// loadUmpireRankings queries aggregated umpire performance from captain report form_data.
+// includeKeys: if non-empty, only these lowercase umpire keys are returned.
+// excludeKeys: if non-empty, these lowercase keys are excluded.
+// invalidNameMode: umpireNamesAll / umpireNamesValid / umpireNamesInvalid.
+func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string, includeKeys, excludeKeys []string, invalidNameMode int) []reportUmpire {
 	if minRatings < 1 {
 		minRatings = 1
 	}
@@ -29,6 +60,27 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		u1TypeWhere = fmt.Sprintf(typeWhere, "u1type")
 		u2TypeWhere = fmt.Sprintf(typeWhere, "u2type")
 	}
+
+	// Build key filter SQL (appended to both UNION parts in ratings CTE).
+	// Values passed as %s args to Sprintf, so % signs in the SQL constants are safe.
+	keyFilter := ""
+	if len(includeKeys) > 0 {
+		p := len(qargs) + 1
+		qargs = append(qargs, includeKeys)
+		keyFilter += fmt.Sprintf("AND key = ANY($%d) ", p)
+	}
+	if len(excludeKeys) > 0 {
+		p := len(qargs) + 1
+		qargs = append(qargs, excludeKeys)
+		keyFilter += fmt.Sprintf("AND NOT (key = ANY($%d)) ", p)
+	}
+	switch invalidNameMode {
+	case umpireNamesValid:
+		keyFilter += excludeInvalidUmpirePattern + " "
+	case umpireNamesInvalid:
+		keyFilter += invalidUmpirePattern + " "
+	}
+
 	minParam := len(qargs) + 1
 	qargs = append(qargs, minRatings)
 	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
@@ -69,6 +121,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		      AND u1perf IS NOT NULL
 		      AND u1perf IN ('Good','Average','Poor')
 		      %s
+		      %s
 		    UNION ALL
 		    SELECT lower(trim(u2name)),
 		           trim(u2name),
@@ -81,6 +134,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
 		      AND u2perf IS NOT NULL
 		      AND u2perf IN ('Good','Average','Poor')
+		      %s
 		      %s
 		),
 		scored AS (
@@ -105,7 +159,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count, COALESCE(avg_score_25,0)
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, whereSQL, u1TypeWhere, u2TypeWhere, minParam), qargs...)
+	`, whereSQL, u1TypeWhere, keyFilter, u2TypeWhere, keyFilter, minParam), qargs...)
 	if err != nil {
 		return nil
 	}
@@ -151,18 +205,6 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				minRatings = n
 			}
 		}
-		category := r.URL.Query().Get("category")
-		if category != "club" {
-			category = "panel"
-		}
-		categoryTitle := "Panel Umpires"
-		otherCategory := "club"
-		otherCategoryTitle := "Club Umpires"
-		if category == "club" {
-			categoryTitle = "Club Umpires"
-			otherCategory = "panel"
-			otherCategoryTitle = "Panel Umpires"
-		}
 
 		// All seasons for the selector
 		type season struct {
@@ -181,23 +223,20 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 		}
 
-		// Umpire performance query, split by whether the captain marked each
-		// official as panel-appointed or club-provided.
-		var umpires, panelUmpires, clubUmpires []reportUmpire
-		var totalRatings, uniqueUmpires int64
+		// Exclude keys for the regular panel section = premier + reserve names.
+		allNamedKeys := append(append([]string{}, premierUmpireKeys...), reserveUmpireKeys...)
 
+		// Load all five groups.
+		var premier, reserves, panel, club, noNames []reportUmpire
 		if seasonID > 0 {
-			panelUmpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings), "panel")
-			clubUmpires = s.loadUmpireRankings(ctx, "sub.season_id=$1", []any{seasonID}, int64(minRatings), "club")
-			if category == "club" {
-				umpires = clubUmpires
-			} else {
-				umpires = panelUmpires
-			}
-			for _, u := range umpires {
-				totalRatings += u.Ratings
-				uniqueUmpires++
-			}
+			where := "sub.season_id=$1"
+			args := []any{seasonID}
+			// Premier and reserves use minRatings=1 so all listed umpires appear even if rated only once.
+			premier = s.loadUmpireRankings(ctx, where, args, 1, "panel", premierUmpireKeys, nil, umpireNamesAll)
+			reserves = s.loadUmpireRankings(ctx, where, args, 1, "panel", reserveUmpireKeys, nil, umpireNamesAll)
+			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "panel", nil, allNamedKeys, umpireNamesValid)
+			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "club", nil, nil, umpireNamesAll)
+			noNames = s.loadUmpireRankings(ctx, where, args, 1, "panel", nil, nil, umpireNamesInvalid)
 		}
 
 		csrfToken := ""
@@ -205,14 +244,14 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			csrfToken = c.Value
 		}
 
-		// Chart data
+		// Chart data — Premier umpires only (top 15 by score).
 		var chartLabels, chartScores, chartGoodPct []string
-		limit := 15
-		if len(umpires) < limit {
-			limit = len(umpires)
+		chartLimit := 15
+		if len(premier) < chartLimit {
+			chartLimit = len(premier)
 		}
-		for i := 0; i < limit; i++ {
-			u := umpires[i]
+		for i := 0; i < chartLimit; i++ {
+			u := premier[i]
 			lb, _ := json.Marshal(u.Name)
 			chartLabels = append(chartLabels, string(lb))
 			chartScores = append(chartScores, fmt.Sprintf("%.3f", u.Score))
@@ -228,16 +267,19 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
 
-		// Header + season selector
+		// Header: title + global search + season selector
 		fmt.Fprintf(w, `
-<div class="d-flex align-items-start justify-content-between mb-4">
+<div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
   <div>
-    <h4 class="mb-0 fw-bold">%s</h4>
-    <p class="text-muted mb-0 small">Performance ratings from captain reports &mdash; min %d ratings to appear</p>
+    <h4 class="mb-0 fw-bold">Umpire Rankings</h4>
+    <p class="text-muted mb-0 small">Performance ratings from captain reports &mdash; panel min %d ratings</p>
   </div>
-  <form method="GET" action="/admin/rankings/umpires" class="d-flex gap-2 align-items-center">
-    <select name="season_id" class="form-select form-select-sm" onchange="this.form.submit()">
-`, escapeHTML(categoryTitle), minRatings)
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    <input type="search" id="umpireSearch" class="form-control form-control-sm" style="min-width:220px"
+           placeholder="Search any umpire name…" oninput="filterAllUmpires(this.value)" autocomplete="off">
+    <form method="GET" action="/admin/rankings/umpires" class="d-flex gap-2 align-items-center">
+      <select name="season_id" class="form-select form-select-sm" onchange="this.form.submit()">
+`, minRatings)
 		for _, ss := range seasons {
 			sel := ""
 			if ss.ID == seasonID {
@@ -245,231 +287,209 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, ss.ID, sel, escapeHTML(ss.Name))
 		}
-		fmt.Fprintf(w, `    </select>
-    <input type="hidden" name="min_ratings" value="%d">
-    <input type="hidden" name="category" value="%s">
-  </form>
+		fmt.Fprintf(w, `      </select>
+      <input type="hidden" name="min_ratings" value="%d">
+    </form>
+  </div>
 </div>
-`, minRatings, escapeHTML(category))
+`, minRatings)
 
-		// Summary KPI strip
+		// KPI strip
 		fmt.Fprintf(w, `
 <div class="row g-3 mb-4">
   <div class="col-6 col-md-3">
     <div class="card card-kpi kpi-blue text-center p-3">
       <div class="kpi-number">%d</div>
-      <div class="kpi-label">%s Rated</div>
+      <div class="kpi-label">Premier Umpires</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
     <div class="card card-kpi kpi-teal text-center p-3">
       <div class="kpi-number">%d</div>
-      <div class="kpi-label">Total Ratings</div>
+      <div class="kpi-label">Reserves</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
-    <a class="text-decoration-none" href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=panel">
-      <div class="card card-kpi %s text-center p-3">
-        <div class="kpi-number">%d</div>
-        <div class="kpi-label">Panel Umpires</div>
-      </div>
-    </a>
+    <div class="card card-kpi kpi-green text-center p-3">
+      <div class="kpi-number">%d</div>
+      <div class="kpi-label">Panel Umpires</div>
+    </div>
   </div>
   <div class="col-6 col-md-3">
-    <a class="text-decoration-none" href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=club">
-      <div class="card card-kpi %s text-center p-3">
-        <div class="kpi-number">%d</div>
-        <div class="kpi-label">Club Umpires</div>
-      </div>
-    </a>
+    <div class="card card-kpi kpi-yellow text-center p-3">
+      <div class="kpi-number">%d</div>
+      <div class="kpi-label">Club Umpires</div>
+    </div>
   </div>
 </div>
-`, uniqueUmpires, escapeHTML(categoryTitle), totalRatings,
-			seasonID, minRatings, umpireCategoryCardClass(category, "panel"), len(panelUmpires),
-			seasonID, minRatings, umpireCategoryCardClass(category, "club"), len(clubUmpires))
+`, len(premier), len(reserves), len(panel), len(club))
 
-		// Chart
-		fmt.Fprintf(w, `
+		// Premier chart (score + good%)
+		fmt.Fprint(w, `
 <div class="row g-3 mb-4">
   <div class="col-12 col-xl-7">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Top 15 %s - Score (1.0-3.0)</div>
-      <div class="card-body">
-        <div class="chart-container-lg"><canvas id="chartUmpireScore"></canvas></div>
-      </div>
+      <div class="card-header fw-semibold">Premier Umpires — Score (1.0–3.0)</div>
+      <div class="card-body"><div class="chart-container-lg"><canvas id="chartUmpireScore"></canvas></div></div>
     </div>
   </div>
   <div class="col-12 col-xl-5">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Top 15 %s - Good Rating %%</div>
-      <div class="card-body">
-        <div class="chart-container-lg"><canvas id="chartUmpireGood"></canvas></div>
-      </div>
+      <div class="card-header fw-semibold">Premier Umpires — Good Rating %</div>
+      <div class="card-body"><div class="chart-container-lg"><canvas id="chartUmpireGood"></canvas></div></div>
     </div>
   </div>
 </div>
-`, escapeHTML(categoryTitle), escapeHTML(categoryTitle))
+`)
 
-		// Rankings table
-		fmt.Fprintf(w, `
+		// renderUmpireRows writes table rows for a slice into the current response writer.
+		renderUmpireRows := func(umpires []reportUmpire, cat string, emptyMsg string) {
+			for i, u := range umpires {
+				scoreClass := "text-success"
+				if u.Score < 2.0 {
+					scoreClass = "text-danger"
+				} else if u.Score < 2.5 {
+					scoreClass = "text-warning"
+				}
+				avg25Class := "text-success"
+				if u.AvgScore25 > 0 && u.AvgScore25 < 15 {
+					avg25Class = "text-danger"
+				} else if u.AvgScore25 > 0 && u.AvgScore25 < 20 {
+					avg25Class = "text-warning"
+				}
+				barGood := int(u.GoodPct)
+				barAvg := 0
+				if u.Ratings > 0 {
+					barAvg = int(float64(u.Average) / float64(u.Ratings) * 100)
+				}
+				barPoor := 100 - barGood - barAvg
+				if barPoor < 0 {
+					barPoor = 0
+				}
+				commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(cat)
+				scoresURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/scores?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(cat)
+				commentBtn := fmt.Sprintf(`<a href="%s" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a>`, commentURL)
+				if u.CommentCount > 0 {
+					commentBtn = fmt.Sprintf(`<a href="%s" class="btn btn-warning btn-sm py-0 px-2 fw-semibold" style="font-size:.75rem">%d comment(s)</a>`, commentURL, u.CommentCount)
+				}
+				avg25Cell := `<span class="text-muted">—</span>`
+				if u.AvgScore25 > 0 {
+					avg25Cell = fmt.Sprintf(`<span class="%s fw-bold">%.1f</span>`, avg25Class, u.AvgScore25)
+				}
+				fmt.Fprintf(w, `<tr>
+  <td class="text-muted">%d</td>
+  <td><strong><a href="%s" class="text-decoration-none">%s</a></strong></td>
+  <td>%d</td>
+  <td class="text-success">%d</td><td class="text-warning">%d</td><td class="text-danger">%d</td>
+  <td><span class="%s fw-bold">%.2f</span></td>
+  <td>%s</td>
+  <td style="min-width:100px"><div class="progress" style="height:8px;border-radius:4px">
+    <div class="progress-bar bg-success" style="width:%d%%"></div>
+    <div class="progress-bar bg-warning" style="width:%d%%"></div>
+    <div class="progress-bar bg-danger"  style="width:%d%%"></div>
+  </div></td>
+  <td class="d-flex gap-1">%s <a href="%s" class="btn btn-outline-primary btn-sm py-0 px-2" style="font-size:.75rem">Scores</a></td>
+</tr>`, i+1, scoresURL, escapeHTML(u.Name), u.Ratings,
+					u.Good, u.Average, u.Poor,
+					scoreClass, u.Score, avg25Cell,
+					barGood, barAvg, barPoor,
+					commentBtn, scoresURL)
+			}
+			if len(umpires) == 0 {
+				fmt.Fprintf(w, `<tr><td colspan="10" class="text-center text-muted py-3">%s</td></tr>`, emptyMsg)
+			}
+		}
+
+		// renderSection writes a full card for one umpire group.
+		renderSection := func(title, bodyID, badgeClass, cat, emptyMsg string, umpires []reportUmpire, note string) {
+			fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
-  <div class="card-header d-flex align-items-center gap-3 py-2">
-    <span class="fw-semibold me-auto">All Rated %s</span>
-    <input type="search" id="umpireSearch" class="form-control form-control-sm" style="max-width:240px"
-           placeholder="Search umpire name…" oninput="filterUmpires(this.value)" autocomplete="off">
-  </div>
+  <div class="card-header d-flex align-items-center gap-2 py-2">
+    <span class="fw-semibold me-auto">%s</span>
+    <span class="badge %s">%d</span>
+  </div>`, escapeHTML(title), badgeClass, len(umpires))
+			if note != "" {
+				fmt.Fprintf(w, `<div class="px-3 pt-2 pb-0"><p class="text-muted small mb-0">%s</p></div>`, note)
+			}
+			fmt.Fprintf(w, `
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
         <th>#</th><th>Umpire</th><th>Ratings</th>
-        <th class="text-success">Good</th>
-        <th class="text-warning">Average</th>
-        <th class="text-danger">Poor</th>
-        <th>Score</th><th title="Average total score out of 25 per game">Avg/25</th><th>Performance Bar</th><th></th>
+        <th class="text-success">Good</th><th class="text-warning">Average</th><th class="text-danger">Poor</th>
+        <th>Score</th><th title="Average total score out of 25 per game">Avg/25</th><th>Bar</th><th></th>
       </tr></thead>
-      <tbody id="umpireTableBody">
-`, escapeHTML(categoryTitle))
-		for i, u := range umpires {
-			scoreClass := "text-success"
-			if u.Score < 2.0 {
-				scoreClass = "text-danger"
-			} else if u.Score < 2.5 {
-				scoreClass = "text-warning"
-			}
-			avg25Class := "text-success"
-			if u.AvgScore25 > 0 {
-				if u.AvgScore25 < 15 {
-					avg25Class = "text-danger"
-				} else if u.AvgScore25 < 20 {
-					avg25Class = "text-warning"
-				}
-			}
-			barGood := int(u.GoodPct)
-			barAvg := 0
-			if u.Ratings > 0 {
-				barAvg = int(float64(u.Average) / float64(u.Ratings) * 100)
-			}
-			barPoor := 100 - barGood - barAvg
-			if barPoor < 0 {
-				barPoor = 0
-			}
-			commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(category)
-			scoresURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/scores?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(category)
-			commentBtn := fmt.Sprintf(`<a href="%s" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a>`, commentURL)
-			if u.CommentCount > 0 {
-				commentBtn = fmt.Sprintf(`<a href="%s" class="btn btn-warning btn-sm py-0 px-2 fw-semibold" style="font-size:.75rem">%d comment(s)</a>`, commentURL, u.CommentCount)
-			}
-			avg25Cell := `<span class="text-muted">—</span>`
-			if u.AvgScore25 > 0 {
-				avg25Cell = fmt.Sprintf(`<span class="%s fw-bold">%.1f</span>`, avg25Class, u.AvgScore25)
-			}
-			fmt.Fprintf(w, `
-<tr>
-  <td class="text-muted">%d</td>
-  <td><strong><a href="%s" class="text-decoration-none">%s</a></strong></td>
-  <td>%d</td>
-  <td class="text-success">%d</td>
-  <td class="text-warning">%d</td>
-  <td class="text-danger">%d</td>
-  <td><span class="%s fw-bold">%.2f</span></td>
-  <td>%s</td>
-  <td style="min-width:120px">
-    <div class="progress" style="height:8px;border-radius:4px">
-      <div class="progress-bar bg-success" style="width:%d%%"></div>
-      <div class="progress-bar bg-warning" style="width:%d%%"></div>
-      <div class="progress-bar bg-danger"  style="width:%d%%"></div>
-    </div>
-  </td>
-  <td class="d-flex gap-1">%s <a href="%s" class="btn btn-outline-primary btn-sm py-0 px-2" style="font-size:.75rem">Scores</a></td>
-</tr>`,
-				i+1, scoresURL, escapeHTML(u.Name), u.Ratings,
-				u.Good, u.Average, u.Poor,
-				scoreClass, u.Score,
-				avg25Cell,
-				barGood, barAvg, barPoor,
-				commentBtn, scoresURL)
-		}
-		if len(umpires) == 0 {
-			fmt.Fprintf(w, `<tr><td colspan="10" class="text-center text-muted py-3">No %s ratings found for this season. <a href="/admin/rankings/umpires?season_id=%d&amp;min_ratings=%d&amp;category=%s">View %s</a>.</td></tr>`,
-				escapeHTML(categoryTitle), seasonID, minRatings, escapeHTML(otherCategory), escapeHTML(otherCategoryTitle))
-		}
-		fmt.Fprint(w, `      </tbody>
+      <tbody id="%s">`, bodyID)
+			renderUmpireRows(umpires, cat, emptyMsg)
+			fmt.Fprint(w, `      </tbody>
     </table>
   </div>
-</div>
 </div>`)
+		}
 
+		renderSection("Premier Umpires", "premierBody", "bg-primary", "panel",
+			"No Premier Umpires rated this season.", premier, "")
+		renderSection("Reserves", "reserveBody", "bg-secondary", "panel",
+			"No Reserves rated this season.", reserves, "")
+		renderSection("Panel Umpires", "panelBody", "bg-success", "panel",
+			"No other panel umpires rated this season.", panel, "")
+		renderSection("Club Umpires", "clubBody", "bg-warning text-dark", "club",
+			"No club umpires rated this season.", club, "")
+		renderSection("No Names", "noNamesBody", "bg-danger", "panel",
+			"No unidentified names found.", noNames,
+			"Panel submissions where no real umpire name was recorded (Unknown, Not listed, etc.)")
+
+		fmt.Fprint(w, `</div>`)
 
 		script := fmt.Sprintf(`
 Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
 Chart.defaults.color = '#6c757d';
-
 new Chart(document.getElementById('chartUmpireScore'), {
   type: 'bar',
   data: {
     labels: %s,
-    datasets: [{
-      label: 'Score',
-      data: %s,
-      backgroundColor: function(ctx) {
-        var v = ctx.raw;
-        return v >= 2.5 ? 'rgba(25,135,84,.75)' : v >= 2.0 ? 'rgba(255,193,7,.8)' : 'rgba(220,53,69,.75)';
-      },
-      borderRadius: 4
-    }]
+    datasets: [{ label: 'Score', data: %s,
+      backgroundColor: function(ctx){ var v=ctx.raw; return v>=2.5?'rgba(25,135,84,.75)':v>=2.0?'rgba(255,193,7,.8)':'rgba(220,53,69,.75)'; },
+      borderRadius: 4 }]
   },
-  options: {
-    indexAxis: 'y',
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { min: 1, max: 3, ticks: { stepSize: .5 }, grid: { color: 'rgba(0,0,0,.05)' } },
-      y: { grid: { display: false } }
-    }
-  }
+  options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{display:false} },
+    scales:{ x:{min:1,max:3,ticks:{stepSize:.5},grid:{color:'rgba(0,0,0,.05)'}}, y:{grid:{display:false}} } }
 });
-
 new Chart(document.getElementById('chartUmpireGood'), {
   type: 'bar',
   data: {
     labels: %s,
-    datasets: [{
-      label: 'Good %%',
-      data: %s,
-      backgroundColor: 'rgba(25,135,84,.7)',
-      borderRadius: 4
-    }]
+    datasets: [{ label: 'Good %%', data: %s, backgroundColor:'rgba(25,135,84,.7)', borderRadius:4 }]
   },
-  options: {
-    indexAxis: 'y',
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { min: 0, max: 100, ticks: { callback: v => v+'%%' } },
-      y: { grid: { display: false } }
-    }
-  }
+  options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{display:false} },
+    scales:{ x:{min:0,max:100,ticks:{callback:function(v){return v+'%%';}}}, y:{grid:{display:false}} } }
 });
 `, labelsJSON, scoresJSON, labelsJSON, goodPctJSON)
 
 		script += `
-function filterUmpires(q) {
+function filterAllUmpires(q) {
   q = q.toLowerCase();
-  var rows = document.querySelectorAll('#umpireTableBody tr');
-  var visible = 0;
-  rows.forEach(function(row) {
-    var show = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
-    row.style.display = show ? '' : 'none';
-    if (show) visible++;
+  ['premierBody','reserveBody','panelBody','clubBody','noNamesBody'].forEach(function(id) {
+    var tbody = document.getElementById(id);
+    if (!tbody) return;
+    var visible = 0;
+    Array.from(tbody.rows).forEach(function(row) {
+      if (row.id && row.id.endsWith('Empty')) return;
+      var show = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    var emptyId = id + 'Empty';
+    var emptyRow = document.getElementById(emptyId);
+    if (!emptyRow) {
+      emptyRow = tbody.insertRow();
+      emptyRow.id = emptyId;
+      emptyRow.innerHTML = '<td colspan="10" class="text-center text-muted py-2">No umpires match your search.</td>';
+    }
+    emptyRow.style.display = (visible === 0 && q) ? '' : 'none';
   });
-  var empty = document.getElementById('umpireSearchEmpty');
-  if (!empty) {
-    empty = document.createElement('tr');
-    empty.id = 'umpireSearchEmpty';
-    empty.innerHTML = '<td colspan="10" class="text-center text-muted py-3">No umpires match your search.</td>';
-    document.getElementById('umpireTableBody').appendChild(empty);
-  }
-  empty.style.display = (visible === 0 && q) ? '' : 'none';
 }
 `
 		pageFooterWithScript(w, script)
