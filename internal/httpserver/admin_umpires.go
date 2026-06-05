@@ -256,7 +256,6 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		      AND u1perf IS NOT NULL
 		      AND u1perf IN ('Good','Average','Poor')
 		      %s
-		      %s
 		    UNION ALL
 		    SELECT lower(trim(u2name)),
 		           trim(u2name),
@@ -269,7 +268,6 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
 		      AND u2perf IS NOT NULL
 		      AND u2perf IN ('Good','Average','Poor')
-		      %s
 		      %s
 		),
 		scored AS (
@@ -288,13 +286,14 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		        COUNT(*) FILTER (WHERE comment <> '')        AS comment_count,
 		        ROUND(AVG(total_score), 1)                   AS avg_score_25
 		    FROM ratings
+		    WHERE TRUE %s
 		    GROUP BY key
 		    HAVING COUNT(*) >= $%d
 		)
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count, COALESCE(avg_score_25,0)
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, whereSQL, u1TypeWhere, keyFilterSQL, u2TypeWhere, keyFilterSQL, minParam), qargs...)
+	`, whereSQL, u1TypeWhere, u2TypeWhere, keyFilterSQL, minParam), qargs...)
 	if err != nil {
 		return nil
 	}
