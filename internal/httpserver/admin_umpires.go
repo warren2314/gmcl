@@ -1044,3 +1044,113 @@ func umpireCategoryCardClass(activeCategory, cardCategory string) string {
 	}
 	return "kpi-blue"
 }
+
+// handleAdminUmpireNames is a diagnostic page listing every unique umpire name key
+// found in submissions, showing which section it maps to.
+func (s *Server) handleAdminUmpireNames() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		csrfToken := ""
+		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
+			csrfToken = c.Value
+		}
+
+		// Build lookup sets for fast categorisation.
+		premierSet := make(map[string]bool, len(premierUmpireKeys))
+		for _, k := range premierUmpireKeys {
+			premierSet[k] = true
+		}
+		reserveSet := make(map[string]bool, len(reserveUmpireKeys))
+		for _, k := range reserveUmpireKeys {
+			reserveSet[k] = true
+		}
+		panelSet := make(map[string]bool, len(allPanelUmpireKeys))
+		for _, k := range allPanelUmpireKeys {
+			panelSet[k] = true
+		}
+		isInvalid := func(k string) bool {
+			for _, pat := range []string{"unknown", "not listed", "no umpire", "no name", "n/a", "na", "none", "tbc", "-", "no"} {
+				if k == pat || strings.Contains(k, pat) {
+					return true
+				}
+			}
+			return false
+		}
+		categorise := func(k string) string {
+			if isInvalid(k) {
+				return "no-name"
+			}
+			if premierSet[k] {
+				return "premier"
+			}
+			if reserveSet[k] {
+				return "reserve"
+			}
+			if panelSet[k] {
+				return "panel"
+			}
+			return "club"
+		}
+
+		type nameRow struct {
+			Key      string
+			Count    int64
+			Category string
+		}
+		rows, err := s.DB.Query(ctx, `
+			SELECT lower(trim(u)) AS key, COUNT(*) AS n
+			FROM (
+				SELECT form_data->>'umpire1_name' AS u FROM submissions
+				UNION ALL
+				SELECT form_data->>'umpire2_name' FROM submissions
+			) t
+			WHERE trim(u) <> '' AND u IS NOT NULL
+			GROUP BY lower(trim(u))
+			ORDER BY lower(trim(u))
+		`)
+		var names []nameRow
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var nr nameRow
+				if rows.Scan(&nr.Key, &nr.Count) == nil {
+					nr.Category = categorise(nr.Key)
+					names = append(names, nr)
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Umpire Name Diagnostic")
+		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
+
+		catBadge := map[string]string{
+			"premier": `<span class="badge bg-primary">Premier</span>`,
+			"reserve": `<span class="badge bg-secondary">Reserve</span>`,
+			"panel":   `<span class="badge bg-success">Panel</span>`,
+			"club":    `<span class="badge bg-warning text-dark">Club</span>`,
+			"no-name": `<span class="badge bg-danger">No Name</span>`,
+		}
+
+		fmt.Fprintf(w, `<div class="container-fluid px-4">
+<h4 class="fw-bold mb-1">Umpire Name Diagnostic</h4>
+<p class="text-muted small mb-3">Every unique umpire name key in the database and which section it maps to. Use this to spot mismatches.</p>
+<div class="card shadow-sm mb-4">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr><th>Name (as stored)</th><th>Appearances</th><th>Section</th></tr></thead>
+      <tbody>
+`)
+		for _, nr := range names {
+			fmt.Fprintf(w, `<tr><td><code>%s</code></td><td>%d</td><td>%s</td></tr>`,
+				escapeHTML(nr.Key), nr.Count, catBadge[nr.Category])
+		}
+		if len(names) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="3" class="text-muted text-center py-3">No data.</td></tr>`)
+		}
+		fmt.Fprint(w, `      </tbody></table></div></div></div>`)
+		pageFooter(w)
+	}
+}
