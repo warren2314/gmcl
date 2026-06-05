@@ -12,19 +12,158 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
-// Premier and reserve umpire lists (lowercase keys for SQL matching).
+// Premier umpires — include known name variants (Dave/David, Steve/Stephen etc.)
+// because captain entries may differ from the official spelling.
 var premierUmpireKeys = []string{
-	"shahid ahmed", "david bardsley", "david bridge", "paul carter",
-	"david chaloner", "mohammed chowdhury", "james clarke", "steve cullen",
-	"dave faulkner", "ian herbert", "mick holden", "richard hope",
-	"steve kenyon", "asif lohdi", "jon mayor", "billy mcewen",
-	"neil cadd", "linval grant", "shah zeb", "farrukh munir",
-	"philip royle", "stuart russell", "nigel stock", "peter thew",
-	"denver thornton", "david wild", "hafiz yousaf", "stephen kirkbright",
+	"shahid ahmed",
+	"david bardsley",
+	"david bridge", "dave bridge",
+	"paul carter",
+	"david chaloner",
+	"mohammed chowdhury", "ahad (mohammed) chowdhury",
+	"james clarke",
+	"steve cullen", "stephen cullen",
+	"dave faulkner", "david faulkner",
+	"ian herbert",
+	"mick holden",
+	"richard hope",
+	"steve kenyon", "stephen kenyon",
+	"asif lohdi",
+	"jon mayor",
+	"billy mcewen",
+	"neil cadd",
+	"linval grant",
+	"shah zeb",
+	"farrukh munir",
+	"philip royle", "phil royle",
+	"stuart russell",
+	"nigel stock",
+	"peter thew",
+	"denver thornton",
+	"david wild", "dave wild",
+	"hafiz yousaf", "fiz yousaf",
+	"stephen kirkbright",
 }
 
+// Reserve umpires — include name variants.
 var reserveUmpireKeys = []string{
-	"parth banerjee", "steve coulding", "behzad khan", "bhikhu sukha", "peter mcandrew",
+	"parth banerjee", "parth banerji",
+	"steve coulding", "stephen coulding", "stevie coulding",
+	"behzad khan",
+	"bhikhu sukha",
+	"peter mcandrew",
+}
+
+// allPanelUmpireKeys is the full official GMCL panel list (lowercase + known variants).
+// Anyone whose name matches a key here is a panel umpire; all others are club umpires.
+var allPanelUmpireKeys = []string{
+	"abrar ahmad",
+	"bashir ahmed",
+	"shahid ahmed",
+	"mohammed ali akber",
+	"salman akhtar",
+	"adeel arif",
+	"martin ashfield",
+	"parth banerji", "parth banerjee",
+	"david bardsley",
+	"michael beech",
+	"paul belston",
+	"dave bridge", "david bridge",
+	"mark brookes",
+	"steven burston",
+	"neil cadd",
+	"paul carter",
+	"david chaloner",
+	"malcolm chapman",
+	"ahad (mohammed) chowdhury", "mohammed chowdhury",
+	"james clarke",
+	"stephen coulding", "stevie coulding", "steve coulding",
+	"david cowburn",
+	"brian crook",
+	"lee cullen", "steve cullen", "stephen cullen",
+	"stewart dobson",
+	"stephen draper",
+	"mike dunkerley",
+	"peter edwards",
+	"david faulkner", "dave faulkner",
+	"billy fish",
+	"thomas george",
+	"linval grant",
+	"mike grimes",
+	"jonathan grosskopf",
+	"damian grundy",
+	"edward haddon",
+	"lee harding",
+	"ian herbert",
+	"paul higgins",
+	"mike hill",
+	"matt hilton",
+	"mick holden",
+	"richard hope",
+	"john howard",
+	"darren howarth",
+	"john hughes",
+	"sarfraz ismail ahmad",
+	"ashraf jamal",
+	"james jones",
+	"ken jones",
+	"jayprakash joshi",
+	"ramki kalyanasundaram",
+	"melissa kay",
+	"stephen kenyon", "steve kenyon",
+	"mark keogh",
+	"anwar khan",
+	"behzad khan",
+	"stephen kirkbright",
+	"raja latif",
+	"fred leatherbarrow",
+	"asif lohdi",
+	"bobby loomba",
+	"peter masters",
+	"jon mayor",
+	"peter mcandrew",
+	"billy mcewen",
+	"arsalaan mohammad",
+	"abdul motala",
+	"farrukh munir",
+	"alan naylor",
+	"amrat patel",
+	"sarang pulikkal",
+	"kamlesh rajput",
+	"craig ramadhin",
+	"suhail rana",
+	"mahmood rather",
+	"roger richards",
+	"phil royle", "philip royle",
+	"stuart russell",
+	"mahammed arshad saiyed",
+	"keith scholes",
+	"wilf seville",
+	"muhammad shahid",
+	"sardar shahid",
+	"john sharples",
+	"neil shaw",
+	"zohaib shazad",
+	"ian standing",
+	"ian stobbs",
+	"nigel stock",
+	"bhikhu sukha",
+	"john sumner",
+	"bernard sweeney",
+	"brian talbot",
+	"peter thew",
+	"denver thornton",
+	"amin tufail",
+	"mike tyldesley",
+	"richard unwin",
+	"steve ward",
+	"dave wild", "david wild",
+	"steve wilkinson",
+	"alan wilson",
+	"beverley wilson",
+	"philip yates",
+	"fiz yousaf", "hafiz yousaf",
+	"shah zeb",
 }
 
 // invalidUmpirePattern is appended to the ratings CTE to match submissions where no
@@ -223,22 +362,24 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 		}
 
-		// Exclude keys for the regular panel/club sections = premier + reserve names.
+		// allNamedKeys = premier + reserve (used to exclude from panel/club/noNames).
 		allNamedKeys := append(append([]string{}, premierUmpireKeys...), reserveUmpireKeys...)
 
-		// Load all five groups.
+		// Load all five groups — all use name matching, no umpire_type column filtering,
+		// because captains often mark panel umpires as "club" in the form.
 		var premier, reserves, panel, club, noNames []reportUmpire
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
-			// Premier and reserves are found by name regardless of how captains typed them
-			// (umpire type data is often unreliable — captains default to "club").
+			// Premier / reserves: found by name in the hardcoded lists.
 			premier = s.loadUmpireRankings(ctx, where, args, 1, "", premierUmpireKeys, nil, umpireNamesAll)
 			reserves = s.loadUmpireRankings(ctx, where, args, 1, "", reserveUmpireKeys, nil, umpireNamesAll)
-			// Panel and club use the type column, excluding any already shown above.
-			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "panel", nil, allNamedKeys, umpireNamesValid)
-			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "club", nil, allNamedKeys, umpireNamesAll)
-			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", nil, allNamedKeys, umpireNamesInvalid)
+			// Panel: anyone on the official GMCL panel list who isn't premier/reserve.
+			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "", allPanelUmpireKeys, allNamedKeys, umpireNamesAll)
+			// Club: anyone NOT on the panel list at all (excludes invalid names too).
+			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "", nil, allPanelUmpireKeys, umpireNamesValid)
+			// No Names: invalid/placeholder entries from any category.
+			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", nil, nil, umpireNamesInvalid)
 		}
 
 		csrfToken := ""
