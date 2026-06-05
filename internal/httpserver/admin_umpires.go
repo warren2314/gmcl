@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,16 +14,26 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 )
 
-// Premier umpires — include known name variants (Dave/David, Steve/Stephen etc.)
-// because captain entries may differ from the official spelling.
+// ── Official GMCL umpire lists ─────────────────────────────────────────────────
+//
+// Rule: Premier → Reserve → Panel → Club → No Names.
+// Premier and Reserve are identified by name (any key variant).
+// Panel = everyone on the full official panel list who isn't Premier/Reserve.
+// Club = everyone else.
+// No Names = placeholder/unknown entries.
+//
+// Each list contains the CANONICAL lowercase key first, then any database
+// spellings that should map to that same person.
+
+// 28 Premier Umpires (canonical name first, then known DB variants)
 var premierUmpireKeys = []string{
 	"shahid ahmed",
 	"david bardsley", "dave bardsley",
 	"david bridge", "dave bridge",
 	"paul carter",
 	"david chaloner", "dave chaloner",
-	"mohammed chowdhury", "ahad (mohammed) chowdhury",
-	"james clarke",
+	"mohammed chowdhury", "ahad (mohammed) chowdhury", "ahad chowdhury",
+	"james clarke", "jim clarke",
 	"steve cullen", "stephen cullen", "steven cullen",
 	"dave faulkner", "david faulkner",
 	"ian herbert",
@@ -46,7 +57,7 @@ var premierUmpireKeys = []string{
 	"stephen kirkbright",
 }
 
-// Reserve umpires — include name variants.
+// 5 Reserve Umpires
 var reserveUmpireKeys = []string{
 	"parth banerjee", "parth banerji", "parth banerli",
 	"steve coulding", "stephen coulding", "stevie coulding", "steven coulding",
@@ -55,120 +66,274 @@ var reserveUmpireKeys = []string{
 	"peter mcandrew",
 }
 
-// allPanelUmpireKeys is the full official GMCL panel list (lowercase + known variants).
-// Anyone whose name matches a key here is a panel umpire; all others are club umpires.
+// Full official GMCL panel list — every name that belongs to a panel umpire.
+// Includes Premier + Reserve + Panel-only names so the SQL can classify correctly.
 var allPanelUmpireKeys = []string{
-	"abrar ahmad", "abrar ahmed",
-	"bashir ahmed",
-	"shahid ahmed",
-	"mohammed ali akber", "mohammad ali akber",
-	"salman akhtar", "akhtar salman", "akhtar, salman",
+	// A
+	"abrar ahmad", "abrar ahmed", "abs ahmad",
 	"adeel arif",
-	"martin ashfield",
-	"parth banerji", "parth banerjee", "parth banerli",
-	"david bardsley", "dave bardsley",
-	"michael beech",
-	"paul belston",
-	"dave bridge", "david bridge",
-	"mark brookes",
-	"steven burston",
-	"neil cadd",
-	"paul carter",
-	"david chaloner", "dave chaloner",
-	"malcolm chapman",
-	"ahad (mohammed) chowdhury", "mohammed chowdhury",
-	"james clarke",
-	"stephen coulding", "stevie coulding", "steve coulding", "steven coulding",
-	"david cowburn", "dave cowburn",
-	"brian crook",
-	"lee cullen", "steve cullen", "stephen cullen", "steven cullen",
-	"stewart dobson",
-	"stephen draper",
-	"mike dunkerley", "michael dunkerley",
-	"peter edwards",
-	"david faulkner", "dave faulkner",
-	"billy fish",
-	"thomas george",
-	"linval grant",
-	"mike grimes", "michael grimes",
-	"jonathan grosskopf",
-	"damian grundy", "damo grundy",
-	"edward haddon",
-	"lee harding",
-	"ian herbert",
-	"paul higgins", "paul anthony higgins",
-	"mike hill",
-	"matt hilton", "matthew hilton",
-	"mick holden",
-	"richard hope",
-	"john howard",
-	"darren howarth",
-	"john hughes",
-	"sarfraz ismail ahmad", "sarfraz ismail ahmed", "sarfraz ahmad",
-	"ashraf jamal",
-	"james jones",
-	"ken jones", "kenneth jones",
-	"jayprakash joshi", "jayprakesh joshi",
-	"ramki kalyanasundaram", "ramki kalyan",
-	"melissa kay",
-	"stephen kenyon", "steve kenyon",
-	"mark keogh",
-	"anwar khan",
-	"behzad khan",
-	"stephen kirkbright",
-	"raja latif",
-	"fred leatherbarrow", "frederick leatherbarrow",
-	"asif lohdi", "asif rashid lohdi", "asim rashid lohdi",
-	"bobby loomba",
-	"peter masters", "pete masters",
-	"jon mayor",
-	"peter mcandrew",
-	"billy mcewen",
-	"arsalaan mohammad",
-	"abdul motala", "abdul hak motala",
-	"farrukh munir",
 	"alan naylor",
+	"alan wilson",
+	"amin tufail",
 	"amrat patel", "amratial patel",
-	"sarang pulikkal",
-	"kamlesh rajput", "kamlesh raijput",
+	"anwar khan",
+	"arsalaan mohammad",
+	"ashraf jamal",
+	"asif lohdi", "asif rashid lohdi", "asim rashid lohdi",
+	// B
+	"bashir ahmed",
+	"behzad khan",
+	"bernard sweeney",
+	"beverley wilson",
+	"bhikhu sukha", "bhikhu suka", "bhikho suka",
+	"billy fish",
+	"billy mcewen",
+	"bobby loomba",
+	"brian crook",
+	"brian talbot",
+	// C
+	"chandan shekhawat",
 	"craig ramadhin", "craig ramadin",
-	"suhail rana", "sohail rana",
-	"mahmood rather", "mamood rather",
-	"roger richards",
-	"phil royle", "philip royle", "philip steven royle",
-	"stuart russell",
-	"mahammed arshad saiyed", "mahammedarshad saiyed",
-	"keith scholes",
-	"wilf seville",
-	"muhammad shahid",
-	"sardar shahid",
-	"john sharples",
-	"neil shaw", "nigel shaw",
-	"zohaib shazad", "zohaib shehzad",
+	// D
+	"damian grundy", "damo grundy",
+	"darren howarth",
+	"dave bardsley", "david bardsley",
+	"dave chaloner", "david chaloner",
+	"dave cowburn", "david cowburn",
+	"dave faulkner", "david faulkner",
+	"dave wild", "david wild",
+	"david bridge", "dave bridge",
+	"denver thornton",
+	// E
+	"edward haddon",
+	// F
+	"farrukh munir",
+	"fiz yousaf", "hafiz yousaf",
+	"fred leatherbarrow", "frederick leatherbarrow",
+	// I
+	"ian herbert",
 	"ian standing",
 	"ian stobbs",
-	"nigel stock",
-	"bhikhu sukha", "bhikhu suka", "bhikho suka",
+	// J
+	"james clarke", "jim clarke",
+	"james jones",
+	"jayprakash joshi", "jayprakesh joshi", "jay joshi",
+	"john howard",
+	"john hughes",
+	"john sharples",
 	"john sumner",
-	"bernard sweeney",
-	"brian talbot",
-	"peter thew", "pete thew",
-	"denver thornton",
-	"amin tufail",
+	"jon mayor",
+	"jonathan grosskopf",
+	// K
+	"kamlesh rajput", "kamlesh raijput",
+	"keith scholes",
+	"ken jones", "kenneth jones",
+	// L
+	"lee cullen",
+	"lee harding",
+	"linval grant",
+	// M
+	"mahammed arshad saiyed", "mahammedarshad saiyed", "mahammed saiyed",
+	"mahmood rather", "mamood rather",
+	"malcolm chapman",
+	"mark brookes",
+	"mark keogh",
+	"martin ashfield",
+	"matthew hilton", "matt hilton",
+	"melissa kay",
+	"michael beech",
+	"mick holden",
+	"mike dunkerley", "michael dunkerley",
+	"mike grimes", "michael grimes",
+	"mike hill",
 	"mike tyldesley",
-	"richard unwin", "unwin richard",
-	"steve ward", "stephen ward",
-	"dave wild", "david wild",
-	"steve wilkinson",
-	"alan wilson",
-	"beverley wilson",
-	"philip yates",
-	"fiz yousaf", "hafiz yousaf",
+	"mohammed ali akber", "mohammad ali akber",
+	"muhammad shahid",
+	// N
+	"neil cadd",
+	"neil shaw", "nigel shaw",
+	"nigel stock",
+	// P
+	"parth banerjee", "parth banerji", "parth banerli",
+	"paul belston",
+	"paul carter",
+	"paul higgins", "paul anthony higgins",
+	"peter edwards",
+	"peter masters", "pete masters",
+	"peter mcandrew",
+	"peter thew", "pete thew",
+	"phil royle", "philip royle", "philip steven royle",
+	"phil yates", "philip yates",
+	// R
+	"raja latif",
+	"ramki kalyanasundaram", "ramki kalyan", "ramki kalgan",
+	"richard hope",
+	"richard unwin", "unwin richard", "rick unwin",
+	"roger richards",
+	// S
+	"saf ishmail", "saf ismail ahmad", "sarfraz ismail ahmad", "sarfraz ismail ahmed", "sarfraz ahmad",
+	"salman akhtar", "akhtar salman", "akhtar, salman",
+	"sarang pulikkal",
+	"sardar shah",
+	"sardar shahid",
 	"shah zeb",
+	"shahid ahmed",
+	"stephen cullen", "steve cullen", "steven cullen",
+	"stephen draper",
+	"stephen kirkbright",
+	"steve burston", "steven burston",
+	"steve coulding", "stephen coulding", "stevie coulding", "steven coulding",
+	"steve kenyon", "stephen kenyon",
+	"steve ward", "stephen ward",
+	"steve wilkinson",
+	"stewart dobson",
+	"stuart russell",
+	"suhail rana", "sohail rana",
+	// T
+	"thomas george",
+	// W
+	"wilf seville",
+	"abdul motala", "abdul hak motala",
+}
+
+// umpireVariantToCanonical maps every known DB spelling variant (lowercase) to its
+// canonical lowercase key. Used by mergeUmpireVariants to collapse duplicate rows.
+var umpireVariantToCanonical = map[string]string{
+	// Premier
+	"ahmed, shahid":             "shahid ahmed",
+	"dave bardsley":             "david bardsley",
+	"dave bridge":               "david bridge",
+	"dave chaloner":             "david chaloner",
+	"ahad (mohammed) chowdhury": "mohammed chowdhury",
+	"ahad chowdhury":            "mohammed chowdhury",
+	"jim clarke":                "james clarke",
+	"stephen cullen":            "steve cullen",
+	"steven cullen":             "steve cullen",
+	"david faulkner":            "dave faulkner",
+	"stephen kenyon":            "steve kenyon",
+	"asif rashid lohdi":         "asif lohdi",
+	"asim rashid lohdi":         "asif lohdi",
+	"phil royle":                "philip royle",
+	"philip steven royle":       "philip royle",
+	"pete thew":                 "peter thew",
+	"dave wild":                 "david wild",
+	"fiz yousaf":                "hafiz yousaf",
+	// Reserve
+	"parth banerji":   "parth banerjee",
+	"parth banerli":   "parth banerjee",
+	"stephen coulding": "steve coulding",
+	"stevie coulding":  "steve coulding",
+	"steven coulding":  "steve coulding",
+	"bhikhu suka":      "bhikhu sukha",
+	"bhikho suka":      "bhikhu sukha",
+	// Panel
+	"abrar ahmed":              "abrar ahmad",
+	"abs ahmad":                "abrar ahmad",
+	"akhtar salman":            "salman akhtar",
+	"akhtar, salman":           "salman akhtar",
+	"amratial patel":           "amrat patel",
+	"craig ramadin":            "craig ramadhin",
+	"damo grundy":              "damian grundy",
+	"dave cowburn":             "david cowburn",
+	"jay joshi":                "jayprakash joshi",
+	"jayprakesh joshi":         "jayprakash joshi",
+	"frederick leatherbarrow":  "fred leatherbarrow",
+	"kamlesh raijput":          "kamlesh rajput",
+	"kenneth jones":            "ken jones",
+	"mahammedarshad saiyed":    "mahammed arshad saiyed",
+	"mahammed saiyed":          "mahammed arshad saiyed",
+	"mamood rather":            "mahmood rather",
+	"matt hilton":              "matthew hilton",
+	"michael dunkerley":        "mike dunkerley",
+	"michael grimes":           "mike grimes",
+	"mohammad ali akber":       "mohammed ali akber",
+	"paul anthony higgins":     "paul higgins",
+	"pete masters":             "peter masters",
+	"philip yates":             "phil yates",
+	"ramki kalyan":             "ramki kalyanasundaram",
+	"ramki kalgan":             "ramki kalyanasundaram",
+	"saf ishmail":              "sarfraz ismail ahmad",
+	"saf ismail ahmad":         "sarfraz ismail ahmad",
+	"sarfraz ahmad":            "sarfraz ismail ahmad",
+	"sarfraz ismail ahmed":     "sarfraz ismail ahmad",
+	"sohail rana":              "suhail rana",
+	"stephen ward":             "steve ward",
+	"steven burston":           "steve burston",
+	"unwin richard":            "richard unwin",
+	"rick unwin":               "richard unwin",
+	"zohaib shehzad":           "zohaib shazad",
+	"abdul hak motala":         "abdul motala",
+}
+
+// mergeUmpireVariants combines rows where one name is a known variant of another,
+// summing their stats and using the canonical display name.
+func mergeUmpireVariants(rows []reportUmpire) []reportUmpire {
+	canonicalIdx := make(map[string]int)
+	var result []reportUmpire
+
+	for _, u := range rows {
+		lk := strings.ToLower(strings.TrimSpace(u.Name))
+		canonical := lk
+		if c, ok := umpireVariantToCanonical[lk]; ok {
+			canonical = c
+		}
+		if idx, ok := canonicalIdx[canonical]; ok {
+			e := &result[idx]
+			totalR := e.Ratings + u.Ratings
+			if totalR > 0 {
+				if e.AvgScore25 > 0 || u.AvgScore25 > 0 {
+					e.AvgScore25 = (e.AvgScore25*float64(e.Ratings) + u.AvgScore25*float64(u.Ratings)) / float64(totalR)
+					e.AvgScore25 = float64(int(e.AvgScore25*10+0.5)) / 10
+				}
+			}
+			e.Ratings += u.Ratings
+			e.Good += u.Good
+			e.Average += u.Average
+			e.Poor += u.Poor
+			e.CommentCount += u.CommentCount
+			if e.Ratings > 0 {
+				e.Score = (float64(e.Good)*3 + float64(e.Average)*2 + float64(e.Poor)*1) / float64(e.Ratings)
+				e.Score = float64(int(e.Score*1000+0.5)) / 1000
+				e.GoodPct = float64(e.Good) / float64(e.Ratings) * 100
+			}
+			// If this row IS the canonical, take its display name
+			if lk == canonical {
+				e.Name = u.Name
+			}
+		} else {
+			entry := u
+			if lk != canonical {
+				// Display the canonical title-cased name
+				entry.Name = umpireTitleCase(canonical)
+			}
+			canonicalIdx[canonical] = len(result)
+			result = append(result, entry)
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Score != result[j].Score {
+			return result[i].Score > result[j].Score
+		}
+		if result[i].Ratings != result[j].Ratings {
+			return result[i].Ratings > result[j].Ratings
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result
+}
+
+func umpireTitleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // umpireNameArray builds a PostgreSQL ARRAY literal from compile-time umpire key slices.
-// These keys are never user input so embedding them as literals is safe.
 func umpireNameArray(keys []string) string {
 	parts := make([]string, len(keys))
 	for i, k := range keys {
@@ -177,7 +342,6 @@ func umpireNameArray(keys []string) string {
 	return "ARRAY[" + strings.Join(parts, ",") + "]"
 }
 
-// umpireIncludeSQL / umpireExcludeSQL build SQL fragments for name filtering.
 func umpireIncludeSQL(keys []string) string {
 	if len(keys) == 0 {
 		return ""
@@ -191,8 +355,6 @@ func umpireExcludeSQL(keys []string) string {
 	return "AND NOT (key = ANY(" + umpireNameArray(keys) + "))"
 }
 
-// invalidUmpireSQL / excludeInvalidUmpireSQL are literal SQL fragments for placeholder names.
-// Covers: explicit unknowns, "unsure/not sure", "don't know", pure numbers/symbols, blank.
 const invalidUmpireSQL = "AND (key ILIKE '%unknown%' OR key ILIKE '%unkown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key ILIKE '%unsure%' OR key ILIKE '%not sure%' OR key ILIKE '%not known%' OR key ILIKE '%don''t know%' OR key ILIKE '%dont know%' OR key ILIKE '%do not know%' OR key ILIKE '%can''t remember%' OR key ILIKE '%can''t recall%' OR key ILIKE '%umpire not%' OR key ~ '^[0-9.?]+$' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no', 'blank', 'a', 'a n other', 'unkown', 'anon'))"
 const excludeInvalidUmpireSQL = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%unkown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key ILIKE '%unsure%' OR key ILIKE '%not sure%' OR key ILIKE '%not known%' OR key ILIKE '%don''t know%' OR key ILIKE '%dont know%' OR key ILIKE '%do not know%' OR key ILIKE '%can''t remember%' OR key ILIKE '%can''t recall%' OR key ILIKE '%umpire not%' OR key ~ '^[0-9.?]+$' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no', 'blank', 'a', 'a n other', 'unkown', 'anon'))"
 
@@ -367,16 +529,13 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
-			// Premier / reserves: found by name regardless of umpire_type.
-			premier = s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(premierUmpireKeys))
-			reserves = s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(reserveUmpireKeys))
-			// Panel: on the official GMCL list, not premier/reserve.
-			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
-				umpireIncludeSQL(allPanelUmpireKeys)+" "+umpireExcludeSQL(allNamedKeys))
-			// Club: not on the panel list at all, and not a placeholder name.
+			// Load each section, then merge rows that are spelling variants of the same person.
+			premier = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(premierUmpireKeys)))
+			reserves = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(reserveUmpireKeys)))
+			panel = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
+				umpireIncludeSQL(allPanelUmpireKeys)+" "+umpireExcludeSQL(allNamedKeys)))
 			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
 				umpireExcludeSQL(allPanelUmpireKeys)+" "+excludeInvalidUmpireSQL)
-			// No Names: unknown/placeholder entries.
 			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", invalidUmpireSQL)
 		}
 
