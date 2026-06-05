@@ -337,7 +337,7 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 
 func (s *Server) loadAIExecutiveUmpireWindow(ctx context.Context, title, period, whereSQL string, args []any, minRatings int64) aiExecutiveUmpireWindow {
 	win := aiExecutiveUmpireWindow{Title: title, Period: period}
-	all := s.loadUmpireRankings(ctx, whereSQL, args, minRatings, "", nil, nil, umpireNamesAll)
+	all := s.loadUmpireRankings(ctx, whereSQL, args, minRatings, "", "")
 	for _, row := range all {
 		win.TotalRatings += row.Ratings
 		win.Good += row.Good

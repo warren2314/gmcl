@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"cricket-ground-feedback/internal/middleware"
@@ -166,23 +167,38 @@ var allPanelUmpireKeys = []string{
 	"shah zeb",
 }
 
-// invalidUmpirePattern is appended to the ratings CTE to match submissions where no
-// real umpire name was recorded. Used as a literal SQL fragment (safe — not user input).
-const invalidUmpirePattern = "AND (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
-const excludeInvalidUmpirePattern = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
+// umpireNameArray builds a PostgreSQL ARRAY literal from compile-time umpire key slices.
+// These keys are never user input so embedding them as literals is safe.
+func umpireNameArray(keys []string) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = "'" + strings.ReplaceAll(k, "'", "''") + "'"
+	}
+	return "ARRAY[" + strings.Join(parts, ",") + "]"
+}
 
-// invalidNameMode constants for loadUmpireRankings.
-const (
-	umpireNamesAll     = 0 // no extra name filtering
-	umpireNamesValid   = 1 // exclude invalid/placeholder names
-	umpireNamesInvalid = 2 // only invalid/placeholder names
-)
+// umpireIncludeSQL / umpireExcludeSQL build SQL fragments for name filtering.
+func umpireIncludeSQL(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	return "AND key = ANY(" + umpireNameArray(keys) + ")"
+}
+func umpireExcludeSQL(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	return "AND NOT (key = ANY(" + umpireNameArray(keys) + "))"
+}
+
+// invalidUmpireSQL / excludeInvalidUmpireSQL are literal SQL fragments for placeholder names.
+const invalidUmpireSQL = "AND (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
+const excludeInvalidUmpireSQL = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
 
 // loadUmpireRankings queries aggregated umpire performance from captain report form_data.
-// includeKeys: if non-empty, only these lowercase umpire keys are returned.
-// excludeKeys: if non-empty, these lowercase keys are excluded.
-// invalidNameMode: umpireNamesAll / umpireNamesValid / umpireNamesInvalid.
-func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string, includeKeys, excludeKeys []string, invalidNameMode int) []reportUmpire {
+// keyFilterSQL is embedded verbatim in the ratings CTE WHERE clauses (both UNION parts);
+// build it with umpireIncludeSQL / umpireExcludeSQL / the invalid constants above.
+func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string, keyFilterSQL string) []reportUmpire {
 	if minRatings < 1 {
 		minRatings = 1
 	}
@@ -198,26 +214,6 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 	if typeWhere != "" {
 		u1TypeWhere = fmt.Sprintf(typeWhere, "u1type")
 		u2TypeWhere = fmt.Sprintf(typeWhere, "u2type")
-	}
-
-	// Build key filter SQL (appended to both UNION parts in ratings CTE).
-	// Values passed as %s args to Sprintf, so % signs in the SQL constants are safe.
-	keyFilter := ""
-	if len(includeKeys) > 0 {
-		p := len(qargs) + 1
-		qargs = append(qargs, includeKeys)
-		keyFilter += fmt.Sprintf("AND key = ANY($%d) ", p)
-	}
-	if len(excludeKeys) > 0 {
-		p := len(qargs) + 1
-		qargs = append(qargs, excludeKeys)
-		keyFilter += fmt.Sprintf("AND NOT (key = ANY($%d)) ", p)
-	}
-	switch invalidNameMode {
-	case umpireNamesValid:
-		keyFilter += excludeInvalidUmpirePattern + " "
-	case umpireNamesInvalid:
-		keyFilter += invalidUmpirePattern + " "
 	}
 
 	minParam := len(qargs) + 1
@@ -298,7 +294,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count, COALESCE(avg_score_25,0)
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, whereSQL, u1TypeWhere, keyFilter, u2TypeWhere, keyFilter, minParam), qargs...)
+	`, whereSQL, u1TypeWhere, keyFilterSQL, u2TypeWhere, keyFilterSQL, minParam), qargs...)
 	if err != nil {
 		return nil
 	}
@@ -371,15 +367,17 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
-			// Premier / reserves: found by name in the hardcoded lists.
-			premier = s.loadUmpireRankings(ctx, where, args, 1, "", premierUmpireKeys, nil, umpireNamesAll)
-			reserves = s.loadUmpireRankings(ctx, where, args, 1, "", reserveUmpireKeys, nil, umpireNamesAll)
-			// Panel: anyone on the official GMCL panel list who isn't premier/reserve.
-			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "", allPanelUmpireKeys, allNamedKeys, umpireNamesAll)
-			// Club: anyone NOT on the panel list at all (excludes invalid names too).
-			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "", nil, allPanelUmpireKeys, umpireNamesValid)
-			// No Names: invalid/placeholder entries from any category.
-			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", nil, nil, umpireNamesInvalid)
+			// Premier / reserves: found by name regardless of umpire_type.
+			premier = s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(premierUmpireKeys))
+			reserves = s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(reserveUmpireKeys))
+			// Panel: on the official GMCL list, not premier/reserve.
+			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
+				umpireIncludeSQL(allPanelUmpireKeys)+" "+umpireExcludeSQL(allNamedKeys))
+			// Club: not on the panel list at all, and not a placeholder name.
+			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
+				umpireExcludeSQL(allPanelUmpireKeys)+" "+excludeInvalidUmpireSQL)
+			// No Names: unknown/placeholder entries.
+			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", invalidUmpireSQL)
 		}
 
 		csrfToken := ""
