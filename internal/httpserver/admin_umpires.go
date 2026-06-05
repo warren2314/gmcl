@@ -223,7 +223,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			}
 		}
 
-		// Exclude keys for the regular panel section = premier + reserve names.
+		// Exclude keys for the regular panel/club sections = premier + reserve names.
 		allNamedKeys := append(append([]string{}, premierUmpireKeys...), reserveUmpireKeys...)
 
 		// Load all five groups.
@@ -231,12 +231,14 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
-			// Premier and reserves use minRatings=1 so all listed umpires appear even if rated only once.
-			premier = s.loadUmpireRankings(ctx, where, args, 1, "panel", premierUmpireKeys, nil, umpireNamesAll)
-			reserves = s.loadUmpireRankings(ctx, where, args, 1, "panel", reserveUmpireKeys, nil, umpireNamesAll)
+			// Premier and reserves are found by name regardless of how captains typed them
+			// (umpire type data is often unreliable — captains default to "club").
+			premier = s.loadUmpireRankings(ctx, where, args, 1, "", premierUmpireKeys, nil, umpireNamesAll)
+			reserves = s.loadUmpireRankings(ctx, where, args, 1, "", reserveUmpireKeys, nil, umpireNamesAll)
+			// Panel and club use the type column, excluding any already shown above.
 			panel = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "panel", nil, allNamedKeys, umpireNamesValid)
-			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "club", nil, nil, umpireNamesAll)
-			noNames = s.loadUmpireRankings(ctx, where, args, 1, "panel", nil, nil, umpireNamesInvalid)
+			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "club", nil, allNamedKeys, umpireNamesAll)
+			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", nil, allNamedKeys, umpireNamesInvalid)
 		}
 
 		csrfToken := ""
