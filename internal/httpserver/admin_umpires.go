@@ -51,7 +51,7 @@ var reserveUmpireKeys = []string{
 	"parth banerjee", "parth banerji", "parth banerli",
 	"steve coulding", "stephen coulding", "stevie coulding", "steven coulding",
 	"behzad khan",
-	"bhikhu sukha",
+	"bhikhu sukha", "bhikhu suka", "bhikho suka",
 	"peter mcandrew",
 }
 
@@ -104,7 +104,7 @@ var allPanelUmpireKeys = []string{
 	"john howard",
 	"darren howarth",
 	"john hughes",
-	"sarfraz ismail ahmad", "sarfraz ismail ahmed",
+	"sarfraz ismail ahmad", "sarfraz ismail ahmed", "sarfraz ahmad",
 	"ashraf jamal",
 	"james jones",
 	"ken jones", "kenneth jones",
@@ -148,7 +148,7 @@ var allPanelUmpireKeys = []string{
 	"ian standing",
 	"ian stobbs",
 	"nigel stock",
-	"bhikhu sukha",
+	"bhikhu sukha", "bhikhu suka", "bhikho suka",
 	"john sumner",
 	"bernard sweeney",
 	"brian talbot",
@@ -192,8 +192,9 @@ func umpireExcludeSQL(keys []string) string {
 }
 
 // invalidUmpireSQL / excludeInvalidUmpireSQL are literal SQL fragments for placeholder names.
-const invalidUmpireSQL = "AND (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
-const excludeInvalidUmpireSQL = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no'))"
+// Covers: explicit unknowns, "unsure/not sure", "don't know", pure numbers/symbols, blank.
+const invalidUmpireSQL = "AND (key ILIKE '%unknown%' OR key ILIKE '%unkown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key ILIKE '%unsure%' OR key ILIKE '%not sure%' OR key ILIKE '%not known%' OR key ILIKE '%don''t know%' OR key ILIKE '%dont know%' OR key ILIKE '%do not know%' OR key ILIKE '%can''t remember%' OR key ILIKE '%can''t recall%' OR key ILIKE '%umpire not%' OR key ~ '^[0-9.?]+$' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no', 'blank', 'a', 'a n other', 'unkown', 'anon'))"
+const excludeInvalidUmpireSQL = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%unkown%' OR key ILIKE '%not listed%' OR key ILIKE '%no umpire%' OR key ILIKE '%no name%' OR key ILIKE '%unsure%' OR key ILIKE '%not sure%' OR key ILIKE '%not known%' OR key ILIKE '%don''t know%' OR key ILIKE '%dont know%' OR key ILIKE '%do not know%' OR key ILIKE '%can''t remember%' OR key ILIKE '%can''t recall%' OR key ILIKE '%umpire not%' OR key ~ '^[0-9.?]+$' OR key IN ('n/a', 'na', 'none', 'tbc', '-', 'no', 'blank', 'a', 'a n other', 'unkown', 'anon'))"
 
 // loadUmpireRankings queries aggregated umpire performance from captain report form_data.
 // keyFilterSQL is embedded verbatim in the ratings CTE WHERE clauses (both UNION parts);
@@ -1070,19 +1071,35 @@ func (s *Server) handleAdminUmpireNames() http.HandlerFunc {
 		for _, k := range allPanelUmpireKeys {
 			panelSet[k] = true
 		}
-		// Mirror the actual SQL: substring match for longer patterns, exact match for short tokens.
+		// Mirror the actual SQL patterns exactly.
 		isInvalid := func(k string) bool {
-			for _, pat := range []string{"unknown", "not listed", "no umpire", "no name"} {
+			substrPatterns := []string{
+				"unknown", "unkown", "not listed", "no umpire", "no name",
+				"unsure", "not sure", "not known", "don't know", "dont know",
+				"do not know", "can't remember", "can't recall", "umpire not",
+			}
+			for _, pat := range substrPatterns {
 				if strings.Contains(k, pat) {
 					return true
 				}
 			}
-			for _, exact := range []string{"n/a", "na", "none", "tbc", "-", "no"} {
-				if k == exact {
-					return true
+			exactMatches := map[string]bool{
+				"n/a": true, "na": true, "none": true, "tbc": true,
+				"-": true, "no": true, "blank": true, "a": true,
+				"a n other": true, "unkown": true, "anon": true,
+			}
+			if exactMatches[k] {
+				return true
+			}
+			// Pure numbers, dots, question marks
+			allSymbol := true
+			for _, c := range k {
+				if !strings.ContainsRune("0123456789.?", c) {
+					allSymbol = false
+					break
 				}
 			}
-			return false
+			return allSymbol && len(k) > 0
 		}
 		categorise := func(k string) string {
 			if isInvalid(k) {
