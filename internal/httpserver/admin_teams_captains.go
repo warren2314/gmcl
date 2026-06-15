@@ -66,15 +66,17 @@ type adminTeamCaptainRow struct {
 }
 
 type adminCaptainRow struct {
-	ID         int32
-	ClubName   string
-	TeamName   string
-	FullName   string
-	Email      string
-	Phone      string
-	ActiveFrom string
-	ActiveTo   string
-	IsActive   bool
+	ID                int32
+	ClubName          string
+	TeamName          string
+	FullName          string
+	Email             string
+	Phone             string
+	ActiveFrom        string
+	ActiveTo          string
+	IsActive          bool
+	EmailOverride     string
+	EmailOverrideUntil string
 }
 
 type adminTeamsCaptainsPageData struct {
@@ -452,7 +454,9 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		SELECT c.id, cl.name, t.name, c.full_name, c.email, COALESCE(c.phone, ''),
 		       TO_CHAR(c.active_from, 'YYYY-MM-DD'),
 		       COALESCE(TO_CHAR(c.active_to, 'YYYY-MM-DD'), ''),
-		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active
+		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active,
+		       COALESCE(c.email_override, ''),
+		       COALESCE(TO_CHAR(c.email_override_until, 'YYYY-MM-DD'), '')
 		FROM captains c
 		JOIN teams t ON t.id = c.team_id
 		JOIN clubs cl ON cl.id = t.club_id
@@ -469,7 +473,8 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	defer captainRows.Close()
 	for captainRows.Next() {
 		var row adminCaptainRow
-		if err := captainRows.Scan(&row.ID, &row.ClubName, &row.TeamName, &row.FullName, &row.Email, &row.Phone, &row.ActiveFrom, &row.ActiveTo, &row.IsActive); err != nil {
+		if err := captainRows.Scan(&row.ID, &row.ClubName, &row.TeamName, &row.FullName, &row.Email, &row.Phone,
+			&row.ActiveFrom, &row.ActiveTo, &row.IsActive, &row.EmailOverride, &row.EmailOverrideUntil); err != nil {
 			return data, err
 		}
 		data.CaptainRows = append(data.CaptainRows, row)
@@ -684,14 +689,47 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 		if row.Phone != "" {
 			phoneCell = `<div class="text-muted small">` + escapeHTML(row.Phone) + `</div>`
 		}
+		// Permanent email editor
 		emailForm := fmt.Sprintf(`
 <form method="POST" action="/admin/captains/%d/email" class="d-flex gap-1 mt-1" style="max-width:320px">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="email" name="email" value="%s" class="form-control form-control-sm" required style="min-width:0">
   <button type="submit" class="btn btn-sm btn-outline-success text-nowrap">Save email</button>
 </form>`, row.ID, csrfToken, escapeHTML(row.Email))
+		// Temporary override section
+		overrideSection := ""
+		if row.EmailOverride != "" {
+			// Active or expired override — show clear button
+			badgeCls := "bg-secondary"
+			label := "Expired override"
+			if row.EmailOverrideUntil >= time.Now().Format("2006-01-02") {
+				badgeCls = "bg-warning text-dark"
+				label = "Override active until " + row.EmailOverrideUntil
+			}
+			overrideSection = fmt.Sprintf(`
+<div class="mt-1 d-flex align-items-center gap-2 flex-wrap">
+  <span class="badge %s" style="font-size:.75rem">%s: %s</span>
+  <form method="POST" action="/admin/captains/%d/email-override" class="d-inline">
+    <input type="hidden" name="csrf_token" value="%s">
+    <input type="hidden" name="action" value="clear">
+    <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" style="font-size:.75rem">Clear override</button>
+  </form>
+</div>`, badgeCls, label, escapeHTML(row.EmailOverride), row.ID, csrfToken)
+		} else {
+			// No override — show set form
+			overrideSection = fmt.Sprintf(`
+<details class="mt-1" style="font-size:.8rem">
+  <summary class="text-muted" style="cursor:pointer">Set temporary email override…</summary>
+  <form method="POST" action="/admin/captains/%d/email-override" class="d-flex gap-1 mt-1 flex-wrap" style="max-width:420px">
+    <input type="hidden" name="csrf_token" value="%s">
+    <input type="email" name="override_email" class="form-control form-control-sm" placeholder="Temporary email" required style="min-width:150px;flex:1">
+    <input type="date" name="override_until" class="form-control form-control-sm" required style="max-width:140px">
+    <button type="submit" class="btn btn-sm btn-outline-warning text-nowrap">Set override</button>
+  </form>
+</details>`, row.ID, csrfToken)
+		}
 		fmt.Fprintf(w, `<tr>
-<td>%s<div class="text-muted small">%s</div>%s%s</td>
+<td>%s<div class="text-muted small">%s</div>%s%s%s</td>
 <td>%s - %s</td>
 <td>%s</td>
 <td>%s</td>
@@ -699,12 +737,60 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
   <a class="btn btn-sm btn-outline-primary" href="/admin/teams-captains?captain_id=%d">Edit</a>
   %s
 </td>
-</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), phoneCell, emailForm,
+</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), phoneCell, emailForm, overrideSection,
 			escapeHTML(row.ClubName), escapeHTML(row.TeamName), dateLabel, status, row.ID, deactivate)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 	fmt.Fprint(w, `</div>`)
 	pageFooter(w)
+}
+
+func (s *Server) handleAdminCaptainEmailOverride() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		captainID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		if captainID <= 0 {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Clear action
+		if r.FormValue("action") == "clear" {
+			if _, err := s.DB.Exec(ctx, `UPDATE captains SET email_override=NULL, email_override_until=NULL WHERE id=$1`, int32(captainID)); err != nil {
+				s.redirectTeamsCaptainsError(w, r, "Could not clear override: "+err.Error())
+				return
+			}
+			s.audit(ctx, r, "admin", nil, "captain_email_override_cleared", "captain",
+				func() *int64 { v := int64(captainID); return &v }(), map[string]any{})
+			s.redirectTeamsCaptainsSuccess(w, r, "Email override cleared.")
+			return
+		}
+
+		overrideEmail := strings.TrimSpace(r.FormValue("override_email"))
+		overrideUntil := strings.TrimSpace(r.FormValue("override_until"))
+		if overrideEmail == "" || overrideUntil == "" {
+			s.redirectTeamsCaptainsError(w, r, "Override email and expiry date are both required.")
+			return
+		}
+		if _, err := time.Parse("2006-01-02", overrideUntil); err != nil {
+			s.redirectTeamsCaptainsError(w, r, "Expiry date must be YYYY-MM-DD.")
+			return
+		}
+		if _, err := s.DB.Exec(ctx, `UPDATE captains SET email_override=$1, email_override_until=$2 WHERE id=$3`,
+			overrideEmail, overrideUntil, int32(captainID)); err != nil {
+			s.redirectTeamsCaptainsError(w, r, "Could not set override: "+err.Error())
+			return
+		}
+		s.audit(ctx, r, "admin", nil, "captain_email_override_set", "captain",
+			func() *int64 { v := int64(captainID); return &v }(),
+			map[string]any{"override_email": overrideEmail, "until": overrideUntil})
+		s.redirectTeamsCaptainsSuccess(w, r, "Temporary override set — emails go to "+overrideEmail+" until "+overrideUntil+".")
+	}
 }
 
 func (s *Server) handleAdminCaptainEmailUpdate() http.HandlerFunc {

@@ -385,7 +385,8 @@ func (s *Server) sendFreshCaptainAccessLink(ctx context.Context, r *http.Request
 
 	var captainEmail, captainName string
 	if err := s.DB.QueryRow(ctx, `
-		SELECT full_name, email
+		SELECT full_name,
+		       COALESCE(CASE WHEN email_override IS NOT NULL AND email_override_until >= CURRENT_DATE THEN TRIM(email_override) END, TRIM(email))
 		FROM captains
 		WHERE id = $1
 	`, captainID).Scan(&captainName, &captainEmail); err != nil {

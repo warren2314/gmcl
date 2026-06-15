@@ -146,6 +146,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Post("/captains/save", s.handleAdminCaptainSave())
 		r.Post("/captains/{id}/deactivate", s.handleAdminCaptainDeactivate())
 		r.Post("/captains/{id}/email", s.handleAdminCaptainEmailUpdate())
+		r.Post("/captains/{id}/email-override", s.handleAdminCaptainEmailOverride())
 		r.With(s.requireAdminRole("super_admin")).Get("/form-settings", s.handleAdminCaptainFormSettingsGet())
 		r.With(s.requireAdminRole("super_admin")).Post("/form-settings", s.handleAdminCaptainFormSettingsPost())
 

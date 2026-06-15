@@ -504,7 +504,7 @@ func (s *Server) sendReminderForTeamDate(r *http.Request, ctx context.Context, m
 		    t.id,
 		    c.id,
 		    c.full_name,
-		    TRIM(c.email),
+		    COALESCE(CASE WHEN c.email_override IS NOT NULL AND c.email_override_until >= CURRENT_DATE THEN TRIM(c.email_override) END, TRIM(c.email)),
 		    cl.name,
 		    t.name,
 		    CASE WHEN TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
