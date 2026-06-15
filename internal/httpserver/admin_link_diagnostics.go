@@ -16,15 +16,18 @@ import (
 )
 
 type linkDiagCaptain struct {
-	ID         int32
-	TeamID     int32
-	FullName   string
-	Email      string
-	ClubName   string
-	TeamName   string
-	ActiveFrom string
-	ActiveTo   string
-	IsActive   bool
+	ID                 int32
+	TeamID             int32
+	FullName           string
+	Email              string // permanent email
+	EffectiveEmail     string // override if active, else permanent
+	EmailOverride      string
+	EmailOverrideUntil string
+	ClubName           string
+	TeamName           string
+	ActiveFrom         string
+	ActiveTo           string
+	IsActive           bool
 }
 
 type linkDiagToken struct {
@@ -158,7 +161,12 @@ func (s *Server) handleAdminLinkDiagnosticsSend() http.HandlerFunc {
 func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData) error {
 	filter := strings.ToLower(strings.TrimSpace(data.Query))
 	rows, err := s.DB.Query(ctx, `
-		SELECT c.id, t.id, c.full_name, c.email, cl.name, t.name,
+		SELECT c.id, t.id, c.full_name,
+		       c.email,
+		       COALESCE(CASE WHEN c.email_override IS NOT NULL AND c.email_override_until >= CURRENT_DATE THEN TRIM(c.email_override) END, TRIM(c.email)) AS effective_email,
+		       COALESCE(c.email_override, ''),
+		       COALESCE(TO_CHAR(c.email_override_until, 'YYYY-MM-DD'), ''),
+		       cl.name, t.name,
 		       TO_CHAR(c.active_from, 'YYYY-MM-DD'),
 		       COALESCE(TO_CHAR(c.active_to, 'YYYY-MM-DD'), ''),
 		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active
@@ -167,6 +175,7 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 		JOIN clubs cl ON cl.id = t.club_id
 		WHERE LOWER(c.email) = LOWER($1)
 		   OR LOWER(c.email) LIKE LOWER('%' || $1 || '%')
+		   OR LOWER(COALESCE(c.email_override,'')) LIKE LOWER('%' || $1 || '%')
 		   OR LOWER(c.full_name) LIKE LOWER('%' || $1 || '%')
 		   OR LOWER(t.name) LIKE LOWER('%' || $1 || '%')
 		   OR LOWER(cl.name) LIKE LOWER('%' || $1 || '%')
@@ -179,7 +188,9 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 	defer rows.Close()
 	for rows.Next() {
 		var row linkDiagCaptain
-		if err := rows.Scan(&row.ID, &row.TeamID, &row.FullName, &row.Email, &row.ClubName, &row.TeamName, &row.ActiveFrom, &row.ActiveTo, &row.IsActive); err != nil {
+		if err := rows.Scan(&row.ID, &row.TeamID, &row.FullName, &row.Email,
+			&row.EffectiveEmail, &row.EmailOverride, &row.EmailOverrideUntil,
+			&row.ClubName, &row.TeamName, &row.ActiveFrom, &row.ActiveTo, &row.IsActive); err != nil {
 			return err
 		}
 		data.Captains = append(data.Captains, row)
@@ -197,7 +208,7 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 	for _, c := range data.Captains {
 		captainIDs = append(captainIDs, c.ID)
 		teamIDs = append(teamIDs, c.TeamID)
-		captainEmails = append(captainEmails, strings.ToLower(strings.TrimSpace(c.Email)))
+		captainEmails = append(captainEmails, strings.ToLower(strings.TrimSpace(c.EffectiveEmail)))
 	}
 
 	tokenRows, err := s.DB.Query(ctx, `
@@ -456,8 +467,13 @@ func renderLinkDiagnosticsPage(w http.ResponseWriter, csrfToken string, data lin
 		} else {
 			dates += row.ActiveTo
 		}
+		emailDisplay := escapeHTML(row.EffectiveEmail)
+		if row.EmailOverride != "" && row.EmailOverrideUntil >= time.Now().Format("2006-01-02") {
+			emailDisplay = fmt.Sprintf(`%s <span class="badge bg-warning text-dark" title="Override active until %s">override</span>`,
+				escapeHTML(row.EffectiveEmail), escapeHTML(row.EmailOverrideUntil))
+		}
 		fmt.Fprintf(w, `<tr><td>%s<div class="text-muted small">%s</div></td><td>%s<br><span class="text-muted small">%s</span></td><td>%s</td><td>%s</td><td><form method="POST" action="/admin/link-diagnostics/send" class="d-inline" onsubmit="return confirm('Send a fresh link to %s? Older general links for this captain/week will be revoked.')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="q" value="%s"><input type="hidden" name="captain_id" value="%d"><button class="btn btn-sm btn-warning" type="submit">Send fresh link</button></form></td></tr>`,
-			escapeHTML(row.FullName), escapeHTML(row.Email), escapeHTML(row.ClubName), escapeHTML(row.TeamName), escapeHTML(dates), status, escapeHTML(row.Email), escapeHTML(csrfToken), escapeHTML(data.Query), row.ID)
+			escapeHTML(row.FullName), emailDisplay, escapeHTML(row.ClubName), escapeHTML(row.TeamName), escapeHTML(dates), status, escapeHTML(row.EffectiveEmail), escapeHTML(csrfToken), escapeHTML(data.Query), row.ID)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 
