@@ -680,8 +680,18 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
 		} else {
 			dateLabel += escapeHTML(row.ActiveTo)
 		}
+		phoneCell := ""
+		if row.Phone != "" {
+			phoneCell = `<div class="text-muted small">` + escapeHTML(row.Phone) + `</div>`
+		}
+		emailForm := fmt.Sprintf(`
+<form method="POST" action="/admin/captains/%d/email" class="d-flex gap-1 mt-1" style="max-width:320px">
+  <input type="hidden" name="csrf_token" value="%s">
+  <input type="email" name="email" value="%s" class="form-control form-control-sm" required style="min-width:0">
+  <button type="submit" class="btn btn-sm btn-outline-success text-nowrap">Save email</button>
+</form>`, row.ID, csrfToken, escapeHTML(row.Email))
 		fmt.Fprintf(w, `<tr>
-<td>%s<div class="text-muted small">%s</div>%s</td>
+<td>%s<div class="text-muted small">%s</div>%s%s</td>
 <td>%s - %s</td>
 <td>%s</td>
 <td>%s</td>
@@ -689,16 +699,46 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
   <a class="btn btn-sm btn-outline-primary" href="/admin/teams-captains?captain_id=%d">Edit</a>
   %s
 </td>
-</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), func() string {
-			if row.Phone == "" {
-				return ""
-			}
-			return `<div class="text-muted small">` + escapeHTML(row.Phone) + `</div>`
-		}(), escapeHTML(row.ClubName), escapeHTML(row.TeamName), dateLabel, status, row.ID, deactivate)
+</tr>`, escapeHTML(row.FullName), escapeHTML(row.Email), phoneCell, emailForm,
+			escapeHTML(row.ClubName), escapeHTML(row.TeamName), dateLabel, status, row.ID, deactivate)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 	fmt.Fprint(w, `</div>`)
 	pageFooter(w)
+}
+
+func (s *Server) handleAdminCaptainEmailUpdate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		captainID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		if captainID <= 0 {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		newEmail := strings.TrimSpace(r.FormValue("email"))
+		if newEmail == "" {
+			s.redirectTeamsCaptainsError(w, r, "Email address cannot be blank.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var oldEmail string
+		_ = s.DB.QueryRow(ctx, `SELECT COALESCE(email,'') FROM captains WHERE id=$1`, int32(captainID)).Scan(&oldEmail)
+
+		_, err := s.DB.Exec(ctx, `UPDATE captains SET email=$1 WHERE id=$2`, newEmail, int32(captainID))
+		if err != nil {
+			s.redirectTeamsCaptainsError(w, r, "Could not update email: "+err.Error())
+			return
+		}
+		s.audit(ctx, r, "admin", nil, "captain_email_updated", "captain",
+			func() *int64 { v := int64(captainID); return &v }(),
+			map[string]any{"old_email": oldEmail, "new_email": newEmail})
+		s.redirectTeamsCaptainsSuccess(w, r, "Email updated to "+newEmail+".")
+	}
 }
 
 func (s *Server) redirectTeamsCaptainsSuccess(w http.ResponseWriter, r *http.Request, message string) {
