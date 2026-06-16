@@ -48,6 +48,24 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.Use(middleware.Logger())
 	r.Use(middleware.SecurityHeaders())
 
+	// Some clients (PDF copy, iOS "smart" typography) rewrite the "fi" in
+	// "confirm" to a Unicode ligature, so magic links arrive as
+	// "/magic-link/conﬁrm?token=..." and 404. On any otherwise-unmatched
+	// request, normalise ligatures in the path and redirect to the canonical
+	// URL, preserving the token query verbatim.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		if canonical := canonicalizePath(req.URL.Path); canonical != req.URL.Path {
+			target := canonical
+			if req.URL.RawQuery != "" {
+				target += "?" + req.URL.RawQuery
+			}
+			log.Printf("[router] normalised ligature path %q -> %q", req.URL.Path, canonical)
+			http.Redirect(w, req, target, http.StatusFound)
+			return
+		}
+		http.NotFound(w, req)
+	})
+
 	r.Get("/manifest.webmanifest", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")

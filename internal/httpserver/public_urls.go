@@ -76,6 +76,27 @@ func replaceURLHost(originalHost, replacementName string) string {
 	return replacementName
 }
 
+// ligaturePathReplacer maps Unicode typographic ligatures back to their ASCII
+// equivalents. Some clients (PDF copy, iOS "smart" text) rewrite the "fi" in
+// "confirm" to the U+FB01 ligature, producing "/magic-link/conﬁrm" which no
+// route matches. We apply this only to the request path (never the token query)
+// and only on otherwise-404 requests, so canonical traffic is unaffected.
+var ligaturePathReplacer = strings.NewReplacer(
+	"ﬀ", "ff",
+	"ﬁ", "fi",
+	"ﬂ", "fl",
+	"ﬃ", "ffi",
+	"ﬄ", "ffl",
+	"ﬅ", "st",
+	"ﬆ", "st",
+)
+
+// canonicalizePath returns the path with typographic ligatures normalised to
+// ASCII. The returned value equals the input when nothing changed.
+func canonicalizePath(path string) string {
+	return ligaturePathReplacer.Replace(path)
+}
+
 func magicLinkURL(r *http.Request, token string) string {
 	return publicBaseURL(r) + "/magic-link/confirm?token=" + url.QueryEscape(token)
 }
