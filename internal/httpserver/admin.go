@@ -98,6 +98,8 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Sanctions
 		r.Get("/sanctions", s.handleAdminSanctions())
+		r.Get("/sanctions/weekly-report", s.handleAdminWeeklyCardReport())
+		r.Post("/sanctions/weekly-report/pdf", s.handleAdminWeeklyCardReportPDF())
 		r.Post("/sanctions/issue", s.handleAdminSanctionIssue())
 		r.Post("/sanctions/bulk-issue", s.handleAdminSanctionBulkIssue())
 		r.With(s.requireAdminRole("super_admin")).Post("/sanctions/clear-all", s.handleAdminSanctionClearAll())

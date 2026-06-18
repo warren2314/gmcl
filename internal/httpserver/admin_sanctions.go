@@ -122,6 +122,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
     <p class="text-muted mb-0 small">%s</p>
   </div>
   <div>
+    <a href="/admin/sanctions/weekly-report" class="btn btn-sm btn-primary">Weekly PDF Report</a>
     <a href="/admin/compliance" class="btn btn-sm btn-outline-primary">View Compliance</a>%s
   </div>
 </div>
