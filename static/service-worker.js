@@ -1,4 +1,4 @@
-const CACHE_NAME = "gmcl-pwa-v1";
+const CACHE_NAME = "gmcl-pwa-v2";
 const STATIC_ASSETS = [
   "/static/css/brand.css",
   "/static/icons/icon-192.png",
@@ -37,16 +37,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/admin") ||
-      url.pathname.startsWith("/captain") ||
-      url.pathname.startsWith("/magic-link")) {
-    event.respondWith(fetch(request));
-    return;
-  }
-
   if (url.pathname.startsWith("/static/") || url.pathname.startsWith("/images/")) {
     event.respondWith(
-      caches.match(request).then((cached) => cached || fetch(request))
+      caches.match(request)
+        .then((cached) => cached || fetch(request))
+        .catch(() => new Response("", {
+          status: 504,
+          statusText: "Gateway Timeout"
+        }))
     );
   }
 });
