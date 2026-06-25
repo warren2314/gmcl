@@ -258,9 +258,8 @@ function updatePeriod() {
   var h = document.getElementById('rptPeriodHint');
   var d = new Date();
   if (t === 'ai_executive') {
-    p.placeholder = 'Auto';
-    h.textContent = 'Uses the latest completed week plus season to date';
-    p.value = 'Auto';
+    p.placeholder = '2025-W14 or Auto';
+    h.textContent = 'Enter YYYY-Www for an exact week, or Auto for latest week with data';
   } else if (t === 'weekly') {
     p.placeholder = '2025-W14';
     h.textContent = 'Format: YYYY-Www';
@@ -379,33 +378,13 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 		// Resolve week_id for weekly and AI executive reports.
 		var weekID *int32
 		if reportType == "ai_executive" {
-			var wid int32
-			var weekNum int32
-			var weekEnd time.Time
-			err := s.DB.QueryRow(ctx, `
-				SELECT id, week_number, end_date
-				FROM weeks
-				WHERE season_id=$1 AND end_date < CURRENT_DATE
-				ORDER BY end_date DESC
-				LIMIT 1
-			`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+			wid, weekNum, weekEnd, err := s.resolveAIExecutiveReportWeek(ctx, seasonID, period)
 			if err != nil {
-				err = s.DB.QueryRow(ctx, `
-					SELECT id, week_number, end_date
-					FROM weeks
-					WHERE season_id=$1
-					ORDER BY
-					    CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0
-					         WHEN start_date > CURRENT_DATE THEN 1
-					         ELSE 2 END,
-					    abs(start_date - CURRENT_DATE)
-					LIMIT 1
-				`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+				http.Error(w, "failed to resolve AI executive report week: "+err.Error(), http.StatusBadRequest)
+				return
 			}
-			if err == nil {
-				weekID = &wid
-				period = fmt.Sprintf("%d-W%02d Executive", weekEnd.Year(), weekNum)
-			}
+			weekID = &wid
+			period = fmt.Sprintf("%d-W%02d Executive", weekEnd.Year(), weekNum)
 		} else if reportType == "weekly" {
 			var wid int32
 			if err := s.DB.QueryRow(ctx, `
@@ -435,6 +414,90 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 
 		http.Redirect(w, r, fmt.Sprintf("/admin/reports/%d", reportID), http.StatusSeeOther)
 	}
+}
+
+func (s *Server) resolveAIExecutiveReportWeek(ctx context.Context, seasonID int, period string) (int32, int32, time.Time, error) {
+	if !isAutoAIExecutivePeriod(period) {
+		return s.resolveAIExecutiveReportWeekByPeriod(ctx, seasonID, period)
+	}
+	return s.resolveLatestAIExecutiveReportWeek(ctx, seasonID)
+}
+
+func (s *Server) resolveAIExecutiveReportWeekByPeriod(ctx context.Context, seasonID int, period string) (int32, int32, time.Time, error) {
+	year, requestedWeek, ok := parseReportWeekPeriod(period)
+	if !ok {
+		return 0, 0, time.Time{}, fmt.Errorf("use YYYY-Www, for example 2026-W10")
+	}
+
+	var wid int32
+	var weekNum int32
+	var weekStart, weekEnd time.Time
+	err := s.DB.QueryRow(ctx, `
+		SELECT id, week_number, start_date, end_date
+		FROM weeks
+		WHERE season_id=$1 AND week_number=$2
+	`, seasonID, requestedWeek).Scan(&wid, &weekNum, &weekStart, &weekEnd)
+	if err != nil {
+		return 0, 0, time.Time{}, fmt.Errorf("week %d does not exist in the selected season", requestedWeek)
+	}
+	if year != 0 && year != weekStart.Year() && year != weekEnd.Year() {
+		return 0, 0, time.Time{}, fmt.Errorf("week %d belongs to %d-%d, not %d", requestedWeek, weekStart.Year(), weekEnd.Year(), year)
+	}
+	return wid, weekNum, weekEnd, nil
+}
+
+func (s *Server) resolveLatestAIExecutiveReportWeek(ctx context.Context, seasonID int) (int32, int32, time.Time, error) {
+	var wid int32
+	var weekNum int32
+	var weekEnd time.Time
+
+	err := s.DB.QueryRow(ctx, `
+		SELECT w.id, w.week_number, w.end_date
+		FROM weeks w
+		WHERE w.season_id=$1
+		  AND EXISTS (
+		      SELECT 1
+		      FROM submissions sub
+		      WHERE sub.season_id=$1 AND sub.week_id=w.id
+		  )
+		ORDER BY w.end_date DESC, w.week_number DESC
+		LIMIT 1
+	`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+	if err == nil {
+		return wid, weekNum, weekEnd, nil
+	}
+
+	err = s.DB.QueryRow(ctx, `
+		SELECT id, week_number, end_date
+		FROM weeks
+		WHERE season_id=$1 AND end_date < CURRENT_DATE
+		ORDER BY end_date DESC
+		LIMIT 1
+	`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+	if err == nil {
+		return wid, weekNum, weekEnd, nil
+	}
+
+	err = s.DB.QueryRow(ctx, `
+		SELECT id, week_number, end_date
+		FROM weeks
+		WHERE season_id=$1
+		ORDER BY
+		    CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0
+		         WHEN start_date > CURRENT_DATE THEN 1
+		         ELSE 2 END,
+		    abs(start_date - CURRENT_DATE)
+		LIMIT 1
+	`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	return wid, weekNum, weekEnd, nil
+}
+
+func isAutoAIExecutivePeriod(period string) bool {
+	p := strings.ToLower(strings.TrimSpace(period))
+	return p == "" || p == "auto" || p == "latest" || p == "latest completed"
 }
 
 func (s *Server) handleAdminReportRegenerate() http.HandlerFunc {
@@ -1379,12 +1442,41 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 		payload, reportID)
 }
 
-// extractWeekNum parses "2025-W14" → 14.
+// extractWeekNum parses "2025-W14" -> 14.
 func extractWeekNum(period string) int {
-	parts := strings.Split(period, "-W")
-	if len(parts) == 2 {
-		n, _ := strconv.Atoi(parts[1])
-		return n
+	_, weekNum, ok := parseReportWeekPeriod(period)
+	if ok {
+		return weekNum
 	}
 	return 0
+}
+
+func parseReportWeekPeriod(period string) (int, int, bool) {
+	p := strings.TrimSpace(period)
+	if p == "" {
+		return 0, 0, false
+	}
+	fields := strings.Fields(p)
+	if len(fields) > 0 {
+		p = fields[0]
+	}
+	p = strings.ToUpper(p)
+
+	parts := strings.Split(p, "-W")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	if len(parts[0]) != 4 || parts[1] == "" {
+		return 0, 0, false
+	}
+
+	year, err := strconv.Atoi(parts[0])
+	if err != nil || year < 2000 || year > 2100 {
+		return 0, 0, false
+	}
+	weekNum, err := strconv.Atoi(parts[1])
+	if err != nil || weekNum < 1 || weekNum > 60 {
+		return 0, 0, false
+	}
+	return year, weekNum, true
 }
