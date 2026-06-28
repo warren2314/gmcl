@@ -68,6 +68,9 @@ func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToke
 <h2 class="mb-3">`+escapeHTML(cfg.Title)+`</h2>
 `+renderCaptainFormIntroHTML(cfg.IntroText)+`
 `)
+	if formVal(draft, "_flash_change_request") == "created" {
+		fmt.Fprint(w, `<div class="alert alert-success">Captain change request submitted for admin approval.</div>`)
+	}
 	if submitterRole == "delegate" {
 		fmt.Fprintf(
 			w,
@@ -90,6 +93,44 @@ func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToke
       </div>
       <div class="col-md-2 d-grid">
         <button type="submit" class="btn btn-outline-primary">Send invite</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div class="card card-gmcl shadow-sm mb-4">
+  <div class="card-header bg-gmcl text-white"><strong>Change official captain</strong></div>
+  <div class="card-body">
+    <form method="POST" action="/captain/change-request" class="row g-2">
+      <input type="hidden" name="csrf_token" value="`+csrfToken+`">
+      <div class="col-md-3">
+        <select class="form-select" name="request_type" required>
+          <option value="permanent">Permanent</option>
+          <option value="temporary">Temporary</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <input type="text" class="form-control" name="nominee_name" placeholder="New captain name" required>
+      </div>
+      <div class="col-md-3">
+        <input type="email" class="form-control" name="nominee_email" placeholder="New captain email" required>
+      </div>
+      <div class="col-md-3">
+        <input type="text" class="form-control" name="nominee_phone" placeholder="Phone (optional)">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Effective from</label>
+        <input type="date" class="form-control" name="effective_from" value="`+time.Now().Format("2006-01-02")+`" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Effective to</label>
+        <input type="date" class="form-control" name="effective_to">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small text-muted mb-1">Reason</label>
+        <input type="text" class="form-control" name="reason" placeholder="Optional note for admin">
+      </div>
+      <div class="col-md-2 d-grid align-self-end">
+        <button type="submit" class="btn btn-outline-primary">Request change</button>
       </div>
     </form>
   </div>

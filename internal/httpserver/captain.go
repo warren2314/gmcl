@@ -276,9 +276,13 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			JOIN teams t ON c.team_id = t.id
 			JOIN weeks w ON w.id = $1
 			WHERE c.team_id = $2
-			ORDER BY c.active_from DESC
+			  AND t.club_id = $3
+			  AND t.active = TRUE
+			  AND c.active_from <= CURRENT_DATE
+			  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+			ORDER BY c.active_from DESC, c.id DESC
 			LIMIT 1
-		`, weekID, teamID).Scan(&captainID, &seasonID, &captainEmail)
+		`, weekID, teamID, clubID).Scan(&captainID, &seasonID, &captainEmail)
 		if err != nil {
 			// Avoid enumeration: always say success.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -405,7 +409,15 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 					return
 				}
 				var teamID int32
-				_ = s.DB.QueryRow(ctx, `SELECT team_id FROM captains WHERE id = $1`, mt.CaptainID).Scan(&teamID)
+				_ = s.DB.QueryRow(ctx, `
+					SELECT c.team_id
+					FROM captains c
+					JOIN teams t ON t.id = c.team_id
+					WHERE c.id = $1
+					  AND t.active = TRUE
+					  AND c.active_from <= CURRENT_DATE
+					  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+				`, mt.CaptainID).Scan(&teamID)
 				submitterRole := "captain"
 				if strings.TrimSpace(mt.DelegateEmail) != "" {
 					submitterRole = "delegate"
@@ -488,9 +500,17 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 
 		// Determine team from captain.
 		var teamID int32
-		err = s.DB.QueryRow(ctx, `SELECT team_id FROM captains WHERE id = $1`, mt.CaptainID).Scan(&teamID)
+		err = s.DB.QueryRow(ctx, `
+			SELECT c.team_id
+			FROM captains c
+			JOIN teams t ON t.id = c.team_id
+			WHERE c.id = $1
+			  AND t.active = TRUE
+			  AND c.active_from <= CURRENT_DATE
+			  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		`, mt.CaptainID).Scan(&teamID)
 		if err != nil {
-			http.Error(w, "could not load captain", http.StatusInternalServerError)
+			http.Error(w, "link invalid or expired", http.StatusBadRequest)
 			return
 		}
 		now := time.Now().Unix()
@@ -549,6 +569,10 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		if !s.captainSessionStillActive(ctx, sess) {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
 
 		var clubName, teamName, captainName, captainEmail string
 		err = s.DB.QueryRow(ctx, `
@@ -583,6 +607,9 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 		draft := make(map[string]any)
 		if len(draftJSON) > 0 {
 			_ = json.Unmarshal(draftJSON, &draft)
+		}
+		if r.URL.Query().Get("change_request") == "created" {
+			draft["_flash_change_request"] = "created"
 		}
 
 		// Determine which fixture to pre-fill.
@@ -771,6 +798,10 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
 		defer cancel()
+		if !s.captainSessionStillActive(ctx, sess) {
+			http.Error(w, "captain session is no longer active", http.StatusForbidden)
+			return
+		}
 
 		_, _ = s.DB.Exec(ctx, `
 			INSERT INTO captain_delegations (season_id, week_id, team_id, captain_id, delegate_name, delegate_email)
@@ -843,6 +874,10 @@ func (s *Server) handleCaptainAutosave() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		if !s.captainSessionStillActive(ctx, sess) {
+			http.Error(w, "captain session is no longer active", http.StatusForbidden)
+			return
+		}
 
 		_, err = s.DB.Exec(ctx, `
 			INSERT INTO drafts (season_id, week_id, team_id, captain_id, draft_data, last_autosaved_at)
@@ -1060,6 +1095,10 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		if !s.captainSessionStillActive(ctx, sess) {
+			http.Error(w, "captain session is no longer active", http.StatusForbidden)
+			return
+		}
 
 		var submissionID int64
 		submittedByRole := "captain"

@@ -169,7 +169,7 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 		       cl.name, t.name,
 		       TO_CHAR(c.active_from, 'YYYY-MM-DD'),
 		       COALESCE(TO_CHAR(c.active_to, 'YYYY-MM-DD'), ''),
-		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active
+		       (c.active_from <= CURRENT_DATE AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)) AS is_active
 		FROM captains c
 		JOIN teams t ON t.id = c.team_id
 		JOIN clubs cl ON cl.id = t.club_id
@@ -396,10 +396,14 @@ func (s *Server) sendFreshCaptainAccessLink(ctx context.Context, r *http.Request
 
 	var captainEmail, captainName string
 	if err := s.DB.QueryRow(ctx, `
-		SELECT full_name,
-		       COALESCE(CASE WHEN email_override IS NOT NULL AND email_override_until >= CURRENT_DATE THEN TRIM(email_override) END, TRIM(email))
-		FROM captains
-		WHERE id = $1
+		SELECT c.full_name,
+		       COALESCE(CASE WHEN c.email_override IS NOT NULL AND c.email_override_until >= CURRENT_DATE THEN TRIM(c.email_override) END, TRIM(c.email))
+		FROM captains c
+		JOIN teams t ON t.id = c.team_id
+		WHERE c.id = $1
+		  AND t.active = TRUE
+		  AND c.active_from <= CURRENT_DATE
+		  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 	`, captainID).Scan(&captainName, &captainEmail); err != nil {
 		return "", fmt.Errorf("could not load captain: %w", err)
 	}

@@ -30,7 +30,7 @@ type adminTeamEdit struct {
 }
 
 type adminCaptainEdit struct {
-	ID         int32
+	ID          int32
 	TeamID      int32
 	FullName    string
 	Email       string
@@ -66,36 +66,37 @@ type adminTeamCaptainRow struct {
 }
 
 type adminCaptainRow struct {
-	ID                int32
-	ClubName          string
-	TeamName          string
-	FullName          string
-	Email             string
-	Phone             string
-	ActiveFrom        string
-	ActiveTo          string
-	IsActive          bool
-	EmailOverride     string
+	ID                 int32
+	ClubName           string
+	TeamName           string
+	FullName           string
+	Email              string
+	Phone              string
+	ActiveFrom         string
+	ActiveTo           string
+	IsActive           bool
+	EmailOverride      string
 	EmailOverrideUntil string
 }
 
 type adminTeamsCaptainsPageData struct {
-	Query         string
-	Filter        string
-	ClubEdit      adminClubEdit
-	TeamEdit      adminTeamEdit
-	CaptainEdit   adminCaptainEdit
-	ClubOptions   []adminClubOption
-	TeamOptions   []adminTeamOption
-	TeamRows      []adminTeamCaptainRow
-	CaptainRows   []adminCaptainRow
-	ClubCount     int
-	TeamCount     int
-	ActiveTeams   int
-	ActiveCaps    int
-	MissingCaps   int
-	SuccessMsg    string
-	ErrorMsg      string
+	Query          string
+	Filter         string
+	ClubEdit       adminClubEdit
+	TeamEdit       adminTeamEdit
+	CaptainEdit    adminCaptainEdit
+	ClubOptions    []adminClubOption
+	TeamOptions    []adminTeamOption
+	TeamRows       []adminTeamCaptainRow
+	CaptainRows    []adminCaptainRow
+	ChangeRequests []adminCaptainChangeRequestRow
+	ClubCount      int
+	TeamCount      int
+	ActiveTeams    int
+	ActiveCaps     int
+	MissingCaps    int
+	SuccessMsg     string
+	ErrorMsg       string
 }
 
 func (s *Server) handleAdminTeamsCaptainsGet() http.HandlerFunc {
@@ -341,10 +342,10 @@ func (s *Server) handleAdminCaptainDeactivate() http.HandlerFunc {
 
 func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Request) (adminTeamsCaptainsPageData, error) {
 	data := adminTeamsCaptainsPageData{
-		Query:      strings.TrimSpace(r.URL.Query().Get("q")),
-		Filter:     strings.TrimSpace(r.URL.Query().Get("filter")),
-		ClubEdit:   adminClubEdit{},
-		TeamEdit:   adminTeamEdit{Active: true},
+		Query:    strings.TrimSpace(r.URL.Query().Get("q")),
+		Filter:   strings.TrimSpace(r.URL.Query().Get("filter")),
+		ClubEdit: adminClubEdit{},
+		TeamEdit: adminTeamEdit{Active: true},
 		CaptainEdit: adminCaptainEdit{
 			ActiveFrom:  time.Now().Format("2006-01-02"),
 			CurrentlyOn: true,
@@ -362,7 +363,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active = TRUE`).Scan(&data.ActiveTeams); err != nil {
 		return data, err
 	}
-	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE active_to IS NULL OR active_to >= CURRENT_DATE`).Scan(&data.ActiveCaps); err != nil {
+	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM captains WHERE active_from <= CURRENT_DATE AND (active_to IS NULL OR active_to >= CURRENT_DATE)`).Scan(&data.ActiveCaps); err != nil {
 		return data, err
 	}
 	if err := s.DB.QueryRow(ctx, `
@@ -371,6 +372,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		  AND NOT EXISTS (
 		      SELECT 1 FROM captains c
 		      WHERE c.team_id = t.id
+		        AND c.active_from <= CURRENT_DATE
 		        AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		        AND TRIM(c.full_name) <> ''
 		        AND TRIM(c.email) <> ''
@@ -424,7 +426,9 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		LEFT JOIN LATERAL (
 		    SELECT c.id, c.full_name, c.email, COALESCE(c.phone, '') AS phone
 		    FROM captains c
-		    WHERE c.team_id = t.id AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+		    WHERE c.team_id = t.id
+		      AND c.active_from <= CURRENT_DATE
+		      AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 		    ORDER BY c.active_from DESC, c.id DESC
 		    LIMIT 1
 		) cur ON TRUE
@@ -454,7 +458,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		SELECT c.id, cl.name, t.name, c.full_name, c.email, COALESCE(c.phone, ''),
 		       TO_CHAR(c.active_from, 'YYYY-MM-DD'),
 		       COALESCE(TO_CHAR(c.active_to, 'YYYY-MM-DD'), ''),
-		       (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) AS is_active,
+		       (c.active_from <= CURRENT_DATE AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)) AS is_active,
 		       COALESCE(c.email_override, ''),
 		       COALESCE(TO_CHAR(c.email_override_until, 'YYYY-MM-DD'), '')
 		FROM captains c
@@ -464,7 +468,7 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		  AND ($2 = '%%' OR cl.name ILIKE $2 OR t.name ILIKE $2
 		       OR c.full_name ILIKE $2 OR c.email ILIKE $2
 		       OR COALESCE(c.phone, '') ILIKE $2)
-		ORDER BY (c.active_to IS NULL OR c.active_to >= CURRENT_DATE) DESC, cl.name, t.name, c.active_from DESC
+		ORDER BY (c.active_from <= CURRENT_DATE AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)) DESC, cl.name, t.name, c.active_from DESC
 		LIMIT 300
 	`, data.Filter == "missing", filter)
 	if err != nil {
@@ -479,6 +483,12 @@ func (s *Server) buildAdminTeamsCaptainsPageData(ctx context.Context, r *http.Re
 		}
 		data.CaptainRows = append(data.CaptainRows, row)
 	}
+
+	changeRequests, err := s.loadPendingCaptainChangeRequests(ctx)
+	if err != nil {
+		return data, err
+	}
+	data.ChangeRequests = changeRequests
 
 	if clubID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("club_id")), 10, 32); clubID > 0 {
 		_ = s.DB.QueryRow(ctx, `SELECT id, name, COALESCE(short_name, '') FROM clubs WHERE id = $1`, int32(clubID)).Scan(&data.ClubEdit.ID, &data.ClubEdit.Name, &data.ClubEdit.ShortName)
@@ -545,6 +555,53 @@ func (s *Server) renderAdminTeamsCaptainsPage(w http.ResponseWriter, r *http.Req
   <div class="col-auto"><button class="btn btn-primary" type="submit">Search</button></div>
   <div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/teams-captains">Clear</a></div>
 </form>`, escapeHTML(data.Query))
+
+	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Pending Captain Changes</div><div class="table-responsive"><table class="table table-hover mb-0 align-middle"><thead><tr><th>Team</th><th>Current Captain</th><th>Requested Change</th><th>Dates</th><th>Requested</th><th></th></tr></thead><tbody>`)
+	if len(data.ChangeRequests) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No pending captain change requests.</td></tr>`)
+	}
+	for _, row := range data.ChangeRequests {
+		typeLabel := "Permanent"
+		if row.RequestType == captainChangeTemporary {
+			typeLabel = "Temporary"
+		}
+		dateLabel := escapeHTML(row.EffectiveFrom)
+		if row.EffectiveTo != "" {
+			dateLabel += ` to ` + escapeHTML(row.EffectiveTo)
+		}
+		phone := ""
+		if row.NomineePhone != "" {
+			phone = `<div class="text-muted small">` + escapeHTML(row.NomineePhone) + `</div>`
+		}
+		reason := ""
+		if row.Reason != "" {
+			reason = `<div class="small mt-1">` + escapeHTML(row.Reason) + `</div>`
+		}
+		warning := ""
+		if row.NomineeActiveElsewhere {
+			warning = `<div><span class="badge text-bg-warning">Nominee active elsewhere</span></div>`
+		}
+		fmt.Fprintf(w, `<tr>
+<td>%s<div class="text-muted small">%s</div></td>
+<td>%s<div class="text-muted small">%s</div></td>
+<td><span class="badge text-bg-primary">%s</span><div class="mt-1">%s</div><div class="text-muted small">%s</div>%s%s%s</td>
+<td>%s</td>
+<td class="text-muted small">%s</td>
+<td class="text-nowrap">
+  <form method="POST" action="/admin/captain-change-requests/%d/approve" class="d-inline" onsubmit="return confirm('Approve this captain change?')">
+    <input type="hidden" name="csrf_token" value="%s">
+    <button class="btn btn-sm btn-success" type="submit">Approve</button>
+  </form>
+  <form method="POST" action="/admin/captain-change-requests/%d/reject" class="d-inline" onsubmit="return confirm('Reject this captain change?')">
+    <input type="hidden" name="csrf_token" value="%s">
+    <button class="btn btn-sm btn-outline-danger" type="submit">Reject</button>
+  </form>
+</td>
+</tr>`, escapeHTML(row.ClubName), escapeHTML(row.TeamName), escapeHTML(row.CurrentCaptainName), escapeHTML(row.CurrentCaptainEmail),
+			typeLabel, escapeHTML(row.NomineeName), escapeHTML(row.NomineeEmail), phone, reason, warning, dateLabel,
+			row.RequestedAt.Format("2 Jan 2006 15:04"), row.ID, csrfToken, row.ID, csrfToken)
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
 
 	fmt.Fprint(w, `<div class="row g-4 mb-4">`)
 	fmt.Fprintf(w, `<div class="col-lg-4"><div class="card shadow-sm h-100"><div class="card-header fw-semibold">%s Club</div><div class="card-body">

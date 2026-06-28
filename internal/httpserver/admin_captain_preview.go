@@ -99,7 +99,9 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 			            abs(start_date - CURRENT_DATE) LIMIT 1)
 			FROM teams t
 			JOIN clubs cl ON cl.id=t.club_id
-			LEFT JOIN captains c ON c.team_id=t.id AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+			LEFT JOIN captains c ON c.team_id=t.id
+			    AND c.active_from <= CURRENT_DATE
+			    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
 			WHERE t.id=$1
 			ORDER BY c.active_from DESC NULLS LAST
 			LIMIT 1

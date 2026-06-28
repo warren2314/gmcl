@@ -117,8 +117,10 @@ func (s *Server) handleCaptainByTeam() http.HandlerFunc {
 		var c captain
 		err := s.DB.QueryRow(ctx, `
 			SELECT full_name, email FROM captains
-			WHERE team_id = $1 AND (active_to IS NULL OR active_to >= CURRENT_DATE)
-			ORDER BY active_from DESC
+			WHERE team_id = $1
+			  AND active_from <= CURRENT_DATE
+			  AND (active_to IS NULL OR active_to >= CURRENT_DATE)
+			ORDER BY active_from DESC, id DESC
 			LIMIT 1
 		`, teamID).Scan(&c.Name, &c.Email)
 		if err != nil {

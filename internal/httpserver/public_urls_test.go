@@ -16,11 +16,14 @@ func TestMagicLinkEmailBlockUsesConfiguredPublicAndAlternateURLs(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://internal/magic-link/request", nil)
 	block := magicLinkEmailBlock(req, "abc+123")
 
-	if !strings.Contains(block, "https://gmcl.co.uk/magic-link/confirm?token=abc%2B123") {
+	if !strings.Contains(block, "BUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=abc%2B123") {
 		t.Fatalf("primary link missing or not escaped: %s", block)
 	}
 	if !strings.Contains(block, "BACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=abc%2B123") {
 		t.Fatalf("backup link missing or not escaped: %s", block)
+	}
+	if !strings.Contains(block, "ACCESS_CODE:abc+123") || !strings.Contains(block, "ACCESS_URL:https://gmcl.co.uk/access") {
+		t.Fatalf("manual access fallback missing: %s", block)
 	}
 }
 
@@ -31,7 +34,7 @@ func TestMagicLinkEmailBlockDerivesWWWBackupForApexHost(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://gmcl.co.uk/magic-link/request", nil)
 	block := magicLinkEmailBlock(req, "token")
 
-	if !strings.Contains(block, "https://gmcl.co.uk/magic-link/confirm?token=token") {
+	if !strings.Contains(block, "BUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=token") {
 		t.Fatalf("primary link should default to https apex: %s", block)
 	}
 	if !strings.Contains(block, "BACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=token") {
@@ -110,5 +113,17 @@ func TestRedactMagicTokenInText(t *testing.T) {
 	want := "clicked https://gmcl.co.uk/magic-link/confirm?token=[redacted]&x=1"
 	if got != want {
 		t.Fatalf("redacted: got %q", got)
+	}
+}
+
+func TestNormaliseMagicAccessCode(t *testing.T) {
+	if got := normaliseMagicAccessCode(" abc \n 123 "); got != "abc123" {
+		t.Fatalf("normalised code: got %q", got)
+	}
+	if got := normaliseMagicAccessCode("https://gmcl.co.uk/magic-link/confirm?token=abc123"); got != "abc123" {
+		t.Fatalf("normalised URL token: got %q", got)
+	}
+	if got := normaliseMagicAccessCode("https://gmcl.co.uk/magic-link/confirm?\n token=abc123"); got != "abc123" {
+		t.Fatalf("normalised wrapped URL token: got %q", got)
 	}
 }

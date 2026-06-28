@@ -109,11 +109,17 @@ func alternateMagicLinkURL(r *http.Request, token string) string {
 	return base + "/magic-link/confirm?token=" + url.QueryEscape(token)
 }
 
+func magicAccessURL(r *http.Request) string {
+	return publicBaseURL(r) + "/access"
+}
+
 func magicLinkEmailBlock(r *http.Request, token string) string {
 	primary := magicLinkURL(r, token)
 	alternate := alternateMagicLinkURL(r, token)
+	accessURL := magicAccessURL(r)
+	accessHelp := "\n\nIf the button will not open, type " + accessURL + " into your browser and paste this access code:\nACCESS_CODE:" + token
 	if alternate == "" || alternate == primary {
-		return primary
+		return "BUTTON_URL:" + primary + accessHelp + "\nACCESS_URL:" + accessURL
 	}
-	return primary + "\n\nIf your browser says \"This site can't be reached\", use this backup link:\nBACKUP_URL:" + alternate
+	return "BUTTON_URL:" + primary + "\n\nIf your browser says \"This site can't be reached\", use this backup link:\nBACKUP_URL:" + alternate + accessHelp + "\nACCESS_URL:" + accessURL
 }

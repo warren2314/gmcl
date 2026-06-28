@@ -152,11 +152,26 @@ func toHTML(body string) string {
 	b.WriteString(`<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px">`)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "BACKUP_URL:") {
+		if strings.HasPrefix(trimmed, "BUTTON_URL:") {
+			linkURL := strings.TrimSpace(strings.TrimPrefix(trimmed, "BUTTON_URL:"))
+			fmt.Fprintf(&b,
+				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#cc0000;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open secure form</a></p>`,
+				linkURL)
+		} else if strings.HasPrefix(trimmed, "BACKUP_URL:") {
 			backupURL := strings.TrimSpace(strings.TrimPrefix(trimmed, "BACKUP_URL:"))
 			fmt.Fprintf(&b,
 				`<p style="word-break:break-all;font-size:13px;color:#555"><strong>Backup link:</strong> <a href="%s" style="color:#cc0000">%s</a></p>`,
 				backupURL, backupURL)
+		} else if strings.HasPrefix(trimmed, "ACCESS_URL:") {
+			accessURL := strings.TrimSpace(strings.TrimPrefix(trimmed, "ACCESS_URL:"))
+			fmt.Fprintf(&b,
+				`<p style="font-size:13px;color:#555"><strong>Manual access page:</strong> <a href="%s" style="color:#cc0000">%s</a></p>`,
+				accessURL, accessURL)
+		} else if strings.HasPrefix(trimmed, "ACCESS_CODE:") {
+			code := strings.TrimSpace(strings.TrimPrefix(trimmed, "ACCESS_CODE:"))
+			fmt.Fprintf(&b,
+				`<p style="font-size:13px;color:#555;margin-bottom:6px"><strong>Access code:</strong></p><pre style="white-space:pre-wrap;word-break:break-all;background:#f6f6f6;border:1px solid #ddd;border-radius:4px;padding:12px;font-size:14px;color:#111">%s</pre>`,
+				code)
 		} else if strings.HasPrefix(trimmed, "https://") {
 			fmt.Fprintf(&b,
 				`<p><a href="%s" style="display:inline-block;padding:12px 24px;background:#cc0000;color:#ffffff;text-decoration:none;border-radius:4px;font-weight:bold">Open link</a></p>`+

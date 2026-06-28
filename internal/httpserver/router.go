@@ -107,6 +107,11 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	// Magic link confirmation uses GET (intermediate page) then POST to redeem.
 	r.Get("/magic-link/confirm", s.handleMagicLinkConfirm())
 	r.Post("/magic-link/confirm", s.handleMagicLinkConfirm())
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.CSRFMiddleware)
+		r.Get("/access", s.handleMagicAccessCode())
+		r.With(middleware.RateLimit(15)).Post("/access", s.handleMagicAccessCode())
+	})
 
 	// Captain form (protected with CSRF)
 	r.Group(func(r chi.Router) {
@@ -114,6 +119,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 		r.Get("/captain/form", s.handleCaptainForm())
 		r.Post("/captain/form/autosave", s.handleCaptainAutosave())
 		r.Post("/captain/delegate/invite", s.handleCaptainDelegateInvite())
+		r.Post("/captain/change-request", s.handleCaptainChangeRequest())
 		r.Post("/captain/form/submit", s.handleCaptainSubmit())
 	})
 
