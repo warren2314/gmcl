@@ -98,6 +98,7 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Sanctions
 		r.Get("/sanctions", s.handleAdminSanctions())
+		r.Get("/sanctions/export.csv", s.handleAdminSanctionsExportCSV())
 		r.Get("/sanctions/weekly-report", s.handleAdminWeeklyCardReport())
 		r.Post("/sanctions/weekly-report/pdf", s.handleAdminWeeklyCardReportPDF())
 		r.Post("/sanctions/issue", s.handleAdminSanctionIssue())

@@ -158,6 +158,28 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 </div>
 `, yellowCount, redCount, activeCount)
 
+		fmt.Fprintf(w, `
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <form method="GET" action="/admin/sanctions/export.csv" class="row g-2 align-items-end">
+      <input type="hidden" name="season_id" value="%d">
+      <div class="col-auto">
+        <label class="form-label small text-muted mb-1">From week</label>
+        <input class="form-control form-control-sm" type="number" name="week_from" min="1" value="5" style="width:100px" required>
+      </div>
+      <div class="col-auto">
+        <label class="form-label small text-muted mb-1">To week</label>
+        <input class="form-control form-control-sm" type="number" name="week_to" min="1" value="10" style="width:100px" required>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-outline-primary" type="submit">Export CSV</button>
+      </div>
+      <div class="col-auto text-muted small pb-1">Revoked cards excluded</div>
+    </form>
+  </div>
+</div>
+`, seasonID)
+
 		// Sanctions table
 		fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
