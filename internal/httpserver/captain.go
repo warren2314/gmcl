@@ -398,18 +398,18 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 				http.Error(w, "missing token", http.StatusBadRequest)
 				return
 			}
-			func() {
-				ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-				defer cancel()
-				mt, err := auth.ValidateMagicToken(ctx, s.DB, token)
-				if err != nil {
-					s.audit(ctx, r, "system", nil, "magic_link_click_invalid", "captain", nil, map[string]any{
-						"reason": err.Error(),
-					})
-					return
-				}
-				var teamID int32
-				_ = s.DB.QueryRow(ctx, `
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			mt, err := auth.ValidateMagicToken(ctx, s.DB, token)
+			if err != nil {
+				s.audit(ctx, r, "system", nil, "magic_link_click_invalid", "captain", nil, map[string]any{
+					"reason": err.Error(),
+				})
+				renderMagicLinkInvalid(w, http.StatusBadRequest)
+				return
+			}
+			var teamID int32
+			if err := s.DB.QueryRow(ctx, `
 					SELECT c.team_id
 					FROM captains c
 					JOIN teams t ON t.id = c.team_id
@@ -417,58 +417,39 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 					  AND t.active = TRUE
 					  AND c.active_from <= CURRENT_DATE
 					  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
-				`, mt.CaptainID).Scan(&teamID)
-				submitterRole := "captain"
-				if strings.TrimSpace(mt.DelegateEmail) != "" {
-					submitterRole = "delegate"
-				}
-				var matchDate string
-				if mt.MatchDate != nil {
-					matchDate = mt.MatchDate.Format("2006-01-02")
-				}
-				s.audit(ctx, r, "system", nil, "magic_link_clicked", "captain", func() *int64 {
+				`, mt.CaptainID).Scan(&teamID); err != nil {
+				s.audit(ctx, r, "system", nil, "magic_link_click_invalid", "captain", func() *int64 {
 					v := int64(mt.CaptainID)
 					return &v
 				}(), map[string]any{
-					"token_id":       mt.ID,
-					"season_id":      mt.SeasonID,
-					"week_id":        mt.WeekID,
-					"team_id":        teamID,
-					"match_date":     matchDate,
-					"submitter_role": submitterRole,
+					"reason":    "captain inactive",
+					"token_id":  mt.ID,
+					"season_id": mt.SeasonID,
+					"week_id":   mt.WeekID,
 				})
-			}()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-store")
-			pageHead(w, "Confirm Link")
-			writeCaptainNav(w)
-			fmt.Fprintf(w, `<div class="container" style="max-width:560px">
-<div class="card card-gmcl shadow">
-  <div class="card-body p-4 text-center">
-    <img src="/images/logo.webp" alt="GMCL" style="max-width:200px" class="mb-4">
-    <h3 class="fw-bold mb-1">Captain&rsquo;s Report</h3>
-    <p class="text-muted mb-4">You have received a secure link to submit your match report.<br>Please confirm below before continuing.</p>
-    <form method="POST" action="/magic-link/confirm">
-      <input type="hidden" name="token" value="%s">
-      <div class="border border-2 border-primary rounded p-3 mb-4 text-start" style="background:#f0f4ff">
-        <div class="form-check d-flex align-items-start gap-2 m-0">
-          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" id="confirmCheck"
-                 style="width:1.4rem;height:1.4rem"
-                 onchange="document.getElementById('continueBtn').disabled = !this.checked">
-          <label class="form-check-label fw-semibold fs-6" for="confirmCheck" style="cursor:pointer">
-            I confirm I am the captain (or authorised stand-in) accessing this link to submit my captain&rsquo;s report.
-          </label>
-        </div>
-      </div>
-      <button type="submit" id="continueBtn" class="btn btn-primary btn-lg w-100" disabled>
-        Open my report form &rarr;
-      </button>
-    </form>
-  </div>
-</div>
-</div>
-`, token)
-			pageFooter(w)
+				renderMagicLinkInvalid(w, http.StatusBadRequest)
+				return
+			}
+			submitterRole := "captain"
+			if strings.TrimSpace(mt.DelegateEmail) != "" {
+				submitterRole = "delegate"
+			}
+			var matchDate string
+			if mt.MatchDate != nil {
+				matchDate = mt.MatchDate.Format("2006-01-02")
+			}
+			s.audit(ctx, r, "system", nil, "magic_link_clicked", "captain", func() *int64 {
+				v := int64(mt.CaptainID)
+				return &v
+			}(), map[string]any{
+				"token_id":       mt.ID,
+				"season_id":      mt.SeasonID,
+				"week_id":        mt.WeekID,
+				"team_id":        teamID,
+				"match_date":     matchDate,
+				"submitter_role": submitterRole,
+			})
+			renderMagicLinkConfirmForm(w, token)
 			return
 		case http.MethodPost:
 			// proceed below
@@ -557,6 +538,62 @@ func (s *Server) handleMagicLinkConfirm() http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, "/captain/form", http.StatusSeeOther)
 	}
+}
+
+func renderMagicLinkConfirmForm(w http.ResponseWriter, token string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	pageHead(w, "Confirm Link")
+	writeCaptainNav(w)
+	fmt.Fprintf(w, `<div class="container" style="max-width:560px">
+<div class="card card-gmcl shadow">
+  <div class="card-body p-4 text-center">
+    <img src="/images/logo.webp" alt="GMCL" style="max-width:200px" class="mb-4">
+    <h3 class="fw-bold mb-1">Captain&rsquo;s Report</h3>
+    <p class="text-muted mb-4">You have received a secure link to submit your match report.<br>Please confirm below before continuing.</p>
+    <form method="POST" action="/magic-link/confirm">
+      <input type="hidden" name="token" value="%s">
+      <div class="border border-2 border-primary rounded p-3 mb-4 text-start" style="background:#f0f4ff">
+        <div class="form-check d-flex align-items-start gap-2 m-0">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" id="confirmCheck"
+                 name="confirm_identity" value="yes" required style="width:1.4rem;height:1.4rem">
+          <label class="form-check-label fw-semibold fs-6" for="confirmCheck" style="cursor:pointer">
+            I confirm I am the captain (or authorised stand-in) accessing this link to submit my captain&rsquo;s report.
+          </label>
+        </div>
+      </div>
+      <button type="submit" id="continueBtn" class="btn btn-primary btn-lg w-100">
+        Open my report form &rarr;
+      </button>
+    </form>
+    <p class="text-muted small mt-3 mb-0">If this button will not open, use <a href="/access">manual access</a> and paste the access code from your email.</p>
+  </div>
+</div>
+</div>
+`, escapeHTML(token))
+	pageFooter(w)
+}
+
+func renderMagicLinkInvalid(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	pageHead(w, "Link Not Available")
+	writeCaptainNav(w)
+	fmt.Fprint(w, `<div class="container" style="max-width:560px">
+<div class="card card-gmcl shadow">
+  <div class="card-body p-4 text-center">
+    <img src="/images/logo.webp" alt="GMCL" style="max-width:200px" class="mb-4">
+    <h3 class="fw-bold mb-2">Link not available</h3>
+    <p class="text-muted">This captain report link is invalid, expired, or no longer active for the current captain record.</p>
+    <div class="d-grid gap-2">
+      <a class="btn btn-primary" href="/access">Use manual access</a>
+      <a class="btn btn-outline-secondary" href="/">Request a fresh link</a>
+    </div>
+  </div>
+</div>
+</div>`)
+	pageFooter(w)
 }
 
 func (s *Server) handleCaptainForm() http.HandlerFunc {

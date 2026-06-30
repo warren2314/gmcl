@@ -127,3 +127,25 @@ func TestNormaliseMagicAccessCode(t *testing.T) {
 		t.Fatalf("normalised wrapped URL token: got %q", got)
 	}
 }
+
+func TestRenderMagicLinkConfirmFormDoesNotRequireJavaScript(t *testing.T) {
+	rec := httptest.NewRecorder()
+	renderMagicLinkConfirmForm(rec, `abc"123`)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "onchange=") {
+		t.Fatalf("confirm form should not rely on onchange JavaScript: %s", body)
+	}
+	if strings.Contains(body, "disabled") {
+		t.Fatalf("continue button should be usable without JavaScript: %s", body)
+	}
+	if !strings.Contains(body, `name="confirm_identity"`) || !strings.Contains(body, " required ") {
+		t.Fatalf("identity checkbox should use normal required form validation: %s", body)
+	}
+	if !strings.Contains(body, `value="abc&quot;123"`) {
+		t.Fatalf("token hidden input was not escaped: %s", body)
+	}
+	if !strings.Contains(body, `href="/access"`) {
+		t.Fatalf("manual access fallback link missing: %s", body)
+	}
+}
