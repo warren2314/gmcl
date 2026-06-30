@@ -66,7 +66,10 @@ section "Building images and restarting containers"
 
 # Step 1: rebuild and restart the app (DB stays up, Caddy keeps serving existing traffic)
 docker compose up -d --build --no-deps --remove-orphans app
-docker compose up -d --no-recreate n8n
+
+# Keep n8n current while preserving its persistent workflow volume.
+docker compose pull n8n
+docker compose up -d n8n
 
 # Step 2: wait for app to be healthy before touching Caddy.
 # Port 8080 is only inside the Docker network so we can't curl it from the host.
