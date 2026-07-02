@@ -41,6 +41,7 @@ func TestSanctionsExportRecordIncludesVisibleSanctionFields(t *testing.T) {
 		ID:              42,
 		Season:          "2026",
 		Week:            7,
+		MatchDate:       time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC),
 		Club:            "Worsley CC",
 		Team:            "1st XI",
 		Colour:          "red",
@@ -59,6 +60,7 @@ func TestSanctionsExportRecordIncludesVisibleSanctionFields(t *testing.T) {
 		"42",
 		"2026",
 		"7",
+		"2026-06-13",
 		"Worsley CC",
 		"1st XI",
 		"Red Card",
@@ -67,7 +69,6 @@ func TestSanctionsExportRecordIncludesVisibleSanctionFields(t *testing.T) {
 		"Served",
 		"Sent",
 		"2",
-		"2026-06-27 19:13",
 		"admin",
 		"",
 		"",
@@ -77,6 +78,33 @@ func TestSanctionsExportRecordIncludesVisibleSanctionFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sanctionsExportRecord() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSanctionsExportHeaderUsesMatchDateInsteadOfProcessedDate(t *testing.T) {
+	got := sanctionsExportHeader()
+	want := []string{
+		"Sanction ID",
+		"Season",
+		"Week",
+		"Match date",
+		"Club",
+		"Team",
+		"Card",
+		"Reason",
+		"Notes",
+		"Status",
+		"Email",
+		"Points deduction",
+		"Processed by",
+		"Resolved",
+		"Resolved by",
+		"Email approved by",
+		"Email approved",
+		"Email sent",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sanctionsExportHeader() = %#v, want %#v", got, want)
 	}
 }
 

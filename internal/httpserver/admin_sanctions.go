@@ -40,6 +40,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		type sanRow struct {
 			ID           int64
 			Week         int32
+			MatchDate    time.Time
 			Club         string
 			Team         string
 			Colour       string
@@ -56,6 +57,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 
 		srows, err := s.DB.Query(ctx, `
 			SELECT sa.id, w.week_number, cl.name, t.name,
+			       COALESCE(missing_fixture.match_date, first_fixture.match_date, w.start_date) AS match_date,
 			       sa.colour, sa.reason, COALESCE(sa.notes,''),
 			       sa.status, sa.issued_at,
 			       COALESCE(au.username, 'system'),
@@ -66,6 +68,63 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 			JOIN clubs cl      ON sa.club_id  = cl.id
 			JOIN teams t       ON sa.team_id  = t.id
 			LEFT JOIN admin_users au ON sa.issued_by_admin_id = au.id
+			LEFT JOIN LATERAL (
+			    SELECT lf.match_date
+			    FROM (
+			        SELECT lf.play_cricket_match_id,
+			               lf.match_date,
+			               ROW_NUMBER() OVER (
+			                   PARTITION BY lf.match_date
+			                   ORDER BY lf.play_cricket_match_id
+			               ) AS fixture_ordinal
+			        FROM league_fixtures lf
+			        WHERE (
+			            TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+			            OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+			        )
+			          AND lf.match_date BETWEEN w.start_date AND w.end_date
+			          AND EXTRACT(DOW FROM lf.match_date) <> 5
+			          AND NOT lf.is_bye
+			    ) lf
+			    LEFT JOIN (
+			        SELECT sub.match_date, COUNT(*) AS legacy_count
+			        FROM submissions sub
+			        WHERE sub.team_id = sa.team_id
+			          AND sub.week_id = sa.week_id
+			          AND sub.play_cricket_match_id IS NULL
+			        GROUP BY sub.match_date
+			    ) legacy_subs ON legacy_subs.match_date = lf.match_date
+			    WHERE NOT EXISTS (
+			        SELECT 1 FROM submissions sub
+			        WHERE sub.team_id = sa.team_id
+			          AND sub.week_id = sa.week_id
+			          AND sub.play_cricket_match_id = lf.play_cricket_match_id
+			    )
+			      AND lf.fixture_ordinal > COALESCE(legacy_subs.legacy_count, 0)
+			      AND NOT EXISTS (
+			          SELECT 1 FROM report_exemptions re
+			          WHERE re.team_id = sa.team_id
+			            AND re.week_id = sa.week_id
+			            AND re.match_date = lf.match_date
+			            AND (
+			                re.play_cricket_match_id = lf.play_cricket_match_id
+			                OR re.play_cricket_match_id IS NULL
+			            )
+			      )
+			    ORDER BY lf.match_date, lf.play_cricket_match_id
+			    LIMIT 1
+			) missing_fixture ON TRUE
+			LEFT JOIN LATERAL (
+			    SELECT MIN(lf.match_date) AS match_date
+			    FROM league_fixtures lf
+			    WHERE (
+			        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+			        OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+			    )
+			      AND lf.match_date BETWEEN w.start_date AND w.end_date
+			      AND EXTRACT(DOW FROM lf.match_date) <> 5
+			      AND NOT lf.is_bye
+			) first_fixture ON TRUE
 			WHERE sa.season_id = $1
 			ORDER BY sa.issued_at DESC
 		`, seasonID)
@@ -74,7 +133,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 			for srows.Next() {
 				var sr sanRow
 				if e := srows.Scan(&sr.ID, &sr.Week, &sr.Club, &sr.Team,
-					&sr.Colour, &sr.Reason, &sr.Notes, &sr.Status,
+					&sr.MatchDate, &sr.Colour, &sr.Reason, &sr.Notes, &sr.Status,
 					&sr.IssuedAt, &sr.IssuedBy, &sr.EmailStatus, &sr.PointsDeduct); e == nil {
 					sanctions = append(sanctions, sr)
 					if sr.Colour == "yellow" {
@@ -186,8 +245,8 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Week</th><th>Club</th><th>Team</th><th>Card</th>
-        <th>Reason</th><th>Notes</th><th>Status</th><th>Email</th><th>Issued</th><th>By</th><th></th>
+        <th>Week</th><th>Match Date</th><th>Club</th><th>Team</th><th>Card</th>
+        <th>Reason</th><th>Notes</th><th>Status</th><th>Email</th><th>By</th><th></th>
       </tr></thead>
       <tbody>
 `)
@@ -251,12 +310,13 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 			}
 
 			fmt.Fprintf(w,
-				`<tr class="%s"><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td class="text-muted small">%s</td><td>%s</td></tr>`,
+				`<tr class="%s"><td>%d</td><td class="text-muted small" title="Processed %s">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td>%s</td><td>%s</td><td class="text-muted small">%s</td><td>%s</td></tr>`,
 				rowClass, sr.Week,
+				escapeHTML(sr.IssuedAt.Format("02 Jan 15:04")),
+				escapeHTML(sr.MatchDate.Format("02 Jan 2006")),
 				escapeHTML(sr.Club), escapeHTML(sr.Team),
 				cardBadge, escapeHTML(reasonLabel),
 				escapeHTML(notesDisplay), statusBadge, emailBadge,
-				sr.IssuedAt.Format("02 Jan 15:04"),
 				escapeHTML(sr.IssuedBy), actions)
 		}
 

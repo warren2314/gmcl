@@ -21,6 +21,7 @@ type sanctionsExportRow struct {
 	ID              int64
 	Season          string
 	Week            int32
+	MatchDate       time.Time
 	Club            string
 	Team            string
 	Colour          string
@@ -133,6 +134,7 @@ func (s *Server) loadSanctionsExportRows(ctx context.Context, filter sanctionsEx
 		SELECT sa.id,
 		       se.name,
 		       w.week_number,
+		       COALESCE(missing_fixture.match_date, first_fixture.match_date, w.start_date) AS match_date,
 		       cl.name,
 		       t.name,
 		       sa.colour::text,
@@ -155,10 +157,67 @@ func (s *Server) loadSanctionsExportRows(ctx context.Context, filter sanctionsEx
 		JOIN teams t ON t.id = sa.team_id
 		LEFT JOIN admin_users issued ON issued.id = sa.issued_by_admin_id
 		LEFT JOIN admin_users resolved ON resolved.id = sa.resolved_by_admin_id
+		LEFT JOIN LATERAL (
+		    SELECT lf.match_date
+		    FROM (
+		        SELECT lf.play_cricket_match_id,
+		               lf.match_date,
+		               ROW_NUMBER() OVER (
+		                   PARTITION BY lf.match_date
+		                   ORDER BY lf.play_cricket_match_id
+		               ) AS fixture_ordinal
+		        FROM league_fixtures lf
+		        WHERE (
+		            TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		            OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		        )
+		          AND lf.match_date BETWEEN w.start_date AND w.end_date
+		          AND EXTRACT(DOW FROM lf.match_date) <> 5
+		          AND NOT lf.is_bye
+		    ) lf
+		    LEFT JOIN (
+		        SELECT sub.match_date, COUNT(*) AS legacy_count
+		        FROM submissions sub
+		        WHERE sub.team_id = sa.team_id
+		          AND sub.week_id = sa.week_id
+		          AND sub.play_cricket_match_id IS NULL
+		        GROUP BY sub.match_date
+		    ) legacy_subs ON legacy_subs.match_date = lf.match_date
+		    WHERE NOT EXISTS (
+		        SELECT 1 FROM submissions sub
+		        WHERE sub.team_id = sa.team_id
+		          AND sub.week_id = sa.week_id
+		          AND sub.play_cricket_match_id = lf.play_cricket_match_id
+		    )
+		      AND lf.fixture_ordinal > COALESCE(legacy_subs.legacy_count, 0)
+		      AND NOT EXISTS (
+		          SELECT 1 FROM report_exemptions re
+		          WHERE re.team_id = sa.team_id
+		            AND re.week_id = sa.week_id
+		            AND re.match_date = lf.match_date
+		            AND (
+		                re.play_cricket_match_id = lf.play_cricket_match_id
+		                OR re.play_cricket_match_id IS NULL
+		            )
+		      )
+		    ORDER BY lf.match_date, lf.play_cricket_match_id
+		    LIMIT 1
+		) missing_fixture ON TRUE
+		LEFT JOIN LATERAL (
+		    SELECT MIN(lf.match_date) AS match_date
+		    FROM league_fixtures lf
+		    WHERE (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		        OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		      AND lf.match_date BETWEEN w.start_date AND w.end_date
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		) first_fixture ON TRUE
 		WHERE sa.season_id = $1
 		  AND w.week_number BETWEEN $2 AND $3
 		  AND sa.status <> 'overturned'
-		ORDER BY w.week_number, cl.name, t.name, sa.issued_at, sa.id
+		ORDER BY w.week_number, match_date, cl.name, t.name, sa.issued_at, sa.id
 	`, filter.SeasonID, filter.WeekFrom, filter.WeekTo)
 	if err != nil {
 		return nil, err
@@ -172,6 +231,7 @@ func (s *Server) loadSanctionsExportRows(ctx context.Context, filter sanctionsEx
 			&row.ID,
 			&row.Season,
 			&row.Week,
+			&row.MatchDate,
 			&row.Club,
 			&row.Team,
 			&row.Colour,
@@ -200,6 +260,7 @@ func sanctionsExportHeader() []string {
 		"Sanction ID",
 		"Season",
 		"Week",
+		"Match date",
 		"Club",
 		"Team",
 		"Card",
@@ -208,8 +269,7 @@ func sanctionsExportHeader() []string {
 		"Status",
 		"Email",
 		"Points deduction",
-		"Issued",
-		"By",
+		"Processed by",
 		"Resolved",
 		"Resolved by",
 		"Email approved by",
@@ -228,6 +288,7 @@ func sanctionsExportRecord(row sanctionsExportRow, loc *time.Location) []string 
 		strconv.FormatInt(row.ID, 10),
 		row.Season,
 		strconv.Itoa(int(row.Week)),
+		formatSanctionsExportDate(row.MatchDate),
 		row.Club,
 		row.Team,
 		sanctionsExportCardLabel(row.Colour),
@@ -236,7 +297,6 @@ func sanctionsExportRecord(row sanctionsExportRow, loc *time.Location) []string 
 		statusLabel(row.Status),
 		sanctionsExportEmailStatusLabel(row.EmailStatus),
 		points,
-		formatSanctionsExportTime(row.IssuedAt, loc),
 		row.IssuedBy,
 		formatNullableSanctionsExportTime(row.ResolvedAt, loc),
 		row.ResolvedBy,
@@ -271,6 +331,10 @@ func formatSanctionsExportTime(t time.Time, loc *time.Location) string {
 		t = t.In(loc)
 	}
 	return t.Format("2006-01-02 15:04")
+}
+
+func formatSanctionsExportDate(t time.Time) string {
+	return t.Format("2006-01-02")
 }
 
 func formatNullableSanctionsExportTime(t sql.NullTime, loc *time.Location) string {
