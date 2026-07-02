@@ -69,6 +69,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/weeks", s.handleAdminWeeks())
 		r.Get("/weeks/{weekNum}", s.handleAdminWeekDetail())
 		r.Get("/submissions", s.handleAdminSubmissionsList())
+		r.Get("/submissions/export.csv", s.handleAdminSubmissionsExportCSV())
 		r.With(s.requireAdminRole("super_admin")).Get("/submissions/import", s.handleAdminSubmissionImportGet())
 		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/preview", s.handleAdminSubmissionImportPreview())
 		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/apply", s.handleAdminSubmissionImportApply())
@@ -1172,46 +1173,13 @@ func (s *Server) handleAdminSubmissionsList() http.HandlerFunc {
 		ctx := r.Context()
 		club := strings.TrimSpace(r.URL.Query().Get("club"))
 
-		type subRow struct {
-			ID          int64
-			Club        string
-			Team        string
-			Captain     string
-			Week        int32
-			MatchDate   string
-			SubmittedAt string
-		}
-
-		var rows []subRow
-
+		var rows []adminSubmissionSearchRow
 		if club != "" {
-			dbRows, dbErr := s.DB.Query(ctx, `
-				SELECT sub.id, cl.name, t.name, c.full_name,
-				       w.week_number, sub.match_date, sub.submitted_at
-				FROM submissions sub
-				JOIN teams t     ON t.id = sub.team_id
-				JOIN clubs cl    ON cl.id = t.club_id
-				JOIN captains c  ON c.id = sub.captain_id
-				JOIN weeks w     ON w.id = sub.week_id
-				WHERE cl.name ILIKE $1
-				ORDER BY sub.submitted_at DESC
-				LIMIT 200
-			`, "%"+club+"%")
-			if dbErr != nil {
+			var err error
+			rows, err = s.loadAdminSubmissionSearchRows(ctx, club, adminSubmissionSearchLimit)
+			if err != nil {
 				http.Error(w, "query error", http.StatusInternalServerError)
 				return
-			}
-			defer dbRows.Close()
-			for dbRows.Next() {
-				var sr subRow
-				var matchDate time.Time
-				var submittedAt time.Time
-				if e := dbRows.Scan(&sr.ID, &sr.Club, &sr.Team, &sr.Captain, &sr.Week, &matchDate, &submittedAt); e != nil {
-					continue
-				}
-				sr.MatchDate = matchDate.Format("2 Jan 2006")
-				sr.SubmittedAt = submittedAt.Format("2 Jan 2006 15:04")
-				rows = append(rows, sr)
 			}
 		}
 
@@ -1229,7 +1197,8 @@ func (s *Server) handleAdminSubmissionsList() http.HandlerFunc {
   <div class="col-auto">
     <button class="btn btn-gmcl" type="submit">Search</button>
   </div>
-</form>`, escapeHTML(club))
+  %s
+</form>`, escapeHTML(club), adminSubmissionsExportButton(club))
 
 		if club == "" {
 			fmt.Fprint(w, `<p class="text-muted">Enter a club name above to search submissions.</p>`)
@@ -1247,7 +1216,7 @@ func (s *Server) handleAdminSubmissionsList() http.HandlerFunc {
 				fmt.Fprintf(w,
 					`<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td><td class="text-muted small">%s</td><td><a href="/admin/submissions/%d" class="btn btn-outline-secondary btn-sm">View</a></td></tr>`,
 					sr.ID, escapeHTML(sr.Club), escapeHTML(sr.Team), escapeHTML(sr.Captain),
-					sr.Week, sr.MatchDate, sr.SubmittedAt, sr.ID)
+					sr.Week, sr.MatchDate.Format("2 Jan 2006"), sr.SubmittedAt.Format("2 Jan 2006 15:04"), sr.ID)
 			}
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
