@@ -774,7 +774,8 @@ func renderLinkDiagnosticsPage(w http.ResponseWriter, csrfToken string, data lin
 	fmt.Fprintf(w, `<form method="GET" action="/admin/link-diagnostics" class="row g-2 mb-4">
   <div class="col-md-6"><input type="text" class="form-control" name="q" placeholder="Captain, team, club, or email" value="%s" required></div>
   <div class="col-auto"><button class="btn btn-primary" type="submit">Check</button></div>
-</form>`, escapeHTML(data.Query))
+  %s
+</form>`, escapeHTML(data.Query), linkDiagExportButtons(data.Query))
 
 	if data.Query == "" {
 		fmt.Fprint(w, `</div>`)
