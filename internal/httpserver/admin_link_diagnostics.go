@@ -76,6 +76,45 @@ type linkDiagSubmission struct {
 	TeamName  string
 }
 
+type linkDiagSanction struct {
+	ID              int64
+	TeamID          int32
+	ClubName        string
+	TeamName        string
+	SeasonName      string
+	WeekNumber      int32
+	MatchDate       time.Time
+	Colour          string
+	Reason          string
+	Status          string
+	EmailStatus     string
+	PointsDeduction sql.NullInt32
+	IssuedAt        time.Time
+	IssuedBy        string
+	EmailSentAt     sql.NullTime
+	Notes           string
+}
+
+type linkDiagFixtureEvidence struct {
+	TeamID             int32
+	WeekNumber         int32
+	MatchDate          time.Time
+	ClubName           string
+	TeamName           string
+	PlayCricketMatchID int64
+	Opponent           string
+	Ground             string
+	IsBye              bool
+	HasSubmission      bool
+	LegacyCovered      bool
+	SubmissionID       sql.NullInt64
+	SubmittedAt        sql.NullTime
+	ExemptionReason    string
+	ReminderCount      int64
+	ReminderTypes      string
+	SanctionStatus     string
+}
+
 type linkDiagAudit struct {
 	CreatedAt time.Time
 	Action    string
@@ -93,6 +132,8 @@ type linkDiagPageData struct {
 	Reminders  []linkDiagReminderSend
 	Events     []linkDiagEmailEvent
 	Submits    []linkDiagSubmission
+	Sanctions  []linkDiagSanction
+	Fixtures   []linkDiagFixtureEvidence
 	AuditRows  []linkDiagAudit
 }
 
@@ -210,6 +251,31 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 		teamIDs = append(teamIDs, c.TeamID)
 		captainEmails = append(captainEmails, strings.ToLower(strings.TrimSpace(c.EffectiveEmail)))
 	}
+	teamRows, err := s.DB.Query(ctx, `
+		SELECT t.id
+		FROM teams t
+		JOIN clubs cl ON cl.id = t.club_id
+		WHERE LOWER(t.name) LIKE LOWER('%' || $1 || '%')
+		   OR LOWER(cl.name) LIKE LOWER('%' || $1 || '%')
+		ORDER BY cl.name, t.name
+		LIMIT 100
+	`, filter)
+	if err != nil {
+		return err
+	}
+	defer teamRows.Close()
+	for teamRows.Next() {
+		var teamID int32
+		if err := teamRows.Scan(&teamID); err != nil {
+			return err
+		}
+		teamIDs = append(teamIDs, teamID)
+	}
+	if err := teamRows.Err(); err != nil {
+		return err
+	}
+	captainIDs = uniqueInt32Slice(captainIDs)
+	teamIDs = uniqueInt32Slice(teamIDs)
 
 	tokenRows, err := s.DB.Query(ctx, `
 		SELECT created_at, expires_at, used_at, match_date, COALESCE(request_ip::text, ''), COALESCE(request_user_agent, '')
@@ -296,9 +362,10 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 		FROM submissions sub
 		JOIN teams t ON t.id = sub.team_id
 		WHERE sub.captain_id = ANY($1)
+		   OR sub.team_id = ANY($2)
 		ORDER BY sub.submitted_at DESC
 		LIMIT 20
-	`, captainIDs)
+	`, captainIDs, teamIDs)
 	if err != nil {
 		return err
 	}
@@ -311,6 +378,265 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 		data.Submits = append(data.Submits, row)
 	}
 	if err := subRows.Err(); err != nil {
+		return err
+	}
+
+	sanctionRows, err := s.DB.Query(ctx, `
+		SELECT sa.id,
+		       sa.team_id,
+		       cl.name,
+		       t.name,
+		       se.name,
+		       w.week_number,
+		       COALESCE(missing_fixture.match_date, first_fixture.match_date, w.start_date) AS match_date,
+		       sa.colour::text,
+		       sa.reason,
+		       sa.status::text,
+		       COALESCE(sa.email_status, 'pending'),
+		       sa.points_deduction,
+		       sa.issued_at,
+		       COALESCE(issued.username, 'system'),
+		       sa.email_sent_at,
+		       COALESCE(sa.notes, '')
+		FROM sanctions sa
+		JOIN teams t ON t.id = sa.team_id
+		JOIN clubs cl ON cl.id = sa.club_id
+		JOIN seasons se ON se.id = sa.season_id
+		JOIN weeks w ON w.id = sa.week_id
+		LEFT JOIN admin_users issued ON issued.id = sa.issued_by_admin_id
+		LEFT JOIN LATERAL (
+		    SELECT lf.match_date
+		    FROM (
+		        SELECT lf.play_cricket_match_id,
+		               lf.match_date,
+		               ROW_NUMBER() OVER (
+		                   PARTITION BY lf.match_date
+		                   ORDER BY lf.play_cricket_match_id
+		               ) AS fixture_ordinal
+		        FROM league_fixtures lf
+		        WHERE (
+		            TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		            OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		        )
+		          AND lf.match_date BETWEEN w.start_date AND w.end_date
+		          AND EXTRACT(DOW FROM lf.match_date) <> 5
+		          AND NOT lf.is_bye
+		    ) lf
+		    LEFT JOIN (
+		        SELECT sub.match_date, COUNT(*) AS legacy_count
+		        FROM submissions sub
+		        WHERE sub.team_id = sa.team_id
+		          AND sub.week_id = sa.week_id
+		          AND sub.play_cricket_match_id IS NULL
+		        GROUP BY sub.match_date
+		    ) legacy_subs ON legacy_subs.match_date = lf.match_date
+		    WHERE NOT EXISTS (
+		        SELECT 1 FROM submissions sub
+		        WHERE sub.team_id = sa.team_id
+		          AND sub.week_id = sa.week_id
+		          AND sub.play_cricket_match_id = lf.play_cricket_match_id
+		    )
+		      AND lf.fixture_ordinal > COALESCE(legacy_subs.legacy_count, 0)
+		      AND NOT EXISTS (
+		          SELECT 1 FROM report_exemptions re
+		          WHERE re.team_id = sa.team_id
+		            AND re.week_id = sa.week_id
+		            AND re.match_date = lf.match_date
+		            AND (
+		                re.play_cricket_match_id = lf.play_cricket_match_id
+		                OR re.play_cricket_match_id IS NULL
+		            )
+		      )
+		    ORDER BY lf.match_date, lf.play_cricket_match_id
+		    LIMIT 1
+		) missing_fixture ON TRUE
+		LEFT JOIN LATERAL (
+		    SELECT MIN(lf.match_date) AS match_date
+		    FROM league_fixtures lf
+		    WHERE (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		        OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		      AND lf.match_date BETWEEN w.start_date AND w.end_date
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		) first_fixture ON TRUE
+		WHERE sa.team_id = ANY($1)
+		ORDER BY sa.issued_at DESC, sa.id DESC
+		LIMIT 50
+	`, teamIDs)
+	if err != nil {
+		return err
+	}
+	defer sanctionRows.Close()
+	for sanctionRows.Next() {
+		var row linkDiagSanction
+		if err := sanctionRows.Scan(
+			&row.ID,
+			&row.TeamID,
+			&row.ClubName,
+			&row.TeamName,
+			&row.SeasonName,
+			&row.WeekNumber,
+			&row.MatchDate,
+			&row.Colour,
+			&row.Reason,
+			&row.Status,
+			&row.EmailStatus,
+			&row.PointsDeduction,
+			&row.IssuedAt,
+			&row.IssuedBy,
+			&row.EmailSentAt,
+			&row.Notes,
+		); err != nil {
+			return err
+		}
+		data.Sanctions = append(data.Sanctions, row)
+	}
+	if err := sanctionRows.Err(); err != nil {
+		return err
+	}
+
+	fixtureRows, err := s.DB.Query(ctx, `
+		WITH expected_fixtures AS (
+		    SELECT t.id AS team_id,
+		           cl.name AS club_name,
+		           t.name AS team_name,
+		           w.id AS week_id,
+		           w.week_number,
+		           lf.match_date,
+		           lf.play_cricket_match_id,
+		           CASE
+		               WHEN TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+		                   THEN CONCAT_WS(' ', NULLIF(lf.away_club_name, ''), NULLIF(lf.away_team_name, ''))
+		               ELSE CONCAT_WS(' ', NULLIF(lf.home_club_name, ''), NULLIF(lf.home_team_name, ''))
+		           END AS opponent,
+		           COALESCE(lf.ground_name, '') AS ground,
+		           lf.is_bye,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY t.id, lf.match_date
+		               ORDER BY lf.play_cricket_match_id
+		           ) AS fixture_ordinal
+		    FROM teams t
+		    JOIN clubs cl ON cl.id = t.club_id
+		    JOIN league_fixtures lf ON (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+		        OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		    JOIN weeks w ON lf.match_date BETWEEN w.start_date AND w.end_date
+		    WHERE t.id = ANY($1)
+		      AND lf.match_date <= CURRENT_DATE
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		),
+		legacy_submissions AS (
+		    SELECT sub.team_id,
+		           sub.match_date,
+		           COUNT(*) AS legacy_count,
+		           MIN(sub.id) AS legacy_submission_id,
+		           MAX(sub.submitted_at) AS legacy_submitted_at
+		    FROM submissions sub
+		    WHERE sub.team_id = ANY($1)
+		      AND sub.play_cricket_match_id IS NULL
+		    GROUP BY sub.team_id, sub.match_date
+		)
+		SELECT ef.team_id,
+		       ef.week_number,
+		       ef.match_date,
+		       ef.club_name,
+		       ef.team_name,
+		       ef.play_cricket_match_id,
+		       COALESCE(NULLIF(BTRIM(ef.opponent), ''), 'Unknown opponent') AS opponent,
+		       ef.ground,
+		       ef.is_bye,
+		       (
+		           sub.id IS NOT NULL
+		           OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		       ) AS has_submission,
+		       (
+		           sub.id IS NULL
+		           AND ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		       ) AS legacy_covered,
+		       CASE
+		           WHEN sub.id IS NOT NULL THEN sub.id
+		           WHEN ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0) THEN ls.legacy_submission_id
+		           ELSE NULL
+		       END AS submission_id,
+		       CASE
+		           WHEN sub.id IS NOT NULL THEN sub.submitted_at
+		           WHEN ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0) THEN ls.legacy_submitted_at
+		           ELSE NULL
+		       END AS submitted_at,
+		       COALESCE(exemption.reason, '') AS exemption_reason,
+		       COALESCE(reminders.reminder_count, 0) AS reminder_count,
+		       COALESCE(reminders.reminder_types, '') AS reminder_types,
+		       COALESCE((
+		           SELECT STRING_AGG(DISTINCT UPPER(sa.colour::text) || ' / ' || sa.status::text || ' / email ' || COALESCE(sa.email_status, 'pending'), ', ')
+		           FROM sanctions sa
+		           WHERE sa.team_id = ef.team_id
+		             AND sa.week_id = ef.week_id
+		             AND sa.reason = 'non_submission'
+		             AND sa.status IN ('active', 'served', 'appealed')
+		       ), '') AS sanction_status
+		FROM expected_fixtures ef
+		LEFT JOIN submissions sub
+		  ON sub.team_id = ef.team_id
+		 AND sub.play_cricket_match_id = ef.play_cricket_match_id
+		LEFT JOIN legacy_submissions ls
+		  ON ls.team_id = ef.team_id
+		 AND ls.match_date = ef.match_date
+		LEFT JOIN LATERAL (
+		    SELECT re.reason
+		    FROM report_exemptions re
+		    WHERE re.team_id = ef.team_id
+		      AND re.week_id = ef.week_id
+		      AND re.match_date = ef.match_date
+		      AND (
+		          re.play_cricket_match_id = ef.play_cricket_match_id
+		          OR re.play_cricket_match_id IS NULL
+		      )
+		    ORDER BY re.created_at DESC, re.id DESC
+		    LIMIT 1
+		) exemption ON TRUE
+		LEFT JOIN LATERAL (
+		    SELECT COUNT(*) AS reminder_count,
+		           STRING_AGG(DISTINCT crl.reminder_type, ', ' ORDER BY crl.reminder_type) AS reminder_types
+		    FROM captain_reminder_log crl
+		    WHERE crl.team_id = ef.team_id
+		      AND crl.match_date = ef.match_date
+		) reminders ON TRUE
+		ORDER BY ef.match_date DESC, ef.club_name, ef.team_name, ef.play_cricket_match_id
+		LIMIT 100
+	`, teamIDs)
+	if err != nil {
+		return err
+	}
+	defer fixtureRows.Close()
+	for fixtureRows.Next() {
+		var row linkDiagFixtureEvidence
+		if err := fixtureRows.Scan(
+			&row.TeamID,
+			&row.WeekNumber,
+			&row.MatchDate,
+			&row.ClubName,
+			&row.TeamName,
+			&row.PlayCricketMatchID,
+			&row.Opponent,
+			&row.Ground,
+			&row.IsBye,
+			&row.HasSubmission,
+			&row.LegacyCovered,
+			&row.SubmissionID,
+			&row.SubmittedAt,
+			&row.ExemptionReason,
+			&row.ReminderCount,
+			&row.ReminderTypes,
+			&row.SanctionStatus,
+		); err != nil {
+			return err
+		}
+		data.Fixtures = append(data.Fixtures, row)
+	}
+	if err := fixtureRows.Err(); err != nil {
 		return err
 	}
 
@@ -481,7 +807,9 @@ func renderLinkDiagnosticsPage(w http.ResponseWriter, csrfToken string, data lin
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 
-	renderLinkDiagEvidenceSummary(w, data.Events, data.AuditRows)
+	renderLinkDiagEvidenceSummary(w, data.Events, data.AuditRows, data.Sanctions, data.Fixtures)
+	renderLinkDiagSanctions(w, data.Sanctions)
+	renderLinkDiagFixtureEvidence(w, data.Fixtures)
 	renderLinkDiagTokens(w, data.Tokens)
 	renderLinkDiagSends(w, data.Sends)
 	renderLinkDiagReminderSends(w, data.Reminders)
@@ -513,7 +841,7 @@ func renderLinkDiagTokens(w http.ResponseWriter, rows []linkDiagToken) {
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
 
-func renderLinkDiagEvidenceSummary(w http.ResponseWriter, events []linkDiagEmailEvent, audits []linkDiagAudit) {
+func renderLinkDiagEvidenceSummary(w http.ResponseWriter, events []linkDiagEmailEvent, audits []linkDiagAudit, sanctions []linkDiagSanction, fixtures []linkDiagFixtureEvidence) {
 	orm := map[string]int{}
 	for _, e := range events {
 		orm[e.EventType]++
@@ -521,8 +849,19 @@ func renderLinkDiagEvidenceSummary(w http.ResponseWriter, events []linkDiagEmail
 	for _, a := range audits {
 		orm[a.Action]++
 	}
+	yellows, reds := 0, 0
+	for _, row := range sanctions {
+		if row.Colour == "red" {
+			reds++
+		} else if row.Colour == "yellow" {
+			yellows++
+		}
+	}
+	missing, submitted, resolved, byes := linkDiagFixtureCounts(fixtures)
 	fmt.Fprintf(w, `<div class="alert alert-info small">
 <strong>Evidence summary:</strong>
+Cards found: %d yellow / %d red |
+Fixture status: %d missing, %d submitted, %d admin-resolved, %d bye |
 SES clicks: %d |
 App link landings: %d |
 Confirmed links: %d |
@@ -531,7 +870,135 @@ Autosaves: %d |
 Submissions: %d.
 Clicking the email link alone does not autosave; autosave evidence starts at <code>draft_autosaved</code>.
 </div>`,
+		yellows, reds, missing, submitted, resolved, byes,
 		orm["click"], orm["magic_link_clicked"], orm["magic_link_redeemed"], orm["captain_form_opened"], orm["draft_autosaved"], orm["submission_created"])
+}
+
+func renderLinkDiagSanctions(w http.ResponseWriter, rows []linkDiagSanction) {
+	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Card / Sanction Records</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Card</th><th>Week / Match</th><th>Club / Team</th><th>Status</th><th>Email</th><th>Issued</th><th>Sent</th><th>Points / Notes</th></tr></thead><tbody>`)
+	if len(rows) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No sanctions found for the matching team(s).</td></tr>`)
+	}
+	for _, row := range rows {
+		cardClass := "badge-yellow-card"
+		if row.Colour == "red" {
+			cardClass = "badge-red-card"
+		}
+		points := "-"
+		if row.PointsDeduction.Valid {
+			points = strconv.Itoa(int(row.PointsDeduction.Int32))
+		}
+		if row.Notes != "" {
+			points += `<div class="text-muted small">` + escapeHTML(row.Notes) + `</div>`
+		}
+		sent := "-"
+		if row.EmailSentAt.Valid {
+			sent = row.EmailSentAt.Time.Format("02 Jan 15:04")
+		}
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">%s</span><div class="text-muted small">#%d - %s</div></td><td>Week %d<br><span class="text-muted small">%s</span></td><td>%s<br><span class="text-muted small">%s</span></td><td>%s</td><td>%s</td><td>%s<br><span class="text-muted small">%s</span></td><td>%s</td><td>%s</td></tr>`,
+			cardClass,
+			escapeHTML(sanctionsExportCardLabel(row.Colour)),
+			row.ID,
+			escapeHTML(reasonLabel(row.Reason)),
+			row.WeekNumber,
+			row.MatchDate.Format("02 Jan 2006"),
+			escapeHTML(row.ClubName),
+			escapeHTML(row.TeamName),
+			escapeHTML(statusLabel(row.Status)),
+			escapeHTML(sanctionsExportEmailStatusLabel(row.EmailStatus)),
+			row.IssuedAt.Format("02 Jan 15:04"),
+			escapeHTML(row.IssuedBy),
+			escapeHTML(sent),
+			points)
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
+}
+
+func renderLinkDiagFixtureEvidence(w http.ResponseWriter, rows []linkDiagFixtureEvidence) {
+	fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Fixture Report Evidence</div><div class="card-body py-2 small text-muted">This is the fixture-level evidence used to decide whether a captain report was outstanding. A row should only support a non-submission card when it is marked missing and has no admin resolution or bye.</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Week / Match</th><th>Club / Team</th><th>Opponent / Ground</th><th>Report status</th><th>Reminders</th><th>Sanction</th></tr></thead><tbody>`)
+	if len(rows) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No synced fixtures found for the matching team(s).</td></tr>`)
+	}
+	for _, row := range rows {
+		label, badge := linkDiagFixtureStatus(row)
+		detail := linkDiagFixtureReportDetail(row)
+		reminders := "-"
+		if row.ReminderCount > 0 {
+			reminders = fmt.Sprintf("%d", row.ReminderCount)
+			if row.ReminderTypes != "" {
+				reminders += `<div class="text-muted small">` + escapeHTML(row.ReminderTypes) + `</div>`
+			}
+		}
+		sanction := row.SanctionStatus
+		if sanction == "" {
+			sanction = "-"
+		}
+		opponent := escapeHTML(row.Opponent)
+		if row.Ground != "" {
+			opponent += `<div class="text-muted small">` + escapeHTML(row.Ground) + `</div>`
+		}
+		fmt.Fprintf(w, `<tr><td>Week %d<br><span class="text-muted small">%s</span><br><code>%d</code></td><td>%s<br><span class="text-muted small">%s</span></td><td>%s</td><td><span class="badge %s">%s</span>%s</td><td>%s</td><td>%s</td></tr>`,
+			row.WeekNumber,
+			row.MatchDate.Format("02 Jan 2006"),
+			row.PlayCricketMatchID,
+			escapeHTML(row.ClubName),
+			escapeHTML(row.TeamName),
+			opponent,
+			badge,
+			escapeHTML(label),
+			detail,
+			reminders,
+			escapeHTML(sanction))
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
+}
+
+func linkDiagFixtureCounts(rows []linkDiagFixtureEvidence) (missing, submitted, resolved, byes int) {
+	for _, row := range rows {
+		switch {
+		case row.IsBye:
+			byes++
+		case row.ExemptionReason != "":
+			resolved++
+		case row.HasSubmission:
+			submitted++
+		default:
+			missing++
+		}
+	}
+	return missing, submitted, resolved, byes
+}
+
+func linkDiagFixtureStatus(row linkDiagFixtureEvidence) (label, badgeClass string) {
+	switch {
+	case row.IsBye:
+		return "Bye", "text-bg-secondary"
+	case row.ExemptionReason != "":
+		return "Admin resolved", "text-bg-info"
+	case row.HasSubmission && row.LegacyCovered:
+		return "Submitted (legacy)", "text-bg-success"
+	case row.HasSubmission:
+		return "Submitted", "text-bg-success"
+	default:
+		return "Missing", "text-bg-danger"
+	}
+}
+
+func linkDiagFixtureReportDetail(row linkDiagFixtureEvidence) string {
+	var parts []string
+	if row.SubmissionID.Valid {
+		parts = append(parts, fmt.Sprintf(`<a href="/admin/submissions/%d">submission #%d</a>`, row.SubmissionID.Int64, row.SubmissionID.Int64))
+	}
+	if row.SubmittedAt.Valid {
+		parts = append(parts, "submitted "+escapeHTML(row.SubmittedAt.Time.Format("02 Jan 15:04")))
+	}
+	if row.ExemptionReason != "" {
+		parts = append(parts, "resolved: "+escapeHTML(row.ExemptionReason))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return `<div class="text-muted small mt-1">` + strings.Join(parts, "<br>") + `</div>`
 }
 
 func renderLinkDiagSends(w http.ResponseWriter, rows []linkDiagSend) {
@@ -607,6 +1074,19 @@ func int32SliceToInt64(values []int32) []int64 {
 	out := make([]int64, 0, len(values))
 	for _, v := range values {
 		out = append(out, int64(v))
+	}
+	return out
+}
+
+func uniqueInt32Slice(values []int32) []int32 {
+	seen := map[int32]bool{}
+	out := make([]int32, 0, len(values))
+	for _, v := range values {
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }
