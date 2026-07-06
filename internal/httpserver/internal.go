@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type generateSanctionsRequest struct {
 type internalResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 type reminderSendFailure struct {
@@ -40,7 +42,10 @@ type reminderSendFailure struct {
 	Cause    error
 }
 
-const playCricketOperationalSyncLookaheadDays = 8
+const (
+	playCricketOperationalSyncLookaheadDays = 8
+	playCricketReminderSyncTimeout          = 20 * time.Second
+)
 
 func (f reminderSendFailure) Error() string {
 	target := strings.TrimSpace(f.ClubName + " " + f.TeamName)
@@ -83,7 +88,7 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		sendCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
 		mailer := email.NewFromEnv()
@@ -114,18 +119,22 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 			return
 		}
 
-		syncedFixtures, syncErr := s.syncPlayCricketFixturesForOperationalWindow(ctx, matchDates, playCricketOperationalSyncLookaheadDays)
-		if syncErr != nil {
-			log.Printf("[reminders] play-cricket sync failed: %v", syncErr)
-			http.Error(w, "fixture sync error: "+syncErr.Error(), http.StatusBadGateway)
-			return
+		syncedFixtures := 0
+		syncWarning := ""
+		syncCtx, syncCancel := context.WithTimeout(r.Context(), playCricketReminderSyncTimeout)
+		if n, syncErr := s.syncPlayCricketFixturesForOperationalWindow(syncCtx, matchDates, playCricketOperationalSyncLookaheadDays); syncErr != nil {
+			syncWarning = redactLeagueAPISecretInError(syncErr)
+			log.Printf("[reminders] play-cricket sync failed; continuing with cached fixtures: %s", syncWarning)
+		} else {
+			syncedFixtures = n
 		}
+		syncCancel()
 
 		sent := 0
 		skipped := 0
 
 		for _, matchDate := range matchDates {
-			n, sk, err := s.sendRemindersForDate(r, ctx, mailer, matchDate, req.Type)
+			n, sk, err := s.sendRemindersForDate(r, sendCtx, mailer, matchDate, req.Type)
 			if err != nil {
 				log.Printf("[reminders] date=%s error: %v", matchDate.Format("2006-01-02"), err)
 				http.Error(w, "error: "+err.Error(), http.StatusInternalServerError)
@@ -137,19 +146,38 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 		}
 
 		log.Printf("[reminders] type=%s sent=%d skipped=%d", req.Type, sent, skipped)
-		s.audit(ctx, r, "n8n", nil, "send_reminders", "reminder", nil, map[string]any{
+		auditMeta := map[string]any{
 			"type":            req.Type,
 			"sent":            sent,
 			"skipped":         skipped,
 			"synced_fixtures": syncedFixtures,
-		})
+		}
+		if syncWarning != "" {
+			auditMeta["sync_warning"] = syncWarning
+		}
+		s.audit(sendCtx, r, "n8n", nil, "send_reminders", "reminder", nil, auditMeta)
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(internalResponse{
+		resp := internalResponse{
 			Status:  "ok",
 			Message: fmt.Sprintf("sent=%d skipped=%d synced_fixtures=%d", sent, skipped, syncedFixtures),
-		})
+		}
+		if syncWarning != "" {
+			resp.Warning = "fixture sync failed; used cached fixtures: " + syncWarning
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+func redactLeagueAPISecretInError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if apiKey := strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_KEY")); apiKey != "" {
+		msg = strings.ReplaceAll(msg, apiKey, "[redacted]")
+	}
+	return msg
 }
 
 // sendRemindersForDate sends the appropriate reminder email to all captains

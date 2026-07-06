@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,6 +169,19 @@ func TestLeagueFixtureDetailMatchesAllowedDate(t *testing.T) {
 	}
 	if leagueFixtureDetailMatchesAllowedDate(leagueapi.MatchDetail{MatchDate: "not-a-date"}, allowed) {
 		t.Fatal("expected invalid fixture date to be filtered out")
+	}
+}
+
+func TestRedactLeagueAPISecretInError(t *testing.T) {
+	t.Setenv("PLAY_CRICKET_API_KEY", "secret-token")
+
+	got := redactLeagueAPISecretInError(fmt.Errorf(`Get "https://api.example.test/matches?api_token=secret-token": context deadline exceeded`))
+
+	if strings.Contains(got, "secret-token") {
+		t.Fatalf("expected API key to be redacted: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("expected redaction marker: %s", got)
 	}
 }
 
