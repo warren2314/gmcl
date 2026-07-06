@@ -93,7 +93,8 @@ Replace **every** `CHANGE_ME_*` value:
 | `PLAY_CRICKET_API_KEY` | Your Play-Cricket API key |
 | `OPENAI_API_KEY` | Optional. Enables AI-written narrative sections in AI Executive reports |
 | `OPENAI_REPORT_MODEL` | Optional. Model used for AI Executive reports, defaults to `gpt-5.2` |
-| `APP_BASE_URL` | Your full domain, e.g. `https://admin.gmcl.co.uk` |
+| `PUBLIC_BASE_URL` | Public captain-report domain used in emailed links, e.g. `https://gmcl.co.uk` |
+| `PUBLIC_ALT_BASE_URL` | Optional backup public domain used in emailed links, e.g. `https://www.gmcl.co.uk` |
 
 > **Security**: `.env` is created with `chmod 600` by the setup script. Never commit it to git.
 

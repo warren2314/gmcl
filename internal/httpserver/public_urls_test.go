@@ -42,6 +42,37 @@ func TestMagicLinkEmailBlockDerivesWWWBackupForApexHost(t *testing.T) {
 	}
 }
 
+func TestMagicLinkEmailBlockForcesHTTPSForGMCLBehindHTTPProxy(t *testing.T) {
+	t.Setenv("PUBLIC_BASE_URL", "")
+	t.Setenv("PUBLIC_ALT_BASE_URL", "")
+
+	req := httptest.NewRequest("GET", "http://gmcl.co.uk/internal/send-reminders", nil)
+	req.Header.Set("X-Forwarded-Proto", "http")
+	block := magicLinkEmailBlock(req, "token")
+
+	if !strings.Contains(block, "BUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=token") {
+		t.Fatalf("primary link should stay https for public GMCL host: %s", block)
+	}
+	if strings.Contains(block, "BUTTON_URL:http://gmcl.co.uk/") {
+		t.Fatalf("primary link must not use http for public GMCL host: %s", block)
+	}
+}
+
+func TestMagicLinkEmailBlockFallsBackFromInternalHostToPublicDomain(t *testing.T) {
+	t.Setenv("PUBLIC_BASE_URL", "")
+	t.Setenv("PUBLIC_ALT_BASE_URL", "")
+
+	req := httptest.NewRequest("GET", "http://app:8080/internal/send-reminders", nil)
+	block := magicLinkEmailBlock(req, "token")
+
+	if !strings.Contains(block, "BUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=token") {
+		t.Fatalf("internal host should fall back to public GMCL domain: %s", block)
+	}
+	if strings.Contains(block, "app:8080") {
+		t.Fatalf("internal host leaked into email block: %s", block)
+	}
+}
+
 func TestMagicLinkEmailBlockDoesNotAddBackupForUnrelatedHost(t *testing.T) {
 	t.Setenv("PUBLIC_BASE_URL", "https://admin.example.test")
 	t.Setenv("PUBLIC_ALT_BASE_URL", "")

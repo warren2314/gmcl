@@ -7,22 +7,35 @@ import (
 	"strings"
 )
 
+const defaultPublicBaseURL = "https://gmcl.co.uk"
+
 func publicBaseURL(r *http.Request) string {
 	if base := configuredPublicBaseURL(); base != "" {
 		return base
-	}
-
-	scheme := firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
-	if scheme != "http" && scheme != "https" {
-		scheme = "https"
 	}
 
 	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
 	if host == "" {
 		host = strings.TrimSpace(r.Host)
 	}
-	if host == "" {
-		host = "gmcl.co.uk"
+	if host == "" || isInternalPublicHost(host) {
+		return defaultPublicBaseURL
+	}
+
+	scheme := firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+	switch {
+	case isGMCLPublicHost(host):
+		scheme = "https"
+	case scheme == "http" && isLocalPublicHost(host):
+		scheme = "http"
+	case scheme == "http" || scheme == "https":
+		scheme = "https"
+	default:
+		if isLocalPublicHost(host) {
+			scheme = "http"
+		} else {
+			scheme = "https"
+		}
 	}
 
 	return scheme + "://" + host
@@ -43,6 +56,40 @@ func configuredPublicBaseURL() string {
 		}
 	}
 	return ""
+}
+
+func isGMCLPublicHost(host string) bool {
+	name := strings.ToLower(hostnameOnly(host))
+	return name == "gmcl.co.uk" || name == "www.gmcl.co.uk"
+}
+
+func isLocalPublicHost(host string) bool {
+	name := strings.ToLower(hostnameOnly(host))
+	return name == "localhost" || name == "127.0.0.1" || name == "::1"
+}
+
+func isInternalPublicHost(host string) bool {
+	name := strings.ToLower(hostnameOnly(host))
+	return name == "" || name == "app" || name == "internal"
+}
+
+func hostnameOnly(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end >= 0 {
+			return strings.Trim(host[1:end], "[]")
+		}
+	}
+	if strings.Count(host, ":") > 1 {
+		return strings.Trim(host, "[]")
+	}
+	if before, _, ok := strings.Cut(host, ":"); ok {
+		return before
+	}
+	return host
 }
 
 func publicAlternateBaseURL(r *http.Request) string {
