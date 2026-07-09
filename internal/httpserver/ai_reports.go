@@ -54,25 +54,124 @@ func (s *Server) generateAIExecutiveReport(ctx context.Context, reportID int64, 
 	}
 
 	latestExpected, latestSubmitted, latestMissing := s.loadAIWeeklyCompliance(ctx, *weekID, seasonID, weekStart, weekEnd)
-	seasonExpected := s.loadAIExpectedReports(ctx, seasonID, time.Time{}, weekEnd)
+	seasonExpected, seasonClosed := s.loadAIClosedExpectedReports(ctx, seasonID, time.Time{}, weekEnd)
 
 	rp.Latest = s.loadAIExecutiveWindow(ctx, "Latest Report", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, latestExpected, &seasonID, weekID)
-	rp.Latest.SubmissionsReceived = latestSubmitted
-	if latestExpected > 0 {
-		rp.Latest.ComplianceRate = float64(latestSubmitted) / float64(latestExpected) * 100
-		if rp.Latest.ComplianceRate > 100 {
-			rp.Latest.ComplianceRate = 100
-		}
-	}
+	applyAIExecutiveCompliance(&rp.Latest, latestExpected, latestSubmitted)
 	rp.SeasonToDate = s.loadAIExecutiveWindow(ctx, "Season Report", rp.Cover.SeasonPeriod,
 		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, seasonExpected, &seasonID, nil)
+	applyAIExecutiveCompliance(&rp.SeasonToDate, seasonExpected, seasonClosed)
 	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrend(ctx, seasonID, weekEnd)
 	rp.Latest.MissingTeams = latestMissing
 	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Latest Umpire Reports", rp.Cover.LatestPeriod,
 		"sub.season_id=$1 AND sub.week_id=$2", []any{seasonID, *weekID}, 1)
 	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Report", rp.Cover.SeasonPeriod,
 		"sub.season_id=$1 AND w.end_date <= $2", []any{seasonID, weekEnd}, 2)
+
+	narrative, model, err := s.callOpenAIExecutiveNarrative(ctx, rp)
+	if err != nil {
+		rp.Executive = buildFallbackExecutiveNarrative(rp)
+		rp.AIError = err.Error()
+	} else {
+		rp.Executive = narrative
+		rp.GeneratedByAI = true
+		rp.AIModel = model
+	}
+
+	payload, err := json.Marshal(rp)
+	if err != nil {
+		s.DB.Exec(ctx, `UPDATE generated_reports SET status='error', error_message=$1, completed_at=now() WHERE id=$2`,
+			err.Error(), reportID)
+		return
+	}
+	s.DB.Exec(ctx, `UPDATE generated_reports SET status='ready', payload_json=$1, completed_at=now() WHERE id=$2`, payload, reportID)
+}
+
+func (s *Server) generateAISeasonToDateReport(ctx context.Context, reportID int64, seasonID int32, asOfDate time.Time, period string) {
+	var seasonName string
+	var seasonStart, seasonEnd time.Time
+	if err := s.DB.QueryRow(ctx, `SELECT name, start_date, end_date FROM seasons WHERE id=$1`, seasonID).
+		Scan(&seasonName, &seasonStart, &seasonEnd); err != nil {
+		s.DB.Exec(ctx, `UPDATE generated_reports SET status='error', error_message=$1, completed_at=now() WHERE id=$2`,
+			err.Error(), reportID)
+		return
+	}
+	seasonStart = dateOnlyInLocation(seasonStart, s.LondonLoc)
+	seasonEnd = dateOnlyInLocation(seasonEnd, s.LondonLoc)
+	asOfDate = dateOnlyInLocation(asOfDate, s.LondonLoc)
+	if asOfDate.After(seasonEnd) {
+		asOfDate = seasonEnd
+	}
+
+	var weekID int32
+	var weekNum int32
+	var weekStart, weekEnd time.Time
+	err := s.DB.QueryRow(ctx, `
+		SELECT id, week_number, start_date, end_date
+		FROM weeks
+		WHERE season_id=$1 AND start_date <= $2
+		ORDER BY
+		    CASE WHEN $2 BETWEEN start_date AND end_date THEN 0 ELSE 1 END,
+		    end_date DESC,
+		    week_number DESC
+		LIMIT 1
+	`, seasonID, asOfDate).Scan(&weekID, &weekNum, &weekStart, &weekEnd)
+	if err != nil {
+		s.DB.Exec(ctx, `UPDATE generated_reports SET status='error', error_message=$1, completed_at=now() WHERE id=$2`,
+			"no season week is available for the selected as-of date", reportID)
+		return
+	}
+
+	currentEnd := asOfDate
+	if currentEnd.After(weekEnd) {
+		currentEnd = weekEnd
+	}
+	if currentEnd.Before(weekStart) {
+		currentEnd = weekStart
+	}
+
+	rp := aiExecutiveReportPayload{
+		SeasonID:     seasonID,
+		SeasonName:   seasonName,
+		ReportType:   "ai_season_to_date",
+		ReportPeriod: period,
+		GeneratedAt:  time.Now(),
+		Cover: aiExecutiveCover{
+			Title:        "GMCL Season-to-Date Report",
+			LatestPeriod: fmt.Sprintf("Week %d to date: %s to %s", weekNum, weekStart.Format("2 Jan 2006"), currentEnd.Format("2 Jan 2006")),
+			SeasonPeriod: fmt.Sprintf("%s: %s to %s", seasonName, seasonStart.Format("2 Jan 2006"), asOfDate.Format("2 Jan 2006")),
+			PreparedFor:  "GMCL Executive Committee",
+		},
+		TableOfContents: []string{
+			"Executive Summary",
+			"Current Period To Date",
+			"Season To Date",
+			"Current Umpire Feedback",
+			"Season Umpire Feedback",
+			"Conclusion",
+		},
+	}
+
+	latestExpected, latestSubmitted, latestMissing := s.loadAIWeeklyCompliance(ctx, weekID, seasonID, weekStart, currentEnd)
+	seasonExpected, seasonClosed := s.loadAIClosedExpectedReports(ctx, seasonID, seasonStart, asOfDate)
+
+	rp.Latest = s.loadAIExecutiveWindow(ctx, "Current Period To Date", rp.Cover.LatestPeriod,
+		"sub.season_id=$1 AND sub.week_id=$2 AND sub.match_date <= $3", []any{seasonID, weekID, currentEnd}, latestExpected, &seasonID, &weekID)
+	applyAIExecutiveCompliance(&rp.Latest, latestExpected, latestSubmitted)
+	rp.Latest.MissingTeams = latestMissing
+	rp.Latest.SanctionsIssued = s.loadAIReportSanctionsIssued(ctx, seasonID, &weekID, &currentEnd)
+
+	rp.SeasonToDate = s.loadAIExecutiveWindow(ctx, "Season To Date", rp.Cover.SeasonPeriod,
+		"sub.season_id=$1 AND sub.match_date BETWEEN $2 AND $3", []any{seasonID, seasonStart, asOfDate}, seasonExpected, &seasonID, nil)
+	applyAIExecutiveCompliance(&rp.SeasonToDate, seasonExpected, seasonClosed)
+	rp.SeasonToDate.WeeklyTrend = s.loadAIExecutiveWeeklyTrendToDate(ctx, seasonID, asOfDate)
+	rp.SeasonToDate.SanctionsIssued = s.loadAIReportSanctionsIssued(ctx, seasonID, nil, &asOfDate)
+
+	rp.LatestUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Current Umpire Feedback", rp.Cover.LatestPeriod,
+		"sub.season_id=$1 AND sub.week_id=$2 AND sub.match_date <= $3", []any{seasonID, weekID, currentEnd}, 1)
+	rp.SeasonUmpires = s.loadAIExecutiveUmpireWindow(ctx, "Season Umpire Feedback", rp.Cover.SeasonPeriod,
+		"sub.season_id=$1 AND sub.match_date BETWEEN $2 AND $3", []any{seasonID, seasonStart, asOfDate}, 2)
 
 	narrative, model, err := s.callOpenAIExecutiveNarrative(ctx, rp)
 	if err != nil {
@@ -114,16 +213,42 @@ func (s *Server) loadAIExecutiveWindow(ctx context.Context, title, period, where
 		}
 	}
 	if seasonID != nil {
-		if weekID != nil {
-			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1 AND week_id=$2`, *seasonID, *weekID).Scan(&win.SanctionsIssued)
-		} else {
-			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1`, *seasonID).Scan(&win.SanctionsIssued)
-		}
+		win.SanctionsIssued = s.loadAIReportSanctionsIssued(ctx, *seasonID, weekID, nil)
 	}
 	win.TopClubs = s.loadAIExecutiveClubRows(ctx, whereSQL, args, "DESC")
 	win.ConcernClubs = s.loadAIExecutiveClubRows(ctx, whereSQL, args, "ASC")
 	win.RepresentativeNotes = s.loadAIExecutiveNotes(ctx, whereSQL, args, "comments")
 	return win
+}
+
+func applyAIExecutiveCompliance(win *aiExecutiveWindow, expected, submitted int64) {
+	win.SubmissionsExpected = expected
+	win.SubmissionsReceived = submitted
+	win.ComplianceRate = 0
+	if expected <= 0 {
+		return
+	}
+	win.ComplianceRate = float64(submitted) / float64(expected) * 100
+	if win.ComplianceRate > 100 {
+		win.ComplianceRate = 100
+	}
+}
+
+func (s *Server) loadAIReportSanctionsIssued(ctx context.Context, seasonID int32, weekID *int32, through *time.Time) int64 {
+	where := "season_id=$1 AND status <> 'overturned'"
+	args := []any{seasonID}
+	if weekID != nil {
+		where += fmt.Sprintf(" AND week_id=$%d", len(args)+1)
+		args = append(args, *weekID)
+	}
+	if through != nil && !through.IsZero() {
+		where += fmt.Sprintf(" AND issued_at::date <= $%d", len(args)+1)
+		args = append(args, through.Format("2006-01-02"))
+	}
+
+	var count int64
+	_ = s.DB.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM sanctions WHERE %s`, where), args...).Scan(&count)
+	return count
 }
 
 func (s *Server) loadAIExecutiveClubRows(ctx context.Context, whereSQL string, args []any, direction string) []aiExecutiveClubRow {
@@ -214,6 +339,29 @@ func (s *Server) loadAIExecutiveWeeklyTrend(ctx context.Context, seasonID int32,
 	return trend
 }
 
+func (s *Server) loadAIExecutiveWeeklyTrendToDate(ctx context.Context, seasonID int32, asOfDate time.Time) []reportWeekTrend {
+	rows, err := s.DB.Query(ctx, `
+		SELECT w.week_number, COUNT(DISTINCT sub.team_id), COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0)
+		FROM weeks w
+		LEFT JOIN submissions sub ON sub.week_id=w.id AND sub.season_id=$1 AND sub.match_date <= $2
+		WHERE w.season_id=$1 AND w.start_date <= $2
+		GROUP BY w.week_number ORDER BY w.week_number
+	`, seasonID, asOfDate)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var trend []reportWeekTrend
+	for rows.Next() {
+		var row reportWeekTrend
+		if rows.Scan(&row.WeekNumber, &row.Subs, &row.AvgPitch) == nil {
+			trend = append(trend, row)
+		}
+	}
+	return trend
+}
+
 func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, startDate, endDate time.Time) int64 {
 	if endDate.IsZero() {
 		return 0
@@ -245,6 +393,82 @@ func (s *Server) loadAIExpectedReports(ctx context.Context, seasonID int32, star
 		WHERE %s
 	`, where), args...).Scan(&expected)
 	return expected
+}
+
+func (s *Server) loadAIClosedExpectedReports(ctx context.Context, seasonID int32, startDate, endDate time.Time) (int64, int64) {
+	if endDate.IsZero() {
+		return 0, 0
+	}
+
+	var startArg any
+	if !startDate.IsZero() {
+		startArg = startDate.Format("2006-01-02")
+	}
+
+	var expected, closed int64
+	err := s.DB.QueryRow(ctx, `
+		WITH expected_fixtures AS (
+		    SELECT t.id AS team_id,
+		           lf.play_cricket_match_id,
+		           lf.match_date,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY t.id, lf.match_date
+		               ORDER BY lf.play_cricket_match_id
+		           ) AS fixture_ordinal
+		    FROM teams t
+		    JOIN league_fixtures lf ON (
+		        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id) OR
+		        TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
+		    )
+		    WHERE t.active=TRUE
+		      AND t.play_cricket_team_id IS NOT NULL
+		      AND TRIM(t.play_cricket_team_id) <> ''
+		      AND lf.season_id=$1
+		      AND lf.match_date <= $2
+		      AND ($3::date IS NULL OR lf.match_date >= $3)
+		      AND EXTRACT(DOW FROM lf.match_date) <> 5
+		      AND NOT lf.is_bye
+		),
+		legacy_submissions AS (
+		    SELECT team_id,
+		           match_date,
+		           COUNT(*) AS legacy_count
+		    FROM submissions
+		    WHERE season_id=$1
+		      AND play_cricket_match_id IS NULL
+		      AND match_date <= $2
+		      AND ($3::date IS NULL OR match_date >= $3)
+		    GROUP BY team_id, match_date
+		)
+		SELECT COUNT(*) AS expected,
+		       COUNT(*) FILTER (
+		           WHERE EXISTS (
+		               SELECT 1 FROM submissions sub
+		               WHERE sub.season_id=$1
+		                 AND sub.team_id=ef.team_id
+		                 AND sub.match_date=ef.match_date
+		                 AND sub.play_cricket_match_id=ef.play_cricket_match_id
+		           )
+		           OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		           OR EXISTS (
+		               SELECT 1 FROM report_exemptions re
+		               WHERE re.season_id=$1
+		                 AND re.team_id=ef.team_id
+		                 AND re.match_date=ef.match_date
+		                 AND (
+		                     re.play_cricket_match_id=ef.play_cricket_match_id
+		                     OR re.play_cricket_match_id IS NULL
+		                 )
+		           )
+		       ) AS closed
+		FROM expected_fixtures ef
+		LEFT JOIN legacy_submissions ls
+		  ON ls.team_id=ef.team_id AND ls.match_date=ef.match_date
+	`, seasonID, endDate.Format("2006-01-02"), startArg).Scan(&expected, &closed)
+	if err != nil {
+		return 0, 0
+	}
+	return expected, closed
 }
 
 func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID int32, weekStart, weekEnd time.Time) (int64, int64, []reportMissing) {
@@ -288,6 +512,16 @@ func (s *Server) loadAIWeeklyCompliance(ctx context.Context, weekID, seasonID in
 		                     AND sub.play_cricket_match_id=ef.play_cricket_match_id
 		               )
 		               OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+		               OR EXISTS (
+		                   SELECT 1 FROM report_exemptions re
+		                   WHERE re.week_id=$1
+		                     AND re.team_id=ef.team_id
+		                     AND re.match_date=ef.match_date
+		                     AND (
+		                         re.play_cricket_match_id=ef.play_cricket_match_id
+		                         OR re.play_cricket_match_id IS NULL
+		                     )
+		               )
 		           ) AS submit_count
 		    FROM expected_fixtures ef
 		    LEFT JOIN legacy_submissions ls
@@ -394,6 +628,7 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 			"Use only the supplied JSON data. Do not invent figures, clubs, umpires, dates, or trends.",
 			"Write in clear British English for a board-level audience. Be direct, measured, and evidence-led.",
 			"Use a concise board-paper style: short paragraphs, explicit implications, and clear recommended focus areas.",
+			"When report_type is ai_season_to_date, treat latest_report as the current reporting period to the as-of date, and make season_report the main season-start-to-as-of-date analysis.",
 			"Make the season_report analytical rather than static: compare latest-week performance with season-to-date, identify direction of travel from weekly_trend, name notable strongest and concern clubs or grounds, and explain what this means for executive attention.",
 			"The conclusion must be more than a generic close: prioritise the next operational actions, separate immediate compliance actions from medium-term ground or umpire follow-up, and state what should be monitored next week.",
 			"Use the representative_notes only as qualitative context, not as facts beyond the supplied text.",
@@ -483,6 +718,10 @@ func openAIReportConfigured() bool {
 }
 
 func buildFallbackExecutiveNarrative(rp aiExecutiveReportPayload) aiExecutiveNarrative {
+	if rp.ReportType == "ai_season_to_date" {
+		return buildFallbackSeasonToDateNarrative(rp)
+	}
+
 	seasonTrend := "No weekly trend is available yet."
 	if len(rp.SeasonToDate.WeeklyTrend) >= 2 {
 		first := rp.SeasonToDate.WeeklyTrend[0]
@@ -519,6 +758,45 @@ func buildFallbackExecutiveNarrative(rp aiExecutiveReportPayload) aiExecutiveNar
 		SeasonUmpireReport: fmt.Sprintf("Season-to-date umpire feedback contains %d individual ratings: %d good, %d average and %d poor. The season view is the better basis for committee action because it separates one-off dissatisfaction from repeated patterns; any official appearing regularly in the review list should be discussed with appointments context before escalation.",
 			rp.SeasonUmpires.TotalRatings, rp.SeasonUmpires.Good, rp.SeasonUmpires.Average, rp.SeasonUmpires.Poor),
 		Conclusion: "Recommended focus for the next cycle is clear: close out missing submissions immediately, review any sanctions or repeated non-compliance, and compare the latest low-rated grounds against the season concern list before contacting clubs. For medium-term governance, track whether the same venues or officials remain in review positions next week; repeated evidence should trigger committee follow-up, while isolated results should remain under observation.",
+	}
+}
+
+func buildFallbackSeasonToDateNarrative(rp aiExecutiveReportPayload) aiExecutiveNarrative {
+	seasonTrend := "No weekly trend is available yet."
+	if len(rp.SeasonToDate.WeeklyTrend) >= 2 {
+		first := rp.SeasonToDate.WeeklyTrend[0]
+		last := rp.SeasonToDate.WeeklyTrend[len(rp.SeasonToDate.WeeklyTrend)-1]
+		pitchMovement := last.AvgPitch - first.AvgPitch
+		direction := "broadly stable"
+		if pitchMovement >= 0.25 {
+			direction = "improving"
+		} else if pitchMovement <= -0.25 {
+			direction = "softening"
+		}
+		seasonTrend = fmt.Sprintf("The week-by-week pitch trend is %s, moving from %.2f in week %d to %.2f in week %d.",
+			direction, first.AvgPitch, first.WeekNumber, last.AvgPitch, last.WeekNumber)
+	}
+	strongest := describeExecutiveClubRows(rp.SeasonToDate.TopClubs)
+	concerns := describeExecutiveClubRows(rp.SeasonToDate.ConcernClubs)
+	if strongest == "" {
+		strongest = "no clear strongest club or ground group is available yet"
+	}
+	if concerns == "" {
+		concerns = "no repeated concern group is available yet"
+	}
+
+	return aiExecutiveNarrative{
+		ExecutiveSummary: fmt.Sprintf("This season-to-date report covers %s. The league has recorded %d reports against %d expected fixture reports, giving %.1f%% compliance. Average pitch rating is %.2f. The report should be read as an evidence snapshot: compliance tells the committee where chasing is still required, while the pitch and umpire sections identify repeated patterns that may need operational follow-up.",
+			rp.Cover.SeasonPeriod, rp.SeasonToDate.SubmissionsReceived, rp.SeasonToDate.SubmissionsExpected, rp.SeasonToDate.ComplianceRate, rp.SeasonToDate.AvgPitch),
+		LatestReport: fmt.Sprintf("The current reporting period is %s. It currently has %d reports against %d expected fixture reports, giving %.1f%% compliance. There are %d current missing submission item(s) and %d non-overturned sanction item(s) in this period, so the immediate operational focus is to close the remaining live gaps before they become historical disputes.",
+			rp.Latest.Period, rp.Latest.SubmissionsReceived, rp.Latest.SubmissionsExpected, rp.Latest.ComplianceRate, len(rp.Latest.MissingTeams), rp.Latest.SanctionsIssued),
+		SeasonReport: fmt.Sprintf("From season start to the as-of date, average pitch score is %.2f, with bounce %.2f, seam %.2f, carry %.2f and turn %.2f. %s Strongest rated clubs or grounds include %s; the lowest-rated group includes %s. The committee should distinguish isolated low scores from repeated ground patterns before deciding whether club contact, ground inspection or remedial action is justified.",
+			rp.SeasonToDate.AvgPitch, rp.SeasonToDate.AvgBounce, rp.SeasonToDate.AvgSeam, rp.SeasonToDate.AvgCarry, rp.SeasonToDate.AvgTurn, seasonTrend, strongest, concerns),
+		LatestUmpireReport: fmt.Sprintf("Current-period umpire feedback contains %d individual ratings: %d good, %d average and %d poor. This is useful for immediate triage, but individual current-period feedback should be matched against season context before drawing firm conclusions.",
+			rp.LatestUmpires.TotalRatings, rp.LatestUmpires.Good, rp.LatestUmpires.Average, rp.LatestUmpires.Poor),
+		SeasonUmpireReport: fmt.Sprintf("Season-to-date umpire feedback contains %d individual ratings: %d good, %d average and %d poor. The season view is the stronger evidence base because it separates one-off dissatisfaction from repeated feedback patterns; officials in the review list should be considered alongside appointments, match context and any written comments.",
+			rp.SeasonUmpires.TotalRatings, rp.SeasonUmpires.Good, rp.SeasonUmpires.Average, rp.SeasonUmpires.Poor),
+		Conclusion: "Recommended focus is to close live missing submissions first, then review low-rated grounds and umpire feedback where the evidence is repeated across the season-to-date window. For the next committee cycle, monitor whether current concern clubs, grounds or officials appear again after new reports arrive; repeated evidence should trigger follow-up, while isolated results should remain under observation.",
 	}
 }
 
@@ -579,6 +857,8 @@ func printScoreBadge(score float64, max float64) string {
 func writeAIExecutivePrintReport(w http.ResponseWriter, rp aiExecutiveReportPayload, canViewUmpireFeedback bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	narrative := effectiveAIExecutiveNarrative(rp)
+	latestTitle := aiExecutiveLatestTitle(rp)
+	seasonTitle := aiExecutiveSeasonTitle(rp)
 	narrativeSource := "Deterministic fallback narrative"
 	if rp.GeneratedByAI {
 		narrativeSource = "AI-assisted narrative"
@@ -652,8 +932,8 @@ tr:nth-child(even) td { background: #fbfcfe; }
     <div class="panel summary-panel"><h2>Executive Summary</h2><div class="copy">%s</div></div>
     <div class="panel">
       <h3>Report Details</h3>
-      <p><strong>Latest:</strong> %s</p>
-      <p><strong>Season:</strong> %s</p>
+      <p><strong>%s:</strong> %s</p>
+      <p><strong>%s:</strong> %s</p>
       <p><strong>Prepared for:</strong> %s</p>
       <p><strong>Generated:</strong> %s</p>
       <p><strong>Narrative:</strong> %s</p>
@@ -668,7 +948,9 @@ tr:nth-child(even) td { background: #fbfcfe; }
 		printKPIClass(execPitchClass(rp.SeasonToDate.AvgPitch)), rp.SeasonToDate.AvgPitch,
 		printFocusClass(len(rp.Latest.MissingTeams)+int(rp.Latest.SanctionsIssued)), len(rp.Latest.MissingTeams)+int(rp.Latest.SanctionsIssued),
 		paragraphsHTML(narrative.ExecutiveSummary),
+		escapeHTML(latestTitle),
 		escapeHTML(rp.Cover.LatestPeriod),
+		escapeHTML(seasonTitle),
 		escapeHTML(rp.Cover.SeasonPeriod),
 		escapeHTML(rp.Cover.PreparedFor),
 		rp.GeneratedAt.Format("02 Jan 2006 15:04"),
@@ -705,7 +987,7 @@ tr:nth-child(even) td { background: #fbfcfe; }
 			majorClass = " major"
 		}
 		expectedLabel := "Expected"
-		if title == "Latest Report" {
+		if title == "Latest Report" || title == "Current Period To Date" {
 			expectedLabel = "Fixtures Expected"
 		}
 		fmt.Fprintf(w, `<section class="section%s"><div class="section-heading"><h2>%s</h2><span class="meta">%s</span></div>
@@ -763,8 +1045,8 @@ tr:nth-child(even) td { background: #fbfcfe; }
 		fmt.Fprint(w, `</section>`)
 	}
 
-	printWindow("Latest Report", rp.Latest, narrative.LatestReport, true)
-	printWindow("Season Report", rp.SeasonToDate, narrative.SeasonReport, true)
+	printWindow(latestTitle, rp.Latest, narrative.LatestReport, true)
+	printWindow(seasonTitle, rp.SeasonToDate, narrative.SeasonReport, true)
 	if canViewUmpireFeedback {
 		printUmpires("Latest Umpire Reports", rp.LatestUmpires, narrative.LatestUmpireReport)
 		printUmpires("Season Umpire Report", rp.SeasonUmpires, narrative.SeasonUmpireReport)

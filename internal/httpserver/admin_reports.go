@@ -231,6 +231,7 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
       <div class="col-auto">
         <label class="form-label small fw-semibold">Type</label>
         <select name="report_type" class="form-select form-select-sm" id="rptType" onchange="updatePeriod()">
+          <option value="ai_season_to_date">AI Season To Date</option>
           <option value="ai_executive">AI Executive</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -241,8 +242,8 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
       <div class="col-auto">
         <label class="form-label small fw-semibold">Period</label>
         <input type="text" name="period" id="rptPeriod" class="form-control form-control-sm"
-               placeholder="e.g. 2025-W14" value="%s" style="width:160px">
-        <div class="form-text" id="rptPeriodHint">Format: 2025-W14 for weekly</div>
+               placeholder="Auto or YYYY-MM-DD" value="Auto" style="width:180px">
+        <div class="form-text" id="rptPeriodHint">Auto uses today; enter YYYY-MM-DD to lock the season-to-date cut-off</div>
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">Generate</button>
@@ -257,7 +258,10 @@ function updatePeriod() {
   var p = document.getElementById('rptPeriod');
   var h = document.getElementById('rptPeriodHint');
   var d = new Date();
-  if (t === 'ai_executive') {
+  if (t === 'ai_season_to_date') {
+    p.placeholder = 'Auto or YYYY-MM-DD';
+    h.textContent = 'Auto uses today; enter YYYY-MM-DD to lock the season-to-date cut-off';
+  } else if (t === 'ai_executive') {
     p.placeholder = '2025-W14 or Auto';
     h.textContent = 'Enter YYYY-Www for an exact week, or Auto for latest week with data';
   } else if (t === 'weekly') {
@@ -280,14 +284,7 @@ function updatePeriod() {
 }
 </script>
 `,
-			csrfToken, currentSeasonID,
-			func() string {
-				if currentWeekNum > 0 {
-					y := time.Now().Year()
-					return fmt.Sprintf("%d-W%02d", y, currentWeekNum)
-				}
-				return ""
-			}(), aiStatusClass, aiStatusText)
+			csrfToken, currentSeasonID, aiStatusClass, aiStatusText)
 
 		// Reports list
 		fmt.Fprint(w, `
@@ -364,7 +361,7 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 			return
 		}
 
-		validTypes := map[string]bool{"ai_executive": true, "weekly": true, "monthly": true, "quarterly": true, "season_end": true}
+		validTypes := map[string]bool{"ai_season_to_date": true, "ai_executive": true, "weekly": true, "monthly": true, "quarterly": true, "season_end": true}
 		if !validTypes[reportType] {
 			http.Error(w, "invalid report type", http.StatusBadRequest)
 			return
@@ -377,7 +374,14 @@ func (s *Server) handleAdminReportGenerate() http.HandlerFunc {
 
 		// Resolve week_id for weekly and AI executive reports.
 		var weekID *int32
-		if reportType == "ai_executive" {
+		if reportType == "ai_season_to_date" {
+			_, resolvedPeriod, err := s.resolveAISeasonToDatePeriod(ctx, seasonID, period)
+			if err != nil {
+				http.Error(w, "failed to resolve AI season-to-date period: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			period = resolvedPeriod
+		} else if reportType == "ai_executive" {
 			wid, weekNum, weekEnd, err := s.resolveAIExecutiveReportWeek(ctx, seasonID, period)
 			if err != nil {
 				http.Error(w, "failed to resolve AI executive report week: "+err.Error(), http.StatusBadRequest)
@@ -498,6 +502,71 @@ func (s *Server) resolveLatestAIExecutiveReportWeek(ctx context.Context, seasonI
 func isAutoAIExecutivePeriod(period string) bool {
 	p := strings.ToLower(strings.TrimSpace(period))
 	return p == "" || p == "auto" || p == "latest" || p == "latest completed"
+}
+
+func isAutoAISeasonToDatePeriod(period string) bool {
+	p := strings.ToLower(strings.TrimSpace(period))
+	return p == "" || p == "auto" || p == "today" || p == "now" || p == "season to date" || p == "season-to-date"
+}
+
+func (s *Server) resolveAISeasonToDatePeriod(ctx context.Context, seasonID int, period string) (time.Time, string, error) {
+	var seasonName string
+	var seasonStart, seasonEnd time.Time
+	if err := s.DB.QueryRow(ctx, `SELECT name, start_date, end_date FROM seasons WHERE id=$1`, seasonID).
+		Scan(&seasonName, &seasonStart, &seasonEnd); err != nil {
+		return time.Time{}, "", fmt.Errorf("season not found")
+	}
+	seasonStart = dateOnlyInLocation(seasonStart, s.LondonLoc)
+	seasonEnd = dateOnlyInLocation(seasonEnd, s.LondonLoc)
+
+	asOf, err := parseAISeasonToDateAsOfDate(period, s.LondonLoc)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	if asOf.IsZero() {
+		asOf = dateOnlyInLocation(time.Now(), s.LondonLoc)
+	}
+	today := dateOnlyInLocation(time.Now(), s.LondonLoc)
+	if asOf.After(today) {
+		return time.Time{}, "", fmt.Errorf("as-of date cannot be in the future")
+	}
+	if asOf.Before(seasonStart) {
+		return time.Time{}, "", fmt.Errorf("as-of date is before the %s season starts", seasonName)
+	}
+	if asOf.After(seasonEnd) {
+		asOf = seasonEnd
+	}
+
+	return asOf, fmt.Sprintf("%s season-to-date to %s", seasonName, asOf.Format("2006-01-02")), nil
+}
+
+func parseAISeasonToDateAsOfDate(period string, loc *time.Location) (time.Time, error) {
+	if isAutoAISeasonToDatePeriod(period) {
+		return time.Time{}, nil
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, field := range strings.Fields(strings.TrimSpace(period)) {
+		field = strings.Trim(field, ".,;:()[]{}")
+		if len(field) != len("2006-01-02") {
+			continue
+		}
+		if field[4] != '-' || field[7] != '-' {
+			continue
+		}
+		return time.ParseInLocation("2006-01-02", field, loc)
+	}
+	return time.Time{}, fmt.Errorf("use Auto or an as-of date in YYYY-MM-DD format")
+}
+
+func dateOnlyInLocation(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	y, m, d := local.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, loc)
 }
 
 func (s *Server) handleAdminReportRegenerate() http.HandlerFunc {
@@ -636,7 +705,7 @@ func (s *Server) handleAdminReportView() http.HandlerFunc {
 			return
 		}
 
-		if reportType == "ai_executive" {
+		if reportType == "ai_executive" || reportType == "ai_season_to_date" {
 			var rp aiExecutiveReportPayload
 			if err := json.Unmarshal(payloadRaw, &rp); err != nil {
 				fmt.Fprint(w, `<div class="alert alert-danger">Could not parse AI executive report data.</div></div>`)
@@ -1050,6 +1119,8 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 	if canViewUmpireFeedback {
 		downloadLink = fmt.Sprintf(`<a href="/admin/reports/%d/download" class="btn btn-outline-primary btn-sm">Download JSON</a>`, reportID)
 	}
+	latestTitle := aiExecutiveLatestTitle(rp)
+	seasonTitle := aiExecutiveSeasonTitle(rp)
 	fmt.Fprintf(w, `
 <div class="exec-report">
 <section class="exec-report-cover">
@@ -1059,8 +1130,8 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
       <h1 class="exec-report-title">%s</h1>
       <div class="exec-report-meta">%s &middot; Generated %s</div>
       <div class="mt-4">
-        <div><strong>Latest report:</strong> %s</div>
-        <div><strong>Season report:</strong> %s</div>
+        <div><strong>%s:</strong> %s</div>
+        <div><strong>%s:</strong> %s</div>
       </div>
     </div>
     <div class="col-lg-4 exec-report-actions">
@@ -1078,8 +1149,10 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
   </div>
 </section>
 `, escapeHTML(rp.Cover.PreparedFor), escapeHTML(rp.Cover.Title), escapeHTML(rp.SeasonName),
-		rp.GeneratedAt.Format("02 Jan 2006 15:04"), escapeHTML(rp.Cover.LatestPeriod),
-		escapeHTML(rp.Cover.SeasonPeriod), reportID, escapeHTML(csrfToken), reportID, escapeHTML(csrfToken), reportID, downloadLink)
+		rp.GeneratedAt.Format("02 Jan 2006 15:04"),
+		escapeHTML(latestTitle), escapeHTML(rp.Cover.LatestPeriod),
+		escapeHTML(seasonTitle), escapeHTML(rp.Cover.SeasonPeriod),
+		reportID, escapeHTML(csrfToken), reportID, escapeHTML(csrfToken), reportID, downloadLink)
 
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))
@@ -1103,10 +1176,10 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 	}
 
 	renderNarrativeSection("Executive Summary", narrative.ExecutiveSummary)
-	s.renderAIExecutiveWindow(w, "Latest Report", rp.Latest)
-	renderNarrativeSection("Latest Report Findings", narrative.LatestReport)
-	s.renderAIExecutiveWindow(w, "Season Report", rp.SeasonToDate)
-	renderNarrativeSection("Season Report Findings", narrative.SeasonReport)
+	s.renderAIExecutiveWindow(w, latestTitle, rp.Latest)
+	renderNarrativeSection(latestTitle+" Findings", narrative.LatestReport)
+	s.renderAIExecutiveWindow(w, seasonTitle, rp.SeasonToDate)
+	renderNarrativeSection(seasonTitle+" Findings", narrative.SeasonReport)
 	if canViewUmpireFeedback {
 		s.renderAIExecutiveUmpireWindow(w, "Latest Umpire Reports", rp.LatestUmpires)
 		renderNarrativeSection("Latest Umpire Findings", narrative.LatestUmpireReport)
@@ -1120,7 +1193,7 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 
 func (s *Server) renderAIExecutiveWindow(w http.ResponseWriter, title string, win aiExecutiveWindow) {
 	expectedLabel := "Expected"
-	if title == "Latest Report" {
+	if title == "Latest Report" || title == "Current Period To Date" {
 		expectedLabel = "Fixtures Expected"
 	}
 	complianceClass := execComplianceClass(win.ComplianceRate)
@@ -1253,10 +1326,38 @@ func paragraphsHTML(text string) string {
 	return b.String()
 }
 
+func aiExecutiveLatestTitle(rp aiExecutiveReportPayload) string {
+	if rp.ReportType == "ai_season_to_date" {
+		return "Current Period To Date"
+	}
+	return "Latest Report"
+}
+
+func aiExecutiveSeasonTitle(rp aiExecutiveReportPayload) string {
+	if rp.ReportType == "ai_season_to_date" {
+		return "Season To Date"
+	}
+	return "Season Report"
+}
+
 // generateReport runs in a goroutine and populates the report payload.
 func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, reportType, period string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	if reportType == "ai_season_to_date" {
+		asOf, err := parseAISeasonToDateAsOfDate(period, s.LondonLoc)
+		if err != nil || asOf.IsZero() {
+			if err == nil {
+				err = fmt.Errorf("could not resolve season-to-date as-of date")
+			}
+			s.DB.Exec(ctx, `UPDATE generated_reports SET status='error', error_message=$1, completed_at=now() WHERE id=$2`,
+				err.Error(), reportID)
+			return
+		}
+		s.generateAISeasonToDateReport(ctx, reportID, seasonID, asOf, period)
+		return
+	}
 
 	if reportType == "ai_executive" {
 		s.generateAIExecutiveReport(ctx, reportID, seasonID, weekID, period)
@@ -1424,10 +1525,10 @@ func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, r
 
 	// Sanctions count
 	if weekID != nil {
-		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1 AND week_id=$2`,
+		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1 AND week_id=$2 AND status <> 'overturned'`,
 			seasonID, *weekID).Scan(&rp.SanctionsIssued)
 	} else {
-		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1`, seasonID).
+		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1 AND status <> 'overturned'`, seasonID).
 			Scan(&rp.SanctionsIssued)
 	}
 

@@ -1,6 +1,9 @@
 package httpserver
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseReportWeekPeriod(t *testing.T) {
 	tests := []struct {
@@ -48,5 +51,45 @@ func TestIsAutoAIExecutivePeriod(t *testing.T) {
 	}
 	if isAutoAIExecutivePeriod("2026-W10") {
 		t.Fatal("explicit week should not be treated as auto")
+	}
+}
+
+func TestIsAutoAISeasonToDatePeriod(t *testing.T) {
+	for _, period := range []string{"", "Auto", "today", "now", "season to date", "season-to-date", "  AUTO  "} {
+		if !isAutoAISeasonToDatePeriod(period) {
+			t.Fatalf("%q should be treated as auto", period)
+		}
+	}
+	if isAutoAISeasonToDatePeriod("2026-07-09") {
+		t.Fatal("explicit date should not be treated as auto")
+	}
+}
+
+func TestParseAISeasonToDateAsOfDate(t *testing.T) {
+	loc := time.UTC
+	want := time.Date(2026, 7, 9, 0, 0, 0, 0, loc)
+	for _, period := range []string{"2026-07-09", "2026 season-to-date to 2026-07-09"} {
+		t.Run(period, func(t *testing.T) {
+			got, err := parseAISeasonToDateAsOfDate(period, loc)
+			if err != nil {
+				t.Fatalf("parse failed: %v", err)
+			}
+			if !got.Equal(want) {
+				t.Fatalf("date: got %s want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestParseAISeasonToDateAsOfDateAutoAndInvalid(t *testing.T) {
+	got, err := parseAISeasonToDateAsOfDate("Auto", time.UTC)
+	if err != nil {
+		t.Fatalf("auto should not error: %v", err)
+	}
+	if !got.IsZero() {
+		t.Fatalf("auto date: got %s want zero", got)
+	}
+	if _, err := parseAISeasonToDateAsOfDate("2026-W10", time.UTC); err == nil {
+		t.Fatal("weekly period should not parse as a season-to-date date")
 	}
 }
