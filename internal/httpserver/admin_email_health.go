@@ -228,6 +228,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 		}
 
 		type counts struct {
+			Accepted   int64
+			Failures   int64
 			Bounces    int64
 			Complaints int64
 			Deliveries int64
@@ -236,6 +238,13 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 			Other      int64
 		}
 		var c counts
+		_ = s.DB.QueryRow(ctx, `
+			SELECT
+				(SELECT COUNT(*) FROM captain_reminder_log
+				 WHERE sent_at >= now() - ($1::text || ' days')::interval),
+				(SELECT COUNT(*) FROM captain_reminder_failures
+				 WHERE created_at >= now() - ($1::text || ' days')::interval)
+		`, days).Scan(&c.Accepted, &c.Failures)
 		_ = s.DB.QueryRow(ctx, `
 			SELECT
 				COUNT(*) FILTER (WHERE event_type='bounce'),
@@ -247,6 +256,59 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 			FROM email_events
 			WHERE created_at >= now() - ($1::text || ' days')::interval
 		`, days).Scan(&c.Bounces, &c.Complaints, &c.Deliveries, &c.Opens, &c.Clicks, &c.Other)
+
+		type sentRow struct {
+			SentAt       time.Time
+			MatchDate    time.Time
+			ReminderType string
+			Recipient    string
+			Club         string
+			Team         string
+			Status       string
+			StatusAt     *time.Time
+			Detail       string
+		}
+		var sentEmails []sentRow
+		sentRows, err := s.DB.Query(ctx, `
+			SELECT crl.sent_at, crl.match_date, crl.reminder_type, crl.captain_email,
+			       COALESCE(cl.name, ''), COALESCE(t.name, ''),
+			       COALESCE(ev.event_type, 'accepted'), ev.created_at,
+			       COALESCE(ev.detail, '')
+			FROM captain_reminder_log crl
+			JOIN teams t ON t.id = crl.team_id
+			JOIN clubs cl ON cl.id = t.club_id
+			LEFT JOIN LATERAL (
+				SELECT ee.event_type, ee.created_at,
+				       COALESCE(NULLIF(ee.diagnostic_code, ''), NULLIF(ee.bounce_type, ''),
+				                NULLIF(ee.complaint_feedback_type, ''), '') AS detail
+				FROM email_events ee
+				WHERE LOWER(ee.recipient) = LOWER(crl.captain_email)
+				  AND ee.created_at >= crl.sent_at - interval '5 minutes'
+				  AND ee.created_at <= crl.sent_at + interval '14 days'
+				  AND (ee.subject IS NULL OR ee.subject = '' OR
+				       (ee.subject ILIKE ('%' || t.name || '%')
+				        AND ee.subject ILIKE ('%' || crl.match_date::text || '%')))
+				ORDER BY CASE ee.event_type
+				           WHEN 'bounce' THEN 1 WHEN 'complaint' THEN 2
+				           WHEN 'delivery' THEN 3 WHEN 'open' THEN 4
+				           WHEN 'click' THEN 5 ELSE 6 END,
+				         ee.created_at DESC
+				LIMIT 1
+			) ev ON TRUE
+			WHERE crl.sent_at >= now() - ($1::text || ' days')::interval
+			ORDER BY crl.sent_at DESC
+			LIMIT 200
+		`, days)
+		if err == nil {
+			defer sentRows.Close()
+			for sentRows.Next() {
+				var row sentRow
+				if sentRows.Scan(&row.SentAt, &row.MatchDate, &row.ReminderType, &row.Recipient,
+					&row.Club, &row.Team, &row.Status, &row.StatusAt, &row.Detail) == nil {
+					sentEmails = append(sentEmails, row)
+				}
+			}
+		}
 
 		type eventRow struct {
 			CreatedAt time.Time
@@ -343,14 +405,56 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
   </form>
 </div>`, selected(days, 7), selected(days, 30), selected(days, 90))
 
+		if strings.TrimSpace(os.Getenv("SMTP_HOST")) == "" {
+			fmt.Fprint(w, `<div class="alert alert-danger"><strong>Email sending is not configured.</strong> SMTP_HOST is empty, so the application only logs emails and does not hand them to SES.</div>`)
+		} else if strings.TrimSpace(os.Getenv("SES_CONFIGURATION_SET")) == "" || strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN")) == "" {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>SES tracking is incomplete.</strong> Sends may work, but delivery and bounce results will not appear reliably until SES_CONFIGURATION_SET and SES_SNS_WEBHOOK_TOKEN are configured.</div>`)
+		}
+
 		fmt.Fprintf(w, `<div class="row g-3 mb-4">
+<div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Send accepted</div></div></div>
+<div class="col-auto"><div class="card card-kpi kpi-red p-3 text-center" style="min-width:120px"><div class="kpi-number text-danger">%d</div><div class="kpi-label">Send failures</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-red p-3 text-center" style="min-width:120px"><div class="kpi-number text-danger">%d</div><div class="kpi-label">Bounces</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-gold p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Complaints</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-green p-3 text-center" style="min-width:120px"><div class="kpi-number text-success">%d</div><div class="kpi-label">Deliveries</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Opens</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-purple p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Clicks</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Other</div></div></div>
-</div>`, c.Bounces, c.Complaints, c.Deliveries, c.Opens, c.Clicks, c.Other)
+</div>`, c.Accepted, c.Failures, c.Bounces, c.Complaints, c.Deliveries, c.Opens, c.Clicks, c.Other)
+
+		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Reminder Email Ledger</div><div class="small text-muted">Every reminder accepted by the configured SMTP server, with the strongest SES result received for that message.</div></div><div class="table-responsive"><table class="table table-hover table-gmcl mb-0">
+<thead><tr><th>Sent</th><th>Match date</th><th>Type</th><th>Recipient</th><th>Club / Team</th><th>Status</th><th>Result time</th><th>Detail</th></tr></thead><tbody>`)
+		for _, e := range sentEmails {
+			badge := "text-bg-secondary"
+			label := e.Status
+			switch e.Status {
+			case "bounce":
+				badge, label = "text-bg-danger", "Bounced"
+			case "complaint":
+				badge, label = "text-bg-warning", "Complaint"
+			case "delivery":
+				badge, label = "text-bg-success", "Delivered"
+			case "open":
+				badge, label = "text-bg-info", "Opened"
+			case "click":
+				badge, label = "text-bg-info", "Clicked"
+			case "accepted":
+				label = "Accepted; awaiting SES"
+			}
+			statusAt := `<span class="text-muted">-</span>`
+			if e.StatusAt != nil {
+				statusAt = escapeHTML(e.StatusAt.Format("02 Jan 15:04"))
+			}
+			fmt.Fprintf(w, `<tr><td class="small text-muted">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><span class="badge %s">%s</span></td><td class="small text-muted">%s</td><td class="small text-muted">%s</td></tr>`,
+				e.SentAt.Format("02 Jan 15:04"), e.MatchDate.Format("02 Jan 2006"),
+				escapeHTML(e.ReminderType), escapeHTML(e.Recipient),
+				escapeHTML(strings.TrimSpace(e.Club+" "+e.Team)), badge, escapeHTML(label),
+				statusAt, escapeHTML(redactMagicTokenInText(e.Detail)))
+		}
+		if len(sentEmails) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No reminder emails were accepted for this period.</td></tr>`)
+		}
+		fmt.Fprint(w, `</tbody></table></div></div>`)
 
 		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Reminder Send Failures</div><div class="table-responsive"><table class="table table-hover table-gmcl mb-0">
 <thead><tr><th>Time</th><th>Match date</th><th>Type</th><th>Recipient</th><th>Club / Team</th><th>Stage</th><th>Error</th></tr></thead><tbody>`)

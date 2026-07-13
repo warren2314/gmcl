@@ -12,7 +12,9 @@ https://gmcl.co.uk/webhooks/aws/ses?token=<SES_SNS_WEBHOOK_TOKEN>
 ```
 
 - Events are stored in `email_events`.
-- Admin UI: `/admin/email-health`
+- Admin UI: `/admin/email-health`. The reminder ledger shows every SMTP-accepted
+  n8n/admin reminder and correlates it with the strongest SES result received
+  (`Delivered`, `Bounced`, `Complaint`, or still awaiting an SES event).
 - Optional reminder send failures are stored in `captain_reminder_failures`.
 
 ## 1. Verify the sender domain in SES
