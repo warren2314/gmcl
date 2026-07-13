@@ -361,6 +361,7 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 			Bounces     int64
 			SoftBounces int64
 			HardBounces int64
+			Delays      int64
 			Complaints  int64
 			Deliveries  int64
 			Opens       int64
@@ -380,14 +381,15 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				COUNT(*) FILTER (WHERE event_type='bounce'),
 				COUNT(*) FILTER (WHERE event_type='bounce' AND LOWER(COALESCE(bounce_type,''))='transient'),
 				COUNT(*) FILTER (WHERE event_type='bounce' AND LOWER(COALESCE(bounce_type,''))='permanent'),
+				COUNT(*) FILTER (WHERE event_type='deliverydelay'),
 				COUNT(*) FILTER (WHERE event_type='complaint'),
 				COUNT(*) FILTER (WHERE event_type='delivery'),
 				COUNT(*) FILTER (WHERE event_type='open'),
 				COUNT(*) FILTER (WHERE event_type='click'),
-				COUNT(*) FILTER (WHERE event_type NOT IN ('bounce','complaint','delivery','open','click'))
+				COUNT(*) FILTER (WHERE event_type NOT IN ('bounce','complaint','delivery','deliverydelay','open','click'))
 			FROM email_events
 			WHERE created_at >= now() - make_interval(days => $1)
-		`, days).Scan(&c.Bounces, &c.SoftBounces, &c.HardBounces, &c.Complaints, &c.Deliveries, &c.Opens, &c.Clicks, &c.Other)
+		`, days).Scan(&c.Bounces, &c.SoftBounces, &c.HardBounces, &c.Delays, &c.Complaints, &c.Deliveries, &c.Opens, &c.Clicks, &c.Other)
 
 		type webhookReceiptRow struct {
 			ReceivedAt   time.Time
@@ -446,8 +448,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				        AND ee.subject ILIKE ('%' || crl.match_date::text || '%')))
 				ORDER BY CASE ee.event_type
 				           WHEN 'bounce' THEN 1 WHEN 'complaint' THEN 2
-				           WHEN 'delivery' THEN 3 WHEN 'open' THEN 4
-				           WHEN 'click' THEN 5 ELSE 6 END,
+				           WHEN 'deliverydelay' THEN 3 WHEN 'delivery' THEN 4
+				           WHEN 'open' THEN 5 WHEN 'click' THEN 6 ELSE 7 END,
 				         ee.created_at DESC
 				LIMIT 1
 			) ev ON TRUE
@@ -586,12 +588,13 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 <div class="col-auto"><div class="card card-kpi kpi-red p-3 text-center" style="min-width:120px"><div class="kpi-number text-danger">%d</div><div class="kpi-label">Bounces</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-gold p-3 text-center" style="min-width:120px"><div class="kpi-number text-warning">%d</div><div class="kpi-label">Soft bounces</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-red p-3 text-center" style="min-width:120px"><div class="kpi-number text-danger">%d</div><div class="kpi-label">Hard bounces</div></div></div>
+<div class="col-auto"><div class="card card-kpi kpi-gold p-3 text-center" style="min-width:120px"><div class="kpi-number text-warning">%d</div><div class="kpi-label">Delayed / retrying</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-gold p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Complaints</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-green p-3 text-center" style="min-width:120px"><div class="kpi-number text-success">%d</div><div class="kpi-label">Deliveries</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Opens</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-purple p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Clicks</div></div></div>
 <div class="col-auto"><div class="card card-kpi kpi-blue p-3 text-center" style="min-width:120px"><div class="kpi-number">%d</div><div class="kpi-label">Other</div></div></div>
-</div>`, c.Accepted, c.Failures, c.Bounces, c.SoftBounces, c.HardBounces, c.Complaints, c.Deliveries, c.Opens, c.Clicks, c.Other)
+</div>`, c.Accepted, c.Failures, c.Bounces, c.SoftBounces, c.HardBounces, c.Delays, c.Complaints, c.Deliveries, c.Opens, c.Clicks, c.Other)
 
 		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">SES/SNS Webhook Diagnostics</div><div class="table-responsive"><table class="table table-sm table-gmcl mb-0">
 <thead><tr><th>Received</th><th>SNS type</th><th>Mode</th><th>Status</th><th>Detail</th></tr></thead><tbody>`)
@@ -616,6 +619,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				badge, label = "text-bg-warning", "Complaint"
 			case "delivery":
 				badge, label = "text-bg-success", "Delivered"
+			case "deliverydelay":
+				badge, label = "text-bg-warning", "Delayed / retrying"
 			case "open":
 				badge, label = "text-bg-info", "Opened"
 			case "click":
@@ -669,6 +674,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 				badge = "text-bg-warning"
 			} else if e.EventType == "delivery" {
 				badge = "text-bg-success"
+			} else if e.EventType == "deliverydelay" {
+				badge = "text-bg-warning"
 			}
 			clubTeam := `<span class="text-muted">-</span>`
 			if e.Club != "" || e.Team != "" {

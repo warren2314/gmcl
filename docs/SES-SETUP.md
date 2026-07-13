@@ -169,6 +169,11 @@ your account suppression list. The Email Health page should first show a
 `send` webhook receipt and then a `bounce` event with its SMTP diagnostic. Use
 `success@simulator.amazonses.com` for the equivalent delivery-path test.
 
+Temporary delivery problems appear as `DeliveryDelay` / **Delayed / retrying**
+while SES continues retrying. SES publishes a `Transient` (soft) bounce when it
+eventually stops retrying, so enable both `DELIVERY_DELAY` and `BOUNCE` on the
+configuration-set event destination.
+
 If the webhook diagnostics table remains empty, the request never reached the
 app: check that the SNS HTTPS subscription is `Confirmed`, its endpoint includes
 the correct token, and the SES event destination is enabled on the exact
