@@ -1052,6 +1052,9 @@ func nextWednesdayMidnight(matchDate time.Time) time.Time {
 
 // buildReminderEmail returns subject and plain-text body for a captain reminder.
 func buildReminderEmail(reminderType, captainName, clubName, teamName, matchDate, opposition string, isHome bool, link string) (subject, body string) {
+	if strings.HasPrefix(reminderType, "manual_") {
+		reminderType = "manual"
+	}
 	firstName := strings.SplitN(strings.TrimSpace(captainName), " ", 2)[0]
 	if firstName == "" {
 		firstName = "Captain"
@@ -1125,6 +1128,22 @@ Submit your report now:
 %s
 
 Failure to submit before midnight tonight will result in a yellow card being issued to your team.
+
+Kind regards,
+Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link, expiredLinkNote)
+
+	case "manual":
+		subject = fmt.Sprintf("GMCL Captain's Report — Action required: %s, %s", fixtureDesc, matchDate)
+		body = fmt.Sprintf(`Dear %s,
+
+Our records show that your captain's report for %s — %s (match played %s) has not yet been submitted.
+
+Please use the fresh secure link below to complete the report:
+%s
+
+%s
+
+If you have already submitted the report, please contact the league office so we can investigate.
 
 Kind regards,
 Greater Manchester Cricket League`, firstName, clubName, teamName, matchDate, link, expiredLinkNote)

@@ -15,6 +15,10 @@ https://gmcl.co.uk/webhooks/aws/ses?token=<SES_SNS_WEBHOOK_TOKEN>
 - Admin UI: `/admin/email-health`. The reminder ledger shows every SMTP-accepted
   n8n/admin reminder and correlates it with the strongest SES result received
   (`Delivered`, `Bounced`, `Complaint`, or still awaiting an SES event).
+- The webhook diagnostics table records subscription confirmations, rejected
+  payloads, storage failures, and successfully stored SNS events. It supports
+  both SNS-wrapped and raw HTTP/S delivery and both SES `eventType`
+  (configuration-set publishing) and legacy `notificationType` payloads.
 - Optional reminder send failures are stored in `captain_reminder_failures`.
 
 ## 1. Verify the sender domain in SES
@@ -119,6 +123,10 @@ SES_CONFIGURATION_SET=gmcl-captain-reports
 
 The app adds `X-SES-CONFIGURATION-SET` to every outgoing SMTP message when this variable is set.
 
+Configuration-set events use the SES `eventType` JSON field. This differs from
+the `notificationType` field used by legacy identity feedback notifications;
+the webhook accepts both formats.
+
 Alternative setup:
 
 - Configure feedback notifications directly on the `gmcl.co.uk` SES identity for bounce, complaint, and delivery.
@@ -147,6 +155,24 @@ Then check:
 - AWS SES message/event view shows the message.
 - `/admin/email-health` shows a delivery event after SNS posts it back.
 - The app logs show no `store failed` or `invalid ses message` errors.
+
+### Deterministic bounce test
+
+Send through the app to the official SES mailbox simulator address:
+
+```text
+bounce@simulator.amazonses.com
+```
+
+SES will generate a permanent bounce without adding the simulator address to
+your account suppression list. The Email Health page should first show a
+`send` webhook receipt and then a `bounce` event with its SMTP diagnostic. Use
+`success@simulator.amazonses.com` for the equivalent delivery-path test.
+
+If the webhook diagnostics table remains empty, the request never reached the
+app: check that the SNS HTTPS subscription is `Confirmed`, its endpoint includes
+the correct token, and the SES event destination is enabled on the exact
+configuration set named by `SES_CONFIGURATION_SET`.
 
 ## 6. How to read the evidence
 

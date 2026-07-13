@@ -185,6 +185,28 @@ func TestRedactLeagueAPISecretInError(t *testing.T) {
 	}
 }
 
+func TestBuildManualReminderEmailForFreshMissingLink(t *testing.T) {
+	subject, body := buildReminderEmail(
+		"manual_20260713T141500Z",
+		"Jane Captain",
+		"Example CC",
+		"1st XI",
+		"2026-07-11",
+		"Other CC 1st XI",
+		true,
+		"BUTTON_URL:https://gmcl.co.uk/captain/form?token=fresh",
+	)
+
+	if !strings.Contains(subject, "Action required") {
+		t.Fatalf("subject does not identify the manual reminder: %q", subject)
+	}
+	for _, want := range []string{"Dear Jane", "has not yet been submitted", "fresh secure link", "BUTTON_URL:"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestBuildSanctionEmailYellowUsesNonSubmissionWording(t *testing.T) {
 	matchDate := time.Date(2026, time.May, 10, 0, 0, 0, 0, time.UTC)
 

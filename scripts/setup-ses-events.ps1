@@ -150,7 +150,13 @@ try {
     ) | Out-Null
 } catch {
     if ($_.Exception.Message -match "AlreadyExists|EventDestinationAlreadyExists") {
-        Write-Host "Event destination already exists."
+        Write-Host "Event destination already exists; updating its topic and event types..."
+        Invoke-Aws @(
+            "sesv2", "update-configuration-set-event-destination",
+            "--configuration-set-name", $ConfigurationSetName,
+            "--event-destination-name", "sns-events",
+            "--event-destination", $eventDestination
+        ) | Out-Null
     } else {
         throw
     }

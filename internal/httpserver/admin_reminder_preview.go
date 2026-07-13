@@ -190,10 +190,14 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
 
 		// Summary badges
 		wouldSend := 0
+		missingReports := 0
 		alreadySent := 0
 		submitted := 0
 		noEmail := 0
 		for _, rr := range results {
+			if !rr.HasSubmit && !rr.IsResolved && !rr.IsBye && rr.Email != "" {
+				missingReports++
+			}
 			switch {
 			case rr.HasSubmit:
 				submitted++
@@ -254,7 +258,16 @@ func (s *Server) handleAdminReminderPreview() http.HandlerFunc {
     <input type="hidden" name="date" value="%s">
     <button type="submit" class="btn btn-warning btn-sm">Send game-day reminders for this date</button>
   </form>
-</div>`, escapeHTML(dateStr), escapeHTML(csrfToken), escapeHTML(dateStr))
+`, escapeHTML(dateStr), escapeHTML(csrfToken), escapeHTML(dateStr))
+			if missingReports > 0 {
+				fmt.Fprintf(w, `<form method="POST" action="/admin/reminders/send-date" class="d-inline ms-2" onsubmit="return confirm('Send a fresh secure link to all %d captains who still have not submitted? This intentionally sends again even if they received an earlier reminder.')">
+    <input type="hidden" name="csrf_token" value="%s">
+    <input type="hidden" name="date" value="%s">
+    <input type="hidden" name="mode" value="fresh_missing">
+    <button type="submit" class="btn btn-danger btn-sm">Send fresh links to %d missing reports</button>
+  </form>`, missingReports, escapeHTML(csrfToken), escapeHTML(dateStr), missingReports)
+			}
+			fmt.Fprint(w, `</div>`)
 			fmt.Fprint(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header fw-semibold">Teams with fixtures</div>
@@ -390,16 +403,26 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		sent, skipped, err := s.sendRemindersForDate(r, ctx, email.NewFromEnv(), matchDate, "game_day")
+		reminderType := "game_day"
+		auditAction := "admin_send_game_day_reminders"
+		if strings.TrimSpace(r.FormValue("mode")) == "fresh_missing" {
+			// A unique type deliberately bypasses the normal per-type deduplication,
+			// while retaining a complete audit/send-log record for the resend.
+			reminderType = "manual_" + time.Now().UTC().Format("20060102T150405Z")
+			auditAction = "admin_send_fresh_missing_reminders"
+		}
+
+		sent, skipped, err := s.sendRemindersForDate(r, ctx, email.NewFromEnv(), matchDate, reminderType)
 		redirect := fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", url.QueryEscape(dateStr), sent, skipped)
 		if err != nil {
 			http.Redirect(w, r, redirect+"&error="+url.QueryEscape("Some reminders failed: "+err.Error()), http.StatusSeeOther)
 			return
 		}
-		s.audit(ctx, r, "admin", nil, "admin_send_game_day_reminders", "reminder", nil, map[string]any{
-			"match_date": dateStr,
-			"sent":       sent,
-			"skipped":    skipped,
+		s.audit(ctx, r, "admin", nil, auditAction, "reminder", nil, map[string]any{
+			"match_date":    dateStr,
+			"reminder_type": reminderType,
+			"sent":          sent,
+			"skipped":       skipped,
 		})
 		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
