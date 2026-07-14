@@ -51,6 +51,9 @@ func starredDivisionLabel(name, competitionType string) string {
 			if marker == "premier" {
 				label = strings.Replace(label, "Premier League", "Premier", 1)
 				label = strings.Replace(label, "Premier league", "Premier", 1)
+				if strings.EqualFold(label, "Premier") {
+					label = "Premier 1"
+				}
 			}
 			return label
 		}

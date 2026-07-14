@@ -33,7 +33,7 @@ func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 		{ClubKey: "beta", PlayingDay: "Saturday", CompetitionType: "League", CompetitionName: "GMCL Championship", TeamLevel: 1},
 		{ClubKey: "beta", PlayingDay: "Sunday", CompetitionType: "League", CompetitionName: "Sunday Premier", TeamLevel: 1},
 	}
-	got := saturdayStarredClubDivisions(clubs, appearances)
+	got := saturdayStarredClubDivisions(clubs, appearances, nil)
 	want := []string{"Premier 1", "Championship", "Unassigned / no Saturday division"}
 	if len(got) != len(want) {
 		t.Fatalf("divisions=%d want %d: %#v", len(got), len(want), got)
@@ -45,5 +45,15 @@ func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	}
 	if len(got[0].Clubs) != 1 || got[0].Clubs[0] != "alpha" {
 		t.Fatalf("Alpha was not assigned by its 1st XI division: %#v", got[0])
+	}
+	overridden := saturdayStarredClubDivisions(clubs, appearances, map[string]string{"alpha": "Division 4"})
+	foundOverride := false
+	for _, division := range overridden {
+		if division.Label == "Division 4" && len(division.Clubs) == 1 && division.Clubs[0] == "alpha" {
+			foundOverride = true
+		}
+	}
+	if !foundOverride {
+		t.Fatal("manual division override did not replace the inferred assignment")
 	}
 }
