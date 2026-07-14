@@ -54,6 +54,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 		}
+		findingStates := s.loadStarredFindingStates(ctx, year)
 		currentA, currentB := 0, 0
 		now := cutoff
 		for _, p := range periods {
@@ -146,9 +147,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 }());
 </script>`)
 
-		fmt.Fprint(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header fw-semibold">Potential List A / List B breaches</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Competition</th><th>Evidence</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Potential List A / List B breaches</div><div class="small text-muted">Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Competition</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
 		if len(eval.Breaches) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-3">No potential breaches found in imported scorecards.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No potential breaches found in imported scorecards.</td></tr>`)
 		}
 		for i, b := range eval.Breaches {
 			if i >= 200 {
@@ -158,7 +159,8 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			if b.NeedsExemptionReview {
 				evidence = "Junior tag — verify exemption"
 			}
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID)
+			state := findingStates[starredFindingKey(b)]
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year))
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 		if clubIssueCount > 0 {
