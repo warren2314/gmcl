@@ -57,3 +57,27 @@ func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 		t.Fatal("manual division override did not replace the inferred assignment")
 	}
 }
+
+func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T) {
+	periods := []starred.Period{
+		{ClubKey: "alpha", PlayerKey: "amy", PlayerName: "Amy Player"},
+		{ClubKey: "alpha", PlayerKey: "zed", PlayerName: "Zed Player"},
+	}
+	appearances := []starred.Appearance{
+		{MatchID: 1, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 99, PlayerKey: "different-name"},
+		{MatchID: 1, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 99, PlayerKey: "different-name"},
+		{MatchID: 2, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 99, PlayerKey: "different-name"},
+		{MatchID: 3, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 2, PlayerID: 99, PlayerKey: "different-name"},
+		{MatchID: 4, ClubKey: "alpha", PlayingDay: "Sunday", TeamLevel: 2, PlayerID: 99, PlayerKey: "different-name"},
+		{MatchID: 5, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 100, PlayerKey: "amy"},
+		{MatchID: 6, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 3, PlayerKey: "zed"},
+	}
+	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "amy", PlayerID: 99}}
+	got := starredSaturdayTeamCounts(periods, appearances, mappings)
+	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 1 {
+		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=1", got["alpha|amy"])
+	}
+	if got["alpha|zed"][3] != 1 {
+		t.Fatalf("name-matched Zed counts=%#v want 3rd=1", got["alpha|zed"])
+	}
+}

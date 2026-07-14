@@ -237,7 +237,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
 	case "club-list":
-		s.renderStarredClubList(w, ctx, year, cutoff, periods, reviewApps, r)
+		s.renderStarredClubList(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 	case "list-a", "list-b":
 		listType := "A"
 		if view == "list-b" {
@@ -427,6 +427,52 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 	return active
 }
 
+func starredSaturdayTeamCounts(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping) map[string]map[int]int {
+	mappedIDs := make(map[string]int64, len(mappings))
+	for _, mapping := range mappings {
+		mappedIDs[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = mapping.PlayerID
+	}
+	counts := make(map[string]map[int]int, len(periods))
+	for _, period := range periods {
+		key := period.ClubKey + "|" + period.PlayerKey
+		counts[key] = make(map[int]int)
+		mappedID := mappedIDs[key]
+		seen := make(map[string]struct{})
+		for _, appearance := range appearances {
+			if appearance.ClubKey != period.ClubKey || appearance.TeamLevel < 1 || !strings.EqualFold(appearance.PlayingDay, "Saturday") {
+				continue
+			}
+			matches := appearance.PlayerKey == period.PlayerKey
+			if mappedID > 0 {
+				matches = appearance.PlayerID == mappedID
+			}
+			if !matches {
+				continue
+			}
+			appearanceKey := strconv.FormatInt(appearance.MatchID, 10) + "|" + strconv.Itoa(appearance.TeamLevel)
+			if _, duplicate := seen[appearanceKey]; duplicate {
+				continue
+			}
+			seen[appearanceKey] = struct{}{}
+			counts[key][appearance.TeamLevel]++
+		}
+	}
+	return counts
+}
+
+func starredTeamLevelLabel(level int) string {
+	switch level {
+	case 1:
+		return "1st XI"
+	case 2:
+		return "2nd XI"
+	case 3:
+		return "3rd XI"
+	default:
+		return strconv.Itoa(level) + "th XI"
+	}
+}
+
 type starredSaturdayDivision struct {
 	Label string
 	Clubs []string
@@ -506,7 +552,7 @@ func (s *Server) loadStarredDivisionOverrides(ctx context.Context, year int) map
 	return overrides
 }
 
-func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, r *http.Request) {
+func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
 	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	clubNames := make(map[string]string)
@@ -589,6 +635,15 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 		return
 	}
 	active := activeStarredPeriodsByClub(periods, cutoff, selectedClub)
+	teamCounts := starredSaturdayTeamCounts(active, appearances, mappings)
+	maxTeamLevel := 4
+	for _, playerCounts := range teamCounts {
+		for level := range playerCounts {
+			if level > maxTeamLevel {
+				maxTeamLevel = level
+			}
+		}
+	}
 	listACount, listBCount := 0, 0
 	for _, period := range active {
 		if period.ListType == "A" {
@@ -597,17 +652,33 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 			listBCount++
 		}
 	}
-	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><h5 class="mb-0">%s</h5><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), listACount, listBCount)
-	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><h5 class="mb-0">%s</h5><div class="small text-muted">Saturday appearances from imported scorecards through %s.</div></div><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), cutoff.Format("02 January 2006"), listACount, listBCount)
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th>`)
+	for level := 1; level <= maxTeamLevel; level++ {
+		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
+	}
+	fmt.Fprint(w, `<th class="text-center">Total</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
 	for _, period := range active {
 		badgeClass := "bg-primary"
 		if period.ListType == "A" {
 			badgeClass = "bg-danger"
 		}
-		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName))
+		playerCounts := teamCounts[period.ClubKey+"|"+period.PlayerKey]
+		total := 0
+		for level := 1; level <= maxTeamLevel; level++ {
+			count := playerCounts[level]
+			total += count
+			cellClass := "text-center"
+			if count == 0 {
+				cellClass += " text-muted"
+			}
+			fmt.Fprintf(w, `<td class="%s">%d</td>`, cellClass, count)
+		}
+		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td>%s</td><td>%s</td><td>%s</td></tr>`, total, period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
 	}
 	if len(active) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active starred players found for this club.</td></tr>`)
+		fmt.Fprintf(w, `<tr><td colspan="%d" class="text-center text-muted py-3">No active starred players found for this club.</td></tr>`, maxTeamLevel+6)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
