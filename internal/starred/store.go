@@ -102,7 +102,7 @@ func StoreSnapshot(ctx context.Context, pool *db.Pool, snapshot Snapshot, body [
 		return ImportResult{}, err
 	}
 	for _, e := range snapshot.Entries {
-		_, err = tx.Exec(ctx, `INSERT INTO starred_list_entries(import_run_id,season_year,club_name,club_key,list_type,slot_number,player_name,player_key,raw_value,tags) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, runID, e.SeasonYear, e.ClubName, e.ClubKey, e.ListType, e.Slot, e.PlayerName, e.PlayerKey, e.RawValue, e.Tags)
+		_, err = tx.Exec(ctx, `INSERT INTO starred_list_entries(import_run_id,season_year,club_name,club_key,list_type,slot_number,player_name,player_key,raw_value,tags) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, runID, e.SeasonYear, e.ClubName, e.ClubKey, e.ListType, e.Slot, e.PlayerName, e.PlayerKey, e.RawValue, nonNilStrings(e.Tags))
 		if err != nil {
 			return ImportResult{}, err
 		}
@@ -124,7 +124,7 @@ func StoreSnapshot(ctx context.Context, pool *db.Pool, snapshot Snapshot, body [
 		}
 	}
 	for _, p := range periods {
-		_, err = tx.Exec(ctx, `INSERT INTO starred_list_periods(import_run_id,season_year,club_name,club_key,list_type,player_name,player_key,valid_from,valid_to,tags,source_kind,source_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, runID, p.SeasonYear, p.ClubName, p.ClubKey, p.ListType, p.PlayerName, p.PlayerKey, p.ValidFrom, p.ValidTo, p.Tags, p.SourceKind, nullInt(p.SourceSequence))
+		_, err = tx.Exec(ctx, `INSERT INTO starred_list_periods(import_run_id,season_year,club_name,club_key,list_type,player_name,player_key,valid_from,valid_to,tags,source_kind,source_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, runID, p.SeasonYear, p.ClubName, p.ClubKey, p.ListType, p.PlayerName, p.PlayerKey, p.ValidFrom, p.ValidTo, nonNilStrings(p.Tags), p.SourceKind, nullInt(p.SourceSequence))
 		if err != nil {
 			return ImportResult{}, err
 		}
@@ -391,6 +391,13 @@ func nullInt(v int) any {
 		return nil
 	}
 	return v
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func MarshalScorecard(match leagueapi.ScorecardMatch) []byte { b, _ := json.Marshal(match); return b }

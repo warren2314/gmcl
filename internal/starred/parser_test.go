@@ -80,3 +80,10 @@ func TestNormalizeClubAliases(t *testing.T) {
 		t.Fatal("expected ampersand alias")
 	}
 }
+
+func TestNonNilStringsUsesEmptyPostgresArrayForMissingTags(t *testing.T) {
+	got := nonNilStrings(nil)
+	if got == nil || len(got) != 0 {
+		t.Fatalf("got %#v; want a non-nil empty slice", got)
+	}
+}
