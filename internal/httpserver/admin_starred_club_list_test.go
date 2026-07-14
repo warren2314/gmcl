@@ -1,11 +1,23 @@
 package httpserver
 
 import (
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"cricket-ground-feedback/internal/starred"
 )
+
+func TestRedirectStarredAnchorPreservesReviewSection(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/admin/starred-players/mapping", nil)
+	redirectStarredAnchor(recorder, request, 2026, "Confirmed", "", "identity-matches")
+	location := recorder.Header().Get("Location")
+	if !strings.HasSuffix(location, "#identity-matches") || !strings.Contains(location, "message=Confirmed") {
+		t.Fatalf("redirect did not preserve section: %q", location)
+	}
+}
 
 func TestActiveStarredPeriodsByClubUsesCutoffAndListOrder(t *testing.T) {
 	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
