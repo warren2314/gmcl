@@ -248,7 +248,7 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 		defer cancel()
 		breach, err := s.verifiedStarredBreach(ctx, year, matchID, playerID, clubKey, playerKey, listType)
 		if err != nil {
-			redirectStarred(w, r, year, "", err.Error())
+			redirectStarredAnchor(w, r, year, "", err.Error(), "potential-breaches")
 			return
 		}
 		key := starredFindingKey(breach)
@@ -262,11 +262,11 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 			WHERE starred_finding_reviews.status <> 'sent'
 			RETURNING id`, key, year, matchID, breach.Appearance.MatchDate, breach.Appearance.ClubName, breach.Appearance.ClubKey, breach.Appearance.TeamName, breach.Appearance.PlayerID, breach.Appearance.PlayerName, breach.Appearance.PlayerKey, breach.ListType, note, adminID).Scan(&findingID)
 		if err != nil {
-			redirectStarred(w, r, year, "", "Could not close finding: "+err.Error())
+			redirectStarredAnchor(w, r, year, "", "Could not close finding: "+err.Error(), "potential-breaches")
 			return
 		}
 		s.audit(ctx, r, "admin", adminID, "starred_finding_accepted", "starred_finding_review", &findingID, map[string]any{"match_id": matchID, "player": breach.Appearance.PlayerName})
-		redirectStarred(w, r, year, "Finding accepted and closed with no letter.", "")
+		redirectStarredAnchor(w, r, year, "Finding accepted and closed with no letter.", "", "potential-breaches")
 	}
 }
 
@@ -492,7 +492,7 @@ func (s *Server) handleAdminStarredFindingApprove() http.HandlerFunc {
 		}
 		_, _ = s.DB.Exec(ctx, `UPDATE starred_finding_reviews SET status='sent',sent_at=now(),send_error=NULL,updated_at=now() WHERE id=$1`, id)
 		s.audit(ctx, r, "admin", adminID, "starred_finding_letter_sent", "starred_finding_review", &id, map[string]any{"recipient": recipient})
-		redirectStarred(w, r, year, "Approved letter sent to "+recipient+".", "")
+		redirectStarredAnchor(w, r, year, "Approved letter sent to "+recipient+".", "", "potential-breaches")
 	}
 }
 

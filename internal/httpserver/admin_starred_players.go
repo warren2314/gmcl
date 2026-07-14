@@ -202,7 +202,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 
 		if len(suggestions) > 0 {
-			fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Suggested identity matches</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th></th></tr></thead><tbody>`)
+			fmt.Fprint(w, `<div id="identity-matches" class="card shadow-sm mb-4"><div class="card-header fw-semibold">Suggested identity matches</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th></th></tr></thead><tbody>`)
 			for i, x := range suggestions {
 				if i >= 100 {
 					break
@@ -826,10 +826,10 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 		defer cancel()
 		err = starred.SaveIdentityMapping(ctx, s.DB, year, r.FormValue("club_key"), r.FormValue("player_key"), id, r.FormValue("candidate_name"), adminIDForRequest(r))
 		if err != nil {
-			redirectStarred(w, r, year, "", err.Error())
+			redirectStarredAnchor(w, r, year, "", err.Error(), "identity-matches")
 			return
 		}
-		redirectStarred(w, r, year, "Identity mapping confirmed.", "")
+		redirectStarredAnchor(w, r, year, "Identity mapping confirmed.", "", "identity-matches")
 	}
 }
 
@@ -877,6 +877,10 @@ func (s *Server) handleStarredDivisionOverride(w http.ResponseWriter, r *http.Re
 }
 
 func redirectStarred(w http.ResponseWriter, r *http.Request, year int, message, errMsg string) {
+	redirectStarredAnchor(w, r, year, message, errMsg, "")
+}
+
+func redirectStarredAnchor(w http.ResponseWriter, r *http.Request, year int, message, errMsg, anchor string) {
 	q := url.Values{}
 	q.Set("season", strconv.Itoa(year))
 	if message != "" {
@@ -885,5 +889,9 @@ func redirectStarred(w http.ResponseWriter, r *http.Request, year int, message, 
 	if errMsg != "" {
 		q.Set("error", errMsg)
 	}
-	http.Redirect(w, r, "/admin/starred-players?"+q.Encode(), http.StatusSeeOther)
+	destination := "/admin/starred-players?" + q.Encode()
+	if anchor != "" {
+		destination += "#" + anchor
+	}
+	http.Redirect(w, r, destination, http.StatusSeeOther)
 }
