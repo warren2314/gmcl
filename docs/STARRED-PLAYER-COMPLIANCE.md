@@ -33,7 +33,10 @@ those admin controls are added; findings should be reviewed before sanctions.
 
 1. Deploy migration `0033_starred_player_compliance.sql`.
 2. Open `/admin/starred-players` and click **Sync published list**.
-3. Click **Import next 25 scorecards** until no further scorecards import.
+3. Click **Import all pending scorecards** once. Keep the page open while it
+   automatically works through the queue in batches of 50 and displays live
+   progress. Refreshing or closing the page safely stops after the current
+   batch; clicking the button again resumes from the remaining scorecards.
 4. Confirm suggested identity mappings and review ambiguous amendments.
 
 Scorecard imports are incremental. A fixture is revisited only when its

@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -59,6 +60,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 		matchCount := 0
 		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports WHERE season_year=$1`, year).Scan(&matchCount)
+		pendingCount, _ := starred.PendingMatchCount(ctx, s.DB, year)
 		clubIssueCount := 0
 		for _, status := range clubStatuses {
 			if !status.Compliant {
@@ -84,15 +86,57 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		fmt.Fprintf(w, `<div class="row g-3 mb-4">
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Current List A</div><div class="display-6">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Current List B</div><div class="display-6">%d</div></div></div></div>
-<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Scorecards</div><div class="display-6">%d</div></div></div></div>
+<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Scorecards</div><div class="display-6">%d</div><div class="small text-muted">%d pending</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Appearances</div><div class="display-6">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Potential breaches</div><div class="display-6 text-danger">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div></div></div></div>
-</div>`, currentA, currentB, matchCount, len(apps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
+</div>`, currentA, currentB, matchCount, pendingCount, len(apps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Synchronisation</div><div class="card-body d-flex flex-wrap gap-3">
 <form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments.</div></form>
-<form method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Import next 25 scorecards</button><div class="form-text">Only missing or changed cached fixtures.</div></form>
+<form id="starred-scorecard-sync-form" method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button id="starred-scorecard-sync-button" class="btn btn-primary">Import all pending scorecards</button><div class="form-text">Runs automatically in batches of 50. Keep this page open until complete.</div><div id="starred-scorecard-sync-progress" class="small mt-2" aria-live="polite"></div></form>
 </div></div>`, escapeHTML(csrf), year, escapeHTML(csrf), year)
+		fmt.Fprint(w, `<script>
+(function () {
+  const form = document.getElementById('starred-scorecard-sync-form');
+  const button = document.getElementById('starred-scorecard-sync-button');
+  const progress = document.getElementById('starred-scorecard-sync-progress');
+  if (!form || !window.fetch) return;
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    button.disabled = true;
+    let matches = 0, appearances = 0, batches = 0, failures = [];
+    try {
+      while (true) {
+        batches++;
+        progress.className = 'small mt-2 text-primary';
+        progress.textContent = 'Importing batch ' + batches + '… ' + matches + ' scorecards imported so far.';
+        const body = new FormData(form);
+        body.set('ajax', '1');
+        const response = await fetch(form.action, {method: 'POST', body: body, headers: {'Accept': 'application/json'}});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Scorecard import failed');
+        matches += result.matches;
+        appearances += result.appearances;
+        if (result.failures) failures = failures.concat(result.failures);
+        progress.textContent = matches + ' scorecards and ' + appearances + ' appearances imported; ' + result.pending + ' pending.';
+        if (result.pending === 0) {
+          progress.className = 'small mt-2 text-success';
+          progress.textContent = 'Complete: ' + matches + ' scorecards and ' + appearances + ' appearances imported. Refreshing results…';
+          window.setTimeout(function () { window.location.reload(); }, 1200);
+          return;
+        }
+        if (result.matches === 0) {
+          throw new Error('No further scorecards could be imported. ' + result.pending + ' remain pending. ' + failures.slice(-5).join('; '));
+        }
+      }
+    } catch (error) {
+      progress.className = 'small mt-2 text-danger';
+      progress.textContent = error.message;
+      button.disabled = false;
+    }
+  });
+}());
+</script>`)
 
 		fmt.Fprint(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Potential List A / List B breaches</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Competition</th><th>Evidence</th></tr></thead><tbody>`)
 		if len(eval.Breaches) == 0 {
@@ -204,10 +248,20 @@ func (s *Server) handleAdminStarredPlayersSyncAppearances() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		client := leagueapi.NewClient(leagueapi.NewConfigFromEnv())
-		result, err := starred.SyncPendingScorecards(ctx, s.DB, client, year, 25)
+		result, err := starred.SyncPendingScorecards(ctx, s.DB, client, year, 50)
 		if err != nil {
+			if r.FormValue("ajax") == "1" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
 			redirectStarred(w, r, year, "", err.Error())
 			return
+		}
+		pending, pendingErr := starred.PendingMatchCount(ctx, s.DB, year)
+		if pendingErr != nil {
+			pending = -1
 		}
 		msg := fmt.Sprintf("Imported %d scorecards and %d player appearances.", result.Matches, result.Appearances)
 		errMsg := ""
@@ -215,6 +269,11 @@ func (s *Server) handleAdminStarredPlayersSyncAppearances() http.HandlerFunc {
 			errMsg = strings.Join(result.Failures, "; ")
 		}
 		s.audit(ctx, r, "admin", nil, "starred_scorecards_sync", "starred_match_import", nil, map[string]any{"season": year, "matches": result.Matches, "appearances": result.Appearances, "failures": len(result.Failures)})
+		if r.FormValue("ajax") == "1" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "matches": result.Matches, "appearances": result.Appearances, "failures": result.Failures, "pending": pending})
+			return
+		}
 		redirectStarred(w, r, year, msg, errMsg)
 	}
 }
