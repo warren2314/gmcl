@@ -23,7 +23,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	var out Evaluation
 	for _, a := range appearances {
-		if a.TeamLevel == 0 {
+		if a.TeamLevel == 0 || a.MatchDate.After(cutoff) {
 			continue
 		}
 		for _, p := range periods {
@@ -92,6 +92,14 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 		return out.Candidates[i].PlayerName < out.Candidates[j].PlayerName
 	})
 	return out
+}
+
+func ReviewCutoff(seasonYear int, now time.Time) time.Time {
+	cutoff := time.Date(seasonYear, time.June, 30, 23, 59, 59, 0, time.UTC)
+	if now.Before(cutoff) {
+		return now
+	}
+	return cutoff
 }
 
 func SuggestMappings(periods []Period, appearances []Appearance, mappings []IdentityMapping, asOf time.Time) []MappingSuggestion {

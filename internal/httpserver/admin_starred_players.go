@@ -38,17 +38,23 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		year := starredSeasonYear(r)
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
+		cutoff := starred.ReviewCutoff(year, time.Now())
 		periods, apps, mappings, issues, loadErr := starred.LoadEvaluationInputs(ctx, s.DB, year)
-		clubStatuses, _ := starred.LoadClubStatuses(ctx, s.DB, year, time.Now())
-		cutoff := time.Date(year, time.June, 30, 23, 59, 59, 0, time.UTC)
+		clubStatuses, _ := starred.LoadClubStatuses(ctx, s.DB, year, cutoff)
+		reviewApps := make([]starred.Appearance, 0, len(apps))
+		for _, appearance := range apps {
+			if !appearance.MatchDate.After(cutoff) {
+				reviewApps = append(reviewApps, appearance)
+			}
+		}
 		eval := starred.Evaluation{}
 		var suggestions []starred.MappingSuggestion
 		if loadErr == nil {
-			eval = starred.Evaluate(periods, apps, mappings, cutoff)
-			suggestions = starred.SuggestMappings(periods, apps, mappings, time.Now())
+			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
+			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 		}
 		currentA, currentB := 0, 0
-		now := time.Now()
+		now := cutoff
 		for _, p := range periods {
 			if !now.Before(p.ValidFrom) && (p.ValidTo == nil || now.Before(*p.ValidTo)) {
 				if p.ListType == "A" {
@@ -59,7 +65,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		matchCount := 0
-		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports WHERE season_year=$1`, year).Scan(&matchCount)
+		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports WHERE season_year=$1 AND match_date <= $2::date`, year, cutoff).Scan(&matchCount)
 		pendingCount, _ := starred.PendingMatchCount(ctx, s.DB, year)
 		clubIssueCount := 0
 		for _, status := range clubStatuses {
@@ -72,7 +78,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		pageHead(w, "Starred Players")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
-<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 checks from the published lists and Play-Cricket team sheets.</p></div>
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 30 June.</p></div>
 <form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div>`, year)
 		if msg := r.URL.Query().Get("message"); msg != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
@@ -84,13 +90,13 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-warning">No imported starred list is available for %d yet. Sync the published list below.</div>`, year)
 		}
 		fmt.Fprintf(w, `<div class="row g-3 mb-4">
-<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Current List A</div><div class="display-6">%d</div></div></div></div>
-<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Current List B</div><div class="display-6">%d</div></div></div></div>
+<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">List A at cutoff</div><div class="display-6">%d</div></div></div></div>
+<div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">List B at cutoff</div><div class="display-6">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Scorecards</div><div class="display-6">%d</div><div class="small text-muted">%d pending</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Appearances</div><div class="display-6">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Potential breaches</div><div class="display-6 text-danger">%d</div></div></div></div>
 <div class="col-md-2"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div></div></div></div>
-</div>`, currentA, currentB, matchCount, pendingCount, len(apps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
+</div>`, currentA, currentB, matchCount, pendingCount, len(reviewApps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Synchronisation</div><div class="card-body d-flex flex-wrap gap-3">
 <form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments.</div></form>
 <form id="starred-scorecard-sync-form" method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button id="starred-scorecard-sync-button" class="btn btn-primary">Import all pending scorecards</button><div class="form-text">Runs automatically in batches of 50. Keep this page open until complete.</div><div id="starred-scorecard-sync-progress" class="small mt-2" aria-live="polite"></div></form>

@@ -59,6 +59,8 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 		{MatchID: 1, SeasonYear: 2026, MatchDate: start, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "1st XI", TeamLevel: 1, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
 		{MatchID: 2, SeasonYear: 2026, MatchDate: start.AddDate(0, 0, 7), CompetitionType: "Cup", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
 		{MatchID: 3, SeasonYear: 2026, MatchDate: start, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "1st XI", TeamLevel: 1, PlayerID: 11, PlayerName: "New Player", PlayerKey: NormalizeName("New Player")},
+		{MatchID: 4, SeasonYear: 2026, MatchDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
+		{MatchID: 5, SeasonYear: 2026, MatchDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "1st XI", TeamLevel: 1, PlayerID: 12, PlayerName: "July Player", PlayerKey: NormalizeName("July Player")},
 	}
 	e := Evaluate(periods, apps, nil, time.Date(2026, 6, 30, 23, 59, 0, 0, time.UTC))
 	if len(e.Breaches) != 1 {
@@ -71,6 +73,14 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 		if c.PlayerName == "Jane Smith" && c.AllLeague != 1 {
 			t.Fatalf("cup was included in league denominator: %#v", c)
 		}
+	}
+}
+
+func TestReviewCutoffStopsAtJune30(t *testing.T) {
+	got := ReviewCutoff(2026, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
+	want := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("cutoff=%s want %s", got, want)
 	}
 }
 
