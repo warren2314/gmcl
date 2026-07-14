@@ -44,7 +44,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		clubStatuses, _ := starred.LoadClubStatuses(ctx, s.DB, year, cutoff)
 		reviewApps := make([]starred.Appearance, 0, len(apps))
 		for _, appearance := range apps {
-			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) {
+			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) && !starred.IsWomensAppearance(appearance) {
 				reviewApps = append(reviewApps, appearance)
 			}
 		}
@@ -67,7 +67,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		matchCount := 0
-		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports sm WHERE sm.season_year=$1 AND sm.match_date <= $2::date AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0)`, year, cutoff).Scan(&matchCount)
+		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports sm WHERE sm.season_year=$1 AND sm.match_date <= $2::date AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0) AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')`, year, cutoff).Scan(&matchCount)
 		pendingCount, _ := starred.PendingMatchCount(ctx, s.DB, year)
 		clubIssueCount := 0
 		for _, status := range clubStatuses {
@@ -271,10 +271,11 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 				LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sm.play_cricket_match_id
 				WHERE sm.season_year=$1 AND sm.match_date <= $2::date
 				  AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0)
+				  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')
 				  AND CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3`, year, cutoff, search).Scan(&scorecardTotal)
 		}
 		fmt.Fprintf(w, `Open-age scorecards through 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="scorecards"><div class="col-md-8"><label class="form-label small" for="scorecard-search">Search club, team, competition or match ID</label><input id="scorecard-search" class="form-control" name="q" value="%s" placeholder="e.g. Droylsden, 2nd XI or 7458963"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail">Clear</a></div></form><div class="form-text">Only classified open-age XI fixtures are shown; junior scorecards are excluded.</div></div>`, year, escapeHTML(query), year)
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="scorecards"><div class="col-md-8"><label class="form-label small" for="scorecard-search">Search club, team, competition or match ID</label><input id="scorecard-search" class="form-control" name="q" value="%s" placeholder="e.g. Droylsden, 2nd XI or 7458963"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail">Clear</a></div></form><div class="form-text">Only classified men's open-age XI fixtures are shown; women's and junior scorecards are excluded from this review.</div></div>`, year, escapeHTML(query), year)
 		rows, err := s.DB.Query(ctx, `
 			SELECT sm.play_cricket_match_id,sm.match_date,
 			       COALESCE(lf.home_club_name,''),COALESCE(lf.home_team_name,''),
@@ -284,6 +285,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sm.play_cricket_match_id
 			WHERE sm.season_year=$1 AND sm.match_date <= $2::date
 			  AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0)
+			  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')
 			  AND ($3 = '%%' OR CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3)
 			ORDER BY sm.match_date DESC,sm.play_cricket_match_id DESC
 			LIMIT $4 OFFSET $5`, year, cutoff, search, pageSize, offset)
@@ -321,7 +323,8 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		err := s.DB.QueryRow(ctx, `
 			SELECT sm.match_date,COALESCE(lf.home_club_name,''),COALESCE(lf.home_team_name,''),COALESCE(lf.away_club_name,''),COALESCE(lf.away_team_name,''),COALESCE(sm.competition_type,''),COALESCE(sm.competition_name,'')
 			FROM starred_match_imports sm LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sm.play_cricket_match_id
-			WHERE sm.play_cricket_match_id=$1 AND sm.season_year=$2`, matchID, year).Scan(&date, &homeClub, &homeTeam, &awayClub, &awayTeam, &competitionType, &competitionName)
+			WHERE sm.play_cricket_match_id=$1 AND sm.season_year=$2
+			  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')`, matchID, year).Scan(&date, &homeClub, &homeTeam, &awayClub, &awayTeam, &competitionType, &competitionName)
 		if err != nil {
 			fmt.Fprintf(w, `Match %d</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail">Back to scorecards</a></div><div class="alert alert-danger m-3">%s</div></div>`, matchID, year, escapeHTML(err.Error()))
 			return
@@ -365,7 +368,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		search := "%" + query + "%"
 		if query != "" {
-			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*)::int FROM starred_appearances WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0 AND CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3`, year, cutoff, search).Scan(&appearanceTotal)
+			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*)::int FROM starred_appearances WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0 AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)' AND CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3`, year, cutoff, search).Scan(&appearanceTotal)
 		}
 		fmt.Fprintf(w, `Open-age player appearances through 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
 		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="appearances"><div class="col-md-8"><label class="form-label small" for="appearance-search">Search player, club, team or player ID</label><input id="appearance-search" class="form-control" name="q" value="%s" placeholder="e.g. player name, club or ID"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=appearances#card-detail">Clear</a></div></form></div>`, year, escapeHTML(query), year)
@@ -373,6 +376,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			SELECT match_date,club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),COALESCE(competition_name,competition_type,''),play_cricket_match_id
 			FROM starred_appearances
 			WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0
+			  AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)'
 			  AND ($3 = '%%' OR CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3)
 			ORDER BY match_date DESC,club_name,team_name,player_name
 			LIMIT $4 OFFSET $5`, year, cutoff, search, pageSize, offset)

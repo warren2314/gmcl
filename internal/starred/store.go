@@ -144,6 +144,7 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND CONCAT_WS(' ',lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,lf.payload->>'competition_name') !~* '(wom(en|an)|ladies|female|girls)'
 		  AND (
 		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
 		    OR COALESCE(lf.away_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
@@ -178,6 +179,7 @@ func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int,
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND CONCAT_WS(' ',lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,lf.payload->>'competition_name') !~* '(wom(en|an)|ladies|female|girls)'
 		  AND (
 		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
 		    OR COALESCE(lf.away_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
