@@ -167,6 +167,22 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 	return ids, rows.Err()
 }
 
+func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int, error) {
+	var count int
+	err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)::int
+		FROM league_fixtures lf
+		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
+		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND (sm.play_cricket_match_id IS NULL OR (
+		        COALESCE(lf.payload->>'last_updated','') <> ''
+		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
+		      ))
+		  AND lf.match_date <= CURRENT_DATE
+	`, seasonYear).Scan(&count)
+	return count, err
+}
+
 func SyncPendingScorecards(ctx context.Context, pool *db.Pool, client *leagueapi.Client, seasonYear, limit int) (ScorecardSyncResult, error) {
 	ids, err := PendingMatchIDs(ctx, pool, seasonYear, limit)
 	if err != nil {
