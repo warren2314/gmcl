@@ -104,7 +104,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
   form.addEventListener('submit', async function (event) {
     event.preventDefault();
     button.disabled = true;
-    let matches = 0, appearances = 0, batches = 0, failures = [];
+    let matches = 0, appearances = 0, batches = 0, failures = new Set();
     try {
       while (true) {
         batches++;
@@ -117,7 +117,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
         if (!response.ok) throw new Error(result.error || 'Scorecard import failed');
         matches += result.matches;
         appearances += result.appearances;
-        if (result.failures) failures = failures.concat(result.failures);
+        if (result.failures) result.failures.forEach(function (failure) { failures.add(failure); });
         progress.textContent = matches + ' scorecards and ' + appearances + ' appearances imported; ' + result.pending + ' pending.';
         if (result.pending === 0) {
           progress.className = 'small mt-2 text-success';
@@ -126,7 +126,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
           return;
         }
         if (result.matches === 0) {
-          throw new Error('No further scorecards could be imported. ' + result.pending + ' remain pending. ' + failures.slice(-5).join('; '));
+          throw new Error('No further scorecards could be imported. ' + result.pending + ' remain pending. ' + Array.from(failures).slice(-5).join('; '));
         }
       }
     } catch (error) {

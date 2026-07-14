@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cricket-ground-feedback/internal/leagueapi"
 )
 
 func TestParsePublishedCSV(t *testing.T) {
@@ -85,5 +87,20 @@ func TestNonNilStringsUsesEmptyPostgresArrayForMissingTags(t *testing.T) {
 	got := nonNilStrings(nil)
 	if got == nil || len(got) != 0 {
 		t.Fatalf("got %#v; want a non-nil empty slice", got)
+	}
+}
+
+func TestDedupeScorecardPlayersMergesRepeatedTeamSheetRows(t *testing.T) {
+	players := []leagueapi.ScorecardPlayer{
+		{Position: 4, PlayerID: 123, PlayerName: "Jane Smith", Captain: true},
+		{Position: 4, PlayerID: 123, PlayerName: " Jane Smith ", WicketKeeper: true},
+		{Position: 5, PlayerID: 456, PlayerName: "Sam Jones"},
+	}
+	got := dedupeScorecardPlayers(players)
+	if len(got) != 2 {
+		t.Fatalf("got %d players; want 2: %#v", len(got), got)
+	}
+	if !got[0].Captain || !got[0].WicketKeeper {
+		t.Fatalf("duplicate flags were not merged: %#v", got[0])
 	}
 }
