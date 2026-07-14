@@ -147,20 +147,33 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 }());
 </script>`)
 
-		fmt.Fprint(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Potential List A / List B breaches</div><div class="small text-muted">Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Competition</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
+		breachGroups := groupStarredBreaches(eval.Breaches)
+		fmt.Fprint(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Potential List A / List B breaches by division</div><div class="small text-muted">Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.</div></div>`)
+		if len(breachGroups) > 0 {
+			fmt.Fprint(w, `<div class="card-body border-bottom d-flex flex-wrap gap-2">`)
+			for index, group := range breachGroups {
+				fmt.Fprintf(w, `<a class="btn btn-sm btn-outline-secondary" href="#starred-division-%d">%s — %s <span class="badge bg-secondary">%d</span></a>`, index, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches))
+			}
+			fmt.Fprint(w, `</div>`)
+		}
+		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Format</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
 		if len(eval.Breaches) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No potential breaches found in imported scorecards.</td></tr>`)
 		}
-		for i, b := range eval.Breaches {
-			if i >= 200 {
-				break
+		for groupIndex, group := range breachGroups {
+			findingWord := "findings"
+			if len(group.Breaches) == 1 {
+				findingWord = "finding"
 			}
-			evidence := "Review"
-			if b.NeedsExemptionReview {
-				evidence = "Junior tag — verify exemption"
+			fmt.Fprintf(w, `<tr id="starred-division-%d" class="table-primary"><th colspan="8" class="py-2">%s — %s <span class="badge bg-primary ms-1">%d %s</span></th></tr>`, groupIndex, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches), findingWord)
+			for _, b := range group.Breaches {
+				evidence := "Review"
+				if b.NeedsExemptionReview {
+					evidence = "Junior tag — verify exemption"
+				}
+				state := findingStates[starredFindingKey(b)]
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year))
 			}
-			state := findingStates[starredFindingKey(b)]
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year))
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 		if clubIssueCount > 0 {

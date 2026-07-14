@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,124 @@ import (
 type starredFindingState struct {
 	ID     int64
 	Status string
+}
+
+type starredBreachGroup struct {
+	Day      string
+	Division string
+	Breaches []starred.Breach
+}
+
+func starredBreachDay(b starred.Breach) string {
+	day := strings.TrimSpace(b.Appearance.PlayingDay)
+	if day == "" {
+		day = b.Appearance.MatchDate.Weekday().String()
+	}
+	if day == "" {
+		return "Other day"
+	}
+	return strings.ToUpper(day[:1]) + strings.ToLower(day[1:])
+}
+
+func starredDivisionLabel(name, competitionType string) string {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	markers := []string{"premier", "championship", "division"}
+	for _, marker := range markers {
+		if index := strings.Index(lower, marker); index >= 0 {
+			label := strings.TrimSpace(name[index:])
+			if marker == "premier" {
+				label = strings.Replace(label, "Premier League", "Premier", 1)
+				label = strings.Replace(label, "Premier league", "Premier", 1)
+			}
+			return label
+		}
+	}
+	if name != "" {
+		return name
+	}
+	if strings.TrimSpace(competitionType) != "" {
+		return strings.TrimSpace(competitionType)
+	}
+	return "Other competition"
+}
+
+func starredDivisionRank(label string) int {
+	lower := strings.ToLower(label)
+	numberAfter := func(marker string) int {
+		index := strings.Index(lower, marker)
+		if index < 0 {
+			return 0
+		}
+		for _, field := range strings.Fields(lower[index+len(marker):]) {
+			field = strings.Trim(field, "-–—()")
+			if field == "league" {
+				continue
+			}
+			if number, err := strconv.Atoi(field); err == nil {
+				return number
+			}
+			break
+		}
+		return 0
+	}
+	switch {
+	case strings.Contains(lower, "premier"):
+		if number := numberAfter("premier"); number > 0 {
+			return number * 10
+		}
+		return 25
+	case strings.Contains(lower, "championship"):
+		return 30
+	case strings.Contains(lower, "division"):
+		if number := numberAfter("division"); number > 0 {
+			return 40 + number
+		}
+		return 70
+	case strings.Contains(lower, "cup"):
+		return 900
+	default:
+		return 500
+	}
+}
+
+func groupStarredBreaches(breaches []starred.Breach) []starredBreachGroup {
+	groupsByKey := make(map[string]*starredBreachGroup)
+	for _, breach := range breaches {
+		day := starredBreachDay(breach)
+		division := starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType)
+		key := strings.ToLower(day + "\x00" + division)
+		group := groupsByKey[key]
+		if group == nil {
+			group = &starredBreachGroup{Day: day, Division: division}
+			groupsByKey[key] = group
+		}
+		group.Breaches = append(group.Breaches, breach)
+	}
+	groups := make([]starredBreachGroup, 0, len(groupsByKey))
+	for _, group := range groupsByKey {
+		groups = append(groups, *group)
+	}
+	dayRank := func(day string) int {
+		switch strings.ToLower(day) {
+		case "saturday":
+			return 10
+		case "sunday":
+			return 20
+		default:
+			return 30
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if dayRank(groups[i].Day) != dayRank(groups[j].Day) {
+			return dayRank(groups[i].Day) < dayRank(groups[j].Day)
+		}
+		if starredDivisionRank(groups[i].Division) != starredDivisionRank(groups[j].Division) {
+			return starredDivisionRank(groups[i].Division) < starredDivisionRank(groups[j].Division)
+		}
+		return groups[i].Division < groups[j].Division
+	})
+	return groups
 }
 
 func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int) string {

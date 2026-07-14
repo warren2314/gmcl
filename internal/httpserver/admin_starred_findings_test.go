@@ -18,10 +18,48 @@ func sampleStarredBreach() starred.Breach {
 			ClubKey:         "example",
 			TeamName:        "Example CC 2nd XI",
 			CompetitionName: "Division Two",
+			PlayingDay:      "Saturday",
 			PlayerID:        12345,
 			PlayerName:      "Alex Player",
 			PlayerKey:       "alexplayer",
 		},
+	}
+}
+
+func TestGroupStarredBreachesByDayAndDivisionOrder(t *testing.T) {
+	makeBreach := func(day, competition string) starred.Breach {
+		breach := sampleStarredBreach()
+		breach.Appearance.PlayingDay = day
+		breach.Appearance.CompetitionName = competition
+		return breach
+	}
+	groups := groupStarredBreaches([]starred.Breach{
+		makeBreach("Sunday", "GMCL Sunday Division 1"),
+		makeBreach("Saturday", "GMCL Championship"),
+		makeBreach("Saturday", "GMCL Premier League 2"),
+		makeBreach("Saturday", "GMCL Premier League 1"),
+		makeBreach("Saturday", "GMCL Premier League 1"),
+	})
+	want := []string{
+		"Saturday — Premier 1",
+		"Saturday — Premier 2",
+		"Saturday — Championship",
+		"Sunday — Division 1",
+	}
+	if len(groups) != len(want) {
+		t.Fatalf("groups=%d want %d: %#v", len(groups), len(want), groups)
+	}
+	for index, group := range groups {
+		got := group.Day + " — " + group.Division
+		if got != want[index] {
+			t.Errorf("group %d=%q want %q", index, got, want[index])
+		}
+	}
+	if len(groups[0].Breaches) != 2 {
+		t.Fatalf("Premier 1 findings=%d want 2", len(groups[0].Breaches))
+	}
+	if starredDivisionRank("Division 10") <= starredDivisionRank("Division 2") {
+		t.Fatal("numbered divisions must be sorted numerically")
 	}
 }
 
