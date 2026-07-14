@@ -15,6 +15,7 @@ import (
 	"cricket-ground-feedback/internal/auth"
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/leagueapi"
+	"cricket-ground-feedback/internal/starred"
 )
 
 type sendRemindersRequest struct {
@@ -836,6 +837,56 @@ func (s *Server) handleInternalSyncLeagueFixtures() http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "ok",
 			"count":  len(details),
+		})
+	}
+}
+
+// handleInternalSyncStarredPlayers refreshes the published list and imports a
+// bounded batch of missing/changed scorecards. It is intended for an overnight
+// HMAC-authenticated n8n job; repeated calls are incremental and idempotent.
+func (s *Server) handleInternalSyncStarredPlayers() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			SeasonYear     int `json:"season_year"`
+			ScorecardLimit int `json:"scorecard_limit"`
+		}
+		if r.Body != nil {
+			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil && err != io.EOF {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+		}
+		if req.SeasonYear == 0 {
+			req.SeasonYear = time.Now().Year()
+		}
+		if req.ScorecardLimit <= 0 || req.ScorecardLimit > 100 {
+			req.ScorecardLimit = 25
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		snapshot, body, source, err := starred.FetchSnapshot(ctx, req.SeasonYear)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		listResult, err := starred.StoreSnapshot(ctx, s.DB, snapshot, body, source, s.starredSeasonStart(ctx, req.SeasonYear))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		client := leagueapi.NewClient(leagueapi.NewConfigFromEnv())
+		scorecards, err := starred.SyncPendingScorecards(ctx, s.DB, client, req.SeasonYear, req.ScorecardLimit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		s.audit(ctx, r, "n8n", nil, "internal_sync_starred_players", "starred_import_run", &listResult.RunID, map[string]any{"season": req.SeasonYear, "matches": scorecards.Matches, "appearances": scorecards.Appearances, "failures": len(scorecards.Failures)})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok", "season_year": req.SeasonYear,
+			"list_already_current": listResult.AlreadyCurrent, "list_entries": listResult.Entries,
+			"list_amendments": listResult.Amendments, "list_issues": listResult.Issues,
+			"scorecards": scorecards.Matches, "appearances": scorecards.Appearances, "failures": scorecards.Failures,
 		})
 	}
 }

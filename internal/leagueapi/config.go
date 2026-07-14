@@ -16,6 +16,8 @@ type Config struct {
 	// MatchesURLTemplate is appended to BaseURL. Placeholders: {siteId}, {leagueId},
 	// {date}, {season}. The legacy {leagueId} placeholder is still supported.
 	MatchesURLTemplate string
+	// MatchDetailURLTemplate is appended to BaseURL and supports {matchId}.
+	MatchDetailURLTemplate string
 	// DateFormat is used for {date}: "dd/MM/yyyy" (API sample) or "2006-01-02"
 	DateFormat string
 	// AuthQueryParam if set adds &param=key to the request URL (common for Play-Cricket style APIs).
@@ -41,19 +43,24 @@ func NewConfigFromEnv() Config {
 	if tpl == "" {
 		tpl = "/api/v2/matches.json?site_id={siteId}&season={season}"
 	}
+	detailTpl := strings.TrimSpace(os.Getenv("PLAY_CRICKET_MATCH_DETAIL_URL_TEMPLATE"))
+	if detailTpl == "" {
+		detailTpl = "/api/v2/match_detail.json?match_id={matchId}"
+	}
 	siteID := strings.TrimSpace(os.Getenv("PLAY_CRICKET_SITE_ID"))
 	if siteID == "" {
 		siteID = strings.TrimSpace(os.Getenv("PLAY_CRICKET_LEAGUE_ID"))
 	}
 	return Config{
-		BaseURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_BASE_URL")), "/"),
-		APIKey:             strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_KEY")),
-		SiteID:             siteID,
-		MatchesURLTemplate: tpl,
-		DateFormat:         df,
-		AuthQueryParam:     strings.TrimSpace(os.Getenv("PLAY_CRICKET_AUTH_QUERY_PARAM")),
-		AuthHeader:         strings.TrimSpace(os.Getenv("PLAY_CRICKET_AUTH_HEADER")),
-		Timeout:            timeout,
+		BaseURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_BASE_URL")), "/"),
+		APIKey:                 strings.TrimSpace(os.Getenv("PLAY_CRICKET_API_KEY")),
+		SiteID:                 siteID,
+		MatchesURLTemplate:     tpl,
+		MatchDetailURLTemplate: detailTpl,
+		DateFormat:             df,
+		AuthQueryParam:         strings.TrimSpace(os.Getenv("PLAY_CRICKET_AUTH_QUERY_PARAM")),
+		AuthHeader:             strings.TrimSpace(os.Getenv("PLAY_CRICKET_AUTH_HEADER")),
+		Timeout:                timeout,
 	}
 }
 

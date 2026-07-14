@@ -46,6 +46,12 @@ jobs:
             sleep 3
           done
 
+      - name: Run migrations
+        run: |
+          for migration in migrations/*.sql; do
+            psql "$DB_DSN" -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
       - name: Run tests
         run: go test ./...
 

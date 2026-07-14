@@ -59,6 +59,70 @@ func (c *Client) BuildMatchesURL(matchDate time.Time, season int) (string, error
 	return u.String(), nil
 }
 
+func (c *Client) BuildMatchDetailURL(matchID int64) (string, error) {
+	if c.cfg.BaseURL == "" {
+		return "", fmt.Errorf("PLAY_CRICKET_API_BASE_URL is not set")
+	}
+	tpl := c.cfg.MatchDetailURLTemplate
+	if tpl == "" {
+		tpl = "/api/v2/match_detail.json?match_id={matchId}"
+	}
+	if !strings.HasPrefix(tpl, "/") {
+		tpl = "/" + tpl
+	}
+	tpl = strings.ReplaceAll(tpl, "{matchId}", url.QueryEscape(fmt.Sprintf("%d", matchID)))
+	u, err := url.Parse(c.cfg.BaseURL + tpl)
+	if err != nil {
+		return "", err
+	}
+	if c.cfg.APIKey != "" && c.cfg.AuthQueryParam != "" {
+		q := u.Query()
+		q.Set(c.cfg.AuthQueryParam, c.cfg.APIKey)
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+func (c *Client) FetchMatchDetail(ctx context.Context, matchID int64) (*ScorecardMatch, []byte, error) {
+	if !c.cfg.Enabled() {
+		return nil, nil, fmt.Errorf("league API client not configured (set PLAY_CRICKET_API_BASE_URL and PLAY_CRICKET_API_KEY)")
+	}
+	urlStr, err := c.BuildMatchDetailURL(matchID)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.cfg.AuthQueryParam == "" {
+		switch {
+		case c.cfg.AuthHeader != "":
+			req.Header.Set("Authorization", c.cfg.AuthHeader)
+		case c.cfg.APIKey != "":
+			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, body, fmt.Errorf("league API HTTP %d: %s", resp.StatusCode, truncate(body, 500))
+	}
+	parsed, err := ParseScorecardJSON(body)
+	if err != nil {
+		return nil, body, fmt.Errorf("decode match detail JSON: %w", err)
+	}
+	return &parsed.MatchDetails[0], body, nil
+}
+
 // FetchMatchesForDate GETs match list for a calendar date and returns parsed details.
 func (c *Client) FetchMatchesForDate(ctx context.Context, matchDate time.Time) ([]MatchDetail, error) {
 	return c.fetchMatches(ctx, matchDate, 0)

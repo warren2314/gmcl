@@ -8,6 +8,39 @@ import (
 	"time"
 )
 
+func (p *PlayerSheets) UnmarshalJSON(body []byte) error {
+	var sides []PlayerSide
+	if err := json.Unmarshal(body, &sides); err == nil {
+		for _, side := range sides {
+			p.HomeTeam = append(p.HomeTeam, side.HomeTeam...)
+			p.AwayTeam = append(p.AwayTeam, side.AwayTeam...)
+		}
+		return nil
+	}
+	var side PlayerSide
+	if err := json.Unmarshal(body, &side); err != nil {
+		return err
+	}
+	p.HomeTeam, p.AwayTeam = side.HomeTeam, side.AwayTeam
+	return nil
+}
+
+func ParseScorecardJSON(body []byte) (*ScorecardResponse, error) {
+	var r ScorecardResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	if len(r.MatchDetails) == 0 {
+		return nil, fmt.Errorf("match detail response contained no match_details")
+	}
+	for i := range r.MatchDetails {
+		if strings.TrimSpace(r.MatchDetails[i].MatchID) == "" && r.MatchDetails[i].ID > 0 {
+			r.MatchDetails[i].MatchID = strconv.FormatInt(r.MatchDetails[i].ID, 10)
+		}
+	}
+	return &r, nil
+}
+
 // DetailToJSON returns JSON for the payload column.
 func DetailToJSON(d MatchDetail) []byte {
 	b, _ := json.Marshal(d)

@@ -21,6 +21,36 @@ func setupTestDB(t *testing.T) *db.Pool {
 	if err != nil {
 		t.Fatalf("db connect: %v", err)
 	}
+	t.Cleanup(pool.Close)
+
+	// Keep these integration tests self-contained. CI starts with a freshly
+	// migrated database, so the foreign-key records used by the token tests do
+	// not exist until the test creates them.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO seasons (id, name, start_date, end_date)
+		VALUES (1, 'Magic token test season', '2025-01-01', '2025-12-31')
+		ON CONFLICT (id) DO NOTHING;
+
+		INSERT INTO weeks (id, season_id, week_number, start_date, end_date)
+		VALUES (1, 1, 1, '2025-01-01', '2025-01-07')
+		ON CONFLICT (id) DO NOTHING;
+
+		INSERT INTO clubs (id, name)
+		VALUES (1, 'Magic Token Test Club')
+		ON CONFLICT (id) DO NOTHING;
+
+		INSERT INTO teams (id, club_id, name)
+		VALUES (1, 1, 'Magic Token Test XI')
+		ON CONFLICT (id) DO NOTHING;
+
+		INSERT INTO captains (id, team_id, full_name, email, active_from)
+		VALUES (1, 1, 'Test Captain', 'captain@example.test', '2025-01-01')
+		ON CONFLICT (id) DO NOTHING;
+
+		DELETE FROM magic_link_tokens WHERE captain_id = 1;
+	`); err != nil {
+		t.Fatalf("prepare test fixtures: %v", err)
+	}
 	return pool
 }
 
