@@ -62,6 +62,7 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 		{MatchID: 4, SeasonYear: 2026, MatchDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
 		{MatchID: 5, SeasonYear: 2026, MatchDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "1st XI", TeamLevel: 1, PlayerID: 12, PlayerName: "July Player", PlayerKey: NormalizeName("July Player")},
 		{MatchID: 6, SeasonYear: 2026, MatchDate: start, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "Under 15", TeamLevel: 0, PlayerID: 13, PlayerName: "Junior Player", PlayerKey: NormalizeName("Junior Player")},
+		{MatchID: 7, SeasonYear: 2026, MatchDate: start, CompetitionType: "League", CompetitionName: "GMCL Women's Premier League", ClubName: "Alpha CC", ClubKey: "alpha", TeamName: "Women's 2nd XI", TeamLevel: 2, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
 	}
 	e := Evaluate(periods, apps, nil, time.Date(2026, 6, 30, 23, 59, 0, 0, time.UTC))
 	if len(e.Breaches) != 1 {
@@ -82,6 +83,23 @@ func TestReviewCutoffStopsAtJune30(t *testing.T) {
 	want := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("cutoff=%s want %s", got, want)
+	}
+}
+
+func TestIsWomensAppearanceUsesCompetitionClubAndTeamLabels(t *testing.T) {
+	tests := []Appearance{
+		{CompetitionName: "GMCL Women's Premier League"},
+		{ClubName: "Example Ladies CC"},
+		{TeamName: "Woman's 1st XI"},
+		{CompetitionName: "Girls Development League"},
+	}
+	for _, appearance := range tests {
+		if !IsWomensAppearance(appearance) {
+			t.Errorf("expected women's appearance: %#v", appearance)
+		}
+	}
+	if IsWomensAppearance(Appearance{CompetitionName: "GMCL Premier League 1", ClubName: "Example CC", TeamName: "1st XI"}) {
+		t.Fatal("men's open-age appearance was incorrectly excluded")
 	}
 }
 

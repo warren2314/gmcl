@@ -6,6 +6,19 @@ import (
 	"time"
 )
 
+// IsWomensAppearance keeps the men's Rule 3.5 review separate from women's cricket.
+// Play-Cricket does not expose a single reliable gender flag on every scorecard, so
+// the competition, club and team labels are checked together.
+func IsWomensAppearance(a Appearance) bool {
+	scope := strings.ToLower(strings.Join([]string{a.CompetitionName, a.ClubName, a.TeamName}, " "))
+	for _, marker := range []string{"women", "woman", "ladies", "female", "girls"} {
+		if strings.Contains(scope, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMapping, cutoff time.Time) Evaluation {
 	mappingBySource := make(map[string]int64)
 	for _, m := range mappings {
@@ -23,7 +36,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	var out Evaluation
 	for _, a := range appearances {
-		if a.TeamLevel == 0 || a.MatchDate.After(cutoff) {
+		if a.TeamLevel == 0 || a.MatchDate.After(cutoff) || IsWomensAppearance(a) {
 			continue
 		}
 		for _, p := range periods {
@@ -44,7 +57,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	stats := make(map[string]*counts)
 	for _, a := range appearances {
-		if a.TeamLevel == 0 || !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(cutoff) {
+		if a.TeamLevel == 0 || !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(cutoff) || IsWomensAppearance(a) {
 			continue
 		}
 		identity := a.PlayerKey
