@@ -144,6 +144,10 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND (
+		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
+		    OR COALESCE(lf.away_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
+		  )
 		  AND (sm.play_cricket_match_id IS NULL OR (
 		        COALESCE(lf.payload->>'last_updated','') <> ''
 		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
@@ -174,6 +178,10 @@ func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int,
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND (
+		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
+		    OR COALESCE(lf.away_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
+		  )
 		  AND (sm.play_cricket_match_id IS NULL OR (
 		        COALESCE(lf.payload->>'last_updated','') <> ''
 		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
