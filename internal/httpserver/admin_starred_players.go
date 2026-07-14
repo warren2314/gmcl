@@ -99,7 +99,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="#potential-breaches"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Potential breaches</div><div class="display-6 text-danger">%d</div><div class="small text-primary">View evidence &rarr;</div></div></div></a></div>
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="#june-30-test"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div><div class="small text-primary">View calculation &rarr;</div></div></div></a></div>
 </div>`, year, currentA, year, currentB, year, matchCount, pendingCount, year, len(reviewApps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
-		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, mappings, matchCount, len(reviewApps), r)
+		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Synchronisation</div><div class="card-body d-flex flex-wrap gap-3">
 <form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments.</div></form>
 <form id="starred-scorecard-sync-form" method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button id="starred-scorecard-sync-button" class="btn btn-primary">Import all pending scorecards</button><div class="form-text">Runs automatically in batches of 50. Keep this page open until complete.</div><div id="starred-scorecard-sync-progress" class="small mt-2" aria-live="polite"></div></form>
@@ -223,7 +223,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 	}
 }
 
-func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, view string, periods []starred.Period, mappings []starred.IdentityMapping, scorecardTotal, appearanceTotal int, r *http.Request) {
+func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, view string, periods []starred.Period, reviewApps []starred.Appearance, mappings []starred.IdentityMapping, scorecardTotal, appearanceTotal int, r *http.Request) {
 	if view == "" {
 		return
 	}
@@ -237,7 +237,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
 	case "club-list":
-		renderStarredClubList(w, year, cutoff, periods, r)
+		renderStarredClubList(w, year, cutoff, periods, reviewApps, r)
 	case "list-a", "list-b":
 		listType := "A"
 		if view == "list-b" {
@@ -427,8 +427,69 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 	return active
 }
 
-func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, periods []starred.Period, r *http.Request) {
+type starredSaturdayDivision struct {
+	Label string
+	Clubs []string
+}
+
+func saturdayStarredClubDivisions(clubNames map[string]string, appearances []starred.Appearance) []starredSaturdayDivision {
+	type divisionCounts map[string]int
+	firstXI := make(map[string]divisionCounts)
+	fallback := make(map[string]divisionCounts)
+	add := func(target map[string]divisionCounts, clubKey, division string) {
+		if target[clubKey] == nil {
+			target[clubKey] = make(divisionCounts)
+		}
+		target[clubKey][division]++
+	}
+	for _, appearance := range appearances {
+		if _, listed := clubNames[appearance.ClubKey]; !listed || !strings.EqualFold(appearance.PlayingDay, "Saturday") || !strings.EqualFold(appearance.CompetitionType, "League") {
+			continue
+		}
+		division := starredDivisionLabel(appearance.CompetitionName, appearance.CompetitionType)
+		add(fallback, appearance.ClubKey, division)
+		if appearance.TeamLevel == 1 {
+			add(firstXI, appearance.ClubKey, division)
+		}
+	}
+	chooseDivision := func(counts divisionCounts) string {
+		selected, selectedCount := "", -1
+		for division, count := range counts {
+			if count > selectedCount || (count == selectedCount && starredDivisionRank(division) < starredDivisionRank(selected)) {
+				selected, selectedCount = division, count
+			}
+		}
+		return selected
+	}
+	clubsByDivision := make(map[string][]string)
+	for clubKey := range clubNames {
+		division := chooseDivision(firstXI[clubKey])
+		if division == "" {
+			division = chooseDivision(fallback[clubKey])
+		}
+		if division == "" {
+			division = "Unassigned / no Saturday division"
+		}
+		clubsByDivision[division] = append(clubsByDivision[division], clubKey)
+	}
+	divisions := make([]starredSaturdayDivision, 0, len(clubsByDivision))
+	for label, clubs := range clubsByDivision {
+		sort.Slice(clubs, func(i, j int) bool { return clubNames[clubs[i]] < clubNames[clubs[j]] })
+		divisions = append(divisions, starredSaturdayDivision{Label: label, Clubs: clubs})
+	}
+	sort.Slice(divisions, func(i, j int) bool {
+		left, right := starredDivisionRank(divisions[i].Label), starredDivisionRank(divisions[j].Label)
+		if left != right {
+			return left < right
+		}
+		return divisions[i].Label < divisions[j].Label
+	})
+	return divisions
+}
+
+func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, r *http.Request) {
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
+	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	clubNames := make(map[string]string)
 	for _, period := range periods {
 		if cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
@@ -436,29 +497,51 @@ func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, pe
 		}
 		clubNames[period.ClubKey] = period.ClubName
 	}
-	clubKeys := make([]string, 0, len(clubNames))
-	for clubKey := range clubNames {
-		clubKeys = append(clubKeys, clubKey)
+	divisions := saturdayStarredClubDivisions(clubNames, appearances)
+	clubDivision := make(map[string]string)
+	for _, division := range divisions {
+		for _, clubKey := range division.Clubs {
+			clubDivision[clubKey] = division.Label
+		}
 	}
-	sort.Slice(clubKeys, func(i, j int) bool { return clubNames[clubKeys[i]] < clubNames[clubKeys[j]] })
+	if selectedDivision == "" && selectedClub != "" {
+		selectedDivision = clubDivision[selectedClub]
+	}
 
 	fmt.Fprintf(w, `Starred list by club at 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
-	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="club-list"><div class="col-md-8"><label class="form-label fw-semibold" for="starred-club-filter">Club</label><select id="starred-club-filter" class="form-select" name="club" required><option value="">Choose a club…</option>`, year)
-	for _, clubKey := range clubKeys {
+	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="club-list"><div class="col-md-5"><label class="form-label fw-semibold" for="starred-division-filter">Saturday division</label><select id="starred-division-filter" class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose a Saturday division…</option>`, year)
+	for _, division := range divisions {
 		selected := ""
-		if clubKey == selectedClub {
+		if division.Label == selectedDivision {
 			selected = " selected"
 		}
-		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
+		fmt.Fprintf(w, `<option value="%s"%s>%s (%d clubs)</option>`, escapeHTML(division.Label), selected, escapeHTML(division.Label), len(division.Clubs))
 	}
-	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Show starred list</button></div></form></div>`)
+	fmt.Fprint(w, `</select></div><div class="col-md-5"><label class="form-label fw-semibold" for="starred-club-filter">Club</label><select id="starred-club-filter" class="form-select" name="club" required><option value="">Choose a club…</option>`)
+	for _, division := range divisions {
+		if division.Label != selectedDivision {
+			continue
+		}
+		for _, clubKey := range division.Clubs {
+			selected := ""
+			if clubKey == selectedClub {
+				selected = " selected"
+			}
+			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
+		}
+	}
+	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Show starred list</button></div></form><div class="form-text">Clubs are assigned from their Saturday 1st XI league division at the review cutoff.</div></div>`)
+	if selectedDivision == "" {
+		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose the Saturday division you have been assigned, then select a club.</div></div>`)
+		return
+	}
 	if selectedClub == "" {
-		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose a club to see its current List A and List B players.</div></div>`)
+		fmt.Fprintf(w, `<div class="card-body text-center text-muted py-4">Choose a club from %s to see its current List A and List B players.</div></div>`, escapeHTML(selectedDivision))
 		return
 	}
 	clubName, exists := clubNames[selectedClub]
-	if !exists {
-		fmt.Fprint(w, `<div class="alert alert-warning m-3">That club is not present in the active starred list.</div></div>`)
+	if !exists || clubDivision[selectedClub] != selectedDivision {
+		fmt.Fprint(w, `<div class="alert alert-warning m-3">That club is not assigned to the selected Saturday division.</div></div>`)
 		return
 	}
 	active := activeStarredPeriodsByClub(periods, cutoff, selectedClub)

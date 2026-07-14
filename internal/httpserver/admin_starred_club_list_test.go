@@ -24,3 +24,26 @@ func TestActiveStarredPeriodsByClubUsesCutoffAndListOrder(t *testing.T) {
 		t.Fatalf("unexpected club list order: %#v", got)
 	}
 }
+
+func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
+	clubs := map[string]string{"alpha": "Alpha CC", "beta": "Beta CC", "gamma": "Gamma CC"}
+	appearances := []starred.Appearance{
+		{ClubKey: "alpha", PlayingDay: "Saturday", CompetitionType: "League", CompetitionName: "GMCL Premier League 1", TeamLevel: 1},
+		{ClubKey: "alpha", PlayingDay: "Saturday", CompetitionType: "League", CompetitionName: "GMCL Division 3", TeamLevel: 2},
+		{ClubKey: "beta", PlayingDay: "Saturday", CompetitionType: "League", CompetitionName: "GMCL Championship", TeamLevel: 1},
+		{ClubKey: "beta", PlayingDay: "Sunday", CompetitionType: "League", CompetitionName: "Sunday Premier", TeamLevel: 1},
+	}
+	got := saturdayStarredClubDivisions(clubs, appearances)
+	want := []string{"Premier 1", "Championship", "Unassigned / no Saturday division"}
+	if len(got) != len(want) {
+		t.Fatalf("divisions=%d want %d: %#v", len(got), len(want), got)
+	}
+	for index := range want {
+		if got[index].Label != want[index] {
+			t.Errorf("division %d=%q want %q", index, got[index].Label, want[index])
+		}
+	}
+	if len(got[0].Clubs) != 1 || got[0].Clubs[0] != "alpha" {
+		t.Fatalf("Alpha was not assigned by its 1st XI division: %#v", got[0])
+	}
+}
