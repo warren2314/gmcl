@@ -54,6 +54,10 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 		}
+		if strings.TrimSpace(r.URL.Query().Get("view")) == "player-review" && r.URL.Query().Get("export") == "csv" {
+			s.writeStarredPlayerReviewCSV(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
+			return
+		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
 		currentA, currentB := 0, 0
 		now := cutoff
@@ -81,7 +85,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 30 June.</p></div>
-<div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div></div>`, year, year)
+<div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=player-review#card-detail">Player list review</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div></div>`, year, year, year)
 		if msg := r.URL.Query().Get("message"); msg != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
 		}
@@ -236,6 +240,8 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
+	case "player-review":
+		s.renderStarredPlayerReview(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 	case "club-list":
 		s.renderStarredClubList(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 	case "list-a", "list-b":
