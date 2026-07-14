@@ -50,7 +50,11 @@ func ParsePublishedCSV(r io.Reader, seasonYear int) (Snapshot, error) {
 		if m := listRowRE.FindStringSubmatch(label); m != nil {
 			listType := strings.ToUpper(m[1])
 			slot, _ := strconv.Atoi(m[2])
-			for col, clubIndex := range clubByColumn {
+			for col := 1; col < len(headers); col++ {
+				clubIndex, ok := clubByColumn[col]
+				if !ok {
+					continue
+				}
 				if col >= len(rec) {
 					continue
 				}
@@ -74,14 +78,22 @@ func ParsePublishedCSV(r io.Reader, seasonYear int) (Snapshot, error) {
 
 		switch {
 		case strings.EqualFold(label, "List B Required?"):
-			for col, clubIndex := range clubByColumn {
+			for col := 1; col < len(headers); col++ {
+				clubIndex, ok := clubByColumn[col]
+				if !ok {
+					continue
+				}
 				if col < len(rec) {
 					club := &s.Clubs[clubIndex]
 					club.ListBRule = strings.TrimSpace(rec[col])
 				}
 			}
 		case strings.EqualFold(label, "Number of Starred Players Submitted"):
-			for col, clubIndex := range clubByColumn {
+			for col := 1; col < len(headers); col++ {
+				clubIndex, ok := clubByColumn[col]
+				if !ok {
+					continue
+				}
 				if col < len(rec) {
 					club := &s.Clubs[clubIndex]
 					club.SubmittedCount, _ = strconv.Atoi(strings.TrimSpace(rec[col]))
@@ -89,14 +101,22 @@ func ParsePublishedCSV(r io.Reader, seasonYear int) (Snapshot, error) {
 			}
 		case strings.HasPrefix(strings.ToLower(label), "amendment"):
 			seq, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.ToLower(label), "amendment")))
-			for col, clubIndex := range clubByColumn {
+			for col := 1; col < len(headers); col++ {
+				clubIndex, ok := clubByColumn[col]
+				if !ok {
+					continue
+				}
 				if col >= len(rec) || strings.TrimSpace(rec[col]) == "" {
 					continue
 				}
 				s.Amendments = append(s.Amendments, parseAmendment(seasonYear, s.Clubs[clubIndex], seq, rec[col]))
 			}
 		default:
-			for col, clubIndex := range clubByColumn {
+			for col := 1; col < len(headers); col++ {
+				clubIndex, ok := clubByColumn[col]
+				if !ok {
+					continue
+				}
 				if col < len(rec) && strings.EqualFold(strings.TrimSpace(rec[col]), "No form submitted") {
 					club := &s.Clubs[clubIndex]
 					club.NoForm = true
