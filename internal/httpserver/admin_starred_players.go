@@ -81,7 +81,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 30 June.</p></div>
-<form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div>`, year)
+<div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div></div>`, year, year)
 		if msg := r.URL.Query().Get("message"); msg != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
 		}
@@ -236,6 +236,8 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
+	case "club-list":
+		renderStarredClubList(w, year, cutoff, periods, r)
 	case "list-a", "list-b":
 		listType := "A"
 		if view == "list-b" {
@@ -256,7 +258,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		})
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Club</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
 		for _, period := range active {
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(period.ClubName), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+			fmt.Fprintf(w, `<tr><td><a href="/admin/starred-players?season=%d&amp;view=club-list&amp;club=%s#card-detail">%s</a></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, year, url.QueryEscape(period.ClubKey), escapeHTML(period.ClubName), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
 		}
 		if len(active) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active players found.</td></tr>`)
@@ -406,6 +408,81 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 	default:
 		fmt.Fprint(w, `Details</span></div><div class="alert alert-warning m-3">Unknown card view.</div></div>`)
 	}
+}
+
+func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, clubKey string) []starred.Period {
+	active := make([]starred.Period, 0)
+	for _, period := range periods {
+		if period.ClubKey != clubKey || cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
+			continue
+		}
+		active = append(active, period)
+	}
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].ListType != active[j].ListType {
+			return active[i].ListType < active[j].ListType
+		}
+		return active[i].PlayerName < active[j].PlayerName
+	})
+	return active
+}
+
+func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, periods []starred.Period, r *http.Request) {
+	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
+	clubNames := make(map[string]string)
+	for _, period := range periods {
+		if cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
+			continue
+		}
+		clubNames[period.ClubKey] = period.ClubName
+	}
+	clubKeys := make([]string, 0, len(clubNames))
+	for clubKey := range clubNames {
+		clubKeys = append(clubKeys, clubKey)
+	}
+	sort.Slice(clubKeys, func(i, j int) bool { return clubNames[clubKeys[i]] < clubNames[clubKeys[j]] })
+
+	fmt.Fprintf(w, `Starred list by club at 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="club-list"><div class="col-md-8"><label class="form-label fw-semibold" for="starred-club-filter">Club</label><select id="starred-club-filter" class="form-select" name="club" required><option value="">Choose a club…</option>`, year)
+	for _, clubKey := range clubKeys {
+		selected := ""
+		if clubKey == selectedClub {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
+	}
+	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Show starred list</button></div></form></div>`)
+	if selectedClub == "" {
+		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose a club to see its current List A and List B players.</div></div>`)
+		return
+	}
+	clubName, exists := clubNames[selectedClub]
+	if !exists {
+		fmt.Fprint(w, `<div class="alert alert-warning m-3">That club is not present in the active starred list.</div></div>`)
+		return
+	}
+	active := activeStarredPeriodsByClub(periods, cutoff, selectedClub)
+	listACount, listBCount := 0, 0
+	for _, period := range active {
+		if period.ListType == "A" {
+			listACount++
+		} else if period.ListType == "B" {
+			listBCount++
+		}
+	}
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><h5 class="mb-0">%s</h5><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), listACount, listBCount)
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
+	for _, period := range active {
+		badgeClass := "bg-primary"
+		if period.ListType == "A" {
+			badgeClass = "bg-danger"
+		}
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+	}
+	if len(active) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active starred players found for this club.</td></tr>`)
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
 
 func starredListForAppearance(periods []starred.Period, mappings []starred.IdentityMapping, appearance starred.Appearance) string {
