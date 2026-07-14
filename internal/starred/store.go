@@ -148,10 +148,10 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 		        COALESCE(lf.payload->>'last_updated','') <> ''
 		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
 		      ))
-		  AND lf.match_date <= CURRENT_DATE
+		  AND lf.match_date <= $3::date
 		ORDER BY lf.match_date, lf.play_cricket_match_id
 		LIMIT $2
-	`, seasonYear, limit)
+	`, seasonYear, limit, ReviewCutoff(seasonYear, time.Now()))
 	if err != nil {
 		return nil, err
 	}
@@ -178,8 +178,8 @@ func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int,
 		        COALESCE(lf.payload->>'last_updated','') <> ''
 		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
 		      ))
-		  AND lf.match_date <= CURRENT_DATE
-	`, seasonYear).Scan(&count)
+		  AND lf.match_date <= $2::date
+	`, seasonYear, ReviewCutoff(seasonYear, time.Now())).Scan(&count)
 	return count, err
 }
 
@@ -252,7 +252,7 @@ func StoreScorecard(ctx context.Context, pool *db.Pool, match leagueapi.Scorecar
 	insertSide := func(clubName, teamName string, players []leagueapi.ScorecardPlayer) error {
 		clubKey, level := NormalizeClub(clubName), TeamLevel(teamName)
 		day := date.Weekday().String()
-		for _, player := range players {
+		for _, player := range dedupeScorecardPlayers(players) {
 			name := strings.TrimSpace(player.PlayerName)
 			if name == "" {
 				continue
@@ -279,6 +279,34 @@ func StoreScorecard(ctx context.Context, pool *db.Pool, match leagueapi.Scorecar
 		return 0, err
 	}
 	return count, nil
+}
+
+func dedupeScorecardPlayers(players []leagueapi.ScorecardPlayer) []leagueapi.ScorecardPlayer {
+	type playerIdentity struct {
+		id  int64
+		key string
+	}
+	out := make([]leagueapi.ScorecardPlayer, 0, len(players))
+	indexes := make(map[playerIdentity]int, len(players))
+	for _, player := range players {
+		name := strings.TrimSpace(player.PlayerName)
+		if name == "" {
+			continue
+		}
+		player.PlayerName = name
+		identity := playerIdentity{id: player.PlayerID, key: NormalizeName(name)}
+		if index, exists := indexes[identity]; exists {
+			out[index].Captain = out[index].Captain || player.Captain
+			out[index].WicketKeeper = out[index].WicketKeeper || player.WicketKeeper
+			if out[index].Position == 0 || (player.Position > 0 && player.Position < out[index].Position) {
+				out[index].Position = player.Position
+			}
+			continue
+		}
+		indexes[identity] = len(out)
+		out = append(out, player)
+	}
+	return out
 }
 
 func LoadEvaluationInputs(ctx context.Context, pool *db.Pool, seasonYear int) ([]Period, []Appearance, []IdentityMapping, []RosterIssue, error) {

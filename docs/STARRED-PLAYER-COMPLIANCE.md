@@ -23,6 +23,9 @@ the admin review instead of being guessed.
 - Junior-tagged findings are retained but labelled for exemption review.
 - At 30 June: 1st XI League appearances divided by all personal League
   appearances. Cup matches are deliberately excluded from this calculation.
+- The review and scorecard backfill are capped at 30 June inclusive. Matches
+  already imported after that date remain stored but are ignored by this
+  mid-season report.
 - Club list-size and missing-form checks.
 
 The first version does not automatically approve junior, Category 3, temporary
