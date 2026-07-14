@@ -237,7 +237,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
 	case "club-list":
-		renderStarredClubList(w, year, cutoff, periods, reviewApps, r)
+		s.renderStarredClubList(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 	case "list-a", "list-b":
 		listType := "A"
 		if view == "list-b" {
@@ -427,12 +427,58 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 	return active
 }
 
+func starredSaturdayTeamCounts(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping) map[string]map[int]int {
+	mappedIDs := make(map[string]int64, len(mappings))
+	for _, mapping := range mappings {
+		mappedIDs[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = mapping.PlayerID
+	}
+	counts := make(map[string]map[int]int, len(periods))
+	for _, period := range periods {
+		key := period.ClubKey + "|" + period.PlayerKey
+		counts[key] = make(map[int]int)
+		mappedID := mappedIDs[key]
+		seen := make(map[string]struct{})
+		for _, appearance := range appearances {
+			if appearance.ClubKey != period.ClubKey || appearance.TeamLevel < 1 || !strings.EqualFold(appearance.PlayingDay, "Saturday") {
+				continue
+			}
+			matches := appearance.PlayerKey == period.PlayerKey
+			if mappedID > 0 {
+				matches = appearance.PlayerID == mappedID
+			}
+			if !matches {
+				continue
+			}
+			appearanceKey := strconv.FormatInt(appearance.MatchID, 10) + "|" + strconv.Itoa(appearance.TeamLevel)
+			if _, duplicate := seen[appearanceKey]; duplicate {
+				continue
+			}
+			seen[appearanceKey] = struct{}{}
+			counts[key][appearance.TeamLevel]++
+		}
+	}
+	return counts
+}
+
+func starredTeamLevelLabel(level int) string {
+	switch level {
+	case 1:
+		return "1st XI"
+	case 2:
+		return "2nd XI"
+	case 3:
+		return "3rd XI"
+	default:
+		return strconv.Itoa(level) + "th XI"
+	}
+}
+
 type starredSaturdayDivision struct {
 	Label string
 	Clubs []string
 }
 
-func saturdayStarredClubDivisions(clubNames map[string]string, appearances []starred.Appearance) []starredSaturdayDivision {
+func saturdayStarredClubDivisions(clubNames map[string]string, appearances []starred.Appearance, overrides map[string]string) []starredSaturdayDivision {
 	type divisionCounts map[string]int
 	firstXI := make(map[string]divisionCounts)
 	fallback := make(map[string]divisionCounts)
@@ -463,7 +509,10 @@ func saturdayStarredClubDivisions(clubNames map[string]string, appearances []sta
 	}
 	clubsByDivision := make(map[string][]string)
 	for clubKey := range clubNames {
-		division := chooseDivision(firstXI[clubKey])
+		division := strings.TrimSpace(overrides[clubKey])
+		if division == "" {
+			division = chooseDivision(firstXI[clubKey])
+		}
 		if division == "" {
 			division = chooseDivision(fallback[clubKey])
 		}
@@ -487,7 +536,23 @@ func saturdayStarredClubDivisions(clubNames map[string]string, appearances []sta
 	return divisions
 }
 
-func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, r *http.Request) {
+func (s *Server) loadStarredDivisionOverrides(ctx context.Context, year int) map[string]string {
+	overrides := make(map[string]string)
+	rows, err := s.DB.Query(ctx, `SELECT club_key,division_name FROM starred_club_division_overrides WHERE season_year=$1`, year)
+	if err != nil {
+		return overrides
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var clubKey, division string
+		if rows.Scan(&clubKey, &division) == nil {
+			overrides[clubKey] = division
+		}
+	}
+	return overrides
+}
+
+func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
 	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	clubNames := make(map[string]string)
@@ -497,7 +562,8 @@ func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, pe
 		}
 		clubNames[period.ClubKey] = period.ClubName
 	}
-	divisions := saturdayStarredClubDivisions(clubNames, appearances)
+	overrides := s.loadStarredDivisionOverrides(ctx, year)
+	divisions := saturdayStarredClubDivisions(clubNames, appearances, overrides)
 	clubDivision := make(map[string]string)
 	for _, division := range divisions {
 		for _, clubKey := range division.Clubs {
@@ -530,7 +596,31 @@ func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, pe
 			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
 		}
 	}
-	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Show starred list</button></div></form><div class="form-text">Clubs are assigned from their Saturday 1st XI league division at the review cutoff.</div></div>`)
+	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Show starred list</button></div></form><div class="form-text">Clubs are assigned from their Saturday 1st XI league division at the review cutoff. Manual corrections take priority.</div></div>`)
+	fmt.Fprintf(w, `<div class="card-body border-bottom bg-light"><details><summary class="fw-semibold" style="cursor:pointer">Correct a club's division assignment</summary><form method="post" action="/admin/starred-players/mapping" class="row g-2 align-items-end mt-2"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="mapping_type" value="division"><input type="hidden" name="season" value="%d"><div class="col-md-5"><label class="form-label" for="override-club">Club</label><select id="override-club" class="form-select" name="club_key" required onchange="document.getElementById('override-division').value=this.options[this.selectedIndex].dataset.division||''"><option value="">Choose a club…</option>`, escapeHTML(middleware.CSRFToken(r)), year)
+	allClubKeys := make([]string, 0, len(clubNames))
+	for clubKey := range clubNames {
+		allClubKeys = append(allClubKeys, clubKey)
+	}
+	sort.Slice(allClubKeys, func(i, j int) bool { return clubNames[allClubKeys[i]] < clubNames[allClubKeys[j]] })
+	for _, clubKey := range allClubKeys {
+		selected := ""
+		if clubKey == selectedClub {
+			selected = " selected"
+		}
+		marker := " — current: " + clubDivision[clubKey]
+		if overrides[clubKey] != "" {
+			marker += " (manual)"
+		}
+		fmt.Fprintf(w, `<option value="%s" data-division="%s"%s>%s%s</option>`, escapeHTML(clubKey), escapeHTML(clubDivision[clubKey]), selected, escapeHTML(clubNames[clubKey]), escapeHTML(marker))
+	}
+	fmt.Fprintf(w, `</select></div><div class="col-md-4"><label class="form-label" for="override-division">Correct Saturday division</label><input id="override-division" class="form-control" name="division_name" list="starred-division-options" value="%s" placeholder="e.g. Premier 1" required><datalist id="starred-division-options">`, escapeHTML(clubDivision[selectedClub]))
+	for _, division := range divisions {
+		if division.Label != "Unassigned / no Saturday division" {
+			fmt.Fprintf(w, `<option value="%s"></option>`, escapeHTML(division.Label))
+		}
+	}
+	fmt.Fprint(w, `</datalist></div><div class="col-auto"><button class="btn btn-warning" name="override_action" value="save">Save correction</button></div><div class="col-auto"><button class="btn btn-outline-secondary" name="override_action" value="clear" formnovalidate>Use automatic assignment</button></div></form></details></div>`)
 	if selectedDivision == "" {
 		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose the Saturday division you have been assigned, then select a club.</div></div>`)
 		return
@@ -545,6 +635,15 @@ func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, pe
 		return
 	}
 	active := activeStarredPeriodsByClub(periods, cutoff, selectedClub)
+	teamCounts := starredSaturdayTeamCounts(active, appearances, mappings)
+	maxTeamLevel := 4
+	for _, playerCounts := range teamCounts {
+		for level := range playerCounts {
+			if level > maxTeamLevel {
+				maxTeamLevel = level
+			}
+		}
+	}
 	listACount, listBCount := 0, 0
 	for _, period := range active {
 		if period.ListType == "A" {
@@ -553,17 +652,33 @@ func renderStarredClubList(w http.ResponseWriter, year int, cutoff time.Time, pe
 			listBCount++
 		}
 	}
-	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><h5 class="mb-0">%s</h5><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), listACount, listBCount)
-	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><h5 class="mb-0">%s</h5><div class="small text-muted">Saturday appearances from imported scorecards through %s.</div></div><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), cutoff.Format("02 January 2006"), listACount, listBCount)
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th>`)
+	for level := 1; level <= maxTeamLevel; level++ {
+		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
+	}
+	fmt.Fprint(w, `<th class="text-center">Total</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
 	for _, period := range active {
 		badgeClass := "bg-primary"
 		if period.ListType == "A" {
 			badgeClass = "bg-danger"
 		}
-		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName))
+		playerCounts := teamCounts[period.ClubKey+"|"+period.PlayerKey]
+		total := 0
+		for level := 1; level <= maxTeamLevel; level++ {
+			count := playerCounts[level]
+			total += count
+			cellClass := "text-center"
+			if count == 0 {
+				cellClass += " text-muted"
+			}
+			fmt.Fprintf(w, `<td class="%s">%d</td>`, cellClass, count)
+		}
+		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td>%s</td><td>%s</td><td>%s</td></tr>`, total, period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
 	}
 	if len(active) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active starred players found for this club.</td></tr>`)
+		fmt.Fprintf(w, `<tr><td colspan="%d" class="text-center text-muted py-3">No active starred players found for this club.</td></tr>`, maxTeamLevel+6)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
@@ -698,6 +813,10 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 			return
 		}
 		year := starredSeasonYear(r)
+		if r.FormValue("mapping_type") == "division" {
+			s.handleStarredDivisionOverride(w, r, year)
+			return
+		}
 		id, err := strconv.ParseInt(r.FormValue("candidate_id"), 10, 64)
 		if err != nil || id <= 0 {
 			http.Error(w, "invalid candidate", http.StatusBadRequest)
@@ -712,6 +831,49 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 		}
 		redirectStarred(w, r, year, "Identity mapping confirmed.", "")
 	}
+}
+
+func (s *Server) handleStarredDivisionOverride(w http.ResponseWriter, r *http.Request, year int) {
+	clubKey := strings.TrimSpace(r.FormValue("club_key"))
+	division := starredDivisionLabel(strings.TrimSpace(r.FormValue("division_name")), "")
+	action := strings.TrimSpace(r.FormValue("override_action"))
+	if (action != "save" && action != "clear") || clubKey == "" || (action != "clear" && (division == "" || len(division) > 120)) {
+		http.Error(w, "club and a valid division are required", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	cutoff := starred.ReviewCutoff(year, time.Now())
+	var clubName string
+	err := s.DB.QueryRow(ctx, `
+		SELECT p.club_name
+		FROM starred_list_periods p
+		WHERE p.import_run_id=(SELECT id FROM starred_import_runs WHERE season_year=$1 AND status='complete' ORDER BY imported_at DESC,id DESC LIMIT 1)
+		  AND p.club_key=$2 AND p.valid_from <= $3::date AND (p.valid_to IS NULL OR p.valid_to > $3::date)
+		ORDER BY p.id LIMIT 1`, year, clubKey, cutoff).Scan(&clubName)
+	if err != nil {
+		http.Error(w, "club is not present in the active starred list", http.StatusBadRequest)
+		return
+	}
+	adminID := s.resolveAdminID(r)
+	message := "Division assignment corrected for " + clubName + "."
+	if action == "clear" {
+		_, err = s.DB.Exec(ctx, `DELETE FROM starred_club_division_overrides WHERE season_year=$1 AND club_key=$2`, year, clubKey)
+		division = ""
+		message = "Manual division assignment removed for " + clubName + "."
+	} else {
+		_, err = s.DB.Exec(ctx, `INSERT INTO starred_club_division_overrides(season_year,club_key,club_name,division_name,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(season_year,club_key) DO UPDATE SET club_name=EXCLUDED.club_name,division_name=EXCLUDED.division_name,updated_by=EXCLUDED.updated_by,updated_at=now()`, year, clubKey, clubName, division, adminID)
+	}
+	if err != nil {
+		redirectStarred(w, r, year, "", "Could not save division assignment: "+err.Error())
+		return
+	}
+	s.audit(ctx, r, "admin", adminID, "starred_division_override_"+action, "starred_club_division_override", nil, map[string]any{"season": year, "club": clubName, "division": division})
+	q := url.Values{"season": {strconv.Itoa(year)}, "view": {"club-list"}, "club": {clubKey}, "message": {message}}
+	if division != "" {
+		q.Set("division", division)
+	}
+	http.Redirect(w, r, "/admin/starred-players?"+q.Encode()+"#card-detail", http.StatusSeeOther)
 }
 
 func redirectStarred(w http.ResponseWriter, r *http.Request, year int, message, errMsg string) {
