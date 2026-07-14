@@ -44,7 +44,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	stats := make(map[string]*counts)
 	for _, a := range appearances {
-		if !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(cutoff) {
+		if a.TeamLevel == 0 || !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(cutoff) {
 			continue
 		}
 		identity := a.PlayerKey
