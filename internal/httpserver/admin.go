@@ -73,6 +73,10 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Get("/submissions/import", s.handleAdminSubmissionImportGet())
 		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/preview", s.handleAdminSubmissionImportPreview())
 		r.With(s.requireAdminRole("super_admin")).Post("/submissions/import/apply", s.handleAdminSubmissionImportApply())
+		r.With(s.requireAdminRole("super_admin")).Get("/pitch-marks", s.handleAdminPitchMarksGet())
+		r.With(s.requireAdminRole("super_admin")).Post("/pitch-marks/import/preview", s.handleAdminPitchMarksPreview())
+		r.With(s.requireAdminRole("super_admin")).Post("/pitch-marks/import/apply", s.handleAdminPitchMarksApply())
+		r.With(s.requireAdminRole("super_admin")).Get("/pitch-marks/export.csv", s.handleAdminPitchMarksExportCSV())
 		r.Get("/submissions/{id}", s.handleAdminSubmissionDetail())
 		r.Post("/submissions/{id}/fix-date", s.handleAdminSubmissionFixDate())
 
