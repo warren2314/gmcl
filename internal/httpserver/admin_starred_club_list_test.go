@@ -93,3 +93,14 @@ func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T
 		t.Fatalf("name-matched Zed counts=%#v want 3rd=1", got["alpha|zed"])
 	}
 }
+
+func TestRemapStarredAppearanceClubsLinksImportedGamesToPublishedClub(t *testing.T) {
+	appearances := []starred.Appearance{{ClubKey: "play-cricket-name", ClubName: "Play Cricket Name", PlayerName: "Player"}}
+	got := remapStarredAppearanceClubs(appearances, map[string]string{"published-name": "play-cricket-name"}, map[string]string{"published-name": "Published Name CC"})
+	if got[0].ClubKey != "published-name" || got[0].ClubName != "Published Name CC" {
+		t.Fatalf("appearance was not remapped: %#v", got[0])
+	}
+	if appearances[0].ClubKey != "play-cricket-name" {
+		t.Fatal("source appearances must not be mutated")
+	}
+}

@@ -198,6 +198,7 @@ func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, p
 	if err != nil {
 		return starred.Breach{}, err
 	}
+	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, starred.ReviewCutoff(year, time.Now())))
 	evaluation := starred.Evaluate(periods, appearances, mappings, starred.ReviewCutoff(year, time.Now()))
 	for _, breach := range evaluation.Breaches {
 		if breach.Appearance.MatchID != matchID || breach.Appearance.ClubKey != clubKey || breach.ListType != listType {
@@ -297,8 +298,12 @@ func (s *Server) captainForStarredBreach(ctx context.Context, breach starred.Bre
 	return captain
 }
 
-func (s *Server) starredScorecardEvidence(ctx context.Context, matchID int64) string {
-	rows, err := s.DB.Query(ctx, `SELECT club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),captain,wicket_keeper FROM starred_appearances WHERE play_cricket_match_id=$1 AND team_level > 0 ORDER BY team_level,club_name,player_name`, matchID)
+func (s *Server) starredScorecardEvidence(ctx context.Context, breach starred.Breach) string {
+	appearanceClubKey := breach.Appearance.ClubKey
+	if mappedClubKey := s.loadStarredAppearanceClubOverrides(ctx, breach.Appearance.SeasonYear)[breach.Appearance.ClubKey]; mappedClubKey != "" {
+		appearanceClubKey = mappedClubKey
+	}
+	rows, err := s.DB.Query(ctx, `SELECT club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),captain,wicket_keeper FROM starred_appearances WHERE play_cricket_match_id=$1 AND club_key=$2 AND team_name=$3 AND team_level > 0 ORDER BY player_name`, breach.Appearance.MatchID, appearanceClubKey, breach.Appearance.TeamName)
 	if err != nil {
 		return "Scorecard team sheet unavailable."
 	}
@@ -381,7 +386,7 @@ func (s *Server) handleAdminStarredFindingEscalate() http.HandlerFunc {
 			return
 		}
 		captain := s.captainForStarredBreach(ctx, breach)
-		subject, body := starredFindingDraft(breach, captain, s.starredScorecardEvidence(ctx, matchID))
+		subject, body := starredFindingDraft(breach, captain, s.starredScorecardEvidence(ctx, breach))
 		adminID := s.resolveAdminID(r)
 		var findingID int64
 		err = s.DB.QueryRow(ctx, `
