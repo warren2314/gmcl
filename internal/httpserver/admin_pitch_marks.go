@@ -155,10 +155,8 @@ func parseUmpirePitchFile(data []byte) ([]umpirePitchParsedRow, error) {
 		if err != nil {
 			row.Errors = append(row.Errors, "invalid date of game")
 		}
-		row.Timestamp, err = time.ParseInLocation("02/01/2006 15:04:05", field(record, "Timestamp"), loc)
-		if err != nil {
-			row.Errors = append(row.Errors, "invalid timestamp")
-		}
+		rawTimestamp := field(record, "Timestamp")
+		row.Timestamp, _ = parsePitchTimestamp(rawTimestamp, loc)
 		if row.HomeClub == "" || row.AwayClub == "" || row.Division == "" {
 			row.Errors = append(row.Errors, "home club, away club and division are required")
 		}
@@ -177,7 +175,7 @@ func parseUmpirePitchFile(data []byte) ([]umpirePitchParsedRow, error) {
 			Turn:   mark("Turn"),
 		}
 		canonical := fmt.Sprintf("%s|%s|%s|%s|%s|%.0f|%.0f|%.0f|%.0f",
-			row.Timestamp.Format(time.RFC3339), row.MatchDate.Format("2006-01-02"),
+			strings.TrimSpace(rawTimestamp), row.MatchDate.Format("2006-01-02"),
 			normalizeCaptainCSVClubKey(row.HomeClub), normalizeCaptainCSVClubKey(row.AwayClub), strings.ToLower(row.Division),
 			row.Marks.Uneven, row.Marks.Seam, row.Marks.Carry, row.Marks.Turn)
 		h := sha256.Sum256([]byte(canonical))
@@ -185,6 +183,31 @@ func parseUmpirePitchFile(data []byte) ([]umpirePitchParsedRow, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func parsePitchTimestamp(value string, loc *time.Location) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range []string{
+		"02/01/2006 15:04:05",
+		"2/1/2006 15:04:05",
+		"02/01/2006 15:04",
+		"2/1/2006 15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"02/01/2006 3:04:05 PM",
+		"2/1/2006 3:04:05 PM",
+	} {
+		if parsed, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return parsed, nil
+		}
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp")
 }
 
 func normalizePitchHeader(s string) string {
@@ -499,11 +522,15 @@ func (s *Server) handleAdminPitchMarksApply() http.HandlerFunc {
 				continue
 			}
 			rawJSON, _ := json.Marshal(row.Raw)
+			var timestampArg any
+			if !row.Timestamp.IsZero() {
+				timestampArg = row.Timestamp
+			}
 			cmd, execErr := tx.Exec(ctx, `
 				INSERT INTO umpire_pitch_reports(import_id,play_cricket_match_id,source_timestamp,match_date,division_label,home_club_label,away_club_label,unevenness_mark,seam_mark,carry_mark,turn_mark,source_row_hash,source_row)
 				VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 				ON CONFLICT(source_row_hash) DO NOTHING
-			`, importID, selected, row.Timestamp, row.MatchDate, row.Division, row.HomeClub, row.AwayClub, int(row.Marks.Uneven), int(row.Marks.Seam), int(row.Marks.Carry), int(row.Marks.Turn), row.Hash, rawJSON)
+			`, importID, selected, timestampArg, row.MatchDate, row.Division, row.HomeClub, row.AwayClub, int(row.Marks.Uneven), int(row.Marks.Seam), int(row.Marks.Carry), int(row.Marks.Turn), row.Hash, rawJSON)
 			if execErr != nil {
 				http.Error(w, "could not import selected rows", http.StatusInternalServerError)
 				return

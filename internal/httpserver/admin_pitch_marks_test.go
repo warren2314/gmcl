@@ -52,8 +52,41 @@ func TestParseUmpirePitchFileValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows[0].Errors) != 4 {
+	if len(rows[0].Errors) != 3 {
 		t.Fatalf("errors=%v", rows[0].Errors)
+	}
+	if !rows[0].Timestamp.IsZero() {
+		t.Fatalf("unrecognized timestamp should be stored as null: %v", rows[0].Timestamp)
+	}
+}
+
+func TestParsePitchTimestampFormats(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		loc = time.UTC
+	}
+	for _, value := range []string{
+		"18/04/2026 15:04:58",
+		"18/4/2026 15:04:58",
+		"18/04/2026 15:04",
+		"2026-04-18 15:04:58",
+		"18/04/2026 3:04:58 PM",
+		"2026-04-18T14:04:58Z",
+	} {
+		if _, err := parsePitchTimestamp(value, loc); err != nil {
+			t.Errorf("format %q: %v", value, err)
+		}
+	}
+}
+
+func TestUnknownTimestampDoesNotInvalidatePitchRow(t *testing.T) {
+	data := pitchTestHeader + "Excel timestamp\tClifton CC\t\tGMCL Saturday Division 1\t18/04/2026\tDarcy Lever CC\t\t4\t4\t4\t4\n"
+	rows, err := parseUmpirePitchFile([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows[0].Errors) != 0 || !rows[0].Timestamp.IsZero() || rows[0].Hash == "" {
+		t.Fatalf("row=%+v", rows[0])
 	}
 }
 
