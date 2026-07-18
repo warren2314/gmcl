@@ -165,14 +165,17 @@ Every time you push new code, deploy it from the server:
 ssh deploy@YOUR_DROPLET_IP "cd /opt/gmcl && bash scripts/deploy.sh"
 ```
 
-Or from CI/CD (GitHub Actions example):
+The repository CI workflow deploys successful pushes to `master` after migrations,
+tests, `gosec`, and `govulncheck` pass. Configure these GitHub repository secrets:
 
-```yaml
-- name: Deploy to production
-  run: |
-    ssh -o StrictHostKeyChecking=no deploy@${{ secrets.DROPLET_IP }} \
-      "cd /opt/gmcl && bash scripts/deploy.sh"
-```
+- `PROD_SSH_HOST` — production droplet hostname or IP
+- `PROD_SSH_USER` — restricted deployment user
+- `PROD_SSH_KEY` — private SSH key for that user
+- `PROD_SSH_KNOWN_HOSTS` — pinned `known_hosts` entry for the droplet
+
+The deploy job uses the GitHub `production` environment and passes the exact
+tested commit to `scripts/deploy.sh`; it does not deploy a newer untested branch
+head if another push occurs while a job is running.
 
 ---
 

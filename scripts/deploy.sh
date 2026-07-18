@@ -47,7 +47,9 @@ info "Checks passed."
 section "Pulling latest code"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
+TARGET_REF="${DEPLOY_COMMIT:-origin/${BRANCH}}"
 info "Branch: ${BRANCH}"
+info "Target: ${TARGET_REF}"
 
 # Stash any local changes (shouldn't be any in prod, but guard against accidental edits)
 if ! git diff --quiet; then
@@ -56,13 +58,32 @@ if ! git diff --quiet; then
 fi
 
 git fetch origin
-git reset --hard "origin/${BRANCH}"
+git cat-file -e "${TARGET_REF}^{commit}" || error "Deployment target is not a fetched commit: ${TARGET_REF}"
+git reset --hard "${TARGET_REF}"
 
 COMMIT=$(git log -1 --format="%h  %s  (%cr)" HEAD)
 info "Deploying commit: ${COMMIT}"
 
 # ── Build & restart ──────────────────────────────────────────────────────────
 section "Building images and restarting containers"
+
+# Keep the database image compatible with migrations before the app starts.
+# Existing data remains on the db_data volume.
+docker compose pull db
+docker compose up -d --no-deps db
+
+section "Waiting for database to become healthy"
+ELAPSED=0
+until [[ "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q db)")" == "healthy" ]]; do
+    if [[ ${ELAPSED} -ge 60 ]]; then
+        error "Database health check timed out after 60s. Check: docker compose logs db"
+    fi
+    echo -n "."
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+done
+echo ""
+info "Database healthy (${ELAPSED}s)."
 
 # Step 1: rebuild and restart the app (DB stays up, Caddy keeps serving existing traffic)
 docker compose up -d --build --no-deps --remove-orphans app
