@@ -67,24 +67,41 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		season := strings.TrimSpace(r.URL.Query().Get("season"))
+		search := strings.TrimSpace(r.URL.Query().Get("q"))
+		effectFilter := strings.TrimSpace(r.URL.Query().Get("type"))
 		archive := r.URL.Query().Get("archive") == "1"
 		args := []any{}
-		where := `c.status='published' AND c.public_status IN ('active','suspended','served','expired')`
+		where := `c.status='published' AND c.public_status IN ('active','suspended','served','expired') AND e.status IN ('active','suspended','served','expired')`
 		if !archive {
-			where += ` AND c.public_status IN ('active','suspended')`
+			where += ` AND c.public_status IN ('active','suspended') AND e.status IN ('active','suspended') AND (e.ends_at IS NULL OR e.ends_at>=now())`
 		}
 		if season != "" {
 			if y, err := strconv.Atoi(season); err == nil {
 				args = append(args, y)
-				where += fmt.Sprintf(` AND EXTRACT(YEAR FROM s.start_date)::int=$%d`, len(args))
+				where += fmt.Sprintf(` AND COALESCE(EXTRACT(YEAR FROM s.start_date)::int,EXTRACT(YEAR FROM e.starts_at)::int)=$%d`, len(args))
 			}
+		}
+		if search != "" {
+			args = append(args, "%"+search+"%")
+			where += fmt.Sprintf(` AND (cl.name ILIKE $%d OR t.name ILIKE $%d OR c.player_name ILIKE $%d OR c.public_summary ILIKE $%d)`, len(args), len(args), len(args), len(args))
+		}
+		allowedEffects := map[string]bool{"yellow_card": true, "red_card": true, "suspended_red": true, "player_ban": true, "team_ban": true, "fine": true, "card_points": true, "points_adjustment": true, "warning": true}
+		if allowedEffects[effectFilter] {
+			args = append(args, effectFilter)
+			where += fmt.Sprintf(` AND e.effect_type=$%d`, len(args))
 		}
 		rows, err := s.DB.Query(ctx, fmt.Sprintf(`
 			SELECT c.reference,COALESCE(EXTRACT(YEAR FROM s.start_date)::int,EXTRACT(YEAR FROM e.starts_at)::int,0),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),
-			       c.public_summary,c.public_status,e.effect_type,e.status,COALESCE(e.points,0),COALESCE(e.amount_pence,0),e.starts_at,e.ends_at,c.published_at
+			       c.public_summary,CASE WHEN e.ends_at<now() THEN 'expired' ELSE c.public_status END,e.effect_type,e.status,COALESCE(e.points,0),COALESCE(e.amount_pence,0),e.starts_at,e.ends_at,c.published_at,
+			       COALESCE(balance.yellow_balance,0),COALESCE(balance.red_count,0)
 			FROM sanction_cases c
 			LEFT JOIN seasons s ON s.id=c.season_id LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id
-			JOIN LATERAL (SELECT er.* FROM sanction_effect_revisions er JOIN sanction_decision_revisions dr ON dr.id=er.decision_revision_id WHERE dr.case_id=c.id AND dr.status='approved' AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=er.id) ORDER BY er.id DESC LIMIT 1) e ON true
+			JOIN sanction_decision_revisions d ON d.id=(SELECT latest.id FROM sanction_decision_revisions latest WHERE latest.case_id=c.id AND latest.status='approved' ORDER BY latest.revision DESC LIMIT 1)
+			JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
+			LEFT JOIN LATERAL (SELECT
+			  (SELECT SUM(yellow_delta) FROM sanction_card_ledger_entries yl WHERE yl.team_id=c.team_id) yellow_balance,
+			  (SELECT SUM(red_delta) FROM sanction_card_ledger_entries rl WHERE rl.team_id=c.team_id AND (c.season_id IS NULL OR rl.season_id=c.season_id)) red_count
+			) balance ON true
 			WHERE %s ORDER BY COALESCE(e.starts_at,c.published_at) DESC,c.reference DESC`, where), args...)
 		if err != nil {
 			slog.Error("load public sanctions register", "error", err)
@@ -95,18 +112,26 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "GMCL Sanctions Register")
 		writeCaptainNav(w)
-		fmt.Fprint(w, `<main class="container py-4" style="max-width:1100px"><div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4"><div><h1 class="h2">GMCL sanctions register</h1><p class="text-muted">Approved and published team cards, bans, fines and points decisions. Private evidence and correspondence are never shown here.</p></div><a class="btn btn-outline-danger" href="/sanctions/report">Report an issue</a></div><form method="GET" class="row g-2 mb-3"><div class="col-auto"><input class="form-control" type="number" name="season" min="2016" placeholder="Season" value="`+escapeHTML(season)+`"></div><div class="col-auto"><label class="form-check mt-2"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
+		fmt.Fprint(w, `<main class="container py-4" style="max-width:1100px"><div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-start gap-3 mb-4"><div><h1 class="h2">GMCL sanctions register</h1><p class="text-muted mb-0">Approved and published team cards, bans, fines and points decisions. Private evidence and correspondence are never shown here.</p></div><a class="btn btn-outline-danger" href="/sanctions/report">Report an issue</a></div><form method="GET" class="card card-body mb-3"><div class="row g-2"><div class="col-12 col-md-4"><label class="form-label" for="sanction-search">Club, team, player or reason</label><input id="sanction-search" class="form-control" type="search" name="q" placeholder="Search register" value="`+escapeHTML(search)+`"></div><div class="col-6 col-md-2"><label class="form-label" for="sanction-season">Season</label><input id="sanction-season" class="form-control" type="number" name="season" min="2016" placeholder="All" value="`+escapeHTML(season)+`"></div><div class="col-6 col-md-3"><label class="form-label" for="sanction-type">Sanction</label><select id="sanction-type" class="form-select" name="type"><option value="">All types</option>`)
+		for _, option := range []struct{ value, label string }{{"yellow_card", "Yellow card"}, {"red_card", "Red card"}, {"suspended_red", "Suspended red"}, {"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"}, {"points_adjustment", "Points adjustment"}, {"warning", "Warning"}} {
+			selected := ""
+			if effectFilter == option.value {
+				selected = " selected"
+			}
+			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.value, selected, option.label)
+		}
+		fmt.Fprint(w, `</select></div><div class="col-12 col-md-3 d-flex flex-column justify-content-end"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
 		if archive {
 			fmt.Fprint(w, " checked")
 		}
-		fmt.Fprint(w, `> <span class="form-check-label">Include archive</span></label></div><div class="col-auto"><button class="btn btn-primary">Filter</button></div></form><div class="table-responsive"><table class="table table-striped align-middle"><thead><tr><th>Reference</th><th>Season</th><th>Club / team / player</th><th>Sanction</th><th>Status</th><th>Effective</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `> <span class="form-check-label">Include served and expired</span></label><button class="btn btn-primary">Apply filters</button></div></div></form><div class="table-responsive"><table class="table table-striped responsive-cards align-middle"><thead><tr><th>Reference</th><th>Season</th><th>Club / team / player</th><th>Sanction</th><th>Status</th><th>Effective</th></tr></thead><tbody>`)
 		count := 0
 		for rows.Next() {
 			var ref, club, team, player, reason, pubStatus, effect, effectStatus string
-			var year, points int
+			var year, points, yellowBalance, redCount int
 			var amountPence int64
 			var starts, ends, published *time.Time
-			if rows.Scan(&ref, &year, &club, &team, &player, &reason, &pubStatus, &effect, &effectStatus, &points, &amountPence, &starts, &ends, &published) != nil {
+			if rows.Scan(&ref, &year, &club, &team, &player, &reason, &pubStatus, &effect, &effectStatus, &points, &amountPence, &starts, &ends, &published, &yellowBalance, &redCount) != nil {
 				continue
 			}
 			count++
@@ -118,6 +143,14 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			if amountPence != 0 {
 				sanction += fmt.Sprintf(" · £%.2f", float64(amountPence)/100)
 			}
+			balance := ""
+			if effect == "yellow_card" || effect == "red_card" || effect == "suspended_red" {
+				toThreshold := 3 - yellowBalance
+				if toThreshold < 0 {
+					toThreshold = 0
+				}
+				balance = fmt.Sprintf(`<div class="small text-muted">Current balance: %d yellow, %d red; %d yellow to next threshold</div>`, yellowBalance, redCount, toThreshold)
+			}
 			dates := "—"
 			if starts != nil {
 				dates = starts.In(s.LondonLoc).Format("02 Jan 2006")
@@ -125,7 +158,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			if ends != nil {
 				dates += " to " + ends.In(s.LondonLoc).Format("02 Jan 2006")
 			}
-			fmt.Fprintf(w, `<tr><td><a href="/sanctions/%s">%s</a></td><td>%d</td><td>%s</td><td><strong>%s</strong><div class="small text-muted">%s</div></td><td>%s</td><td>%s</td></tr>`, escapeHTML(ref), escapeHTML(ref), year, escapeHTML(subject), escapeHTML(sanction), escapeHTML(reason), escapeHTML(pubStatus), escapeHTML(dates))
+			fmt.Fprintf(w, `<tr><td data-label="Reference"><a href="/sanctions/%s"><strong>%s</strong></a></td><td data-label="Season">%d</td><td data-label="Club / team / player">%s</td><td data-label="Sanction"><strong>%s</strong>%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Effective">%s</td></tr>`, escapeHTML(ref), escapeHTML(ref), year, escapeHTML(subject), escapeHTML(sanction), balance, escapeHTML(reason), escapeHTML(pubStatus), escapeHTML(dates))
 		}
 		if count == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-4">No published sanctions match this view.</td></tr>`)
@@ -151,26 +184,51 @@ func effectLabel(v string) string {
 func (s *Server) handlePublicSanctionDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ref := chi.URLParam(r, "reference")
-		var club, team, player, summary, status, effect, ruleRef string
-		var starts, ends *time.Time
-		var points *int
-		var amountPence *int64
-		err := s.DB.QueryRow(r.Context(), `SELECT COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),c.public_summary,c.public_status,e.effect_type,COALESCE(d.rule_reference,''),e.starts_at,e.ends_at,e.points,e.amount_pence FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.reference=$1 AND c.status='published' AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id) ORDER BY d.revision DESC LIMIT 1`, ref).Scan(&club, &team, &player, &summary, &status, &effect, &ruleRef, &starts, &ends, &points, &amountPence)
+		var caseID int64
+		var club, team, player, summary, status, ruleRef string
+		err := s.DB.QueryRow(r.Context(), `SELECT c.id,COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),c.public_summary,c.public_status,COALESCE(d.rule_reference,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id JOIN sanction_decision_revisions d ON d.id=(SELECT latest.id FROM sanction_decision_revisions latest WHERE latest.case_id=c.id AND latest.status='approved' ORDER BY latest.revision DESC LIMIT 1) WHERE c.reference=$1 AND c.status='published'`, ref).Scan(&caseID, &club, &team, &player, &summary, &status, &ruleRef)
 		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
+		effects, err := s.DB.Query(r.Context(), `SELECT e.effect_type,e.status,e.starts_at,e.ends_at,e.points,e.amount_pence FROM sanction_effect_revisions e JOIN sanction_decision_revisions d ON d.id=e.decision_revision_id WHERE d.case_id=$1 AND d.status='approved' AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id) ORDER BY e.id`, caseID)
+		if err != nil {
+			http.Error(w, "could not load sanction effects", 500)
+			return
+		}
+		defer effects.Close()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanction "+ref)
 		writeCaptainNav(w)
-		fmt.Fprintf(w, `<main class="container py-4" style="max-width:800px"><a href="/sanctions" class="btn btn-sm btn-outline-secondary mb-3">Back to register</a><article class="card"><div class="card-header d-flex justify-content-between"><strong>%s</strong><span class="badge text-bg-danger">%s</span></div><div class="card-body"><h1 class="h3">%s</h1><p>%s</p><dl class="row"><dt class="col-sm-4">Status</dt><dd class="col-sm-8">%s</dd><dt class="col-sm-4">Applicable rule</dt><dd class="col-sm-8">%s</dd>`, escapeHTML(ref), escapeHTML(effectLabel(effect)), escapeHTML(strings.Join(nonEmpty(club, team, player), " — ")), escapeHTML(summary), escapeHTML(status), escapeHTML(ruleRef))
-		if points != nil {
-			fmt.Fprintf(w, `<dt class="col-sm-4">Points consequence</dt><dd class="col-sm-8">%d point deduction</dd>`, *points)
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:800px"><a href="/sanctions" class="btn btn-sm btn-outline-secondary mb-3">Back to register</a><article class="card mb-3"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge text-bg-danger">%s</span></div><div class="card-body"><h1 class="h3">%s</h1><p>%s</p><dl class="row mb-0"><dt class="col-sm-4">Status</dt><dd class="col-sm-8">%s</dd><dt class="col-sm-4">Applicable rule</dt><dd class="col-sm-8">%s</dd></dl></div></article><h2 class="h4">Decision effects</h2><div class="row g-3">`, escapeHTML(ref), escapeHTML(status), escapeHTML(strings.Join(nonEmpty(club, team, player), " — ")), escapeHTML(summary), escapeHTML(status), escapeHTML(ruleRef))
+		for effects.Next() {
+			var effect, effectStatus string
+			var starts, ends *time.Time
+			var points *int
+			var amountPence *int64
+			if effects.Scan(&effect, &effectStatus, &starts, &ends, &points, &amountPence) != nil {
+				continue
+			}
+			if ends != nil && ends.Before(time.Now()) {
+				effectStatus = "expired"
+			}
+			dates := "No fixed dates"
+			if starts != nil {
+				dates = starts.In(s.LondonLoc).Format("02 Jan 2006")
+			}
+			if ends != nil {
+				dates += " to " + ends.In(s.LondonLoc).Format("02 Jan 2006")
+			}
+			fmt.Fprintf(w, `<div class="col-12"><section class="card card-gmcl"><div class="card-body"><div class="d-flex justify-content-between gap-2"><h3 class="h5">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div><p class="mb-1">%s</p>`, escapeHTML(effectLabel(effect)), escapeHTML(effectStatus), escapeHTML(dates))
+			if points != nil {
+				fmt.Fprintf(w, `<p class="mb-1"><strong>Points consequence:</strong> %d point deduction</p>`, *points)
+			}
+			if amountPence != nil {
+				fmt.Fprintf(w, `<p class="mb-1"><strong>Fine:</strong> £%.2f</p>`, float64(*amountPence)/100)
+			}
+			fmt.Fprint(w, `</div></section></div>`)
 		}
-		if amountPence != nil {
-			fmt.Fprintf(w, `<dt class="col-sm-4">Fine</dt><dd class="col-sm-8">£%.2f</dd>`, float64(*amountPence)/100)
-		}
-		fmt.Fprint(w, `</dl><p class="small text-muted mb-0">This public record excludes evidence, correspondence, contact details, and internal notes.</p></div></article></main>`)
+		fmt.Fprint(w, `</div><p class="small text-muted mt-3 mb-0">This public record excludes evidence, correspondence, contact details, and internal notes.</p></main>`)
 		pageFooter(w)
 	}
 }
@@ -479,13 +537,13 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions cases")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-wrap justify-content-between gap-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-flex flex-wrap gap-2 align-self-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><div class="btn-group"><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a><a href="/admin/cases/imports" class="btn btn-outline-secondary">History imports</a><a href="/admin/sanctions" class="btn btn-outline-secondary">Legacy card ledger</a></div></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted mb-0">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 align-self-lg-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><a href="/admin/cases/imports" class="btn btn-primary">Import legacy bans &amp; cards</a><a href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener" class="btn btn-outline-primary">Public register</a><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`)
 		for rows.Next() {
 			var id int64
 			var ref, source, status, club, team, assigned string
 			var created time.Time
 			if rows.Scan(&id, &ref, &source, &status, &club, &team, &created, &assigned) == nil {
-				fmt.Fprintf(w, `<tr><td><a href="/admin/cases/%d">%s</a></td><td>%s</td><td>%s — %s</td><td>%s</td><td>%s</td><td>%s</td></tr>`, id, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(assigned), created.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
+				fmt.Fprintf(w, `<tr><td data-label="Reference"><a href="/admin/cases/%d"><strong>%s</strong></a></td><td data-label="Source">%s</td><td data-label="Club / team">%s — %s</td><td data-label="Status">%s</td><td data-label="Assigned">%s</td><td data-label="Opened">%s</td></tr>`, id, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(assigned), created.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></div></main>`)

@@ -78,7 +78,7 @@ func (s *Server) handleAdminSanctionTimelineGet() http.HandlerFunc {
 			}
 			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, rel.ID, selected, escapeHTML(rel.Label))
 		}
-		fmt.Fprintf(w, `</select></div><div class="col-12"><label class="form-label">Reason *</label><input class="form-control" name="reason" value="%s" required></div><div class="col-12"><label class="form-label">Notes</label><textarea class="form-control" name="notes" rows="4">%s</textarea></div></div></div><div class="card-footer"><button class="btn btn-primary">Save verified details</button></div></div></form>`, escapeHTML(v.Reason), escapeHTML(v.Notes))
+		fmt.Fprintf(w, `</select></div><div class="col-12"><label class="form-label">Recorded reason *</label><input class="form-control" name="reason" value="%s" required></div><div class="col-12"><label class="form-label">Notes</label><textarea class="form-control" name="notes" rows="4">%s</textarea></div><div class="col-12"><label class="form-label">Reason for this correction *</label><textarea class="form-control" name="correction_reason" rows="2" required></textarea><div class="form-text">The previous and replacement values, your identity, time and request ID are retained permanently.</div></div></div></div><div class="card-footer"><button class="btn btn-primary">Record immutable correction</button></div></div></form>`, escapeHTML(v.Reason), escapeHTML(v.Notes))
 		rows2, _ := s.DB.Query(ctx, `SELECT event_type,event_at,COALESCE(notes,'') FROM sanction_events WHERE sanction_id=$1 ORDER BY event_at`, id)
 		fmt.Fprint(w, `<div class="card"><div class="card-header fw-semibold">Audit timeline</div><ul class="list-group list-group-flush">`)
 		if rows2 != nil {
@@ -115,19 +115,43 @@ func (s *Server) handleAdminSanctionTimelinePost() http.HandlerFunc {
 		}
 		ref := strings.TrimSpace(r.FormValue("rule_reference"))
 		reason := strings.TrimSpace(r.FormValue("reason"))
-		if ref == "" || reason == "" {
-			http.Error(w, "rule reference and reason are required", 400)
+		correctionReason := strings.TrimSpace(r.FormValue("correction_reason"))
+		if ref == "" || reason == "" || correctionReason == "" {
+			http.Error(w, "rule reference, recorded reason and correction reason are required", 400)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		admin := s.resolveAdminID(r)
-		_, err = s.DB.Exec(ctx, `UPDATE sanctions SET offence_date=$2,remedy_due_at=$3,appeal_due_at=$4,served_at=$5,rule_release_id=$6,rule_reference=$7,reason=$8,notes=$9 WHERE id=$1`, id, offence, parseLocalDateTime(r.FormValue("remedy_due_at"), s.LondonLoc), parseLocalDateTime(r.FormValue("appeal_due_at"), s.LondonLoc), parseLocalDateTime(r.FormValue("served_at"), s.LondonLoc), releaseID, ref, reason, strings.TrimSpace(r.FormValue("notes")))
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
 		if err != nil {
 			http.Error(w, "save failed", 500)
 			return
 		}
-		_, _ = s.DB.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id) VALUES($1,'details_verified',now(),$2,$3)`, id, "Rule "+ref+" and dates verified", admin)
+		defer tx.Rollback(ctx)
+		var beforeData []byte
+		if err = tx.QueryRow(ctx, `SELECT jsonb_build_object('offence_date',offence_date,'remedy_due_at',remedy_due_at,'appeal_due_at',appeal_due_at,'served_at',served_at,'rule_release_id',rule_release_id,'rule_reference',rule_reference,'reason',reason,'notes',notes) FROM sanctions WHERE id=$1 FOR UPDATE`, id).Scan(&beforeData); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		remedyDue := parseLocalDateTime(r.FormValue("remedy_due_at"), s.LondonLoc)
+		appealDue := parseLocalDateTime(r.FormValue("appeal_due_at"), s.LondonLoc)
+		servedAt := parseLocalDateTime(r.FormValue("served_at"), s.LondonLoc)
+		notes := strings.TrimSpace(r.FormValue("notes"))
+		_, err = tx.Exec(ctx, `UPDATE sanctions SET offence_date=$2,remedy_due_at=$3,appeal_due_at=$4,served_at=$5,rule_release_id=$6,rule_reference=$7,reason=$8,notes=$9 WHERE id=$1`, id, offence, remedyDue, appealDue, servedAt, releaseID, ref, reason, notes)
+		if err != nil {
+			http.Error(w, "save failed", 500)
+			return
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'details_corrected',now(),$2,$3,$4,$5,$6::jsonb,jsonb_build_object('offence_date',$7::date,'remedy_due_at',$8::timestamptz,'appeal_due_at',$9::timestamptz,'served_at',$10::timestamptz,'rule_release_id',$11::bigint,'rule_reference',$12::text,'reason',$13::text,'notes',$14::text),$15)`, id, "Rule "+ref+" and dates corrected", *actor.ID, actor.Label, correctionReason, string(beforeData), offence, remedyDue, appealDue, servedAt, releaseID, ref, reason, notes, actor.RequestID)
+		if err != nil || tx.Commit(ctx) != nil {
+			http.Error(w, "save failed", 500)
+			return
+		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/sanctions/%d/timeline", id), http.StatusSeeOther)
 	}
 }

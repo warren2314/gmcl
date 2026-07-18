@@ -81,21 +81,25 @@ func pageHeadWithCharts(w io.Writer, title string) {
 func writeCaptainNav(w io.Writer) {
 	assistantLink := ""
 	if rulesAssistantEnabled() {
-		assistantLink = `<a class="link-light text-decoration-none small" href="/rules-assistant">A1 Rules Assistant</a>`
+		assistantLink = `<li class="nav-item"><a class="nav-link" href="/rules-assistant">A1 Rules Assistant</a></li>`
 	}
-	fmt.Fprintf(w, `<nav class="navbar navbar-dark bg-gmcl mb-4">
+	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-4">
   <div class="container">
-    <div class="d-flex align-items-center justify-content-between w-100">
-      <a class="navbar-brand d-flex align-items-center" href="/">
-        <img src="/images/logo.webp" alt="GMCL" height="48" class="me-2">
-      </a>
-      <div class="d-flex gap-3">
-        <a class="link-light text-decoration-none small" href="/">Home</a>
-        <a class="link-light text-decoration-none small" href="/submissions">Submission Status</a>
+    <a class="navbar-brand d-flex align-items-center" href="/">
+      <img src="/images/logo.webp" alt="GMCL" height="48" class="me-2">
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#publicNav" aria-controls="publicNav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="publicNav">
+      <ul class="navbar-nav ms-auto mb-2 mb-md-0">
+        <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+        <li class="nav-item"><a class="nav-link" href="https://sanctions.gmcl.co.uk/">Sanctions register</a></li>
+        <li class="nav-item"><a class="nav-link" href="/submissions">Submission status</a></li>
         %s
-        <a class="link-light text-decoration-none small" href="/privacy">Privacy</a>
-        <a class="link-light text-decoration-none small" href="/retention">Retention</a>
-      </div>
+        <li class="nav-item"><a class="nav-link" href="/privacy">Privacy</a></li>
+        <li class="nav-item"><a class="nav-link" href="/retention">Retention</a></li>
+      </ul>
     </div>
   </div>
 </nav>
@@ -130,6 +134,24 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 	if role == "super_admin" {
 		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions</a></li>`
 	}
+
+	sanctionsMenu := fmt.Sprintf(`
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
+            Sanctions
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="/admin/cases">Case dashboard</a></li>
+            <li><a class="dropdown-item" href="/admin/cases/new">Add card, ban, fine or points decision</a></li>
+            <li><a class="dropdown-item" href="/admin/cases/imports">Import legacy bans &amp; cards</a></li>
+            <li><a class="dropdown-item" href="/admin/cases/tasks">Follow-up tasks</a></li>
+            <li><a class="dropdown-item" href="/admin/cases/recipients">Notice recipients</a></li>
+            <li><a class="dropdown-item" href="/admin/cases/automation">Automation safety</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener">View public register</a></li>
+            <li><a class="dropdown-item" href="/admin/sanctions">Legacy card ledger</a></li>
+          </ul>
+        </li>`, dropdownActive("/admin/cases", "/admin/sanctions"))
 
 	opsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
@@ -167,14 +189,12 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		%s
 		%s
 		%s
-		%s
 		%s`,
 		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
 		dropdownActive("/admin/rankings", "/admin/pitch-marks"),
 		dropdownActive("/admin/reports"),
 		missingReportItem,
-		navLink("/admin/cases", "Sanctions cases"),
-		navLink("/admin/sanctions", "Legacy card ledger"),
+		sanctionsMenu,
 		navLink("/admin/rules-assistant", "A1 Rules Assistant"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),

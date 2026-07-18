@@ -82,6 +82,23 @@ func TestTeamBanDatesCoverEveryRecordedSeason(t *testing.T) {
 	}
 }
 
+func TestImportOverrideResolvesTeamAndMissingDateWithoutChangingSource(t *testing.T) {
+	clubID, teamID := int32(4), int32(9)
+	lookup := sanctionImportLookup{
+		clubsByID: map[int32]importClub{clubID: {ID: clubID, Name: "Example CC"}},
+		teamsByID: map[int32]importTeam{teamID: {ID: teamID, ClubID: clubID, ClubName: "Example CC", Name: "2nd XI"}},
+	}
+	candidate := sanctionImportCandidate{EffectType: "yellow_card", PublicReason: "Recorded source offence", Error: "club/team not matched"}
+	date := "2026-06-20"
+	got := applySanctionImportOverride(candidate, "live-team-card-register.csv", sanctionImportOverride{TeamID: &teamID, OffenceDate: date}, lookup)
+	if got.Error != "" || got.TeamID == nil || *got.TeamID != teamID || got.ClubID == nil || *got.ClubID != clubID {
+		t.Fatalf("override did not resolve mapping: %#v", got)
+	}
+	if got.OffenceDate == nil || got.OffenceDate.Format("2006-01-02") != date || got.PublicReason != candidate.PublicReason {
+		t.Fatalf("override changed or failed to complete source candidate: %#v", got)
+	}
+}
+
 func TestParseSanctionImportCSVRejectsEmptyInput(t *testing.T) {
 	if _, _, err := parseSanctionImportCSV(nil); err == nil {
 		t.Fatal("expected empty CSV to be rejected")

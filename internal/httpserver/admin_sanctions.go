@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -163,18 +164,9 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
 
 		fmt.Fprint(w, `<div class="container-fluid px-4">`)
+		// Bulk deletion is deliberately unavailable. Corrections and reversals
+		// must retain an attributed immutable history.
 		clearBtn := ""
-		if adminRoleForRequest(r) == "super_admin" && (yellowCount > 0 || redCount > 0) {
-			clearBtn = fmt.Sprintf(`
-<form method="POST" action="/admin/sanctions/clear-all" class="d-inline ms-2">
-  <input type="hidden" name="csrf_token" value="%s">
-  <input type="hidden" name="season_id" value="%d">
-  <button type="submit" class="btn btn-sm btn-outline-danger"
-          onclick="return confirm('This will permanently DELETE all yellow cards and all non-submission red cards for this season. Continue?')">
-    Clear all non-submission cards
-  </button>
-</form>`, csrfToken, seasonID)
-		}
 		fmt.Fprintf(w, `
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div>
@@ -288,8 +280,9 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 				actions = fmt.Sprintf(`
 <form method="POST" action="/admin/sanctions/%d/resolve" class="d-inline">
   <input type="hidden" name="csrf_token" value="%s">
+  <input type="text" name="reason" class="form-control form-control-sm d-inline-block" style="width:12rem" placeholder="Overturn reason" required>
   <button type="submit" class="btn btn-sm btn-outline-success py-0"
-          onclick="return confirm('Overturn this sanction?')">Overturn</button>
+          >Overturn</button>
 </form>`, sr.ID, csrfToken)
 			}
 			actions += fmt.Sprintf(` <a class="btn btn-sm btn-outline-primary py-0" href="/admin/sanctions/%d/timeline">Details</a>`, sr.ID)
@@ -576,19 +569,42 @@ func (s *Server) handleAdminSanctionResolve() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-
-		adminID := s.resolveAdminID(r)
-
-		_, err = s.DB.Exec(ctx, `
-			UPDATE sanctions SET status='overturned', resolved_at=now(), resolved_by_admin_id=$1
-			WHERE id=$2 AND status='active'
-		`, adminID, sanctionID)
+		if err = r.ParseForm(); err != nil || strings.TrimSpace(r.FormValue("reason")) == "" {
+			http.Error(w, "overturn reason is required", http.StatusBadRequest)
+			return
+		}
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
 		if err != nil {
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
 		}
+		defer tx.Rollback(ctx)
+		var beforeData []byte
+		if err = tx.QueryRow(ctx, `SELECT to_jsonb(sa) FROM sanctions sa WHERE id=$1 AND status='active' FOR UPDATE`, sanctionID).Scan(&beforeData); err != nil {
+			http.Error(w, "active sanction not found", http.StatusNotFound)
+			return
+		}
+		reason := strings.TrimSpace(r.FormValue("reason"))
+		_, err = tx.Exec(ctx, `
+			UPDATE sanctions SET status='overturned', resolved_at=now(), resolved_by_admin_id=$1
+			WHERE id=$2 AND status='active'
+		`, *actor.ID, sanctionID)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,'overturned_with_reason',now(),$2,$3,$4,$2,$5::jsonb,to_jsonb(sa),$6 FROM sanctions sa WHERE id=$1`, sanctionID, reason, *actor.ID, actor.Label, string(beforeData), actor.RequestID)
+		if err != nil || tx.Commit(ctx) != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
 
-		s.audit(ctx, r, "admin", adminID, "sanction_resolved", "sanction", &sanctionID, map[string]any{})
+		s.audit(ctx, r, "admin", actor.ID, "sanction_resolved", "sanction", &sanctionID, map[string]any{"reason": reason})
 
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
@@ -618,7 +634,17 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		adminID := s.resolveAdminID(r)
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback(ctx)
 
 		type sanctionState struct {
 			TeamID      int32
@@ -628,7 +654,7 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 			EmailStatus string
 		}
 		var before sanctionState
-		err = s.DB.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT team_id, week_id, season_id, status::text, COALESCE(email_status, 'pending')
 			FROM sanctions
 			WHERE id=$1 AND colour='yellow' AND status IN ('active','served')
@@ -639,7 +665,8 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 			return
 		}
 
-		tag, err := s.DB.Exec(ctx, `
+		beforeData, _ := json.Marshal(before)
+		tag, err := tx.Exec(ctx, `
 			UPDATE sanctions
 			SET status='overturned',
 			    resolved_at=now(),
@@ -653,7 +680,7 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 			        ELSE email_status
 			    END
 			WHERE id=$2 AND colour='yellow' AND status IN ('active','served')
-		`, adminID, sanctionID, reason)
+		`, *actor.ID, sanctionID, reason)
 		if err != nil {
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
@@ -663,8 +690,13 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not revocable."), http.StatusSeeOther)
 			return
 		}
+		_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,'yellow_revoked',now(),$2,$3,$4,$2,$5::jsonb,to_jsonb(sa),$6 FROM sanctions sa WHERE id=$1`, sanctionID, reason, *actor.ID, actor.Label, string(beforeData), actor.RequestID)
+		if err != nil || tx.Commit(ctx) != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
 
-		s.audit(ctx, r, "admin", adminID, "yellow_card_revoked", "sanction", &sanctionID, map[string]any{
+		s.audit(ctx, r, "admin", actor.ID, "yellow_card_revoked", "sanction", &sanctionID, map[string]any{
 			"team_id":               before.TeamID,
 			"week_id":               before.WeekID,
 			"season_id":             before.SeasonID,
@@ -799,6 +831,22 @@ func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback(ctx)
+		var beforeData []byte
+		if tx.QueryRow(ctx, `SELECT to_jsonb(sa) FROM sanctions sa WHERE id=$1 FOR UPDATE`, sanctionID).Scan(&beforeData) != nil {
+			http.NotFound(w, r)
+			return
+		}
 
 		// Persist edits and mark approved
 		var pointsArg interface{}
@@ -811,7 +859,7 @@ func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 			approvedBy = strconv.Itoa(int(sess.AdminID))
 		}
 
-		_, err = s.DB.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
 			UPDATE sanctions
 			SET email_subject=$1, email_body=$2, points_deduction=$3,
 			    email_status='approved', email_approved_by=$4, email_approved_at=now()
@@ -819,6 +867,11 @@ func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 		`, subject, body, pointsArg, approvedBy, sanctionID)
 		if err != nil {
 			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,'email_approved',now(),'Legacy sanction notice approved',$2,$3,'Notice approved for sending',$4::jsonb,to_jsonb(sa),$5 FROM sanctions sa WHERE id=$1`, sanctionID, *actor.ID, actor.Label, string(beforeData), actor.RequestID)
+		if err != nil || tx.Commit(ctx) != nil {
+			http.Error(w, "could not record immutable email approval", http.StatusInternalServerError)
 			return
 		}
 
@@ -846,11 +899,27 @@ func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 		}
 
 		if sentCount > 0 || len(recipients) == 0 {
-			s.DB.Exec(ctx, `UPDATE sanctions SET email_status='sent', email_sent_at=now() WHERE id=$1`, sanctionID)
+			sentTx, sentErr := s.DB.Begin(ctx)
+			if sentErr != nil {
+				http.Error(w, "notice sent but delivery status could not be recorded", http.StatusInternalServerError)
+				return
+			}
+			if sentErr == nil {
+				defer sentTx.Rollback(ctx)
+				if _, sentErr = sentTx.Exec(ctx, `UPDATE sanctions SET email_status='sent', email_sent_at=now() WHERE id=$1`, sanctionID); sentErr == nil {
+					_, sentErr = sentTx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,after_data,request_id) SELECT id,'email_sent',now(),$2,$3,$4,'Approved notice sent',jsonb_build_object('recipient_count',$5,'sent_count',$6,'email_status',email_status,'email_sent_at',email_sent_at),$7 FROM sanctions WHERE id=$1`, sanctionID, fmt.Sprintf("Sent %d of %d configured notices", sentCount, len(recipients)), *actor.ID, actor.Label, len(recipients), sentCount, actor.RequestID)
+				}
+				if sentErr == nil {
+					sentErr = sentTx.Commit(ctx)
+				}
+				if sentErr != nil {
+					http.Error(w, "notice sent but delivery status could not be recorded", http.StatusInternalServerError)
+					return
+				}
+			}
 		}
 
-		adminID := s.resolveAdminID(r)
-		s.audit(ctx, r, "admin", adminID, "sanction_email_sent", "sanction", &sanctionID, map[string]any{
+		s.audit(ctx, r, "admin", actor.ID, "sanction_email_sent", "sanction", &sanctionID, map[string]any{
 			"recipients": len(recipients),
 			"sent":       sentCount,
 		})
@@ -869,7 +938,29 @@ func (s *Server) handleAdminSanctionEmailSkip() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		s.DB.Exec(ctx, `UPDATE sanctions SET email_status='skipped' WHERE id=$1`, sanctionID)
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
+		if err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback(ctx)
+		var beforeData []byte
+		if tx.QueryRow(ctx, `SELECT to_jsonb(sa) FROM sanctions sa WHERE id=$1 FOR UPDATE`, sanctionID).Scan(&beforeData) != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err = tx.Exec(ctx, `UPDATE sanctions SET email_status='skipped' WHERE id=$1`, sanctionID); err == nil {
+			_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,'email_skipped',now(),'Legacy sanction notice skipped',$2,$3,'Notice deliberately skipped',$4::jsonb,to_jsonb(sa),$5 FROM sanctions sa WHERE id=$1`, sanctionID, *actor.ID, actor.Label, string(beforeData), actor.RequestID)
+		}
+		if err != nil || tx.Commit(ctx) != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
 }

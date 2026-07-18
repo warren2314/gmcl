@@ -44,7 +44,10 @@ const captainSessionCookie = "cap_sess"
 func (s *Server) handlePublicEntry() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(hostnameOnly(r.Host), "sanctions.gmcl.co.uk") {
-			http.Redirect(w, r, "/sanctions", http.StatusTemporaryRedirect)
+			// The sanctions hostname is a public product in its own right. Render
+			// the register at the root so visitors do not need to know an internal
+			// application path (the /sanctions route remains available too).
+			s.handlePublicSanctionsRegister().ServeHTTP(w, r)
 			return
 		}
 		csrfToken := middleware.CSRFToken(r)

@@ -11,6 +11,8 @@ import (
 
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
@@ -199,6 +201,101 @@ func parseIntOrNil(v string) *int {
 		return nil
 	}
 	return &n
+}
+
+func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		includeClosed := r.URL.Query().Get("archive") == "1"
+		where := `t.status IN ('open','in_progress')`
+		if includeClosed {
+			where = `TRUE`
+		}
+		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`)
+		if err != nil {
+			http.Error(w, "tasks unavailable", 500)
+			return
+		}
+		defer rows.Close()
+		csrf := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Sanctions follow-up tasks")
+		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
+		fmt.Fprint(w, `<main class="container py-4" style="max-width:1000px"><div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-3"><div><h1 class="h2">Sanctions follow-up tasks</h1><p class="text-muted mb-0">Points deductions, fine recovery, Board intervention, suspension reviews, appeals and ban expiry.</p></div><a class="btn btn-outline-secondary align-self-sm-start" href="/admin/cases">Back to cases</a></div><form method="GET" class="mb-3"><label class="form-check"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
+		if includeClosed {
+			fmt.Fprint(w, ` checked`)
+		}
+		fmt.Fprint(w, ` onchange="this.form.submit()"> <span class="form-check-label">Include completed and cancelled tasks</span></label></form><div class="row g-3">`)
+		count := 0
+		for rows.Next() {
+			var taskID, caseID int64
+			var ref, taskType, status, note, assigned string
+			var due *time.Time
+			var created time.Time
+			if rows.Scan(&taskID, &caseID, &ref, &taskType, &status, &note, &due, &created, &assigned) != nil {
+				continue
+			}
+			count++
+			dueLabel := "No due date"
+			if due != nil {
+				dueLabel = due.In(s.LondonLoc).Format("02 Jan 2006 15:04")
+			}
+			fmt.Fprintf(w, `<div class="col-12"><article class="card"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><div><a href="/admin/cases/%d"><strong>%s</strong></a> <span class="badge text-bg-secondary">%s</span></div><span>%s</span></div><form method="POST" action="/admin/cases/tasks/%d"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-3"><label class="form-label">Status</label><select class="form-select" name="status"><option value="open"%s>Open</option><option value="in_progress"%s>In progress</option><option value="complete"%s>Complete</option><option value="cancelled"%s>Cancelled</option></select></div><div class="col-md-4"><label class="form-label">Operational note</label><input class="form-control" name="note" value="%s"></div><div class="col-md-5"><label class="form-label">Reason for change</label><input class="form-control" name="reason" required placeholder="Why is this task changing?"></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><small class="text-muted">Due: %s · Assigned: %s · Created: %s</small><button class="btn btn-primary">Record task update</button></div></form></article></div>`, caseID, escapeHTML(ref), escapeHTML(strings.ReplaceAll(taskType, "_", " ")), escapeHTML(status), taskID, csrf, selectedMode(status, "open"), selectedMode(status, "in_progress"), selectedMode(status, "complete"), selectedMode(status, "cancelled"), escapeHTML(note), escapeHTML(dueLabel), escapeHTML(defaultString(assigned, "unassigned")), created.In(s.LondonLoc).Format("02 Jan 2006"))
+		}
+		if count == 0 {
+			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-success">There are no follow-up tasks in this view.</div></div>`)
+		}
+		fmt.Fprint(w, `</div></main>`)
+		pageFooter(w)
+	}
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func (s *Server) handleAdminSanctionTaskUpdate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		taskID, err := strconv.ParseInt(chi.URLParam(r, "taskID"), 10, 64)
+		if err != nil || taskID < 1 || r.ParseForm() != nil {
+			http.Error(w, "invalid task", 400)
+			return
+		}
+		status := strings.TrimSpace(r.FormValue("status"))
+		reason := strings.TrimSpace(r.FormValue("reason"))
+		note := strings.TrimSpace(r.FormValue("note"))
+		if !map[string]bool{"open": true, "in_progress": true, "complete": true, "cancelled": true}[status] || reason == "" {
+			http.Error(w, "valid status and reason are required", 400)
+			return
+		}
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", 401)
+			return
+		}
+		tx, err := s.DB.Begin(r.Context())
+		if err != nil {
+			http.Error(w, "task update failed", 500)
+			return
+		}
+		defer tx.Rollback(r.Context())
+		var beforeData []byte
+		if tx.QueryRow(r.Context(), `SELECT to_jsonb(t) FROM sanction_follow_up_tasks t WHERE id=$1 FOR UPDATE`, taskID).Scan(&beforeData) != nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, err = tx.Exec(r.Context(), `UPDATE sanction_follow_up_tasks SET status=$2,current_note=$3,assigned_admin_id=COALESCE(assigned_admin_id,$4),updated_at=now() WHERE id=$1`, taskID, status, nullIfEmptyHTTP(note), *actor.ID)
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_follow_up_task_events(task_id,actor_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,$2,$3,$4,$5::jsonb,to_jsonb(t),$6 FROM sanction_follow_up_tasks t WHERE id=$1`, taskID, *actor.ID, actor.Label, reason, string(beforeData), actor.RequestID)
+		}
+		if err != nil || tx.Commit(r.Context()) != nil {
+			http.Error(w, "task update failed", 500)
+			return
+		}
+		http.Redirect(w, r, "/admin/cases/tasks", http.StatusSeeOther)
+	}
 }
 
 func (s *Server) handleAdminSanctionRecipients() http.HandlerFunc {
