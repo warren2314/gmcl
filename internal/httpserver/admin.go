@@ -106,6 +106,8 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Sanctions
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases", s.handleAdminCases())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases/new", s.handleAdminCaseNew())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/cases", s.handleAdminCaseCreate())
 		r.With(s.requireAdminPermission("sanctions_automation")).Get("/cases/automation", s.handleAdminSanctionAutomation())
 		r.With(s.requireAdminPermission("sanctions_automation")).Post("/cases/automation", s.handleAdminSanctionAutomationPost())
 		r.With(s.requireAdminPermission("sanctions_import")).Get("/cases/imports", s.handleAdminSanctionImports())

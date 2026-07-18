@@ -174,7 +174,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		dropdownActive("/admin/reports"),
 		missingReportItem,
 		navLink("/admin/cases", "Sanctions cases"),
-		navLink("/admin/sanctions", "Legacy cards"),
+		navLink("/admin/sanctions", "Legacy card ledger"),
 		navLink("/admin/rules-assistant", "A1 Rules Assistant"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),

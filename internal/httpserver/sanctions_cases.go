@@ -479,7 +479,7 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions cases")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex justify-content-between"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted">Investigation, two-stage approval, publication and immutable history.</p></div><div class="btn-group align-self-start"><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a><a href="/admin/cases/imports" class="btn btn-outline-secondary">History imports</a><a href="/admin/sanctions" class="btn btn-outline-secondary">Legacy cards</a></div></div><div class="table-responsive"><table class="table table-hover"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-wrap justify-content-between gap-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-flex flex-wrap gap-2 align-self-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><div class="btn-group"><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a><a href="/admin/cases/imports" class="btn btn-outline-secondary">History imports</a><a href="/admin/sanctions" class="btn btn-outline-secondary">Legacy card ledger</a></div></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`)
 		for rows.Next() {
 			var id int64
 			var ref, source, status, club, team, assigned string
@@ -490,6 +490,86 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</tbody></table></div></main>`)
 		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminCaseNew() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rows, err := s.DB.Query(r.Context(), `SELECT t.id,cl.name,t.name FROM teams t JOIN clubs cl ON cl.id=t.club_id WHERE t.active ORDER BY cl.name,t.name`)
+		if err != nil {
+			http.Error(w, "could not load teams", 500)
+			return
+		}
+		defer rows.Close()
+		csrf := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Add sanction case")
+		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:900px"><a href="/admin/cases" class="btn btn-sm btn-outline-secondary mb-3">Back to cases</a><h1 class="h2">Add a card, ban, fine or points decision</h1><p class="text-muted">This creates an attributed manual case. It does not issue a sanction immediately: a decision must be proposed, independently approved and then published.</p><form method="POST" action="/admin/cases" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-6"><label class="form-label">Case source</label><select class="form-select" name="source_type" required><option value="manual">Manual referral</option><option value="discipline">Discipline</option><option value="ineligible_player">Ineligible player</option><option value="grounds_facilities">Grounds or facilities</option><option value="forfeit">Forfeit / withdrawal</option><option value="play_cricket">Play-Cricket finding</option></select></div><div class="col-md-6"><label class="form-label">Offence / match date</label><input class="form-control" type="date" name="match_date" required value="%s"></div><div class="col-12"><label class="form-label">Affected team</label><select class="form-select" name="team_id" required><option value="">Choose club and team...</option>`, csrf, time.Now().In(s.LondonLoc).Format("2006-01-02"))
+		for rows.Next() {
+			var id int32
+			var club, team string
+			if rows.Scan(&id, &club, &team) == nil {
+				fmt.Fprintf(w, `<option value="%d">%s — %s</option>`, id, escapeHTML(club), escapeHTML(team))
+			}
+		}
+		fmt.Fprint(w, `</select></div><div class="col-md-6"><label class="form-label">Player name <span class="text-muted">(if applicable)</span></label><input class="form-control" name="player_name" maxlength="200"></div><div class="col-12"><label class="form-label">Public reason / recorded facts</label><textarea class="form-control" name="public_summary" rows="4" required maxlength="5000"></textarea><div class="form-text">This may appear in the public register after approval and publication. Do not include evidence or private correspondence.</div></div><div class="col-12"><label class="form-label">Private investigation note</label><textarea class="form-control" name="private_summary" rows="4" maxlength="10000"></textarea></div></div><div class="card-footer"><button class="btn btn-danger">Create case and continue to decision</button></div></form></main>`)
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handleAdminCaseCreate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", 400)
+			return
+		}
+		source := strings.TrimSpace(r.FormValue("source_type"))
+		allowedSources := map[string]bool{"manual": true, "discipline": true, "ineligible_player": true, "grounds_facilities": true, "forfeit": true, "play_cricket": true}
+		teamID, teamErr := strconv.ParseInt(r.FormValue("team_id"), 10, 32)
+		matchDate, dateErr := time.Parse("2006-01-02", r.FormValue("match_date"))
+		publicSummary := strings.TrimSpace(r.FormValue("public_summary"))
+		privateSummary := strings.TrimSpace(r.FormValue("private_summary"))
+		if !allowedSources[source] || teamErr != nil || teamID <= 0 || dateErr != nil || publicSummary == "" {
+			http.Error(w, "source, team, date and public reason are required", 400)
+			return
+		}
+		actor := adminActor(r)
+		if actor.ID == nil {
+			http.Error(w, "unauthorised", 401)
+			return
+		}
+		tx, err := s.DB.Begin(r.Context())
+		if err != nil {
+			http.Error(w, "could not create case", 500)
+			return
+		}
+		defer tx.Rollback(r.Context())
+		var clubID int32
+		if err = tx.QueryRow(r.Context(), `SELECT club_id FROM teams WHERE id=$1 AND active`, teamID).Scan(&clubID); err != nil {
+			http.Error(w, "active team not found", 400)
+			return
+		}
+		var seasonID int32
+		var weekID *int32
+		var matchedWeek int32
+		if tx.QueryRow(r.Context(), `SELECT season_id,id FROM weeks WHERE $1::date BETWEEN start_date AND end_date ORDER BY id DESC LIMIT 1`, matchDate).Scan(&seasonID, &matchedWeek) == nil {
+			weekID = &matchedWeek
+		} else if err = tx.QueryRow(r.Context(), `SELECT id FROM seasons WHERE $1::date BETWEEN start_date AND end_date ORDER BY id DESC LIMIT 1`, matchDate).Scan(&seasonID); err != nil {
+			http.Error(w, "no season covers the selected date", 400)
+			return
+		}
+		var caseID int64
+		var ref string
+		err = tx.QueryRow(r.Context(), `INSERT INTO sanction_cases(source_type,status,season_id,week_id,club_id,team_id,player_name,match_date,public_summary,private_summary,assigned_admin_id) VALUES($1,'investigating',$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,reference`, source, seasonID, weekID, clubID, teamID, nullIfEmptyHTTP(r.FormValue("player_name")), matchDate, publicSummary, nullIfEmptyHTTP(privateSummary), *actor.ID).Scan(&caseID, &ref)
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,request_id) VALUES($1,'manual_case_created','admin',$2,$3,$4,jsonb_build_object('reference',$5,'source_type',$6,'team_id',$7,'match_date',$8::date),$9)`, caseID, *actor.ID, actor.Label, "Manual case created by administrator", ref, source, teamID, matchDate, actor.RequestID)
+		}
+		if err != nil || tx.Commit(r.Context()) != nil {
+			http.Error(w, "could not create case", 500)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d", caseID), http.StatusSeeOther)
 	}
 }
 

@@ -12,6 +12,7 @@ reconciliation cycles and a super-admin explicitly changes its mode.
 - Secure party response: `/sanctions/case/respond?token=...`
 - Captain own-team history: `/captain/discipline`
 - Admin case queue: `/admin/cases`
+- Manual card/ban/fine/points case: `/admin/cases/new`
 - Safety modes and kill switch: `/admin/cases/automation`
 - Role-based notice recipients: `/admin/cases/recipients`
 - Immutable historical CSV staging: `/admin/cases/imports`
