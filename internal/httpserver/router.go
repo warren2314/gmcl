@@ -102,6 +102,19 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.With(middleware.RateLimit(60)).Get("/submissions", s.handlePublicSubmissionsStatus())
 	r.Get("/privacy", s.handlePrivacyNotice())
 	r.Get("/retention", s.handleRetentionNotice())
+	r.Get("/rules-assistant", s.handleRulesAssistantPage())
+	r.With(middleware.RateLimit(40)).Post("/api/rules/chat", s.handleRulesChat())
+	r.With(middleware.RateLimit(80)).Post("/api/rules/chat/feedback", s.handleRulesFeedback())
+	r.Get("/sanctions", s.handlePublicSanctionsRegister())
+	r.Get("/sanctions/{reference}", s.handlePublicSanctionDetail())
+	r.Get("/sanctions/report/verify", s.handleSanctionReportVerify())
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.CSRFMiddleware)
+		r.With(middleware.RateLimit(20)).Get("/sanctions/report", s.handleSanctionReportForm())
+		r.With(middleware.RateLimit(8)).Post("/sanctions/report", s.handleSanctionReportSubmit())
+		r.With(middleware.RateLimit(20)).Get("/sanctions/case/respond", s.handleSanctionCaseResponseForm())
+		r.With(middleware.RateLimit(10)).Post("/sanctions/case/respond", s.handleSanctionCaseResponseSubmit())
+	})
 	// Rate limit magic link requests per IP + club/team.
 	r.With(middleware.RateLimit(15)).Post("/magic-link/request", s.handleMagicLinkRequest())
 	// Magic link confirmation uses GET (intermediate page) then POST to redeem.
@@ -117,6 +130,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.CSRFMiddleware)
 		r.Get("/captain/form", s.handleCaptainForm())
+		r.Get("/captain/discipline", s.handleCaptainDiscipline())
 		r.Post("/captain/form/autosave", s.handleCaptainAutosave())
 		r.Post("/captain/delegate/invite", s.handleCaptainDelegateInvite())
 		r.Post("/captain/change-request", s.handleCaptainChangeRequest())
@@ -136,6 +150,8 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	internalMux.Post("/sync-starred-players", s.handleInternalSyncStarredPlayers())
 	internalMux.Post("/refresh-umpire-prefills", s.handleInternalRefreshUmpirePrefills())
 	internalMux.Post("/preview-email", s.handleInternalPreviewEmail())
+	internalMux.Post("/sync-rules", s.handleInternalSyncRules())
+	internalMux.Post("/process-sanction-outbox", s.handleInternalSanctionOutbox())
 	r.Mount("/internal", internalMux)
 
 	return r, func() { pool.Close() }, nil

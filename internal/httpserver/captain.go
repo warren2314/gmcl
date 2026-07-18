@@ -43,6 +43,10 @@ const captainSessionCookie = "cap_sess"
 
 func (s *Server) handlePublicEntry() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(hostnameOnly(r.Host), "sanctions.gmcl.co.uk") {
+			http.Redirect(w, r, "/sanctions", http.StatusTemporaryRedirect)
+			return
+		}
 		csrfToken := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ground Feedback")
@@ -1284,6 +1288,11 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			"umpire1_type":      umpire1Type,
 			"umpire2_type":      umpire2Type,
 		})
+		if unevenness == 6 || seam == 6 || carry == 6 || turn == 6 {
+			s.createGroundsReviewFromSubmission(ctx, r, submissionID, sess, matchDate, map[string]int{
+				"unevenness_of_bounce": unevenness, "seam_movement": seam, "carry_bounce": carry, "turn": turn,
+			})
+		}
 	}
 }
 

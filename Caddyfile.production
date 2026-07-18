@@ -10,7 +10,7 @@
     email webmaster@gmcl.co.uk
 }
 
-YOUR_DOMAIN {
+YOUR_DOMAIN, sanctions.gmcl.co.uk {
     encode gzip
 
     # Security headers

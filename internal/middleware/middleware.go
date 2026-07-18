@@ -47,7 +47,9 @@ func SecurityHeaders() func(next http.Handler) http.Handler {
 func isSensitivePath(path string) bool {
 	return strings.HasPrefix(path, "/admin") ||
 		strings.HasPrefix(path, "/captain") ||
-		strings.HasPrefix(path, "/magic-link")
+		strings.HasPrefix(path, "/magic-link") ||
+		strings.HasPrefix(path, "/sanctions/case") ||
+		strings.HasPrefix(path, "/sanctions/report/verify")
 }
 
 type responseWriter struct {
@@ -60,3 +62,10 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush preserves streaming support (including server-sent events) when the
+// request logger wraps a response writer provided by net/http.
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}

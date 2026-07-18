@@ -169,6 +169,73 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [220, 640]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 3 * * *" }]
+        }
+      },
+      "id": "trigger-rules-nightly",
+      "name": "Nightly rules sync",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 800]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmcl.co.uk/internal/sync-rules",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer REPLACE_WITH_N8N_HMAC_SECRET" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ }"
+      },
+      "id": "http-rules-nightly",
+      "name": "POST sync-rules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 800]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "*/5 * * * *" }]
+        }
+      },
+      "id": "trigger-sanction-outbox",
+      "name": "Sanction notice outbox",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 960]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmcl.co.uk/internal/process-sanction-outbox",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer REPLACE_WITH_N8N_HMAC_SECRET" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ }"
+      },
+      "id": "http-sanction-outbox",
+      "name": "POST sanction outbox",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 960]
     }
   ],
   "connections": {
@@ -176,7 +243,9 @@
     "Sunday 21:00":    { "main": [[{ "node": "POST Sunday game_day",    "type": "main", "index": 0 }]] },
     "Monday 10:00":    { "main": [[{ "node": "POST Monday reminder",    "type": "main", "index": 0 }]] },
     "Wednesday 10:00": { "main": [[{ "node": "POST Wednesday reminder", "type": "main", "index": 0 }]] },
-    "Wednesday 23:59": { "main": [[{ "node": "POST generate-sanctions", "type": "main", "index": 0 }]] }
+    "Wednesday 23:59": { "main": [[{ "node": "POST generate-sanctions", "type": "main", "index": 0 }]] },
+    "Nightly rules sync": { "main": [[{ "node": "POST sync-rules", "type": "main", "index": 0 }]] },
+    "Sanction notice outbox": { "main": [[{ "node": "POST sanction outbox", "type": "main", "index": 0 }]] }
   },
   "active": false,
   "settings": { "executionOrder": "v1" },

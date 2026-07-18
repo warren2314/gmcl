@@ -1,0 +1,174 @@
+package rulesassistant
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestParseHTMLPreservesRuleHeadings(t *testing.T) {
+	raw := `<html><title>Player rules</title><body>WELCOME TO GMCL FOR YOUR MOBILE
+<h1>GMCL Rules</h1><h2>Rule 3.5 Starred Players</h2><p>A starred player must satisfy the published eligibility restrictions for the relevant team.</p>
+<h3>3.5.2 Sunday cricket</h3><p>The competition-specific conditions also apply.</p><h2>Proud Sponsors</h2></body></html>`
+	doc := parseHTML("https://example.test/pages/rules-players", raw)
+	if doc.Title != "Player rules" {
+		t.Fatalf("title=%q", doc.Title)
+	}
+	if len(doc.Chunks) < 2 {
+		t.Fatalf("expected heading chunks, got %d", len(doc.Chunks))
+	}
+	found := false
+	for _, chunk := range doc.Chunks {
+		if strings.HasPrefix(chunk.RuleReference, "3.5") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected Rule 3.5 reference")
+	}
+}
+
+func TestDiscoverLinksUsesRulesContentAndAcceptsUnnumberedSlugs(t *testing.T) {
+	root, _ := url.Parse("https://gmcl.test/pages/rules-main-menu")
+	raw := `<a href="/pages/site-navigation">Global navigation</a>
+WELCOME TO GMCL FOR YOUR MOBILE
+<a href="
+	/pages/category-3-registrations">Registrations</a>
+<a href="/pages/match-forfeits?from=menu#section">Forfeits</a>
+<a href="https://evil.test/pages/rules">Bad</a>
+Proud Sponsors
+<a href="/pages/sponsor">Sponsor</a>`
+	links := discoverLinks(root, root.String(), raw)
+	if len(links) != 2 {
+		t.Fatalf("links=%v", links)
+	}
+	if links[0] != "https://gmcl.test/pages/category-3-registrations" || links[1] != "https://gmcl.test/pages/match-forfeits" {
+		t.Fatalf("unexpected links=%v", links)
+	}
+}
+
+func TestValidateCorpusRequiresEveryRuleGroup(t *testing.T) {
+	var docs []parsedDocument
+	for i := 1; i <= 8; i++ {
+		var chunks []parsedChunk
+		for j := 0; j < 4; j++ {
+			chunks = append(chunks, parsedChunk{RuleReference: string(rune('0'+i)) + "." + string(rune('1'+j)), Content: "Enough rule content for validation and retrieval tests."})
+		}
+		docs = append(docs, parsedDocument{URL: "https://example.test/rules/" + string(rune('0'+i)), Text: "rules", Chunks: chunks})
+	}
+	if err := validateCorpus(docs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	docs = docs[:7]
+	if err := validateCorpus(docs); err == nil {
+		t.Fatal("expected missing group error")
+	}
+}
+
+func TestExtractRuleReference(t *testing.T) {
+	for input, want := range map[string]string{"What does rule 3.5.2 mean?": "3.5.2", "Penalty under 8.1": "8.1", "no reference here": ""} {
+		if got := extractRuleReference(input); got != want {
+			t.Errorf("%q: got %q want %q", input, got, want)
+		}
+	}
+}
+
+func TestBuildLexicalQueryExpandsSummerCampAndDropsFiller(t *testing.T) {
+	got := buildLexicalQuery("Explain the junior rule and point out where it says one league game before Summer Camp")
+	for _, term := range []string{"junior", "league", "game", "summer", "camp", "cup"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain %q", got, term)
+		}
+	}
+	for _, filler := range []string{"explain", "where", "rule", "one", "before"} {
+		if strings.Contains(got, filler) {
+			t.Fatalf("query %q retained filler %q", got, filler)
+		}
+	}
+}
+
+func TestCitationMatchesQuestionRejectsUnrelatedJuniorEvidence(t *testing.T) {
+	question := "Explain the junior rule before the Summer Cup"
+	if citationMatchesQuestion(question, Chunk{RuleReference: "1.5.2", Title: "Rules-1-5", Content: "Contact the junior board."}) {
+		t.Fatal("unrelated Rule 1 citation was accepted for a junior-rules question")
+	}
+	if !citationMatchesQuestion(question, Chunk{RuleReference: "7.5.1.2", Title: "Rules-Junior"}) {
+		t.Fatal("Rule 7 citation was rejected for a junior-rules question")
+	}
+}
+
+func TestIsJuniorRulesQueryDoesNotHideOpenAgeRules(t *testing.T) {
+	if !isJuniorRulesQuery("Explain the junior rule for the Summer Cup") {
+		t.Fatal("expected explicit junior rules question to be routed to Rule 7")
+	}
+	if isJuniorRulesQuery("Can a junior play open age senior cricket?") {
+		t.Fatal("cross-rule open-age question must not be restricted to Rule 7")
+	}
+	if !isJuniorRulesQuery("I mean the Under 13 Summer Cup") || !isJuniorRulesQuery("What about U15 summer cup eligibility?") {
+		t.Fatal("junior age-group Summer Cup follow-up was not routed to Rule 7")
+	}
+}
+
+func TestIsJuniorCupEligibilityQuery(t *testing.T) {
+	if !isJuniorCupEligibilityQuery("Where does the junior rule say a player must play one League game before the Summer Cup?") {
+		t.Fatal("expected Junior Cup eligibility intent")
+	}
+	if isJuniorCupEligibilityQuery("What are the bowling limits in the Summer Cup?") {
+		t.Fatal("bowling question must not trigger Junior Cup entry routing")
+	}
+}
+
+func TestFallbackClarificationQuestionsAreTargeted(t *testing.T) {
+	questions := fallbackClarificationQuestions("Can a junior play in summer camp?")
+	if len(questions) != 2 || !strings.Contains(strings.ToLower(questions[0]), "age group") || !strings.Contains(strings.ToLower(questions[1]), "summer cup") {
+		t.Fatalf("unexpected questions: %v", questions)
+	}
+}
+
+func TestNeedsPreviousQuestionOnlyForDependentFollowups(t *testing.T) {
+	if !needsPreviousQuestion("Yes, that one") || !needsPreviousQuestion("What about Sunday?") {
+		t.Fatal("short dependent follow-up did not retain the previous question")
+	}
+	if needsPreviousQuestion("What happens in bad weather?") || needsPreviousQuestion("Can a junior play senior cricket?") {
+		t.Fatal("self-contained question was incorrectly tied to conversation history")
+	}
+}
+
+func TestStripInternalCitationMarkers(t *testing.T) {
+	input := "Weather applies here. [chunk 491] It may use DLS. [Chunk 498] Final point. [505]"
+	want := "Weather applies here. It may use DLS. Final point."
+	if got := stripInternalCitationMarkers(input); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestEmbedRetriesTemporaryUpstreamErrors(t *testing.T) {
+	attempts := 0
+	embedding := strings.TrimSuffix(strings.Repeat("0,", 1536), ",")
+	service := &Service{
+		APIKey: "test-key", EmbedModel: "test-embedding-model",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts < 3 {
+				return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("temporary")), Header: make(http.Header)}, nil
+			}
+			body := fmt.Sprintf(`{"data":[{"embedding":[%s]}]}`, embedding)
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})},
+	}
+	got, err := service.embed(context.Background(), "rule question")
+	if err != nil {
+		t.Fatalf("embed returned error: %v", err)
+	}
+	if attempts != 3 || len(got) != 1536 {
+		t.Fatalf("attempts=%d dimensions=%d", attempts, len(got))
+	}
+}

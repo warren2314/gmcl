@@ -10,6 +10,7 @@ import (
 
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
+	sanctiondomain "cricket-ground-feedback/internal/sanctions"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -291,6 +292,7 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
           onclick="return confirm('Overturn this sanction?')">Overturn</button>
 </form>`, sr.ID, csrfToken)
 			}
+			actions += fmt.Sprintf(` <a class="btn btn-sm btn-outline-primary py-0" href="/admin/sanctions/%d/timeline">Details</a>`, sr.ID)
 
 			notesDisplay := sr.Notes
 			if len(notesDisplay) > 60 {
@@ -444,28 +446,12 @@ func (s *Server) handleAdminSanctionIssue() http.HandlerFunc {
 			return
 		}
 
-		// Count existing active yellows for this team this season
-		var yellowCount int64
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(*) FROM sanctions
-			WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
-		`, teamID, seasonID).Scan(&yellowCount)
-
-		// Resolve issuing admin
-		adminID := s.resolveAdminID(r)
-
-		// Determine card colour
-		colour := "yellow"
-		if yellowCount >= 1 {
-			colour = "red"
-		}
-
-		// Idempotency: don't double-issue same colour for same week
+		// Idempotency: don't propose the same source offence twice for a week.
 		var existing int64
 		s.DB.QueryRow(ctx, `
-			SELECT COUNT(*) FROM sanctions
-			WHERE team_id=$1 AND week_id=$2 AND season_id=$3 AND colour=$4 AND status IN ('active','served')
-		`, teamID, weekID, seasonID, colour).Scan(&existing)
+			SELECT (SELECT COUNT(*) FROM sanctions WHERE team_id=$1 AND week_id=$2 AND season_id=$3 AND reason=$4 AND status IN ('active','served'))
+			     + (SELECT COUNT(*) FROM sanction_cases WHERE team_id=$1 AND week_id=$2 AND season_id=$3 AND source_type=CASE WHEN $4='non_submission' THEN 'captain_report' ELSE 'manual' END AND status NOT IN ('rejected','withdrawn'))
+		`, teamID, weekID, seasonID, reason).Scan(&existing)
 		if existing > 0 {
 			redirect := r.FormValue("redirect")
 			if redirect == "" {
@@ -475,38 +461,20 @@ func (s *Server) handleAdminSanctionIssue() http.HandlerFunc {
 			return
 		}
 
-		// If escalating to red, mark existing yellows as served
-		if colour == "red" {
-			s.DB.Exec(ctx, `
-				UPDATE sanctions SET status='served', resolved_at=now()
-				WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
-			`, teamID, seasonID)
+		sourceType := "manual"
+		if reason == "non_submission" {
+			sourceType = "captain_report"
 		}
-
-		var sanctionID int64
-		err := s.DB.QueryRow(ctx, `
-			INSERT INTO sanctions (season_id, week_id, team_id, club_id, colour, reason, notes, issued_by_admin_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			RETURNING id
-		`, seasonID, weekID, teamID, clubID, colour, reason, notes, adminID).Scan(&sanctionID)
+		proposed, err := sanctiondomain.NewService(s.DB).ProposeCardCase(ctx, sanctiondomain.CardCaseRequest{
+			SourceType: sourceType, SeasonID: int32(seasonID), WeekID: int32(weekID), ClubID: clubID, TeamID: int32(teamID),
+			PublicReason: reasonLabel(reason), PrivateReason: notes, CardRequest: sanctiondomain.CardRequest{Kind: "yellow"},
+			Actor: adminActor(r), LegacyReason: reason,
+		})
 		if err != nil {
-			http.Error(w, "failed to issue sanction: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "failed to propose sanction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		eid := int64(sanctionID)
-		s.audit(ctx, r, "admin", adminID, "sanction_issued", "sanction", &eid, map[string]any{
-			"team_id": teamID,
-			"week_id": weekID,
-			"colour":  colour,
-			"reason":  reason,
-		})
-
-		redirect := r.FormValue("redirect")
-		if redirect == "" {
-			redirect = "/admin/compliance?week_id=" + strconv.Itoa(weekID)
-		}
-		http.Redirect(w, r, redirect, http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d", proposed.CaseID), http.StatusSeeOther)
 	}
 }
 
@@ -559,6 +527,11 @@ func (s *Server) handleAdminSanctionBulkIssue() http.HandlerFunc {
 			      WHERE week_id=$1 AND season_id=$2 AND reason='non_submission'
 			      AND status IN ('active','served')
 			  )
+			  AND t.id NOT IN (
+			      SELECT team_id FROM sanction_cases
+			      WHERE week_id=$1 AND season_id=$2 AND source_type='captain_report'
+			        AND status NOT IN ('rejected','withdrawn')
+			  )
 		`, weekID, seasonID)
 		if err != nil {
 			http.Error(w, "query error", http.StatusInternalServerError)
@@ -575,41 +548,19 @@ func (s *Server) handleAdminSanctionBulkIssue() http.HandlerFunc {
 		}
 		rows.Close()
 
-		adminID := s.resolveAdminID(r)
-
 		for _, tid := range teamIDs {
 			var clubID int32
 			if s.DB.QueryRow(ctx, `SELECT club_id FROM teams WHERE id=$1`, tid).Scan(&clubID) != nil {
 				continue
 			}
-			var yellowCount int64
-			s.DB.QueryRow(ctx, `
-				SELECT COUNT(*) FROM sanctions
-				WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
-			`, tid, seasonID).Scan(&yellowCount)
-
-			colour := "yellow"
-			if yellowCount >= 1 {
-				colour = "red"
-				s.DB.Exec(ctx, `
-					UPDATE sanctions SET status='served', resolved_at=now()
-					WHERE team_id=$1 AND season_id=$2 AND colour='yellow' AND status='active'
-				`, tid, seasonID)
-			}
-
-			var sid int64
-			if err := s.DB.QueryRow(ctx, `
-				INSERT INTO sanctions (season_id, week_id, team_id, club_id, colour, reason, issued_by_admin_id)
-				VALUES ($1, $2, $3, $4, $5, 'non_submission', $6) RETURNING id
-			`, seasonID, weekID, tid, clubID, colour, adminID).Scan(&sid); err == nil {
-				eid := sid
-				s.audit(ctx, r, "admin", adminID, "sanction_bulk_issued", "sanction", &eid, map[string]any{
-					"team_id": tid, "week_id": weekID, "colour": colour,
-				})
-			}
+			_, _ = sanctiondomain.NewService(s.DB).ProposeCardCase(ctx, sanctiondomain.CardCaseRequest{
+				SourceType: "captain_report", SeasonID: int32(seasonID), WeekID: int32(weekID), ClubID: clubID, TeamID: tid,
+				PublicReason: "Failure to submit captain's report", PrivateReason: "Bulk compliance proposal",
+				CardRequest: sanctiondomain.CardRequest{Kind: "yellow"}, Actor: adminActor(r), LegacyReason: "non_submission",
+			})
 		}
 
-		http.Redirect(w, r, "/admin/compliance?week_id="+strconv.Itoa(weekID), http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/cases", http.StatusSeeOther)
 	}
 }
 
@@ -923,57 +874,11 @@ func (s *Server) handleAdminSanctionEmailSkip() http.HandlerFunc {
 	}
 }
 
-// handleAdminSanctionClearAll permanently deletes every yellow card and every
-// non_submission red (i.e. cards escalated from two yellows) for the current
-// season, so the weekly compliance run can start from a clean slate.
-// Manually-issued reds with reasons other than 'non_submission' are preserved.
+// handleAdminSanctionClearAll is retained only so old bookmarks fail safely.
+// Approved records must be corrected or overturned with immutable events.
 func (s *Server) handleAdminSanctionClearAll() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-
-		var seasonID int32
-		s.DB.QueryRow(ctx, `
-			SELECT s.id FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-		`).Scan(&seasonID)
-		if sid := r.FormValue("season_id"); sid != "" {
-			if n, err := strconv.Atoi(sid); err == nil {
-				seasonID = int32(n)
-			}
-		}
-		if seasonID == 0 {
-			http.Error(w, "no active season", http.StatusBadRequest)
-			return
-		}
-
-		var yellowDeleted, redDeleted int64
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(*) FROM sanctions
-			WHERE season_id=$1 AND colour='yellow'
-		`, seasonID).Scan(&yellowDeleted)
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(*) FROM sanctions
-			WHERE season_id=$1 AND colour='red' AND reason='non_submission'
-		`, seasonID).Scan(&redDeleted)
-
-		if _, err := s.DB.Exec(ctx, `
-			DELETE FROM sanctions
-			WHERE season_id=$1
-			  AND (colour='yellow' OR (colour='red' AND reason='non_submission'))
-		`, seasonID); err != nil {
-			http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		adminID := s.resolveAdminID(r)
-		s.audit(ctx, r, "admin", adminID, "sanction_cleared_all", "sanction", nil, map[string]any{
-			"season_id":      seasonID,
-			"yellow_deleted": yellowDeleted,
-			"red_deleted":    redDeleted,
-		})
-
-		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
+		http.Error(w, "bulk deletion is disabled; record an immutable correction or reversal", http.StatusGone)
 	}
 }
 
@@ -997,6 +902,7 @@ func (s *Server) handleAdminSanctionRecipientSave() http.HandlerFunc {
 			VALUES ($1, $2)
 			ON CONFLICT (email) DO UPDATE SET name=$1, active=TRUE
 		`, name, emailAddr)
+		s.DB.Exec(ctx, `INSERT INTO sanction_recipient_directory(recipient_role,name,email) VALUES('executive',$1,$2) ON CONFLICT(recipient_role,email) DO UPDATE SET name=EXCLUDED.name,active=TRUE`, name, emailAddr)
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
 }
@@ -1011,7 +917,12 @@ func (s *Server) handleAdminSanctionRecipientDelete() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		s.DB.Exec(ctx, `DELETE FROM disciplinary_recipients WHERE id=$1`, int32(id))
+		var emailAddr string
+		_ = s.DB.QueryRow(ctx, `SELECT email FROM disciplinary_recipients WHERE id=$1`, int32(id)).Scan(&emailAddr)
+		s.DB.Exec(ctx, `UPDATE disciplinary_recipients SET active=FALSE WHERE id=$1`, int32(id))
+		if emailAddr != "" {
+			s.DB.Exec(ctx, `UPDATE sanction_recipient_directory SET active=FALSE WHERE recipient_role='executive' AND email=$1`, emailAddr)
+		}
 		http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 	}
 }

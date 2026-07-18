@@ -91,7 +91,7 @@ func main() {
 		Addr:              addr,
 		Handler:           router,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      45 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -126,4 +126,3 @@ func getEnv(key, def string) string {
 	}
 	return def
 }
-

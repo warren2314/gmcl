@@ -54,6 +54,7 @@ func (s *Server) handlePrivacyNotice() http.HandlerFunc {
       <li>Club and team details linked to captain reporting and league administration.</li>
       <li>Submission data, including report content, timestamps and related operational metadata.</li>
       <li>Authentication and security data, including login events, single-use access tokens, IP addresses and user-agent information.</li>
+      <li>Sanctions case reports, explanations, evidence, correspondence, decisions, appeals and immutable action history.</li>
     </ul>
     <h5>How the data is used</h5>
     <ul>
@@ -64,8 +65,8 @@ func (s *Server) handlePrivacyNotice() http.HandlerFunc {
       <li>To support league compliance and sanction processes where a required submission has not been received.</li>
     </ul>
     <h5>Compliance checks and sanctions</h5>
-    <p>The application uses submission and scheduling data to check whether required reports have been submitted on time. Where a required submission is not recorded by the deadline, the system may automatically flag or issue a league sanction, including yellow or red cards, in accordance with league rules.</p>
-    <p>These checks are intended to support league administration and are not intended to operate as an unreviewable black-box decision. League administrators may review, confirm, amend or reverse a sanction where a report was submitted, an exception applies, or the automated outcome was incorrect.</p>
+    <p>The application uses submission and scheduling data to check whether required reports have been submitted on time. It initially creates review candidates. A deterministic source may issue automatically only after the configured reconciliation and approval controls have been satisfied; judgement-based cases always require human approval.</p>
+    <p>These checks are not an unreviewable black-box decision. League administrators may review, reject, correct or reverse an outcome. Corrections and reversals preserve the previous decision and add an attributed immutable revision.</p>
     <h5>Retention</h5>
     <p>Operational security data is retained for limited periods. Submission records are retained for league administration unless they are later anonymised or removed under an approved process.</p>
     <p>Further detail is set out in the <a href="/retention">retention schedule</a>.</p>
@@ -101,6 +102,8 @@ func (s *Server) handleRetentionNotice() http.HandlerFunc {
         <tr><td>CSV preview tokens</td><td>%d days after expiry/use</td></tr>
         <tr><td>Draft autosaves</td><td>%d days since last autosave</td></tr>
         <tr><td>Captain submissions</td><td>Retained for league administration unless later anonymised or deleted under an approved process</td></tr>
+        <tr><td>Published sanction decisions and human action history</td><td>Retained as the permanent league record; corrections are additional immutable revisions</td></tr>
+        <tr><td>Private sanctions evidence and correspondence</td><td>Retained under the approved case-evidence policy; redaction or expiry leaves an immutable tombstone event</td></tr>
       </tbody>
     </table>
     <p class="mb-0">Where a data subject request is upheld, relevant captain contact data can be exported or anonymised through the league’s admin processes.</p>

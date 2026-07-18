@@ -15,6 +15,7 @@ import (
 	"cricket-ground-feedback/internal/auth"
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/leagueapi"
+	sanctiondomain "cricket-ground-feedback/internal/sanctions"
 	"cricket-ground-feedback/internal/starred"
 )
 
@@ -538,6 +539,11 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 			      WHERE sa.team_id = t.id AND sa.week_id = w.id
 			        AND sa.reason = 'non_submission' AND sa.status IN ('active','served')
 			  )
+			  AND NOT EXISTS (
+			      SELECT 1 FROM sanction_cases sc
+			      WHERE sc.team_id=t.id AND sc.week_id=w.id AND sc.source_type='captain_report'
+			        AND sc.status NOT IN ('rejected','withdrawn')
+			  )
 			ORDER BY t.id, lf.match_date
 		`, sat, sun)
 		if err != nil {
@@ -563,45 +569,30 @@ func (s *Server) handleInternalGenerateSanctions() http.HandlerFunc {
 
 		drafted := 0
 		for _, m := range missed {
-			var totalOffences, redCount int64
-			s.DB.QueryRow(ctx, `
-				SELECT COUNT(*) FROM sanctions
-				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
-				  AND status IN ('active','served')
-			`, m.TeamID, m.SeasonID).Scan(&totalOffences)
-			s.DB.QueryRow(ctx, `
-				SELECT COUNT(*) FROM sanctions
-				WHERE team_id=$1 AND season_id=$2 AND reason='non_submission'
-				  AND colour='red' AND status IN ('active','served')
-			`, m.TeamID, m.SeasonID).Scan(&redCount)
-
-			// Every 3rd offence is a red card; points deduction increments per red.
-			colour := "yellow"
-			pointsDeduction := 0
-			if (totalOffences+1)%3 == 0 {
-				colour = "red"
-				pointsDeduction = int(redCount) + 1
-			}
-
-			subject, body := buildSanctionEmail(colour, m.ClubName, m.TeamName, m.MatchDate, pointsDeduction)
-
-			var sanctionID int64
-			err := s.DB.QueryRow(ctx, `
-				INSERT INTO sanctions
-				    (season_id, week_id, team_id, club_id, colour, reason, points_deduction, email_subject, email_body, email_status)
-				VALUES ($1, $2, $3, $4, $5, 'non_submission', $6, $7, $8, 'pending')
-				RETURNING id
-			`, m.SeasonID, m.WeekID, m.TeamID, m.ClubID, colour, pointsDeduction, subject, body).Scan(&sanctionID)
+			matchDate := m.MatchDate
+			proposed, err := sanctiondomain.NewService(s.DB).ProposeCardCase(ctx, sanctiondomain.CardCaseRequest{
+				SourceType: "captain_report", SeasonID: m.SeasonID, WeekID: m.WeekID, ClubID: m.ClubID, TeamID: m.TeamID,
+				MatchDate: &matchDate, PublicReason: "Failure to submit captain's report",
+				PrivateReason: "Automatically detected after the reporting deadline",
+				CardRequest:   sanctiondomain.CardRequest{Kind: "yellow"},
+				Actor:         sanctiondomain.Actor{Type: "n8n", Label: "sanctions scheduler", RequestID: requestID(r)}, LegacyReason: "non_submission",
+			})
 			if err != nil {
 				continue
 			}
+			if proposed.AutomationMode == "automatic" {
+				autoActor := sanctiondomain.Actor{Type: "n8n", Label: "sanctions scheduler", RequestID: requestID(r)}
+				if err = sanctiondomain.NewService(s.DB).ApproveCase(ctx, proposed.CaseID, autoActor, ""); err != nil {
+					continue
+				}
+				if err = sanctiondomain.NewService(s.DB).PublishCase(ctx, proposed.CaseID, autoActor); err != nil {
+					continue
+				}
+			}
 			drafted++
-
-			eid := sanctionID
-			s.audit(ctx, r, "n8n", nil, "sanction_auto_drafted", "sanction", &eid, map[string]any{
-				"team_id":          m.TeamID,
-				"colour":           colour,
-				"points_deduction": pointsDeduction,
+			eid := proposed.CaseID
+			s.audit(ctx, r, "n8n", nil, "sanction_case_proposed", "sanction_case", &eid, map[string]any{
+				"team_id": m.TeamID, "effect_type": proposed.Calculation.EffectType, "points_deduction": proposed.Calculation.PointsDeduction, "automation_mode": proposed.AutomationMode,
 			})
 		}
 

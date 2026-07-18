@@ -29,6 +29,7 @@ func pageHead(w io.Writer, title string) {
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
+  <link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">
   <script src="%s"></script>
 </head>
 <body>
@@ -51,6 +52,7 @@ func pageHeadWithCharts(w io.Writer, title string) {
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
+  <link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">
   <script src="%s"></script>
   <script src="%s"></script>
 </head>
@@ -69,6 +71,7 @@ func writeCaptainNav(w io.Writer) {
       <div class="d-flex gap-3">
         <a class="link-light text-decoration-none small" href="/">Home</a>
         <a class="link-light text-decoration-none small" href="/submissions">Submission Status</a>
+        <a class="link-light text-decoration-none small" href="/rules-assistant">A1 Rules Assistant</a>
         <a class="link-light text-decoration-none small" href="/privacy">Privacy</a>
         <a class="link-light text-decoration-none small" href="/retention">Retention</a>
       </div>
@@ -139,14 +142,18 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             <li><a class="dropdown-item" href="/admin/reports">Generated Reports</a></li>
           </ul>
         </li>
-        %s
-        %s
-        %s`,
+		%s
+		%s
+		%s
+		%s
+		%s`,
 		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
 		dropdownActive("/admin/rankings"),
 		dropdownActive("/admin/reports"),
 		missingReportItem,
-		navLink("/admin/sanctions", "Sanctions"),
+		navLink("/admin/cases", "Sanctions cases"),
+		navLink("/admin/sanctions", "Legacy cards"),
+		navLink("/admin/rules-assistant", "A1 Rules Assistant"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),
 	)
@@ -218,6 +225,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 // pageFooter writes the Bootstrap JS bundle and closing HTML tags.
 func pageFooter(w io.Writer) {
 	fmt.Fprintf(w, `<script src="%s"></script>
+<script src="/static/rules-assistant.js?v=20260714-6" defer></script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {

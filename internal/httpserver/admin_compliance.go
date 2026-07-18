@@ -374,7 +374,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <input type="hidden" name="season_id" value="%d">
   <button type="submit" class="btn btn-warning btn-sm"
           onclick="return confirm('Issue yellow cards to all %d teams without a submission?')">
-    Issue Yellow Cards to All %d Missing Teams
+    Propose Cards for All %d Missing Teams
   </button>
 </form>
 `, csrfToken, weekID, seasonID, fixturesMissing, fixturesMissing)
@@ -420,7 +420,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <input type="hidden" name="week_id" value="%d">
   <input type="hidden" name="season_id" value="%d">
   <input type="hidden" name="reason" value="non_submission">
-  <button type="submit" class="btn btn-warning btn-sm py-0">Issue Card</button>
+  <button type="submit" class="btn btn-warning btn-sm py-0">Propose Card</button>
 </form>`, csrfToken, cr.TeamID, weekID, seasonID)
 					}
 				} else {
@@ -451,7 +451,7 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
   <input type="hidden" name="week_id" value="%d">
   <input type="hidden" name="season_id" value="%d">
   <input type="hidden" name="reason" value="non_submission">
-  <button type="submit" class="btn btn-warning btn-sm py-0">Issue Card</button>
+  <button type="submit" class="btn btn-warning btn-sm py-0">Propose Card</button>
 </form>`, csrfToken, cr.TeamID, weekID, seasonID)
 					}
 				}

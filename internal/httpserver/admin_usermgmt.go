@@ -471,6 +471,7 @@ func (s *Server) handleAdminUsers() http.HandlerFunc {
   <button type="submit" class="btn btn-sm btn-outline-secondary py-0"
           onclick="return confirm('Deactivate %s?')">Deactivate</button>
 </form>`, u.ID, csrfToken, escapeHTML(u.Username))
+					actions += fmt.Sprintf(`<a class="btn btn-sm btn-outline-danger py-0 me-1" href="/admin/users/%d/sanctions-permissions">Sanctions access</a>`, u.ID)
 				}
 				actions += fmt.Sprintf(`
 <form method="POST" action="/admin/users/%d/resend-invite" class="d-inline me-1">

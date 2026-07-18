@@ -2,7 +2,7 @@
 	email webmaster@gmcl.co.uk
 }
 
-gmcl.co.uk, www.gmcl.co.uk {
+gmcl.co.uk, www.gmcl.co.uk, sanctions.gmcl.co.uk {
 	encode gzip
 
 	reverse_proxy app:8080 {
