@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -75,17 +76,18 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		if season != "" {
 			if y, err := strconv.Atoi(season); err == nil {
 				args = append(args, y)
-				where += fmt.Sprintf(` AND s.year=$%d`, len(args))
+				where += fmt.Sprintf(` AND EXTRACT(YEAR FROM s.start_date)::int=$%d`, len(args))
 			}
 		}
 		rows, err := s.DB.Query(ctx, fmt.Sprintf(`
-			SELECT c.reference,COALESCE(s.year,0),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),
+			SELECT c.reference,COALESCE(EXTRACT(YEAR FROM s.start_date)::int,0),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),
 			       c.public_summary,c.public_status,e.effect_type,e.status,COALESCE(e.points,0),COALESCE(e.amount_pence,0),e.starts_at,e.ends_at,c.published_at
 			FROM sanction_cases c
 			LEFT JOIN seasons s ON s.id=c.season_id LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id
 			JOIN LATERAL (SELECT er.* FROM sanction_effect_revisions er JOIN sanction_decision_revisions dr ON dr.id=er.decision_revision_id WHERE dr.case_id=c.id AND dr.status='approved' AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=er.id) ORDER BY er.id DESC LIMIT 1) e ON true
 			WHERE %s ORDER BY COALESCE(e.starts_at,c.published_at) DESC,c.reference DESC`, where), args...)
 		if err != nil {
+			slog.Error("load public sanctions register", "error", err)
 			http.Error(w, "could not load sanctions", 500)
 			return
 		}
@@ -239,7 +241,7 @@ func (s *Server) handleSanctionReportSubmit() http.HandlerFunc {
 			seasonID = sid
 			weekID = wid
 		} else {
-			_ = s.DB.QueryRow(r.Context(), `SELECT id FROM seasons ORDER BY year DESC LIMIT 1`).Scan(&sid)
+			_ = s.DB.QueryRow(r.Context(), `SELECT id FROM seasons ORDER BY start_date DESC LIMIT 1`).Scan(&sid)
 			if sid != 0 {
 				seasonID = sid
 			}
