@@ -76,6 +76,11 @@ func normaliseImportName(value string) string {
 	aliases := map[string]string{
 		"bolton deane and derby": "deane and derby",
 		"delph and dobcross":     "delph dobcross",
+		"flixton c and sc":       "flixton",
+		"micklehurst c and sc":   "micklehurst and social",
+		"springhead ccc":         "springhead",
+		"westleigh leigh":        "westleigh",
+		"woodley cheshire":       "woodley",
 	}
 	if alias, ok := aliases[result]; ok {
 		return alias

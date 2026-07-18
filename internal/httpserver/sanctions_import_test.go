@@ -26,6 +26,11 @@ func TestNormaliseImportNameMatchesPublishedAliases(t *testing.T) {
 		"Bolton Deane & Derby CC": "deane and derby",
 		"Blackley CC, Lancs":      "blackley",
 		"Bradshaw Cricket Club":   "bradshaw",
+		"Flixton C&SC":            "flixton",
+		"Micklehurst C&SC":        "micklehurst and social",
+		"Springhead CCC":          "springhead",
+		"Westleigh CC, Leigh":     "westleigh",
+		"Woodley CC, Cheshire":    "woodley",
 	}
 	for input, want := range tests {
 		if got := normaliseImportName(input); got != want {
