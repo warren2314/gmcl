@@ -331,7 +331,7 @@ func (s *Server) handleAdminSanctionImportReview() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<main class="container py-4"><a class="btn btn-sm btn-outline-secondary mb-3" href="/admin/cases/imports">Back to imports</a><div class="d-flex flex-wrap justify-content-between gap-3"><div><h1 class="h2">%s</h1><p class="text-muted">Only deterministic matches can be applied. Source defects and unmatched teams remain visible for correction.</p></div>`, escapeHTML(source))
 		if ready > 0 {
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/imports/%d/apply"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-danger" onclick="return confirm('Apply %d matched rows as published historical sanctions? No notification emails will be sent.')">Apply %d matched rows</button></form>`, batchID, csrf, ready, ready)
+			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/imports/%d/apply"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-danger">Apply %d matched rows</button><div class="form-text text-end">Creates published historical records; no notification emails are sent.</div></form>`, batchID, csrf, ready)
 		}
 		fmt.Fprintf(w, `</div><div class="row g-3 my-2"><div class="col-md-4"><div class="card card-body"><strong>%d ready</strong></div></div><div class="col-md-4"><div class="card card-body"><strong>%d exceptions</strong></div></div><div class="col-md-4"><div class="card card-body"><strong>%d applied</strong></div></div></div>`, ready, exceptions, applied)
 		if r.URL.Query().Get("applied") != "" {
