@@ -80,7 +80,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			}
 		}
 		rows, err := s.DB.Query(ctx, fmt.Sprintf(`
-			SELECT c.reference,COALESCE(EXTRACT(YEAR FROM s.start_date)::int,0),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),
+			SELECT c.reference,COALESCE(EXTRACT(YEAR FROM s.start_date)::int,EXTRACT(YEAR FROM e.starts_at)::int,0),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.player_name,''),
 			       c.public_summary,c.public_status,e.effect_type,e.status,COALESCE(e.points,0),COALESCE(e.amount_pence,0),e.starts_at,e.ends_at,c.published_at
 			FROM sanction_cases c
 			LEFT JOIN seasons s ON s.id=c.season_id LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id

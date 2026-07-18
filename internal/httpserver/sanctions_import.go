@@ -74,7 +74,7 @@ func (s *Server) handleAdminSanctionImports() http.HandlerFunc {
 			var source, file, sum, status string
 			var at time.Time
 			if rows.Scan(&id, &source, &file, &sum, &status, &at, &rowsN, &exceptions) == nil {
-				fmt.Fprintf(w, `<tr><td>%d</td><td>%s</td><td>%s</td><td><code>%s</code></td><td>%d</td><td>%d</td><td>%s</td><td>%s</td></tr>`, id, escapeHTML(source), escapeHTML(file), escapeHTML(sum[:minInt(12, len(sum))]), rowsN, exceptions, escapeHTML(status), at.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
+				fmt.Fprintf(w, `<tr><td><a href="/admin/cases/imports/%d">%d</a></td><td><a href="/admin/cases/imports/%d">%s</a></td><td>%s</td><td><code>%s</code></td><td>%d</td><td>%d</td><td>%s</td><td>%s</td></tr>`, id, id, id, escapeHTML(source), escapeHTML(file), escapeHTML(sum[:minInt(12, len(sum))]), rowsN, exceptions, escapeHTML(status), at.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></main>`)
