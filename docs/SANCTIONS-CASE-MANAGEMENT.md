@@ -85,9 +85,12 @@ per case, decision revision, and recipient.
 
 ## Historical migration procedure
 
-1. Export each Google Form/sheet or existing public table separately as CSV.
-2. Upload each original export through `/admin/cases/imports`, recording its
-   source name and URL. The original bytes and SHA-256 checksum are retained.
+1. Use **Fetch and stage live register** in `/admin/cases/imports` for the
+   three unique datasets embedded in the existing public live-bans page. The
+   importer deliberately excludes the duplicate offence-order player view.
+2. Export any other Google Form/sheet or historical table separately as CSV,
+   then upload it through the same screen with its source name and URL. Direct
+   snapshots and uploads both retain the original bytes and SHA-256 checksum.
 3. Reconcile every pending row to a club, team/player, season, rule snapshot,
    effect, and status. Mark duplicates and source defects explicitly; do not
    infer ambiguous mappings.
@@ -118,4 +121,3 @@ not embedded in code.
 7. Import/activate the updated n8n workflow and verify the HMAC secret.
 8. Test a non-production case through report, response, proposal, independent
    approval, publication, outbox delivery, captain lookup, appeal, and reversal.
-
