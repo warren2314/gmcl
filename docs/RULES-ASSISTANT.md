@@ -2,6 +2,12 @@
 
 The rules assistant is a retrieval-augmented public Q&A service. It answers only from an atomically published snapshot of the GMCL rules and attaches source links to every material answer.
 
+Public access is controlled by `RULES_ASSISTANT_ENABLED`. It defaults to
+`false`, which removes the public navigation and floating widget and leaves the
+public page/chat endpoints unregistered. Set it to `true` only after evaluation
+and launch approval. The authenticated admin management page remains available
+while public access is disabled.
+
 ## Configuration
 
 - `OPENAI_API_KEY` enables embeddings, sync, and chat.

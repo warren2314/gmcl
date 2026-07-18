@@ -3,6 +3,7 @@ package httpserver
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -12,6 +13,22 @@ const (
 	htmxJS       = "https://unpkg.com/htmx.org@1.9.12"
 	chartJS      = "https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
 )
+
+func rulesAssistantEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("RULES_ASSISTANT_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func rulesAssistantStylesheet() string {
+	if !rulesAssistantEnabled() {
+		return ""
+	}
+	return `<link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">`
+}
 
 // pageHead writes the opening HTML through <body> with Bootstrap CSS, brand CSS, and HTMX.
 func pageHead(w io.Writer, title string) {
@@ -29,11 +46,11 @@ func pageHead(w io.Writer, title string) {
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
-  <link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">
+  %s
   <script src="%s"></script>
 </head>
 <body>
-`, escapeHTML(title), bootstrapCSS, htmxJS)
+`, escapeHTML(title), bootstrapCSS, rulesAssistantStylesheet(), htmxJS)
 }
 
 // pageHeadWithCharts writes the opening HTML including Chart.js for chart-heavy pages.
@@ -52,17 +69,21 @@ func pageHeadWithCharts(w io.Writer, title string) {
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
   <link href="/static/css/brand.css" rel="stylesheet">
-  <link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">
+  %s
   <script src="%s"></script>
   <script src="%s"></script>
 </head>
 <body>
-`, escapeHTML(title), bootstrapCSS, htmxJS, chartJS)
+`, escapeHTML(title), bootstrapCSS, rulesAssistantStylesheet(), htmxJS, chartJS)
 }
 
 // writeCaptainNav writes a simple top navbar with logo and app name.
 func writeCaptainNav(w io.Writer) {
-	fmt.Fprint(w, `<nav class="navbar navbar-dark bg-gmcl mb-4">
+	assistantLink := ""
+	if rulesAssistantEnabled() {
+		assistantLink = `<a class="link-light text-decoration-none small" href="/rules-assistant">A1 Rules Assistant</a>`
+	}
+	fmt.Fprintf(w, `<nav class="navbar navbar-dark bg-gmcl mb-4">
   <div class="container">
     <div class="d-flex align-items-center justify-content-between w-100">
       <a class="navbar-brand d-flex align-items-center" href="/">
@@ -71,14 +92,14 @@ func writeCaptainNav(w io.Writer) {
       <div class="d-flex gap-3">
         <a class="link-light text-decoration-none small" href="/">Home</a>
         <a class="link-light text-decoration-none small" href="/submissions">Submission Status</a>
-        <a class="link-light text-decoration-none small" href="/rules-assistant">A1 Rules Assistant</a>
+        %s
         <a class="link-light text-decoration-none small" href="/privacy">Privacy</a>
         <a class="link-light text-decoration-none small" href="/retention">Retention</a>
       </div>
     </div>
   </div>
 </nav>
-`)
+`, assistantLink)
 }
 
 // writeAdminNav writes the admin navbar with dropdowns, active-link highlighting, and logout.
@@ -225,8 +246,12 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 
 // pageFooter writes the Bootstrap JS bundle and closing HTML tags.
 func pageFooter(w io.Writer) {
+	assistantScript := ""
+	if rulesAssistantEnabled() {
+		assistantScript = `<script src="/static/rules-assistant.js?v=20260714-6" defer></script>`
+	}
 	fmt.Fprintf(w, `<script src="%s"></script>
-<script src="/static/rules-assistant.js?v=20260714-6" defer></script>
+%s
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
@@ -236,7 +261,7 @@ if ("serviceWorker" in navigator) {
 </script>
 </body>
 </html>
-`, bootstrapJS)
+`, bootstrapJS, assistantScript)
 }
 
 // pageFooterWithScript writes Bootstrap JS, then any inline chart/script code, then closes the page.

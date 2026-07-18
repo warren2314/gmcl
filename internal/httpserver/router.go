@@ -102,9 +102,11 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	r.With(middleware.RateLimit(60)).Get("/submissions", s.handlePublicSubmissionsStatus())
 	r.Get("/privacy", s.handlePrivacyNotice())
 	r.Get("/retention", s.handleRetentionNotice())
-	r.Get("/rules-assistant", s.handleRulesAssistantPage())
-	r.With(middleware.RateLimit(40)).Post("/api/rules/chat", s.handleRulesChat())
-	r.With(middleware.RateLimit(80)).Post("/api/rules/chat/feedback", s.handleRulesFeedback())
+	if rulesAssistantEnabled() {
+		r.Get("/rules-assistant", s.handleRulesAssistantPage())
+		r.With(middleware.RateLimit(40)).Post("/api/rules/chat", s.handleRulesChat())
+		r.With(middleware.RateLimit(80)).Post("/api/rules/chat/feedback", s.handleRulesFeedback())
+	}
 	r.Get("/sanctions", s.handlePublicSanctionsRegister())
 	r.Get("/sanctions/{reference}", s.handlePublicSanctionDetail())
 	r.Get("/sanctions/report/verify", s.handleSanctionReportVerify())

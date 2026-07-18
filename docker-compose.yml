@@ -14,6 +14,7 @@ services:
       - PUBLIC_BASE_URL=https://gmcl.co.uk
       - PUBLIC_ALT_BASE_URL=https://www.gmcl.co.uk
       - SANCTIONS_BASE_URL=https://sanctions.gmcl.co.uk
+      - RULES_ASSISTANT_ENABLED=${RULES_ASSISTANT_ENABLED:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
