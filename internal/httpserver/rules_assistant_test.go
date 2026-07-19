@@ -50,3 +50,13 @@ func TestMatchSanctionLookupClubUsesNamedLongestMatch(t *testing.T) {
 		t.Fatal("question without a named club unexpectedly matched")
 	}
 }
+
+func TestMatchSanctionLookupClubTreatsAndAsAmpersand(t *testing.T) {
+	clubs := []importClub{{ID: 8, Name: "Deane & Derby CC"}}
+	for _, question := range []string{"Why does Deane and Derby have cards?", "Why does Deane & Derby have cards?"} {
+		got, ok := matchSanctionLookupClub(question, clubs)
+		if !ok || got.ID != 8 {
+			t.Fatalf("question %q matched %#v, ok=%v", question, got, ok)
+		}
+	}
+}

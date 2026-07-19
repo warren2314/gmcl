@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,6 +63,50 @@ func newPublicToken() (string, []byte, error) {
 
 func tokenHash(raw string) []byte { h := sha256.Sum256([]byte(strings.TrimSpace(raw))); return h[:] }
 
+func sanctionsSearchPatterns(value string) []string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	patterns := []string{}
+	add := func(term string) {
+		term = strings.Join(strings.Fields(strings.TrimSpace(term)), " ")
+		if term != "" && !seen[term] {
+			seen[term] = true
+			patterns = append(patterns, "%"+term+"%")
+		}
+	}
+	add(value)
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, " and ") {
+		add(strings.ReplaceAll(lower, " and ", " & "))
+	}
+	if strings.Contains(lower, "&") {
+		add(strings.ReplaceAll(lower, "&", " and "))
+	}
+	return patterns
+}
+
+func sanctionsCategoryURL(current url.Values, category string) string {
+	values := url.Values{}
+	for key, items := range current {
+		for _, item := range items {
+			values.Add(key, item)
+		}
+	}
+	values.Del("type")
+	if category == "" {
+		values.Del("view")
+	} else {
+		values.Set("view", category)
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return "/sanctions?" + encoded
+	}
+	return "/sanctions"
+}
+
 func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -69,6 +114,14 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		season := strings.TrimSpace(r.URL.Query().Get("season"))
 		search := strings.TrimSpace(r.URL.Query().Get("q"))
 		effectFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+		category := strings.TrimSpace(r.URL.Query().Get("view"))
+		allowedEffects := map[string]bool{"yellow_card": true, "red_card": true, "suspended_red": true, "player_ban": true, "team_ban": true, "fine": true, "card_points": true, "points_adjustment": true, "warning": true}
+		if !map[string]bool{"players": true, "clubs": true, "yellow": true, "red": true}[category] {
+			category = ""
+		}
+		if allowedEffects[effectFilter] && (category == "yellow" || category == "red") {
+			category = ""
+		}
 		archive := r.URL.Query().Get("archive") == "1"
 		args := []any{}
 		where := `c.status='published' AND c.public_status IN ('active','suspended','served','expired') AND e.status IN ('active','suspended','served','expired')`
@@ -82,10 +135,24 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			}
 		}
 		if search != "" {
-			args = append(args, "%"+search+"%")
-			where += fmt.Sprintf(` AND (cl.name ILIKE $%d OR t.name ILIKE $%d OR c.player_name ILIKE $%d OR c.public_summary ILIKE $%d)`, len(args), len(args), len(args), len(args))
+			clauses := []string{}
+			for _, pattern := range sanctionsSearchPatterns(search) {
+				args = append(args, pattern)
+				position := len(args)
+				clauses = append(clauses, fmt.Sprintf(`(cl.name ILIKE $%d OR t.name ILIKE $%d OR c.player_name ILIKE $%d OR c.public_summary ILIKE $%d)`, position, position, position, position))
+			}
+			where += ` AND (` + strings.Join(clauses, ` OR `) + `)`
 		}
-		allowedEffects := map[string]bool{"yellow_card": true, "red_card": true, "suspended_red": true, "player_ban": true, "team_ban": true, "fine": true, "card_points": true, "points_adjustment": true, "warning": true}
+		switch category {
+		case "players":
+			where += ` AND (NULLIF(BTRIM(c.player_name),'') IS NOT NULL OR e.effect_type='player_ban')`
+		case "clubs":
+			where += ` AND c.club_id IS NOT NULL AND NULLIF(BTRIM(c.player_name),'') IS NULL`
+		case "yellow":
+			where += ` AND e.effect_type='yellow_card'`
+		case "red":
+			where += ` AND e.effect_type IN ('red_card','suspended_red')`
+		}
 		if allowedEffects[effectFilter] {
 			args = append(args, effectFilter)
 			where += fmt.Sprintf(` AND e.effect_type=$%d`, len(args))
@@ -112,7 +179,25 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "GMCL Sanctions Register")
 		writeCaptainNav(w)
-		fmt.Fprint(w, `<main class="container py-4" style="max-width:1100px"><div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-start gap-3 mb-4"><div><h1 class="h2">GMCL sanctions register</h1><p class="text-muted mb-0">Approved and published team cards, bans, fines and points decisions. Private evidence and correspondence are never shown here.</p></div><a class="btn btn-outline-danger" href="/sanctions/report">Report an issue</a></div><form method="GET" class="card card-body mb-3"><div class="row g-2"><div class="col-12 col-md-4"><label class="form-label" for="sanction-search">Club, team, player or reason</label><input id="sanction-search" class="form-control" type="search" name="q" placeholder="Search register" value="`+escapeHTML(search)+`"></div><div class="col-6 col-md-2"><label class="form-label" for="sanction-season">Season</label><input id="sanction-season" class="form-control" type="number" name="season" min="2016" placeholder="All" value="`+escapeHTML(season)+`"></div><div class="col-6 col-md-3"><label class="form-label" for="sanction-type">Sanction</label><select id="sanction-type" class="form-select" name="type"><option value="">All types</option>`)
+		fmt.Fprint(w, `<main class="container py-4" style="max-width:1100px"><div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-start gap-3 mb-4"><div><h1 class="h2">GMCL sanctions register</h1><p class="text-muted mb-0">Approved and published team cards, bans, fines and points decisions. Private evidence and correspondence are never shown here.</p></div><a class="btn btn-outline-danger" href="/sanctions/report">Report an issue</a></div>`)
+		fmt.Fprint(w, `<nav class="row row-cols-2 row-cols-md-5 g-2 mb-3" aria-label="Sanctions register views">`)
+		for _, item := range []struct{ value, label, description string }{
+			{"", "All", "Every sanction"},
+			{"players", "Players", "Player sanctions"},
+			{"clubs", "Clubs / teams", "Team decisions"},
+			{"yellow", "Yellow cards", "Yellow card records"},
+			{"red", "Red cards", "Direct and suspended reds"},
+		} {
+			active := item.value == category
+			classes := "card h-100 text-decoration-none text-body shadow-sm"
+			current := ""
+			if active {
+				classes += " border-danger border-2 bg-light"
+				current = ` aria-current="page"`
+			}
+			fmt.Fprintf(w, `<div class="col"><a class="%s" href="%s"%s><span class="card-body p-3"><strong class="d-block">%s</strong><small class="text-muted">%s</small></span></a></div>`, classes, escapeHTML(sanctionsCategoryURL(r.URL.Query(), item.value)), current, item.label, item.description)
+		}
+		fmt.Fprint(w, `</nav><form method="GET" class="card card-body mb-3"><input type="hidden" name="view" value="`+escapeHTML(category)+`"><div class="row g-2"><div class="col-12 col-md-4"><label class="form-label" for="sanction-search">Club, team, player or reason</label><input id="sanction-search" class="form-control" type="search" name="q" placeholder="Search register" value="`+escapeHTML(search)+`"></div><div class="col-6 col-md-2"><label class="form-label" for="sanction-season">Season</label><input id="sanction-season" class="form-control" type="number" name="season" min="2016" placeholder="All" value="`+escapeHTML(season)+`"></div><div class="col-6 col-md-3"><label class="form-label" for="sanction-type">Sanction</label><select id="sanction-type" class="form-select" name="type"><option value="">All types</option>`)
 		for _, option := range []struct{ value, label string }{{"yellow_card", "Yellow card"}, {"red_card", "Red card"}, {"suspended_red", "Suspended red"}, {"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"}, {"points_adjustment", "Points adjustment"}, {"warning", "Warning"}} {
 			selected := ""
 			if effectFilter == option.value {
