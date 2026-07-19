@@ -180,3 +180,41 @@ func TestSuggestMappingsRecognisesCommonPlayCricketNameVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestConfirmedMappingRemovesIdentitySuggestion(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []Period{{ClubName: "Example CC", ClubKey: "example", PlayerName: "Jon Phillips", PlayerKey: NormalizeName("Jon Phillips"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)}}
+	appearances := []Appearance{{ClubKey: "example", PlayerID: 44, PlayerName: "John Phillips", PlayerKey: NormalizeName("John Phillips")}}
+	mappings := []IdentityMapping{{ClubKey: "example", StarredPlayerKey: NormalizeName("Jon Phillips"), PlayerID: 44}}
+
+	if got := SuggestMappings(periods, appearances, mappings, cutoff); len(got) != 0 {
+		t.Fatalf("confirmed identity was still suggested: %#v", got)
+	}
+}
+
+func TestSearchAppearanceIdentitiesSearchesAllNamesAndGroupsScorecards(t *testing.T) {
+	first := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
+	appearances := []Appearance{
+		{MatchID: 10, MatchDate: first, ClubName: "Alpha CC", TeamLevel: 1, PlayerID: 44, PlayerName: "J Phillips"},
+		{MatchID: 10, MatchDate: first, ClubName: "Alpha CC", TeamLevel: 1, PlayerID: 44, PlayerName: "John Phillips"},
+		{MatchID: 11, MatchDate: last, ClubName: "Beta CC", TeamLevel: 2, PlayerID: 44, PlayerName: "John Phillips"},
+		{MatchID: 12, MatchDate: last, ClubName: "Beta Women", TeamLevel: 1, PlayerID: 55, PlayerName: "Jane Phillips"},
+		{MatchID: 13, MatchDate: last, ClubName: "Gamma CC", TeamLevel: 0, PlayerID: 66, PlayerName: "Phil Phillips"},
+	}
+
+	got := SearchAppearanceIdentities(appearances, "phillips", 50)
+	if len(got) != 1 {
+		t.Fatalf("results=%d want 1: %#v", len(got), got)
+	}
+	if got[0].PlayerID != 44 || got[0].PlayerName != "John Phillips" || got[0].MatchCount != 2 {
+		t.Fatalf("unexpected identity summary: %#v", got[0])
+	}
+	if strings.Join(got[0].ClubNames, ",") != "Alpha CC,Beta CC" || !got[0].FirstSeen.Equal(first) || !got[0].LastSeen.Equal(last) {
+		t.Fatalf("unexpected identity evidence: %#v", got[0])
+	}
+	byID := SearchAppearanceIdentities(appearances, "44", 50)
+	if len(byID) != 1 || byID[0].PlayerID != 44 {
+		t.Fatalf("player ID search failed: %#v", byID)
+	}
+}

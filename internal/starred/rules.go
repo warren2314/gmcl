@@ -192,6 +192,116 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 	return out
 }
 
+// SearchAppearanceIdentities searches every supplied scorecard appearance and
+// returns one row per Play-Cricket player ID. All appearances for a matching ID
+// contribute to the summary, including rows whose displayed name is a variant.
+func SearchAppearanceIdentities(appearances []Appearance, query string, limit int) []IdentitySearchResult {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if len(query) < 2 {
+		return nil
+	}
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	type identityStats struct {
+		names       map[string]int
+		clubs       map[string]struct{}
+		matches     map[int64]struct{}
+		first, last time.Time
+		matched     bool
+		rank        int
+	}
+	stats := make(map[int64]*identityStats)
+	for _, appearance := range appearances {
+		if appearance.PlayerID <= 0 || appearance.TeamLevel <= 0 || IsWomensAppearance(appearance) {
+			continue
+		}
+		current := stats[appearance.PlayerID]
+		if current == nil {
+			current = &identityStats{
+				names:   make(map[string]int),
+				clubs:   make(map[string]struct{}),
+				matches: make(map[int64]struct{}),
+				rank:    3,
+			}
+			stats[appearance.PlayerID] = current
+		}
+		name := strings.TrimSpace(appearance.PlayerName)
+		if name != "" {
+			current.names[name]++
+		}
+		if club := strings.TrimSpace(appearance.ClubName); club != "" {
+			current.clubs[club] = struct{}{}
+		}
+		current.matches[appearance.MatchID] = struct{}{}
+		if current.first.IsZero() || appearance.MatchDate.Before(current.first) {
+			current.first = appearance.MatchDate
+		}
+		if current.last.IsZero() || appearance.MatchDate.After(current.last) {
+			current.last = appearance.MatchDate
+		}
+
+		lowerName := strings.ToLower(name)
+		playerID := itoa64(appearance.PlayerID)
+		rank := 3
+		switch {
+		case playerID == query || lowerName == query:
+			rank = 0
+		case strings.HasPrefix(lowerName, query):
+			rank = 1
+		case strings.Contains(lowerName, query) || strings.Contains(playerID, query):
+			rank = 2
+		}
+		if rank < current.rank {
+			current.rank = rank
+			current.matched = true
+		}
+	}
+
+	type rankedResult struct {
+		IdentitySearchResult
+		rank int
+	}
+	results := make([]rankedResult, 0)
+	for playerID, current := range stats {
+		if !current.matched {
+			continue
+		}
+		name, nameCount := "", -1
+		for candidate, count := range current.names {
+			if count > nameCount || (count == nameCount && candidate < name) {
+				name, nameCount = candidate, count
+			}
+		}
+		clubs := make([]string, 0, len(current.clubs))
+		for club := range current.clubs {
+			clubs = append(clubs, club)
+		}
+		sort.Strings(clubs)
+		results = append(results, rankedResult{IdentitySearchResult: IdentitySearchResult{
+			PlayerID: playerID, PlayerName: name, ClubNames: clubs,
+			MatchCount: len(current.matches), FirstSeen: current.first, LastSeen: current.last,
+		}, rank: current.rank})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].rank != results[j].rank {
+			return results[i].rank < results[j].rank
+		}
+		if results[i].MatchCount != results[j].MatchCount {
+			return results[i].MatchCount > results[j].MatchCount
+		}
+		return results[i].PlayerName < results[j].PlayerName
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	out := make([]IdentitySearchResult, len(results))
+	for i := range results {
+		out[i] = results[i].IdentitySearchResult
+	}
+	return out
+}
+
 func hasJuniorTag(tags []string) bool {
 	for _, tag := range tags {
 		if strings.Contains(tag, "17") || strings.Contains(tag, "18") {

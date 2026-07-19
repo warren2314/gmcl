@@ -37,6 +37,26 @@ func TestActiveStarredPeriodsByClubUsesCutoffAndListOrder(t *testing.T) {
 	}
 }
 
+func TestActiveUnmappedStarredPeriodsRemovesAcceptedPlayers(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Accepted Player", PlayerKey: "accepted", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Needs Match", PlayerKey: "needsmatch", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Needs Match", PlayerKey: "needsmatch", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "accepted", PlayerID: 99}}
+
+	got := activeUnmappedStarredPeriods(periods, mappings, cutoff)
+	if len(got) != 1 || got[0].PlayerKey != "needsmatch" {
+		t.Fatalf("unmapped periods=%#v want only Needs Match", got)
+	}
+	sourceID := starredMappingSourceID(got[0])
+	selected, ok := findUnmappedStarredPeriod(got, sourceID)
+	if !ok || selected.PlayerName != "Needs Match" {
+		t.Fatalf("source selection failed: %#v, %v", selected, ok)
+	}
+}
+
 func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	clubs := map[string]string{"alpha": "Alpha CC", "beta": "Beta CC", "gamma": "Gamma CC"}
 	appearances := []starred.Appearance{

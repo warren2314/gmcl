@@ -51,9 +51,21 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		reviewApps = remapStarredAppearanceClubs(reviewApps, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
 		eval := starred.Evaluation{}
 		var suggestions []starred.MappingSuggestion
+		var unmappedPeriods []starred.Period
 		if loadErr == nil {
 			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
+			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
+		}
+		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
+		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
+		if runes := []rune(mappingQuery); len(runes) > 100 {
+			mappingQuery = string(runes[:100])
+		}
+		selectedMappingPeriod, mappingSourceValid := findUnmappedStarredPeriod(unmappedPeriods, mappingSource)
+		var identitySearchResults []starred.IdentitySearchResult
+		if mappingSourceValid && len([]rune(mappingQuery)) >= 2 {
+			identitySearchResults = starred.SearchAppearanceIdentities(reviewApps, mappingQuery, 100)
 		}
 		if strings.TrimSpace(r.URL.Query().Get("view")) == "player-review" && r.URL.Query().Get("export") == "csv" {
 			s.writeStarredPlayerReviewCSV(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
@@ -207,15 +219,52 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 
+		fmt.Fprint(w, `<div id="identity-matches" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Identity matches</div><div class="small text-muted">Confirmed matches leave this action list immediately. The mapping and a separate administrator audit event are retained.</div></div>`)
 		if len(suggestions) > 0 {
-			fmt.Fprint(w, `<div id="identity-matches" class="card shadow-sm mb-4"><div class="card-header fw-semibold">Suggested identity matches</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th></th></tr></thead><tbody>`)
+			fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm align-middle mb-0"><caption class="caption-top px-3 pb-1 fw-semibold">Suggested from scorecards</caption><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th></th></tr></thead><tbody>`)
 			for i, x := range suggestions {
 				if i >= 100 {
 					break
 				}
 				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s <code>%d</code></td><td><form method="post" action="/admin/starred-players/mapping"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="candidate_id" value="%d"><input type="hidden" name="candidate_name" value="%s"><button class="btn btn-sm btn-outline-primary">Confirm</button></form></td></tr>`, escapeHTML(x.ClubName), escapeHTML(x.StarredName), escapeHTML(x.CandidateName), x.CandidateID, escapeHTML(csrf), year, escapeHTML(x.ClubKey), escapeHTML(x.StarredPlayerKey), x.CandidateID, escapeHTML(x.CandidateName))
 			}
-			fmt.Fprint(w, `</tbody></table></div></div>`)
+			fmt.Fprint(w, `</tbody></table></div>`)
+		}
+		fmt.Fprint(w, `<div class="card-body border-top"><h6 class="mb-2">Search all imported scorecards</h6><p class="small text-muted">Choose the unmatched published player, then search by any part of a scorecard name or by Play-Cricket player ID.</p>`)
+		if loadErr != nil {
+			fmt.Fprint(w, `<div class="alert alert-warning mb-0">Synchronise the published list before matching identities.</div></div></div>`)
+		} else if len(unmappedPeriods) == 0 {
+			fmt.Fprint(w, `<div class="alert alert-success mb-0">Every active published player has an accepted identity mapping.</div></div></div>`)
+		} else {
+			fmt.Fprintf(w, `<form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-lg-5"><label class="form-label" for="mapping-source">Published starred player</label><select class="form-select" id="mapping-source" name="mapping_source" required><option value="">Choose a player</option>`, year)
+			for _, period := range unmappedPeriods {
+				sourceID := starredMappingSourceID(period)
+				selected := ""
+				if sourceID == mappingSource {
+					selected = " selected"
+				}
+				fmt.Fprintf(w, `<option value="%s"%s>%s — %s (List %s)</option>`, escapeHTML(sourceID), selected, escapeHTML(period.ClubName), escapeHTML(period.PlayerName), escapeHTML(period.ListType))
+			}
+			fmt.Fprintf(w, `</select></div><div class="col-lg-5"><label class="form-label" for="mapping-query">Scorecard name or player ID</label><input class="form-control" id="mapping-query" name="mapping_q" value="%s" minlength="2" maxlength="100" placeholder="e.g. Phillips" required></div><div class="col-lg-2"><button class="btn btn-primary w-100">Search</button></div></form>`, escapeHTML(mappingQuery))
+			if mappingQuery != "" && !mappingSourceValid {
+				fmt.Fprint(w, `<div class="alert alert-warning mt-3 mb-0">Choose an unmatched published player before searching.</div>`)
+			} else if mappingSourceValid && len([]rune(mappingQuery)) < 2 && mappingQuery != "" {
+				fmt.Fprint(w, `<div class="alert alert-warning mt-3 mb-0">Enter at least two characters.</div>`)
+			} else if mappingSourceValid && len([]rune(mappingQuery)) >= 2 {
+				fmt.Fprintf(w, `<div class="mt-4"><h6>Potential matches for %s — %s</h6><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Scorecard player</th><th>Player ID</th><th>Clubs found</th><th>Scorecards</th><th>Dates</th><th></th></tr></thead><tbody>`, escapeHTML(selectedMappingPeriod.ClubName), escapeHTML(selectedMappingPeriod.PlayerName))
+				if len(identitySearchResults) == 0 {
+					fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No scorecard identities matched this search.</td></tr>`)
+				}
+				for _, candidate := range identitySearchResults {
+					dates := ""
+					if !candidate.FirstSeen.IsZero() {
+						dates = candidate.FirstSeen.Format("02 Jan") + " – " + candidate.LastSeen.Format("02 Jan 2006")
+					}
+					fmt.Fprintf(w, `<tr><td>%s</td><td><code>%d</code></td><td>%s</td><td>%d</td><td>%s</td><td><form method="post" action="/admin/starred-players/mapping"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="candidate_id" value="%d"><input type="hidden" name="candidate_name" value="%s"><button class="btn btn-sm btn-outline-primary">Confirm</button></form></td></tr>`, escapeHTML(candidate.PlayerName), candidate.PlayerID, escapeHTML(strings.Join(candidate.ClubNames, ", ")), candidate.MatchCount, escapeHTML(dates), escapeHTML(csrf), year, escapeHTML(selectedMappingPeriod.ClubKey), escapeHTML(selectedMappingPeriod.PlayerKey), candidate.PlayerID, escapeHTML(candidate.PlayerName))
+				}
+				fmt.Fprint(w, `</tbody></table></div></div>`)
+			}
+			fmt.Fprint(w, `</div></div>`)
 		}
 		if len(issues) > 0 {
 			fmt.Fprint(w, `<div class="card border-warning shadow-sm mb-4"><div class="card-header fw-semibold">Amendments requiring review</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Club</th><th>Amendment</th><th>Published text</th><th>Reason</th></tr></thead><tbody>`)
@@ -435,6 +484,52 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 		return active[i].PlayerName < active[j].PlayerName
 	})
 	return active
+}
+
+func activeUnmappedStarredPeriods(periods []starred.Period, mappings []starred.IdentityMapping, cutoff time.Time) []starred.Period {
+	mapped := make(map[string]struct{}, len(mappings))
+	for _, mapping := range mappings {
+		mapped[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	out := make([]starred.Period, 0)
+	for _, period := range periods {
+		if cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
+			continue
+		}
+		key := period.ClubKey + "|" + period.PlayerKey
+		if _, exists := mapped[key]; exists {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, period)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ClubName != out[j].ClubName {
+			return out[i].ClubName < out[j].ClubName
+		}
+		if out[i].ListType != out[j].ListType {
+			return out[i].ListType < out[j].ListType
+		}
+		return out[i].PlayerName < out[j].PlayerName
+	})
+	return out
+}
+
+func starredMappingSourceID(period starred.Period) string {
+	return period.ClubKey + ":" + period.PlayerKey
+}
+
+func findUnmappedStarredPeriod(periods []starred.Period, sourceID string) (starred.Period, bool) {
+	for _, period := range periods {
+		if starredMappingSourceID(period) == sourceID {
+			return period, true
+		}
+	}
+	return starred.Period{}, false
 }
 
 func starredAppearanceSearch(playerName string, playerID int64) string {
@@ -934,12 +1029,58 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		err = starred.SaveIdentityMapping(ctx, s.DB, year, r.FormValue("club_key"), r.FormValue("player_key"), id, r.FormValue("candidate_name"), adminIDForRequest(r))
+		clubKey := strings.TrimSpace(r.FormValue("club_key"))
+		playerKey := strings.TrimSpace(r.FormValue("player_key"))
+		periods, appearances, mappings, _, loadErr := starred.LoadEvaluationInputs(ctx, s.DB, year)
+		if loadErr != nil {
+			redirectStarredAnchor(w, r, year, "", "Could not validate the identity mapping: "+loadErr.Error(), "identity-matches")
+			return
+		}
+		cutoff := starred.ReviewCutoff(year, time.Now())
+		target, targetFound := starred.Period{}, false
+		for _, period := range activeUnmappedStarredPeriods(periods, mappings, cutoff) {
+			if period.ClubKey == clubKey && period.PlayerKey == playerKey {
+				target, targetFound = period, true
+				break
+			}
+		}
+		if !targetFound {
+			redirectStarredAnchor(w, r, year, "", "That published player is no longer awaiting an identity match.", "identity-matches")
+			return
+		}
+		reviewAppearances := make([]starred.Appearance, 0, len(appearances))
+		for _, appearance := range appearances {
+			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) && !starred.IsWomensAppearance(appearance) {
+				reviewAppearances = append(reviewAppearances, appearance)
+			}
+		}
+		candidateName := ""
+		for _, candidate := range starred.SearchAppearanceIdentities(reviewAppearances, strconv.FormatInt(id, 10), 200) {
+			if candidate.PlayerID == id {
+				candidateName = candidate.PlayerName
+				break
+			}
+		}
+		if candidateName == "" {
+			redirectStarredAnchor(w, r, year, "", "That Play-Cricket identity was not found in the imported scorecards.", "identity-matches")
+			return
+		}
+		adminID := adminIDForRequest(r)
+		err = starred.SaveIdentityMapping(ctx, s.DB, year, clubKey, playerKey, id, candidateName, adminID)
 		if err != nil {
 			redirectStarredAnchor(w, r, year, "", err.Error(), "identity-matches")
 			return
 		}
-		redirectStarredAnchor(w, r, year, "Identity mapping confirmed.", "", "identity-matches")
+		var auditAdminID *int32
+		if adminID > 0 {
+			auditAdminID = &adminID
+		}
+		s.audit(ctx, r, "admin", auditAdminID, "starred_identity_mapping_confirmed", "starred_identity_mapping", nil, map[string]any{
+			"season": year, "club_key": clubKey, "club_name": target.ClubName,
+			"starred_player_key": playerKey, "starred_player_name": target.PlayerName,
+			"play_cricket_player_id": id, "play_cricket_player_name": candidateName,
+		})
+		redirectStarredAnchor(w, r, year, "Identity mapping confirmed for "+target.PlayerName+". It has been removed from the action list.", "", "identity-matches")
 	}
 }
 

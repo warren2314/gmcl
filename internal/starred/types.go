@@ -130,3 +130,14 @@ type MappingSuggestion struct {
 	CandidateName    string
 	Distance         int
 }
+
+// IdentitySearchResult is a scorecard identity returned by the manual mapping
+// search. MatchCount counts distinct scorecards rather than repeated rows.
+type IdentitySearchResult struct {
+	PlayerID   int64
+	PlayerName string
+	ClubNames  []string
+	MatchCount int
+	FirstSeen  time.Time
+	LastSeen   time.Time
+}
