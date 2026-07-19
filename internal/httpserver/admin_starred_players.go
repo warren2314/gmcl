@@ -199,7 +199,8 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				continue
 			}
 			shown++
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%d</td><td>%d</td><td>%.1f%%</td><td><span class="badge bg-warning text-dark">List B review</span></td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(c.PlayerName), escapeHTML(c.PlayerName), c.FirstXILeague, c.AllLeague, c.Percentage*100)
+			appearanceSearch := starredAppearanceSearch(c.PlayerName, c.PlayerID)
+			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%d</td><td>%d</td><td>%.1f%%</td><td><span class="badge bg-warning text-dark">List B review</span></td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.FirstXILeague, c.AllLeague, c.Percentage*100)
 		}
 		if shown == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No unstarred candidates currently meet the threshold.</td></tr>`)
@@ -265,7 +266,8 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		})
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Club</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
 		for _, period := range active {
-			fmt.Fprintf(w, `<tr><td><a href="/admin/starred-players?season=%d&amp;view=club-list&amp;club=%s#card-detail">%s</a></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, year, url.QueryEscape(period.ClubKey), escapeHTML(period.ClubName), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+			appearanceSearch := starredAppearanceSearch(period.PlayerName, starredMappedPlayerID(period, mappings))
+			fmt.Fprintf(w, `<tr><td><a href="/admin/starred-players?season=%d&amp;view=club-list&amp;club=%s#card-detail">%s</a></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, year, url.QueryEscape(period.ClubKey), escapeHTML(period.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
 		}
 		if len(active) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active players found.</td></tr>`)
@@ -367,7 +369,8 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			if listType != "" {
 				listBadge = fmt.Sprintf(`<span class="badge bg-danger">List %s</span>`, escapeHTML(listType))
 			}
-			fmt.Fprintf(w, `<tr><td><strong>%s</strong><div class="small text-muted">%s</div></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td><code>%d</code></td><td>%s</td><td>%s</td></tr>`, escapeHTML(appearance.ClubName), escapeHTML(appearance.TeamName), year, url.QueryEscape(appearance.PlayerName), escapeHTML(appearance.PlayerName), appearance.PlayerID, escapeHTML(strings.Join(roles, ", ")), listBadge)
+			appearanceSearch := starredAppearanceSearch(appearance.PlayerName, appearance.PlayerID)
+			fmt.Fprintf(w, `<tr><td><strong>%s</strong><div class="small text-muted">%s</div></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td><code>%d</code></td><td>%s</td><td>%s</td></tr>`, escapeHTML(appearance.ClubName), escapeHTML(appearance.TeamName), year, url.QueryEscape(appearanceSearch), escapeHTML(appearance.PlayerName), appearance.PlayerID, escapeHTML(strings.Join(roles, ", ")), listBadge)
 		}
 		if shown == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No classified open-age players were found for this match.</td></tr>`)
@@ -432,6 +435,22 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 		return active[i].PlayerName < active[j].PlayerName
 	})
 	return active
+}
+
+func starredAppearanceSearch(playerName string, playerID int64) string {
+	if playerID > 0 {
+		return strconv.FormatInt(playerID, 10)
+	}
+	return playerName
+}
+
+func starredMappedPlayerID(period starred.Period, mappings []starred.IdentityMapping) int64 {
+	for _, mapping := range mappings {
+		if mapping.ClubKey == period.ClubKey && mapping.StarredPlayerKey == period.PlayerKey {
+			return mapping.PlayerID
+		}
+	}
+	return 0
 }
 
 func starredSaturdayTeamCounts(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping) map[string]map[int]int {
@@ -753,7 +772,8 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 		if period.ListType == "A" {
 			badgeClass = "bg-danger"
 		}
-		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(period.PlayerName), escapeHTML(period.PlayerName))
+		appearanceSearch := starredAppearanceSearch(period.PlayerName, starredMappedPlayerID(period, mappings))
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName))
 		playerCounts := teamCounts[period.ClubKey+"|"+period.PlayerKey]
 		total := 0
 		for level := 1; level <= maxTeamLevel; level++ {

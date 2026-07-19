@@ -52,6 +52,22 @@ func TestBuildPeriodsAppliesFuzzyAmendment(t *testing.T) {
 	}
 }
 
+func TestBuildPeriodsDeduplicatesPlayerRepeatedInTwoSourceSlots(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	entry := Entry{SeasonYear: 2026, ClubName: "Bolton Deane & Derby CC", ClubKey: "boltondeaneandderby", ListType: "B", PlayerName: "Safwan Patel", PlayerKey: NormalizeName("Safwan Patel")}
+	duplicate := entry
+	entry.Slot = 1
+	duplicate.Slot = 7
+
+	periods, issues := BuildPeriods(Snapshot{SeasonYear: 2026, Entries: []Entry{entry, duplicate}}, start)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%#v", issues)
+	}
+	if len(periods) != 1 {
+		t.Fatalf("periods=%d want 1: %#v", len(periods), periods)
+	}
+}
+
 func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	start := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
 	periods := []Period{{SeasonYear: 2026, ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: start}}
@@ -131,5 +147,36 @@ func TestDedupeScorecardPlayersMergesRepeatedTeamSheetRows(t *testing.T) {
 	}
 	if !got[0].Captain || !got[0].WicketKeeper {
 		t.Fatalf("duplicate flags were not merged: %#v", got[0])
+	}
+}
+
+func TestSuggestMappingsRecognisesCommonPlayCricketNameVariants(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []Period{
+		{ClubName: "Bolton Deane & Derby CC", ClubKey: "deane", PlayerName: "Firdaush Bahja", PlayerKey: NormalizeName("Firdaush Bahja"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Bolton Deane & Derby CC", ClubKey: "deane", PlayerName: "Sarfraz N Patel", PlayerKey: NormalizeName("Sarfraz N Patel"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Bolton Deane & Derby CC", ClubKey: "deane", PlayerName: "Haroon Rawat", PlayerKey: NormalizeName("Haroon Rawat"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	appearances := []Appearance{
+		{ClubKey: "deane", PlayerID: 1, PlayerName: "Firdaush Daud Mohmed Bhaja", PlayerKey: NormalizeName("Firdaush Daud Mohmed Bhaja")},
+		{ClubKey: "deane", PlayerID: 2, PlayerName: "Sarfraz Nawaz Patel", PlayerKey: NormalizeName("Sarfraz Nawaz Patel")},
+		{ClubKey: "deane", PlayerID: 3, PlayerName: "Safvan Patel", PlayerKey: NormalizeName("Safvan Patel")},
+		{ClubKey: "deane", PlayerID: 4, PlayerName: "Hr Rawat", PlayerKey: NormalizeName("Hr Rawat")},
+	}
+
+	suggestions := SuggestMappings(periods, appearances, nil, cutoff)
+	got := make(map[string]string)
+	for _, suggestion := range suggestions {
+		got[suggestion.StarredName] = suggestion.CandidateName
+	}
+	want := map[string]string{
+		"Firdaush Bahja":  "Firdaush Daud Mohmed Bhaja",
+		"Sarfraz N Patel": "Sarfraz Nawaz Patel",
+		"Haroon Rawat":    "Hr Rawat",
+	}
+	for source, candidate := range want {
+		if got[source] != candidate {
+			t.Errorf("suggestion for %q=%q want %q; all=%#v", source, got[source], candidate, got)
+		}
 	}
 }

@@ -104,3 +104,12 @@ func TestRemapStarredAppearanceClubsLinksImportedGamesToPublishedClub(t *testing
 		t.Fatal("source appearances must not be mutated")
 	}
 }
+
+func TestStarredAppearanceSearchPrefersMappedPlayerID(t *testing.T) {
+	if got := starredAppearanceSearch("Safwan Patel", 6340202); got != "6340202" {
+		t.Fatalf("search=%q want player ID", got)
+	}
+	if got := starredAppearanceSearch("Yahya Adia", 0); got != "Yahya Adia" {
+		t.Fatalf("search=%q want published name", got)
+	}
+}

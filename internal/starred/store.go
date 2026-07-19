@@ -338,6 +338,7 @@ func LoadEvaluationInputs(ctx context.Context, pool *db.Pool, seasonYear int) ([
 		periods = append(periods, p)
 	}
 	rows.Close()
+	periods = dedupePeriods(periods)
 	rows, err = pool.Query(ctx, `SELECT play_cricket_match_id,season_year,match_date,COALESCE(competition_type,''),COALESCE(competition_name,''),club_name,club_key,team_name,COALESCE(team_level,0),COALESCE(playing_day,''),COALESCE(play_cricket_player_id,0),player_name,player_key FROM starred_appearances WHERE season_year=$1`, seasonYear)
 	if err != nil {
 		return nil, nil, nil, nil, err

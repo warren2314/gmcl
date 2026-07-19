@@ -150,16 +150,24 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 		seenSource[sourceKey] = true
 		best := candidate{}
 		bestDistance := 1 << 30
+		var aliases []candidate
 		for _, c := range byClub[p.ClubKey] {
 			if c.key == p.PlayerKey {
 				bestDistance = 0
 				best = c
 				break
 			}
+			if likelyNameAlias(p.PlayerName, c.name) {
+				aliases = append(aliases, c)
+			}
 			d := editDistance(p.PlayerKey, c.key)
 			if d < bestDistance {
 				bestDistance, best = d, c
 			}
+		}
+		if len(aliases) == 1 {
+			best = aliases[0]
+			bestDistance = editDistance(p.PlayerKey, best.key)
 		}
 		if best.id == 0 || bestDistance == 0 {
 			continue
@@ -168,7 +176,7 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 		if len(p.PlayerKey) >= 15 {
 			limit = 4
 		}
-		if bestDistance <= limit {
+		if len(aliases) == 1 || bestDistance <= limit {
 			out = append(out, MappingSuggestion{p.ClubName, p.ClubKey, p.PlayerName, p.PlayerKey, best.id, best.name, bestDistance})
 		}
 	}

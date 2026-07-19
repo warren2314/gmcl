@@ -232,7 +232,8 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 		if row.ListType != "" {
 			listLabel = "List " + row.ListType
 		}
-		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td><span class="badge %s">%s</span></td>`, escapeHTML(row.ClubName), year, url.QueryEscape(row.PlayerName), escapeHTML(row.PlayerName), escapeHTML(listLabel), badgeClass, badgeLabel)
+		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)
+		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td><span class="badge %s">%s</span></td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), badgeClass, badgeLabel)
 		for level := 1; level <= 6; level++ {
 			percentage := float64(0)
 			if row.Total > 0 {

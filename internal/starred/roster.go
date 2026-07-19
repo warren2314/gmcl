@@ -93,7 +93,46 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		name, tags := parsePlayerCell(a.Incoming)
 		add(a.ClubName, a.ClubKey, list, name, NormalizeName(name), *a.Date, tags, "amendment", a.Sequence)
 	}
-	return periods, issues
+	return dedupePeriods(periods), issues
+}
+
+// dedupePeriods protects the review from duplicate rows in the published
+// spreadsheet. A player can only occupy a given list once for the same
+// validity window, even if the source accidentally puts them in two slots.
+func dedupePeriods(periods []Period) []Period {
+	type identity struct {
+		season             int
+		club, list, player string
+		validFrom, validTo time.Time
+		hasValidTo         bool
+	}
+	out := make([]Period, 0, len(periods))
+	indexes := make(map[identity]int, len(periods))
+	for _, period := range periods {
+		key := identity{
+			season: period.SeasonYear, club: period.ClubKey, list: period.ListType,
+			player: period.PlayerKey, validFrom: period.ValidFrom,
+		}
+		if period.ValidTo != nil {
+			key.validTo, key.hasValidTo = *period.ValidTo, true
+		}
+		if index, duplicate := indexes[key]; duplicate {
+			seenTag := make(map[string]bool, len(out[index].Tags))
+			for _, tag := range out[index].Tags {
+				seenTag[tag] = true
+			}
+			for _, tag := range period.Tags {
+				if !seenTag[tag] {
+					out[index].Tags = append(out[index].Tags, tag)
+					seenTag[tag] = true
+				}
+			}
+			continue
+		}
+		indexes[key] = len(out)
+		out = append(out, period)
+	}
+	return out
 }
 
 func resolveActiveKey(values map[string]activePeriod, target string) (string, bool) {

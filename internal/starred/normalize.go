@@ -32,6 +32,42 @@ func NormalizeClub(s string) string {
 	return NormalizeName(s)
 }
 
+func likelyNameAlias(source, candidate string) bool {
+	sourceWords := strings.Fields(strings.ToLower(source))
+	candidateWords := strings.Fields(strings.ToLower(candidate))
+	if len(sourceWords) < 2 || len(candidateWords) < 2 {
+		return false
+	}
+	sourceLast, candidateLast := sourceWords[len(sourceWords)-1], candidateWords[len(candidateWords)-1]
+	lastNameMatches := sourceLast == candidateLast || (len(sourceLast) >= 5 && len(candidateLast) >= 5 && editDistance(sourceLast, candidateLast) <= 2)
+	if !lastNameMatches {
+		return false
+	}
+	if sourceWords[0] == candidateWords[0] {
+		if len(sourceWords) == 2 || len(candidateWords) == 2 {
+			return true
+		}
+		if len(sourceWords) == len(candidateWords) {
+			for i := 1; i < len(sourceWords)-1; i++ {
+				if !strings.HasPrefix(sourceWords[i], candidateWords[i]) && !strings.HasPrefix(candidateWords[i], sourceWords[i]) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	if len(candidateWords) == 2 {
+		var initials strings.Builder
+		for _, word := range sourceWords {
+			if word != "" {
+				initials.WriteByte(word[0])
+			}
+		}
+		return candidateWords[0] == initials.String()
+	}
+	return false
+}
+
 func editDistance(a, b string) int {
 	if a == b {
 		return 0
