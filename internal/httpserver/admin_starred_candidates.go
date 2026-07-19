@@ -79,7 +79,7 @@ func (s *Server) verifiedStarredCandidate(ctx context.Context, year int, playerI
 			return candidate, nil
 		}
 	}
-	return starred.Candidate{}, fmt.Errorf("candidate is no longer present in the 30 June List B review")
+	return starred.Candidate{}, fmt.Errorf("candidate is no longer present in the 31 July List B review")
 }
 
 func parseStarredCandidateForm(r *http.Request) (year int, playerID int64, clubKey, playerKey string, err error) {
@@ -111,7 +111,7 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 		defer cancel()
 		candidate, err := s.verifiedStarredCandidate(ctx, year, playerID, clubKey, playerKey)
 		if err != nil {
-			redirectStarredAnchor(w, r, year, "", err.Error(), "june-30-test")
+			redirectStarredAnchor(w, r, year, "", err.Error(), "july-31-test")
 			return
 		}
 		adminID := s.resolveAdminID(r)
@@ -122,11 +122,11 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 			ON CONFLICT(candidate_key) DO NOTHING
 			RETURNING id`, starredCandidateKey(year, candidate), year, candidate.ClubName, candidate.ClubKey, candidate.PlayerID, candidate.PlayerName, candidate.PlayerKey, candidate.FirstXILeague, candidate.AllLeague, candidate.Percentage, strings.TrimSpace(r.FormValue("decision_note")), adminID).Scan(&reviewID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			redirectStarredAnchor(w, r, year, "This List B review was already accepted and closed.", "", "june-30-test")
+			redirectStarredAnchor(w, r, year, "This List B review was already accepted and closed.", "", "july-31-test")
 			return
 		}
 		if err != nil {
-			redirectStarredAnchor(w, r, year, "", "Could not close List B review: "+err.Error(), "june-30-test")
+			redirectStarredAnchor(w, r, year, "", "Could not close List B review: "+err.Error(), "july-31-test")
 			return
 		}
 		s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_accepted", "starred_candidate_review", &reviewID, map[string]any{
@@ -134,6 +134,6 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 			"play_cricket_player_id": candidate.PlayerID, "first_xi_league": candidate.FirstXILeague,
 			"all_league": candidate.AllLeague, "percentage": candidate.Percentage,
 		})
-		redirectStarredAnchor(w, r, year, "List B review accepted and removed from the outstanding list for "+candidate.PlayerName+".", "", "june-30-test")
+		redirectStarredAnchor(w, r, year, "List B review accepted and removed from the outstanding list for "+candidate.PlayerName+".", "", "july-31-test")
 	}
 }

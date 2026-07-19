@@ -21,9 +21,9 @@ the admin review instead of being guessed.
 - List A appearances below the 1st XI in League or Cup matches.
 - List B appearances below the 2nd XI in League or Cup matches.
 - Junior-tagged findings are retained but labelled for exemption review.
-- At 30 June: 1st XI League appearances divided by all personal League
+- At 31 July: 1st XI League appearances divided by all personal League
   appearances. Cup matches are deliberately excluded from this calculation.
-- The review and scorecard backfill are capped at 30 June inclusive. Matches
+- The review and scorecard backfill are capped at 31 July inclusive. Matches
   already imported after that date remain stored but are ignored by this
   mid-season report.
 - Club list-size and missing-form checks.
@@ -45,9 +45,20 @@ those admin controls are added; findings should be reviewed before sanctions.
 Scorecard imports are incremental. A fixture is revisited only when its
 Play-Cricket `last_updated` value changes.
 
-## Overnight automation
+## Weekly automation
 
-Call the HMAC-protected endpoint:
+Production enables `STARRED_WEEKLY_SYNC_ENABLED`. During the active window from
+1 April through 31 July, the app refreshes the published list and imports up to
+five batches of 100 missing or changed scorecards every Monday at 03:00
+Europe/London. The first Monday after 31 July is retained as a final catch-up,
+but its fixture query remains capped at 31 July. After a deployment it also
+performs a catch-up run when no
+successful automatic sync was recorded during the previous six days. Every run
+is recorded in `audit_logs`; an advisory database lock prevents overlapping
+instances.
+
+The same operation can be triggered by n8n or another scheduler through the
+HMAC-protected endpoint:
 
 `POST /internal/sync-starred-players`
 
@@ -57,9 +68,9 @@ Example body:
 {"season_year": 2026, "scorecard_limit": 25}
 ```
 
-Repeat nightly. A higher limit up to 100 is accepted for a controlled initial
-backfill. The endpoint returns individual scorecard failures without discarding
-successful imports.
+A scorecard limit up to 100 is accepted for a controlled manual backfill. The
+endpoint returns individual scorecard failures without discarding successful
+imports.
 
 ## Configuration
 
@@ -68,5 +79,6 @@ successful imports.
 - `PLAY_CRICKET_AUTH_QUERY_PARAM=api_token`
 - `PLAY_CRICKET_MATCH_DETAIL_URL_TEMPLATE` (optional)
 - `STARRED_PLAYERS_CSV_URL` (optional)
+- `STARRED_WEEKLY_SYNC_ENABLED=true` (production weekly scheduler)
 
 Keep API tokens in the deployment secret store, never in source control.

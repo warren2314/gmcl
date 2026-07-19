@@ -93,6 +93,16 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		matchCount := 0
 		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports sm WHERE sm.season_year=$1 AND sm.match_date <= $2::date AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0) AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')`, year, cutoff).Scan(&matchCount)
 		pendingCount, _ := starred.PendingMatchCount(ctx, s.DB, year)
+		automaticSyncStatus := "Automatic weekly refresh is enabled for Mondays at 03:00 Europe/London through 31 July."
+		var lastAutomaticSync time.Time
+		if err := s.DB.QueryRow(ctx, `SELECT created_at FROM audit_logs WHERE action=$1 ORDER BY created_at DESC LIMIT 1`, starredWeeklySyncAction).Scan(&lastAutomaticSync); err == nil {
+			automaticSyncStatus += " Last completed: " + lastAutomaticSync.In(s.LondonLoc).Format("02 Jan 2006 15:04") + "."
+		}
+		if starredWeeklySyncWindowActive(time.Now(), s.LondonLoc) {
+			automaticSyncStatus += " Next scheduled: " + nextStarredWeeklySync(time.Now(), s.LondonLoc).Format("02 Jan 2006 15:04") + "."
+		} else {
+			automaticSyncStatus += " The automatic import window is currently closed."
+		}
 		clubIssueCount := 0
 		for _, status := range clubStatuses {
 			if !status.Compliant {
@@ -104,7 +114,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		pageHead(w, "Starred Players")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
-<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 30 June.</p></div>
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2"><div><h3 class="mb-1">Starred Player Compliance</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 31 July.</p></div>
 <div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=player-review#card-detail">Player list review</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d"><button class="btn btn-outline-primary">Load</button></form></div></div>`, year, year, year)
 		if msg := r.URL.Query().Get("message"); msg != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
@@ -121,13 +131,14 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Scorecards</div><div class="display-6">%d</div><div class="small text-muted">%d pending</div><div class="small text-primary">View scorecards &rarr;</div></div></div></a></div>
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="/admin/starred-players?season=%d&amp;view=appearances#card-detail"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Appearances</div><div class="display-6">%d</div><div class="small text-primary">View appearances &rarr;</div></div></div></a></div>
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="#potential-breaches"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Potential breaches</div><div class="display-6 text-danger">%d</div><div class="small text-primary">View evidence &rarr;</div></div></div></a></div>
-<div class="col-md-2"><a class="text-decoration-none text-reset" href="#june-30-test"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div><div class="small text-primary">View calculation &rarr;</div></div></div></a></div>
+<div class="col-md-2"><a class="text-decoration-none text-reset" href="#july-31-test"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div><div class="small text-primary">View calculation &rarr;</div></div></div></a></div>
 </div>`, year, currentA, year, currentB, year, matchCount, pendingCount, year, len(reviewApps), len(eval.Breaches), countOutstandingUnstarredCandidates(year, eval.Candidates, candidateReviewStates), clubIssueCount)
 		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Synchronisation</div><div class="card-body d-flex flex-wrap gap-3">
-<form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments.</div></form>
+<form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments. Automatic refresh: Mondays at 03:00 through 31 July.</div></form>
 <form id="starred-scorecard-sync-form" method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button id="starred-scorecard-sync-button" class="btn btn-primary">Import all pending scorecards</button><div class="form-text">Runs automatically in batches of 50. Keep this page open until complete.</div><div id="starred-scorecard-sync-progress" class="small mt-2" aria-live="polite"></div></form>
-</div></div>`, escapeHTML(csrf), year, escapeHTML(csrf), year)
+<div class="w-100 small text-muted border-top pt-2">%s</div>
+</div></div>`, escapeHTML(csrf), year, escapeHTML(csrf), year, escapeHTML(automaticSyncStatus))
 		fmt.Fprint(w, `<script>
 (function () {
   const form = document.getElementById('starred-scorecard-sync-form');
@@ -211,7 +222,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
 
-		fmt.Fprintf(w, `<div id="june-30-test" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">30 June league-appearance test</div><div class="small text-muted">Review a player's games or accept and close the List B review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`, acceptedCandidateCount)
+		fmt.Fprintf(w, `<div id="july-31-test" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">31 July league-appearance test</div><div class="small text-muted">Review a player's games or accept and close the List B review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`, acceptedCandidateCount)
 		shown := 0
 		for _, c := range eval.Candidates {
 			if c.AlreadyStarred || candidateReviewStates[starredCandidateKey(year, c)].Status == "accepted" {
@@ -307,7 +318,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		if view == "list-b" {
 			listType = "B"
 		}
-		fmt.Fprintf(w, `List %s players at 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, listType, year)
+		fmt.Fprintf(w, `List %s players at 31 July</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, listType, year)
 		active := make([]starred.Period, 0)
 		for _, period := range periods {
 			if period.ListType == listType && !cutoff.Before(period.ValidFrom) && (period.ValidTo == nil || cutoff.Before(*period.ValidTo)) {
@@ -341,7 +352,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 				  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')
 				  AND CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3`, year, cutoff, search).Scan(&scorecardTotal)
 		}
-		fmt.Fprintf(w, `Open-age scorecards through 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+		fmt.Fprintf(w, `Open-age scorecards through 31 July</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
 		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="scorecards"><div class="col-md-8"><label class="form-label small" for="scorecard-search">Search club, team, competition or match ID</label><input id="scorecard-search" class="form-control" name="q" value="%s" placeholder="e.g. Droylsden, 2nd XI or 7458963"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail">Clear</a></div></form><div class="form-text">Only classified men's open-age XI fixtures are shown; women's and junior scorecards are excluded from this review.</div></div>`, year, escapeHTML(query), year)
 		rows, err := s.DB.Query(ctx, `
 			SELECT sm.play_cricket_match_id,sm.match_date,
@@ -438,7 +449,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		if query != "" {
 			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*)::int FROM starred_appearances WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0 AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)' AND CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3`, year, cutoff, search).Scan(&appearanceTotal)
 		}
-		fmt.Fprintf(w, `Open-age player appearances through 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+		fmt.Fprintf(w, `Open-age player appearances through 31 July</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
 		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="appearances"><div class="col-md-8"><label class="form-label small" for="appearance-search">Search player, club, team or player ID</label><input id="appearance-search" class="form-control" name="q" value="%s" placeholder="e.g. player name, club or ID"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d&amp;view=appearances#card-detail">Clear</a></div></form></div>`, year, escapeHTML(query), year)
 		rows, err := s.DB.Query(ctx, `
 			SELECT match_date,club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),COALESCE(competition_name,competition_type,''),play_cricket_match_id
@@ -774,7 +785,7 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 		selectedDivision = clubDivision[selectedClub]
 	}
 
-	fmt.Fprintf(w, `Starred list by club at 30 June</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+	fmt.Fprintf(w, `Starred list by club at 31 July</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
 	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="club-list"><div class="col-md-5"><label class="form-label fw-semibold" for="starred-division-filter">Saturday division</label><select id="starred-division-filter" class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose a Saturday division…</option>`, year)
 	for _, division := range divisions {
 		selected := ""

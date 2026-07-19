@@ -94,9 +94,13 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	}
 }
 
-func TestReviewCutoffStopsAtJune30(t *testing.T) {
-	got := ReviewCutoff(2026, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
-	want := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+func TestReviewCutoffAdvancesUntilJuly31(t *testing.T) {
+	current := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if got := ReviewCutoff(2026, current); !got.Equal(current) {
+		t.Fatalf("current cutoff=%s want %s", got, current)
+	}
+	got := ReviewCutoff(2026, time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC))
+	want := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("cutoff=%s want %s", got, want)
 	}

@@ -108,7 +108,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 }
 
 func ReviewCutoff(seasonYear int, now time.Time) time.Time {
-	cutoff := time.Date(seasonYear, time.June, 30, 23, 59, 59, 0, time.UTC)
+	cutoff := time.Date(seasonYear, time.July, 31, 23, 59, 59, 0, time.UTC)
 	if now.Before(cutoff) {
 		return now
 	}

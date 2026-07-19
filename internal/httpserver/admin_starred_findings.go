@@ -211,7 +211,7 @@ func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, p
 			return breach, nil
 		}
 	}
-	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 30 June compliance evaluation")
+	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 31 July compliance evaluation")
 }
 
 func parseStarredFindingForm(r *http.Request) (year int, matchID, playerID int64, clubKey, playerKey, listType string, err error) {
