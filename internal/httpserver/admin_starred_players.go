@@ -72,6 +72,13 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			return
 		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
+		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
+		acceptedCandidateCount := 0
+		for _, state := range candidateReviewStates {
+			if state.Status == "accepted" {
+				acceptedCandidateCount++
+			}
+		}
 		currentA, currentB := 0, 0
 		now := cutoff
 		for _, p := range periods {
@@ -115,7 +122,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="/admin/starred-players?season=%d&amp;view=appearances#card-detail"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Appearances</div><div class="display-6">%d</div><div class="small text-primary">View appearances &rarr;</div></div></div></a></div>
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="#potential-breaches"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Potential breaches</div><div class="display-6 text-danger">%d</div><div class="small text-primary">View evidence &rarr;</div></div></div></a></div>
 <div class="col-md-2"><a class="text-decoration-none text-reset" href="#june-30-test"><div class="card shadow-sm h-100"><div class="card-body"><div class="text-muted small">Unstarred ≥50%%</div><div class="display-6 text-warning">%d</div><div class="small text-muted">%d club list issues</div><div class="small text-primary">View calculation &rarr;</div></div></div></a></div>
-</div>`, year, currentA, year, currentB, year, matchCount, pendingCount, year, len(reviewApps), len(eval.Breaches), countUnstarredCandidates(eval.Candidates), clubIssueCount)
+</div>`, year, currentA, year, currentB, year, matchCount, pendingCount, year, len(reviewApps), len(eval.Breaches), countOutstandingUnstarredCandidates(year, eval.Candidates, candidateReviewStates), clubIssueCount)
 		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-header fw-semibold">Synchronisation</div><div class="card-body d-flex flex-wrap gap-3">
 <form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments.</div></form>
@@ -204,15 +211,15 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
 
-		fmt.Fprint(w, `<div id="june-30-test" class="card shadow-sm mb-4"><div class="card-header fw-semibold">30 June league-appearance test</div><div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st XI</th><th>All league</th><th>Percentage</th><th>Status</th></tr></thead><tbody>`)
+		fmt.Fprintf(w, `<div id="june-30-test" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">30 June league-appearance test</div><div class="small text-muted">Review a player's games or accept and close the List B review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`, acceptedCandidateCount)
 		shown := 0
 		for _, c := range eval.Candidates {
-			if c.AlreadyStarred {
+			if c.AlreadyStarred || candidateReviewStates[starredCandidateKey(year, c)].Status == "accepted" {
 				continue
 			}
 			shown++
 			appearanceSearch := starredAppearanceSearch(c.PlayerName, c.PlayerID)
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%d</td><td>%d</td><td>%.1f%%</td><td><span class="badge bg-warning text-dark">List B review</span></td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.FirstXILeague, c.AllLeague, c.Percentage*100)
+			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.FirstXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
 		}
 		if shown == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No unstarred candidates currently meet the threshold.</td></tr>`)
@@ -933,10 +940,10 @@ func renderStarredDetailPager(w http.ResponseWriter, year int, view string, page
 	fmt.Fprint(w, `</div></div>`)
 }
 
-func countUnstarredCandidates(c []starred.Candidate) int {
+func countOutstandingUnstarredCandidates(year int, candidates []starred.Candidate, states map[string]starredCandidateReviewState) int {
 	n := 0
-	for _, x := range c {
-		if !x.AlreadyStarred {
+	for _, candidate := range candidates {
+		if !candidate.AlreadyStarred && states[starredCandidateKey(year, candidate)].Status != "accepted" {
 			n++
 		}
 	}
