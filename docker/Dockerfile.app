@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25.12-alpine AS builder
 
 WORKDIR /app
 
@@ -31,4 +31,3 @@ ENV MIGRATE_DIR=/migrations
 EXPOSE 8080
 
 ENTRYPOINT ["/bin/app"]
-
