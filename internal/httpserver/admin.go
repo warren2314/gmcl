@@ -67,6 +67,8 @@ func (s *Server) adminRouter() http.Handler {
 
 		r.Get("/dashboard", s.handleAdminDashboard())
 		r.Get("/rules-assistant", s.handleAdminRulesAssistant())
+		r.Post("/api/rules/chat", s.handleRulesChat())
+		r.Post("/api/rules/chat/feedback", s.handleRulesFeedback())
 		r.With(s.requireAdminRole("super_admin")).Post("/rules-assistant/sync", s.handleAdminRulesSync())
 		r.With(s.requireAdminRole("super_admin")).Post("/rules-assistant/releases/{id}/activate", s.handleAdminRulesRollback())
 		r.Get("/weeks", s.handleAdminWeeks())

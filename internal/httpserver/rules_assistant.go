@@ -110,30 +110,53 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 			http.Error(w, "streaming unavailable", http.StatusInternalServerError)
 			return
 		}
-		writeSSE(w, "status", map[string]any{"message": "Checking the published rules…"})
+		statusMessage := "Checking the published rules…"
+		if strings.HasPrefix(r.URL.Path, "/admin/") && isSanctionLookupQuestion(input.Question) {
+			statusMessage = "Checking approved sanctions…"
+		}
+		writeSSE(w, "status", map[string]any{"message": statusMessage})
 		flusher.Flush()
-		// Sanction questions use an authenticated, deterministic own-team lookup.
-		// They never enter the public RAG prompt or expose unrestricted SQL data.
-		if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil && isSanctionLookupQuestion(input.Question) {
-			answerText, caseCitations, lookupErr := s.captainSanctionsAnswer(ctx, captain)
-			if lookupErr != nil {
-				writeSSE(w, "error", map[string]any{"message": "I could not load your team's sanction record. Please try again shortly."})
+		// Sanction questions use deterministic, authenticated lookups. Captains
+		// remain restricted to their own team; admins can name any club while
+		// testing from the protected /admin endpoint.
+		if isSanctionLookupQuestion(input.Question) {
+			var answerText, lookupCondition, lookupModel string
+			var caseCitations []map[string]any
+			var lookupErr error
+			authorisedLookup := false
+			if strings.HasPrefix(r.URL.Path, "/admin/") {
+				if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil {
+					authorisedLookup = true
+					answerText, caseCitations, lookupErr = s.adminSanctionsAnswer(ctx, input.Question)
+					lookupCondition = "Authenticated admin lookup across approved club sanctions"
+					lookupModel = "deterministic-admin-sanctions-v1"
+				}
+			} else if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {
+				authorisedLookup = true
+				answerText, caseCitations, lookupErr = s.captainSanctionsAnswer(ctx, captain)
+				lookupCondition = "Authenticated lookup for your team only"
+				lookupModel = "deterministic-sanctions-v1"
+			}
+			if authorisedLookup {
+				if lookupErr != nil {
+					writeSSE(w, "error", map[string]any{"message": "I could not load the authorised sanction record. Please try again shortly."})
+					flusher.Flush()
+					return
+				}
+				messageID := uuid.New()
+				citationsJSON, _ := json.Marshal(caseCitations)
+				_, storeErr := s.DB.Exec(ctx, `INSERT INTO rule_chat_messages(id,conversation_id,release_id,user_question,assistant_answer,clarification_needed,citations,retrieved_chunk_ids,model,prompt_tokens,completion_tokens,latency_ms)
+					VALUES($1,$2,NULL,$3,$4,FALSE,$5,'[]'::jsonb,$6,0,0,0)`, messageID, conversationID, input.Question, answerText, citationsJSON, lookupModel)
+				if storeErr != nil {
+					writeSSE(w, "error", map[string]any{"message": "The lookup completed but could not be recorded."})
+					flusher.Flush()
+					return
+				}
+				writeSSE(w, "answer", map[string]any{"message_id": messageID, "answer": answerText, "clarification_needed": false, "clarification_questions": []string{}, "applicable_conditions": []string{lookupCondition}, "citations": caseCitations, "rules_as_of": time.Now().In(s.LondonLoc).Format("2 January 2006")})
+				writeSSE(w, "done", map[string]bool{"ok": true})
 				flusher.Flush()
 				return
 			}
-			messageID := uuid.New()
-			citationsJSON, _ := json.Marshal(caseCitations)
-			_, storeErr := s.DB.Exec(ctx, `INSERT INTO rule_chat_messages(id,conversation_id,release_id,user_question,assistant_answer,clarification_needed,citations,retrieved_chunk_ids,model,prompt_tokens,completion_tokens,latency_ms)
-				VALUES($1,$2,NULL,$3,$4,FALSE,$5,'[]'::jsonb,'deterministic-sanctions-v1',0,0,0)`, messageID, conversationID, input.Question, answerText, citationsJSON)
-			if storeErr != nil {
-				writeSSE(w, "error", map[string]any{"message": "The lookup completed but could not be recorded."})
-				flusher.Flush()
-				return
-			}
-			writeSSE(w, "answer", map[string]any{"message_id": messageID, "answer": answerText, "clarification_needed": false, "clarification_questions": []string{}, "applicable_conditions": []string{"Authenticated lookup for your team only"}, "citations": caseCitations, "rules_as_of": time.Now().In(s.LondonLoc).Format("2 January 2006")})
-			writeSSE(w, "done", map[string]bool{"ok": true})
-			flusher.Flush()
-			return
 		}
 		conversationContext := ""
 		previousUserQuestion := ""
@@ -181,12 +204,111 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 
 func isSanctionLookupQuestion(q string) bool {
 	q = strings.ToLower(q)
-	for _, term := range []string{"sanction", "yellow card", "red card", "ban", "fine", "points deduction", "appeal", "totting"} {
+	for _, term := range []string{"sanction", "card", "ban", "fine", "points deduction", "appeal", "totting"} {
 		if strings.Contains(q, term) {
 			return true
 		}
 	}
 	return false
+}
+
+func matchSanctionLookupClub(question string, clubs []importClub) (importClub, bool) {
+	normalisedQuestion := " " + normaliseImportName(question) + " "
+	best := importClub{}
+	bestLength := 0
+	for _, club := range clubs {
+		name := normaliseImportName(club.Name)
+		if name != "" && strings.Contains(normalisedQuestion, " "+name+" ") && len(name) > bestLength {
+			best = club
+			bestLength = len(name)
+		}
+	}
+	return best, bestLength > 0
+}
+
+func (s *Server) adminSanctionsAnswer(ctx context.Context, question string) (string, []map[string]any, error) {
+	clubRows, err := s.DB.Query(ctx, `SELECT id,name FROM clubs ORDER BY name`)
+	if err != nil {
+		return "", nil, err
+	}
+	clubs := []importClub{}
+	for clubRows.Next() {
+		var club importClub
+		if err = clubRows.Scan(&club.ID, &club.Name); err != nil {
+			clubRows.Close()
+			return "", nil, err
+		}
+		clubs = append(clubs, club)
+	}
+	if err = clubRows.Err(); err != nil {
+		clubRows.Close()
+		return "", nil, err
+	}
+	clubRows.Close()
+	club, matched := matchSanctionLookupClub(question, clubs)
+	if !matched {
+		return "Please name the club in your sanctions question, for example: “Why does Woodley have cards?” I will only return approved records and will not expose evidence, correspondence, reporter details, or internal notes.", nil, nil
+	}
+
+	cardsOnly := strings.Contains(strings.ToLower(question), "card") || strings.Contains(strings.ToLower(question), "totting")
+	rows, err := s.DB.Query(ctx, `
+		SELECT c.id,c.reference,COALESCE(t.name,''),COALESCE(c.public_summary,''),e.status,e.effect_type,
+		       COALESCE(e.points,0),COALESCE(d.rule_reference,''),
+		       COALESCE(to_char(COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) AT TIME ZONE 'Europe/London','DD Mon YYYY'),'')
+		FROM sanction_cases c
+		JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved'
+		JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
+		LEFT JOIN teams t ON t.id=c.team_id
+		WHERE c.club_id=$1 AND c.status IN ('approved','published','appealed','closed')
+		  AND (NOT $2::boolean OR e.effect_type IN ('yellow_card','red_card','suspended_red'))
+		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
+		ORDER BY COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) DESC LIMIT 20`, club.ID, cardsOnly)
+	if err != nil {
+		return "", nil, err
+	}
+	defer rows.Close()
+	lines := []string{}
+	citations := []map[string]any{}
+	for rows.Next() {
+		var caseID int64
+		var ref, team, reason, status, effect, ruleRef, date string
+		var points int
+		if err = rows.Scan(&caseID, &ref, &team, &reason, &status, &effect, &points, &ruleRef, &date); err != nil {
+			return "", nil, err
+		}
+		detail := fmt.Sprintf("%s: %s", ref, effectLabel(effect))
+		if team != "" {
+			detail += " for " + team
+		}
+		detail += " — " + reason + " (" + status
+		if date != "" {
+			detail += ", effective " + date
+		}
+		if points != 0 {
+			detail += fmt.Sprintf(", %d-point deduction", points)
+		}
+		if ruleRef != "" {
+			detail += ", rule " + ruleRef
+		}
+		detail += ")"
+		lines = append(lines, detail)
+		citations = append(citations, map[string]any{"title": "Case " + ref, "url": fmt.Sprintf("/admin/cases/%d", caseID), "rule_reference": ruleRef})
+	}
+	if err = rows.Err(); err != nil {
+		return "", nil, err
+	}
+	if len(lines) == 0 {
+		kind := "sanctions"
+		if cardsOnly {
+			kind = "card sanctions"
+		}
+		return fmt.Sprintf("I found no approved %s for %s. Staged imports, draft proposals, evidence, and internal notes are deliberately excluded from this lookup.", kind, club.Name), citations, nil
+	}
+	kind := "approved sanction"
+	if cardsOnly {
+		kind = "approved card"
+	}
+	return fmt.Sprintf("%s has %d %s record(s). These are the recorded reasons:\n\n%s\n\nThis admin lookup excludes evidence, correspondence, reporter details, and internal notes. Open a cited case to inspect the authorised case record.", club.Name, len(lines), kind, strings.Join(lines, "\n")), citations, nil
 }
 
 func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSession) (string, []map[string]any, error) {

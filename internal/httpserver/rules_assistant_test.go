@@ -29,3 +29,24 @@ func TestNormaliseRulesScope(t *testing.T) {
 		t.Fatal("invalid scope was accepted")
 	}
 }
+
+func TestSanctionLookupRecognisesGenericCardQuestion(t *testing.T) {
+	if !isSanctionLookupQuestion("Why does Woodley have cards?") {
+		t.Fatal("generic card question was not recognised as a sanctions lookup")
+	}
+}
+
+func TestMatchSanctionLookupClubUsesNamedLongestMatch(t *testing.T) {
+	clubs := []importClub{
+		{ID: 1, Name: "Bolton Cricket Club"},
+		{ID: 2, Name: "Bolton Indians Cricket Club"},
+		{ID: 3, Name: "Woodley Cricket Club"},
+	}
+	got, ok := matchSanctionLookupClub("Why does Bolton Indians have cards?", clubs)
+	if !ok || got.ID != 2 {
+		t.Fatalf("matched club = %#v, ok=%v; want Bolton Indians", got, ok)
+	}
+	if _, ok = matchSanctionLookupClub("Why does this team have cards?", clubs); ok {
+		t.Fatal("question without a named club unexpectedly matched")
+	}
+}

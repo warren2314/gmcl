@@ -2,6 +2,12 @@
   if (window.__gmclRulesAssistantLoaded) return;
   window.__gmclRulesAssistantLoaded = true;
 
+  const config = window.GMCLRulesAssistantConfig || {};
+  const chatEndpoint = config.chatEndpoint || '/api/rules/chat';
+  const feedbackEndpoint = config.feedbackEndpoint || '/api/rules/chat/feedback';
+  const requestHeaders = {'Content-Type': 'application/json'};
+  if (config.csrfToken) requestHeaders['X-CSRF-Token'] = config.csrfToken;
+
   const createElement = (tag, className, text) => {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -41,9 +47,9 @@
       button.addEventListener('click', async () => {
         button.disabled = true;
         try {
-          await fetch('/api/rules/chat/feedback', {
+          await fetch(feedbackEndpoint, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: requestHeaders,
             body: JSON.stringify({message_id: messageId, rating})
           });
           row.textContent = 'Thank you for the feedback.';
@@ -123,9 +129,9 @@
       status.textContent = 'Searching the published rules…';
       status.classList.add('is-thinking');
       try {
-        const response = await fetch('/api/rules/chat', {
+        const response = await fetch(chatEndpoint, {
           method: 'POST',
-          headers: {'Content-Type': 'application/json', 'Accept': 'text/event-stream'},
+          headers: {...requestHeaders, 'Accept': 'text/event-stream'},
           body: JSON.stringify({question, ...getScope()})
         });
         if (!response.ok) throw new Error(await response.text());
@@ -158,7 +164,12 @@
     });
   }
 
-  if (location.pathname === '/rules-assistant') return;
+  if (location.pathname === '/rules-assistant' && !config.admin) return;
+
+  const assistantScope = config.admin ? 'Published rules and approved sanctions' : 'Published rules only';
+  const greeting = config.admin
+    ? '<strong>Hello!</strong> Ask me about the published rules, or why a named club has cards or other approved sanctions.'
+    : '<strong>Hello!</strong> Ask me a question about the published GMCL cricket rules. I’ll show the source beside my answer.';
 
   const widget = createElement('div', 'rules-widget');
   widget.innerHTML = `
@@ -167,16 +178,16 @@
         <img src="/images/gmcl-rules-bot-avatar.png" alt="" class="rules-widget-avatar" width="48" height="48">
         <div class="rules-widget-heading">
           <strong>A1 Rules Assistant</strong>
-          <span><i aria-hidden="true"></i> Published rules only</span>
+          <span><i aria-hidden="true"></i> ${assistantScope}</span>
         </div>
         <button type="button" class="rules-widget-close" aria-label="Close A1 Rules Assistant">×</button>
       </header>
       <div class="rules-widget-messages rules-messages" aria-live="polite">
-        <div class="rules-message assistant"><strong>Hello!</strong> Ask me a question about the published GMCL cricket rules. I’ll show the source beside my answer.</div>
+        <div class="rules-message assistant">${greeting}</div>
         <div class="rules-widget-prompts" aria-label="Suggested questions">
           <button type="button">Who is eligible to play?</button>
           <button type="button">What happens in bad weather?</button>
-          <button type="button">Find a rule number</button>
+          <button type="button">${config.admin ? 'Why does a club have cards?' : 'Find a rule number'}</button>
         </div>
       </div>
       <div class="rules-scope rules-widget-scope" data-rules-scope aria-label="Optional match context">
@@ -189,12 +200,12 @@
       <div class="rules-widget-status" role="status"></div>
       <form class="rules-widget-form">
         <label class="visually-hidden" for="rules-widget-question">Ask a rules question</label>
-        <textarea id="rules-widget-question" maxlength="1200" rows="2" placeholder="Ask about a GMCL rule…" required></textarea>
+        <textarea id="rules-widget-question" maxlength="1200" rows="2" placeholder="${config.admin ? 'Ask about rules or name a club…' : 'Ask about a GMCL rule…'}" required></textarea>
         <button type="submit" aria-label="Send question">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6"/></svg>
         </button>
       </form>
-      <footer class="rules-widget-footer"><a href="/rules-assistant">Open full assistant</a><span>Informational, not an official ruling</span></footer>
+      <footer class="rules-widget-footer"><a href="${config.fullURL || '/rules-assistant'}">${config.admin ? 'Assistant controls and history' : 'Open full assistant'}</a><span>Informational, not an official ruling</span></footer>
     </section>
     <button type="button" class="rules-widget-launcher" aria-expanded="false" aria-controls="rules-widget-panel">
       <span class="rules-widget-launch-copy"><strong>Ask A1 about GMCL rules</strong><small>Open A1 Rules Assistant</small></span>

@@ -1,11 +1,14 @@
 package httpserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 )
+
+const rulesAssistantAssetVersion = "20260719-1"
 
 const (
 	bootstrapCSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -27,7 +30,20 @@ func rulesAssistantStylesheet() string {
 	if !rulesAssistantEnabled() {
 		return ""
 	}
-	return `<link href="/static/css/rules-assistant.css?v=20260714-6" rel="stylesheet">`
+	return `<link href="/static/css/rules-assistant.css?v=` + rulesAssistantAssetVersion + `" rel="stylesheet">`
+}
+
+func adminRulesAssistantAssets(csrfToken string) string {
+	config, _ := json.Marshal(map[string]any{
+		"admin":            true,
+		"chatEndpoint":     "/admin/api/rules/chat",
+		"feedbackEndpoint": "/admin/api/rules/chat/feedback",
+		"fullURL":          "/admin/rules-assistant",
+		"csrfToken":        csrfToken,
+	})
+	return fmt.Sprintf(`<link href="/static/css/rules-assistant.css?v=%s" rel="stylesheet">
+<script>window.GMCLRulesAssistantConfig=%s;</script>
+<script src="/static/rules-assistant.js?v=%s" defer></script>`, rulesAssistantAssetVersion, config, rulesAssistantAssetVersion)
 }
 
 // pageHead writes the opening HTML through <body> with Bootstrap CSS, brand CSS, and HTMX.
@@ -108,6 +124,7 @@ func writeCaptainNav(w io.Writer) {
 
 // writeAdminNav writes the admin navbar with dropdowns, active-link highlighting, and logout.
 func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string) {
+	fmt.Fprint(w, adminRulesAssistantAssets(csrfToken))
 	role := "admin"
 	if len(roleOpt) > 0 && roleOpt[0] != "" {
 		role = roleOpt[0]
@@ -268,7 +285,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 func pageFooter(w io.Writer) {
 	assistantScript := ""
 	if rulesAssistantEnabled() {
-		assistantScript = `<script src="/static/rules-assistant.js?v=20260714-6" defer></script>`
+		assistantScript = `<script src="/static/rules-assistant.js?v=` + rulesAssistantAssetVersion + `" defer></script>`
 	}
 	fmt.Fprintf(w, `<script src="%s"></script>
 %s
