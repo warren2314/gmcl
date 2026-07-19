@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sort"
@@ -69,6 +70,11 @@ type importTeam struct {
 var nonNameCharacters = regexp.MustCompile(`[^a-z0-9]+`)
 var rulePrefixPattern = regexp.MustCompile(`^\s*(\d+(?:\.\d+)+\.?)`)
 var banYearPattern = regexp.MustCompile(`\b(20\d{2}|\d{2})\b`)
+
+func sanctionImportExceptionMapping(message string) string {
+	encoded, _ := json.Marshal(map[string]string{"error": message})
+	return string(encoded)
+}
 
 func normaliseImportName(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
@@ -569,11 +575,12 @@ func (s *Server) handleAdminSanctionImportApply() http.HandlerFunc {
 				continue
 			}
 			if candidate.Error != "" {
-				_, err = tx.Exec(r.Context(), `UPDATE sanction_import_mappings SET status='exception',mapping=jsonb_build_object('error',$2),reviewed_by_admin_id=$3,reviewed_at=now() WHERE import_row_id=$1 AND status='pending'`, candidate.RowID, candidate.Error, *actor.ID)
+				_, err = tx.Exec(r.Context(), `UPDATE sanction_import_mappings SET status='exception',mapping=$2::jsonb,reviewed_by_admin_id=$3,reviewed_at=now() WHERE import_row_id=$1 AND status='pending'`, candidate.RowID, sanctionImportExceptionMapping(candidate.Error), *actor.ID)
 				if err == nil {
 					_, err = tx.Exec(r.Context(), `INSERT INTO sanction_import_exceptions(import_row_id,exception_type,details) VALUES($1,'mapping',$2)`, candidate.RowID, candidate.Error)
 				}
 				if err != nil {
+					slog.Error("record sanction import exception", "batch_id", batchID, "row_id", candidate.RowID, "row_number", candidate.RowNumber, "error", err)
 					http.Error(w, "could not record import exception", 500)
 					return
 				}

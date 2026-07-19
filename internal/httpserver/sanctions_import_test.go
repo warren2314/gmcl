@@ -1,10 +1,22 @@
 package httpserver
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestSanctionImportExceptionMappingIsValidJSON(t *testing.T) {
+	message := `club "name" was not matched`
+	var mapping map[string]string
+	if err := json.Unmarshal([]byte(sanctionImportExceptionMapping(message)), &mapping); err != nil {
+		t.Fatalf("exception mapping is not valid JSON: %v", err)
+	}
+	if mapping["error"] != message {
+		t.Fatalf("error = %q, want %q", mapping["error"], message)
+	}
+}
 
 func TestParseSanctionImportCSVNormalisesHeadersWithoutChangingRows(t *testing.T) {
 	headers, rows, err := parseSanctionImportCSV([]byte("Club,,Club\nAlpha,value,duplicate\n"))
