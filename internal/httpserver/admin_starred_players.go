@@ -57,10 +57,12 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
 		}
+		findingStates := s.loadStarredFindingStates(ctx, year)
+		outstandingBreaches := filterOutstandingStarredBreaches(eval.Breaches, findingStates)
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
-		filteredBreaches := eval.Breaches
+		filteredBreaches := outstandingBreaches
 		if breachFilterErr == nil {
-			filteredBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
+			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
 		}
 		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
 		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
@@ -76,7 +78,6 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			s.writeStarredPlayerReviewCSV(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 			return
 		}
-		findingStates := s.loadStarredFindingStates(ctx, year)
 		if r.URL.Query().Get("export") == "breaches-csv" {
 			if breachFilterErr != nil {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
@@ -151,7 +152,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredNavPill("#sync", "1&nbsp;&middot; Import data", pendingCount, "text-bg-primary"),
 			starredNavPill("#identity-matches", "2&nbsp;&middot; Identities", unmappedCount, "text-bg-info"),
 			starredNavPill("#amendments", "Amendments", len(issues), "text-bg-secondary"),
-			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(eval.Breaches), "text-bg-danger"),
+			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(outstandingBreaches), "text-bg-danger"),
 			starredNavPill("#club-lists", "Club lists", clubIssueCount, "text-bg-warning text-dark"),
 			starredNavPill("#july-31-test", "4&nbsp;&middot; 31 July test", outstandingCandidates, "text-bg-warning text-dark"))
 		fmt.Fprintf(w, `<div id="starred-overview" class="row g-3 mb-4">
@@ -166,7 +167,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
-			starredActionTileHTML(len(eval.Breaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or escalated as a letter to the club captain.", "#potential-breaches", "Review evidence", "danger"),
+			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or escalated as a letter to the club captain.", "#potential-breaches", "Review evidence", "danger"),
 			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
 			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
 		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
@@ -293,7 +294,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if value := strings.TrimSpace(r.URL.Query().Get("breach_to")); value != "" {
 			breachExportQuery.Set("breach_to", value)
 		}
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d potential breaches. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(r.URL.Query().Get("breach_from")), escapeHTML(r.URL.Query().Get("breach_to")), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(eval.Breaches))
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d potential breaches. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(r.URL.Query().Get("breach_from")), escapeHTML(r.URL.Query().Get("breach_to")), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(outstandingBreaches))
 		if breachFilterErr != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
 		}

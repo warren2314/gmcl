@@ -140,6 +140,26 @@ func TestEvaluateListBCandidatesCombinesFirstAndSecondXILeagueGames(t *testing.T
 	}
 }
 
+func TestEvaluateCandidatesSortsByClubThenPlayer(t *testing.T) {
+	date := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	apps := []Appearance{
+		{MatchID: 1, MatchDate: date, CompetitionType: "League", ClubName: "Zulu CC", ClubKey: "zulu", TeamLevel: 1, PlayerID: 1, PlayerName: "Aaron Player", PlayerKey: "aaronplayer"},
+		{MatchID: 2, MatchDate: date, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerID: 2, PlayerName: "Zoe Player", PlayerKey: "zoeplayer"},
+		{MatchID: 3, MatchDate: date, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerID: 3, PlayerName: "Amy Player", PlayerKey: "amyplayer"},
+	}
+
+	candidates := Evaluate(nil, apps, nil, time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)).Candidates
+	want := []string{"Alpha CC/Amy Player", "Alpha CC/Zoe Player", "Zulu CC/Aaron Player"}
+	if len(candidates) != len(want) {
+		t.Fatalf("candidates=%d want %d: %#v", len(candidates), len(want), candidates)
+	}
+	for index, candidate := range candidates {
+		if got := candidate.ClubName + "/" + candidate.PlayerName; got != want[index] {
+			t.Errorf("candidate %d=%q want %q", index, got, want[index])
+		}
+	}
+}
+
 func TestReviewCutoffAdvancesUntilJuly31(t *testing.T) {
 	current := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	if got := ReviewCutoff(2026, current); !got.Equal(current) {

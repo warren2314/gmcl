@@ -102,10 +102,17 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 		if out.Candidates[i].AlreadyStarred != out.Candidates[j].AlreadyStarred {
 			return !out.Candidates[i].AlreadyStarred
 		}
-		if out.Candidates[i].Percentage != out.Candidates[j].Percentage {
-			return out.Candidates[i].Percentage > out.Candidates[j].Percentage
+		leftClub := strings.ToLower(out.Candidates[i].ClubName)
+		rightClub := strings.ToLower(out.Candidates[j].ClubName)
+		if leftClub != rightClub {
+			return leftClub < rightClub
 		}
-		return out.Candidates[i].PlayerName < out.Candidates[j].PlayerName
+		leftPlayer := strings.ToLower(out.Candidates[i].PlayerName)
+		rightPlayer := strings.ToLower(out.Candidates[j].PlayerName)
+		if leftPlayer != rightPlayer {
+			return leftPlayer < rightPlayer
+		}
+		return out.Candidates[i].PlayerID < out.Candidates[j].PlayerID
 	})
 	return out
 }
