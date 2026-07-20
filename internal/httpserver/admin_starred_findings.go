@@ -76,6 +76,19 @@ func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time)
 	return filtered
 }
 
+func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
+	outstanding := make([]starred.Breach, 0, len(breaches))
+	for _, breach := range breaches {
+		switch states[starredFindingKey(breach)].Status {
+		case "accepted", "sent":
+			continue
+		default:
+			outstanding = append(outstanding, breach)
+		}
+	}
+	return outstanding
+}
+
 func starredFindingStatus(state starredFindingState) string {
 	if state.ID == 0 {
 		return "Outstanding"
@@ -252,19 +265,6 @@ func validStarredBreachGroupAnchor(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
 	return err == nil
-}
-
-func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
-	out := make([]starred.Breach, 0, len(breaches))
-	for _, breach := range breaches {
-		switch states[starredFindingKey(breach)].Status {
-		case "accepted", "sent":
-			continue
-		default:
-			out = append(out, breach)
-		}
-	}
-	return out
 }
 
 func sameStarredBreachIdentity(left, right starred.Breach) bool {

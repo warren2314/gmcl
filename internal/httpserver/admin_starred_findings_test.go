@@ -56,6 +56,26 @@ func TestStarredBreachDateRangeIsInclusiveAndAllowsOneSidedFilters(t *testing.T)
 	}
 }
 
+func TestFilterOutstandingStarredBreachesRemovesAcceptedFindings(t *testing.T) {
+	accepted := sampleStarredBreach()
+	outstanding := sampleStarredBreach()
+	outstanding.Appearance.MatchID++
+	draft := sampleStarredBreach()
+	draft.Appearance.MatchID += 2
+
+	filtered := filterOutstandingStarredBreaches([]starred.Breach{accepted, outstanding, draft}, map[string]starredFindingState{
+		starredFindingKey(accepted): {ID: 41, Status: "accepted"},
+		starredFindingKey(draft):    {ID: 42, Status: "draft"},
+	})
+
+	if len(filtered) != 2 {
+		t.Fatalf("outstanding breaches=%d want 2: %#v", len(filtered), filtered)
+	}
+	if filtered[0].Appearance.MatchID != outstanding.Appearance.MatchID || filtered[1].Appearance.MatchID != draft.Appearance.MatchID {
+		t.Fatalf("unexpected outstanding breaches: %#v", filtered)
+	}
+}
+
 func TestWriteStarredBreachesCSVIncludesReviewStatusAndScorecard(t *testing.T) {
 	breach := sampleStarredBreach()
 	breach.StarredName = "Alexander Player"

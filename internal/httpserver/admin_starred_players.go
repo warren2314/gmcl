@@ -57,6 +57,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
 		}
+		findingStates := s.loadStarredFindingStates(ctx, year)
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
 		filteredAuditBreaches := eval.Breaches
 		if breachFilterErr == nil {
@@ -76,7 +77,6 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			s.writeStarredPlayerReviewCSV(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
 			return
 		}
-		findingStates := s.loadStarredFindingStates(ctx, year)
 		if r.URL.Query().Get("export") == "breaches-csv" {
 			if breachFilterErr != nil {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
