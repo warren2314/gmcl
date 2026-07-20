@@ -109,7 +109,14 @@ func starredFindingStatus(state starredFindingState) string {
 	}
 }
 
-func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, from, to *time.Time) {
+func starredBreachExportRows(breaches []starred.Breach, states map[string]starredFindingState, includeClosed bool) []starred.Breach {
+	if includeClosed {
+		return breaches
+	}
+	return filterOutstandingStarredBreaches(breaches, states)
+}
+
+func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, from, to *time.Time, includeClosed bool) {
 	rangeLabel := "all-dates"
 	if from != nil && to != nil {
 		rangeLabel = from.Format("2006-01-02") + "-to-" + to.Format("2006-01-02")
@@ -118,8 +125,12 @@ func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred
 	} else if to != nil {
 		rangeLabel = "through-" + to.Format("2006-01-02")
 	}
+	scopeLabel := "outstanding"
+	if includeClosed {
+		scopeLabel = "including-closed"
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-breaches-%d-%s.csv"`, year, rangeLabel))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-breaches-%d-%s-%s.csv"`, year, scopeLabel, rangeLabel))
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{"Match date", "Day", "Division", "Competition", "Format", "Club", "Player", "Published starred name", "Play-Cricket Player ID", "List", "Team", "Evidence", "Review status", "Match ID", "Scorecard"})
 	for _, breach := range breaches {

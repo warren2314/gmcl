@@ -82,7 +82,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
 				return
 			}
-			writeStarredBreachesCSV(w, year, filteredAuditBreaches, findingStates, breachFrom, breachTo)
+			includeClosed := r.URL.Query().Get("include_closed") == "1"
+			exportBreaches := starredBreachExportRows(filteredAuditBreaches, findingStates, includeClosed)
+			writeStarredBreachesCSV(w, year, exportBreaches, findingStates, breachFrom, breachTo, includeClosed)
 			return
 		}
 		outstandingBreaches := filterOutstandingStarredBreaches(eval.Breaches, findingStates)
@@ -295,13 +297,16 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredSectionTitle("Step 3", "Potential List A / List B breaches by division", "Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.",
 				"What counts as a breach", "Each row is one appearance where a starred player turned out below their permitted team in a League or Cup match: List A below the 1st XI, or List B below the 2nd XI. Open the match to see the full team sheets, then either accept and close the finding (no offence) or draft a letter to the club captain — letters always need a separate approval before anything is sent. Findings tagged Junior may qualify for an exemption, so verify before escalating."))
 		breachExportQuery := url.Values{"season": {strconv.Itoa(year)}, "export": {"breaches-csv"}}
+		breachExportIncludingClosedQuery := url.Values{"season": {strconv.Itoa(year)}, "export": {"breaches-csv"}, "include_closed": {"1"}}
 		if value := strings.TrimSpace(r.URL.Query().Get("breach_from")); value != "" {
 			breachExportQuery.Set("breach_from", value)
+			breachExportIncludingClosedQuery.Set("breach_from", value)
 		}
 		if value := strings.TrimSpace(r.URL.Query().Get("breach_to")); value != "" {
 			breachExportQuery.Set("breach_to", value)
+			breachExportIncludingClosedQuery.Set("breach_to", value)
 		}
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed decisions remain in the CSV audit report. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), closedBreachCount)
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed decisions are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), closedBreachCount)
 		if breachFilterErr != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
 		}

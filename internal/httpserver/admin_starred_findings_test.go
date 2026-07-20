@@ -82,14 +82,35 @@ func TestWriteStarredBreachesCSVIncludesReviewStatusAndScorecard(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeStarredBreachesCSV(recorder, 2026, []starred.Breach{breach}, map[string]starredFindingState{
 		starredFindingKey(breach): {ID: 42, Status: "accepted"},
-	}, nil, nil)
-	if contentDisposition := recorder.Header().Get("Content-Disposition"); !strings.Contains(contentDisposition, "starred-player-breaches-2026-all-dates.csv") {
+	}, nil, nil, true)
+	if contentDisposition := recorder.Header().Get("Content-Disposition"); !strings.Contains(contentDisposition, "starred-player-breaches-2026-including-closed-all-dates.csv") {
 		t.Fatalf("unexpected content disposition: %q", contentDisposition)
 	}
 	for _, want := range []string{"Review status", "Accepted / closed", "Alexander Player", "match_id=7458963"} {
 		if !strings.Contains(recorder.Body.String(), want) {
 			t.Fatalf("CSV does not contain %q:\n%s", want, recorder.Body.String())
 		}
+	}
+}
+
+func TestStarredBreachExportExcludesClosedUnlessRequested(t *testing.T) {
+	accepted := sampleStarredBreach()
+	outstanding := sampleStarredBreach()
+	outstanding.Appearance.MatchID++
+	sent := sampleStarredBreach()
+	sent.Appearance.MatchID += 2
+	breaches := []starred.Breach{accepted, outstanding, sent}
+	states := map[string]starredFindingState{
+		starredFindingKey(accepted): {ID: 41, Status: "accepted"},
+		starredFindingKey(sent):     {ID: 42, Status: "sent"},
+	}
+	defaultRows := starredBreachExportRows(breaches, states, false)
+	if len(defaultRows) != 1 || defaultRows[0].Appearance.MatchID != outstanding.Appearance.MatchID {
+		t.Fatalf("default export rows=%#v", defaultRows)
+	}
+	includingClosed := starredBreachExportRows(breaches, states, true)
+	if len(includingClosed) != 3 {
+		t.Fatalf("including-closed export rows=%d want 3", len(includingClosed))
 	}
 }
 
