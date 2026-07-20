@@ -73,6 +73,17 @@ func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time)
 	return filtered
 }
 
+func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
+	outstanding := make([]starred.Breach, 0, len(breaches))
+	for _, breach := range breaches {
+		if states[starredFindingKey(breach)].Status == "accepted" {
+			continue
+		}
+		outstanding = append(outstanding, breach)
+	}
+	return outstanding
+}
+
 func starredFindingStatus(state starredFindingState) string {
 	if state.ID == 0 {
 		return "Outstanding"
