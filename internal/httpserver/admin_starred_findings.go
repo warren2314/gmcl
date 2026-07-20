@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"cricket-ground-feedback/internal/starred"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 type starredFindingState struct {
@@ -237,7 +240,57 @@ func groupStarredBreaches(breaches []starred.Breach) []starredBreachGroup {
 	return groups
 }
 
-func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int) string {
+func starredBreachGroupAnchor(day, division string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(day)) + "\x00" + strings.ToLower(strings.TrimSpace(division))))
+	return "starred-breach-group-" + hex.EncodeToString(sum[:6])
+}
+
+func validStarredBreachGroupAnchor(value string) bool {
+	const prefix = "starred-breach-group-"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+12 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
+	return err == nil
+}
+
+func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
+	out := make([]starred.Breach, 0, len(breaches))
+	for _, breach := range breaches {
+		switch states[starredFindingKey(breach)].Status {
+		case "accepted", "sent":
+			continue
+		default:
+			out = append(out, breach)
+		}
+	}
+	return out
+}
+
+func sameStarredBreachIdentity(left, right starred.Breach) bool {
+	if left.Appearance.ClubKey != right.Appearance.ClubKey {
+		return false
+	}
+	if right.Appearance.PlayerID > 0 {
+		return left.Appearance.PlayerID == right.Appearance.PlayerID
+	}
+	return left.Appearance.PlayerKey == right.Appearance.PlayerKey
+}
+
+func juniorTaggedIdentityBreaches(breaches []starred.Breach, selected starred.Breach) []starred.Breach {
+	if !selected.NeedsExemptionReview {
+		return []starred.Breach{selected}
+	}
+	out := make([]starred.Breach, 0)
+	for _, breach := range breaches {
+		if sameStarredBreachIdentity(breach, selected) {
+			out = append(out, breach)
+		}
+	}
+	return out
+}
+
+func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int, breachFrom, breachTo string) string {
 	if state.ID > 0 {
 		label, class := "Review", "bg-secondary"
 		switch state.Status {
@@ -254,8 +307,14 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 		}
 		return fmt.Sprintf(`<a class="badge %s text-decoration-none" href="/admin/starred-players/findings/%d">%s</a>`, class, state.ID, escapeHTML(label))
 	}
-	hidden := fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="match_id" value="%d"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="list_type" value="%s">`, escapeHTML(csrf), year, b.Appearance.MatchID, b.Appearance.PlayerID, escapeHTML(b.Appearance.ClubKey), escapeHTML(b.Appearance.PlayerKey), escapeHTML(b.ListType))
-	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('Accept and close this finding with no offence letter?')">%s<button class="btn btn-sm btn-outline-primary w-100">Accept / close — no offence</button></form><form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, hidden, hidden)
+	hidden := fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="match_id" value="%d"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="list_type" value="%s"><input type="hidden" name="breach_from" value="%s"><input type="hidden" name="breach_to" value="%s">`, escapeHTML(csrf), year, b.Appearance.MatchID, b.Appearance.PlayerID, escapeHTML(b.Appearance.ClubKey), escapeHTML(b.Appearance.PlayerKey), escapeHTML(b.ListType), escapeHTML(breachFrom), escapeHTML(breachTo))
+	acceptPrompt := "Accept and close this finding with no offence letter?"
+	acceptLabel := "Accept / close — no offence"
+	if b.NeedsExemptionReview {
+		acceptPrompt = "Accept this junior exemption and close every finding for this player?"
+		acceptLabel = "Accept junior exemption — close all"
+	}
+	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('%s')">%s<button class="btn btn-sm btn-outline-primary w-100">%s</button></form><form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, escapeHTML(acceptPrompt), hidden, escapeHTML(acceptLabel), hidden)
 }
 
 func starredFindingKey(b starred.Breach) string {
@@ -285,14 +344,18 @@ func (s *Server) loadStarredFindingStates(ctx context.Context, seasonYear int) m
 	return states
 }
 
-func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, playerID int64, clubKey, playerKey, listType string) (starred.Breach, error) {
+func (s *Server) currentStarredBreaches(ctx context.Context, year int) ([]starred.Breach, error) {
 	periods, appearances, mappings, _, err := starred.LoadEvaluationInputs(ctx, s.DB, year)
 	if err != nil {
-		return starred.Breach{}, err
+		return nil, err
 	}
 	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, starred.ReviewCutoff(year, time.Now())))
 	evaluation := starred.Evaluate(periods, appearances, mappings, starred.ReviewCutoff(year, time.Now()))
-	for _, breach := range evaluation.Breaches {
+	return evaluation.Breaches, nil
+}
+
+func findStarredBreach(breaches []starred.Breach, matchID, playerID int64, clubKey, playerKey, listType string) (starred.Breach, error) {
+	for _, breach := range breaches {
 		if breach.Appearance.MatchID != matchID || breach.Appearance.ClubKey != clubKey || breach.ListType != listType {
 			continue
 		}
@@ -304,6 +367,14 @@ func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, p
 		}
 	}
 	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 31 July compliance evaluation")
+}
+
+func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, playerID int64, clubKey, playerKey, listType string) (starred.Breach, error) {
+	breaches, err := s.currentStarredBreaches(ctx, year)
+	if err != nil {
+		return starred.Breach{}, err
+	}
+	return findStarredBreach(breaches, matchID, playerID, clubKey, playerKey, listType)
 }
 
 func parseStarredFindingForm(r *http.Request) (year int, matchID, playerID int64, clubKey, playerKey, listType string, err error) {
@@ -339,28 +410,86 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		breach, err := s.verifiedStarredBreach(ctx, year, matchID, playerID, clubKey, playerKey, listType)
+		breaches, err := s.currentStarredBreaches(ctx, year)
 		if err != nil {
-			redirectStarredAnchor(w, r, year, "", err.Error(), "potential-breaches")
+			redirectStarredFinding(w, r, year, "", err.Error(), nil)
 			return
 		}
-		key := starredFindingKey(breach)
+		breach, err := findStarredBreach(breaches, matchID, playerID, clubKey, playerKey, listType)
+		if err != nil {
+			redirectStarredFinding(w, r, year, "", err.Error(), nil)
+			return
+		}
 		adminID := s.resolveAdminID(r)
 		note := strings.TrimSpace(r.FormValue("decision_note"))
-		var findingID int64
-		err = s.DB.QueryRow(ctx, `
-			INSERT INTO starred_finding_reviews(finding_key,season_year,play_cricket_match_id,match_date,club_name,club_key,team_name,play_cricket_player_id,player_name,player_key,list_type,status,decision_note,reviewed_by,reviewed_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,0),$9,$10,$11,'accepted',NULLIF($12,''),$13,now())
-			ON CONFLICT(finding_key) DO UPDATE SET status='accepted',decision_note=EXCLUDED.decision_note,reviewed_by=EXCLUDED.reviewed_by,reviewed_at=now(),updated_at=now()
-			WHERE starred_finding_reviews.status <> 'sent'
-			RETURNING id`, key, year, matchID, breach.Appearance.MatchDate, breach.Appearance.ClubName, breach.Appearance.ClubKey, breach.Appearance.TeamName, breach.Appearance.PlayerID, breach.Appearance.PlayerName, breach.Appearance.PlayerKey, breach.ListType, note, adminID).Scan(&findingID)
+		toClose := juniorTaggedIdentityBreaches(breaches, breach)
+		tx, err := s.DB.Begin(ctx)
 		if err != nil {
-			redirectStarredAnchor(w, r, year, "", "Could not close finding: "+err.Error(), "potential-breaches")
+			redirectStarredFinding(w, r, year, "", "Could not close finding: "+err.Error(), &breach)
 			return
 		}
-		s.audit(ctx, r, "admin", adminID, "starred_finding_accepted", "starred_finding_review", &findingID, map[string]any{"match_id": matchID, "player": breach.Appearance.PlayerName})
-		redirectStarredAnchor(w, r, year, "Finding accepted and closed with no letter.", "", "potential-breaches")
+		defer func() { _ = tx.Rollback(ctx) }()
+		findingIDs := make([]int64, 0, len(toClose))
+		matchIDs := make([]int64, 0, len(toClose))
+		for _, candidate := range toClose {
+			var findingID int64
+			err = tx.QueryRow(ctx, `
+				INSERT INTO starred_finding_reviews(finding_key,season_year,play_cricket_match_id,match_date,club_name,club_key,team_name,play_cricket_player_id,player_name,player_key,list_type,status,decision_note,reviewed_by,reviewed_at)
+				VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,0),$9,$10,$11,'accepted',NULLIF($12,''),$13,now())
+				ON CONFLICT(finding_key) DO UPDATE SET status='accepted',decision_note=EXCLUDED.decision_note,reviewed_by=EXCLUDED.reviewed_by,reviewed_at=now(),updated_at=now()
+				WHERE starred_finding_reviews.status NOT IN ('sent','accepted')
+				RETURNING id`, starredFindingKey(candidate), year, candidate.Appearance.MatchID, candidate.Appearance.MatchDate, candidate.Appearance.ClubName, candidate.Appearance.ClubKey, candidate.Appearance.TeamName, candidate.Appearance.PlayerID, candidate.Appearance.PlayerName, candidate.Appearance.PlayerKey, candidate.ListType, note, adminID).Scan(&findingID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				redirectStarredFinding(w, r, year, "", "Could not close finding: "+err.Error(), &breach)
+				return
+			}
+			findingIDs = append(findingIDs, findingID)
+			matchIDs = append(matchIDs, candidate.Appearance.MatchID)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			redirectStarredFinding(w, r, year, "", "Could not close finding: "+err.Error(), &breach)
+			return
+		}
+		message := "Finding accepted and closed with no letter."
+		if breach.NeedsExemptionReview {
+			message = fmt.Sprintf("Junior exemption accepted for %s; %d findings closed.", breach.Appearance.PlayerName, len(findingIDs))
+		}
+		if len(findingIDs) == 0 {
+			message = "This finding was already closed."
+		} else {
+			s.audit(ctx, r, "admin", adminID, "starred_finding_accepted", "starred_finding_review", &findingIDs[0], map[string]any{
+				"club": breach.Appearance.ClubName, "closed_count": len(findingIDs), "finding_ids": findingIDs,
+				"junior_bulk": breach.NeedsExemptionReview, "list_type": breach.ListType, "match_ids": matchIDs,
+				"play_cricket_player_id": breach.Appearance.PlayerID, "player": breach.Appearance.PlayerName,
+			})
+		}
+		redirectStarredFinding(w, r, year, message, "", &breach)
 	}
+}
+
+func redirectStarredFinding(w http.ResponseWriter, r *http.Request, year int, message, errMsg string, breach *starred.Breach) {
+	q := url.Values{"season": {strconv.Itoa(year)}}
+	if message != "" {
+		q.Set("message", message)
+	}
+	if errMsg != "" {
+		q.Set("error", errMsg)
+	}
+	for _, field := range []string{"breach_from", "breach_to"} {
+		value := strings.TrimSpace(r.FormValue(field))
+		if _, err := time.Parse("2006-01-02", value); err == nil {
+			q.Set(field, value)
+		}
+	}
+	anchor := "potential-breaches"
+	if breach != nil {
+		anchor = starredBreachGroupAnchor(starredBreachDay(*breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType))
+		q.Set("breach_return", anchor)
+	}
+	http.Redirect(w, r, "/admin/starred-players?"+q.Encode()+"#"+anchor, http.StatusSeeOther)
 }
 
 type starredCaptain struct {

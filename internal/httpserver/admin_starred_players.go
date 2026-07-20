@@ -58,9 +58,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
 		}
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
-		filteredBreaches := eval.Breaches
+		filteredAuditBreaches := eval.Breaches
 		if breachFilterErr == nil {
-			filteredBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
+			filteredAuditBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
 		}
 		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
 		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
@@ -82,9 +82,15 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
 				return
 			}
-			writeStarredBreachesCSV(w, year, filteredBreaches, findingStates, breachFrom, breachTo)
+			writeStarredBreachesCSV(w, year, filteredAuditBreaches, findingStates, breachFrom, breachTo)
 			return
 		}
+		outstandingBreaches := filterOutstandingStarredBreaches(eval.Breaches, findingStates)
+		filteredBreaches := outstandingBreaches
+		if breachFilterErr == nil {
+			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
+		}
+		closedBreachCount := len(eval.Breaches) - len(outstandingBreaches)
 		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
 		acceptedCandidateCount := 0
 		for _, state := range candidateReviewStates {
@@ -128,7 +134,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <style>
-#starred-overview,#card-detail,#sync,#identity-matches,#amendments,#potential-breaches,#club-lists,#july-31-test{scroll-margin-top:4.5rem}
+#starred-overview,#card-detail,#sync,#identity-matches,#amendments,#potential-breaches,#club-lists,#july-31-test,.starred-breach-group{scroll-margin-top:4.5rem}
 .starred-section-nav{position:sticky;top:0;z-index:1020;background:var(--bs-body-bg);border-bottom:1px solid var(--bs-border-color)}
 </style>
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 31 July.</p></div>
@@ -151,7 +157,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredNavPill("#sync", "1&nbsp;&middot; Import data", pendingCount, "text-bg-primary"),
 			starredNavPill("#identity-matches", "2&nbsp;&middot; Identities", unmappedCount, "text-bg-info"),
 			starredNavPill("#amendments", "Amendments", len(issues), "text-bg-secondary"),
-			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(eval.Breaches), "text-bg-danger"),
+			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(outstandingBreaches), "text-bg-danger"),
 			starredNavPill("#club-lists", "Club lists", clubIssueCount, "text-bg-warning text-dark"),
 			starredNavPill("#july-31-test", "4&nbsp;&middot; 31 July test", outstandingCandidates, "text-bg-warning text-dark"))
 		fmt.Fprintf(w, `<div id="starred-overview" class="row g-3 mb-4">
@@ -166,7 +172,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
-			starredActionTileHTML(len(eval.Breaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or escalated as a letter to the club captain.", "#potential-breaches", "Review evidence", "danger"),
+			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or escalated as a letter to the club captain.", "#potential-breaches", "Review evidence", "danger"),
 			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
 			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
 		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
@@ -283,6 +289,8 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 
 		breachGroups := groupStarredBreaches(filteredBreaches)
+		breachFromValue := strings.TrimSpace(r.URL.Query().Get("breach_from"))
+		breachToValue := strings.TrimSpace(r.URL.Query().Get("breach_to"))
 		fmt.Fprintf(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header">%s</div>`,
 			starredSectionTitle("Step 3", "Potential List A / List B breaches by division", "Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.",
 				"What counts as a breach", "Each row is one appearance where a starred player turned out below their permitted team in a League or Cup match: List A below the 1st XI, or List B below the 2nd XI. Open the match to see the full team sheets, then either accept and close the finding (no offence) or draft a letter to the club captain — letters always need a separate approval before anything is sent. Findings tagged Junior may qualify for an exemption, so verify before escalating."))
@@ -293,35 +301,50 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if value := strings.TrimSpace(r.URL.Query().Get("breach_to")); value != "" {
 			breachExportQuery.Set("breach_to", value)
 		}
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d potential breaches. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(r.URL.Query().Get("breach_from")), escapeHTML(r.URL.Query().Get("breach_to")), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(eval.Breaches))
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed decisions remain in the CSV audit report. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), closedBreachCount)
 		if breachFilterErr != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
 		}
 		fmt.Fprint(w, `</div>`)
+		returnAnchor := strings.TrimSpace(r.URL.Query().Get("breach_return"))
+		returnAnchorVisible := false
+		if validStarredBreachGroupAnchor(returnAnchor) {
+			for _, group := range breachGroups {
+				if starredBreachGroupAnchor(group.Day, group.Division) == returnAnchor {
+					returnAnchorVisible = true
+					break
+				}
+			}
+			if !returnAnchorVisible {
+				fmt.Fprintf(w, `<div id="%s" class="starred-breach-group card-body border-bottom text-success py-3">&#10003; The selected finding is closed. This division group has no other outstanding findings in the current date range.</div>`, escapeHTML(returnAnchor))
+			}
+		}
 		if len(breachGroups) > 0 {
 			fmt.Fprint(w, `<div class="card-body border-bottom d-flex flex-wrap gap-2">`)
-			for index, group := range breachGroups {
-				fmt.Fprintf(w, `<a class="btn btn-sm btn-outline-primary" href="#starred-division-%d">%s — %s <span class="badge bg-secondary">%d</span></a>`, index, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches))
+			for _, group := range breachGroups {
+				anchor := starredBreachGroupAnchor(group.Day, group.Division)
+				fmt.Fprintf(w, `<a class="btn btn-sm btn-outline-primary" href="#%s">%s — %s <span class="badge bg-secondary">%d</span></a>`, anchor, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches))
 			}
 			fmt.Fprint(w, `</div>`)
 		}
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Format</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
 		if len(filteredBreaches) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No potential breaches found for the selected dates.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No outstanding potential breaches found for the selected dates.</td></tr>`)
 		}
-		for groupIndex, group := range breachGroups {
+		for _, group := range breachGroups {
 			findingWord := "findings"
 			if len(group.Breaches) == 1 {
 				findingWord = "finding"
 			}
-			fmt.Fprintf(w, `<tr id="starred-division-%d" class="table-primary"><th colspan="8" class="py-2">%s — %s <span class="badge bg-primary ms-1">%d %s</span></th></tr>`, groupIndex, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches), findingWord)
+			anchor := starredBreachGroupAnchor(group.Day, group.Division)
+			fmt.Fprintf(w, `<tr id="%s" class="table-primary starred-breach-group"><th colspan="8" class="py-2">%s — %s <span class="badge bg-primary ms-1">%d %s</span></th></tr>`, anchor, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches), findingWord)
 			for _, b := range group.Breaches {
 				evidence := "Review"
 				if b.NeedsExemptionReview {
 					evidence = "Junior tag — verify exemption"
 				}
 				state := findingStates[starredFindingKey(b)]
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year))
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
