@@ -62,7 +62,7 @@ func (s *Server) recordAutomaticStarredSync(ctx context.Context, action string, 
 	_, _ = s.DB.Exec(ctx, `INSERT INTO audit_logs(actor_type,action,entity_type,metadata,user_agent) VALUES('system',$1,'starred_import_run',$2::jsonb,'GMCL weekly starred-player scheduler')`, action, payload)
 }
 
-func (s *Server) runAutomaticStarredSync(parent context.Context, now time.Time) {
+func (s *Server) runAutomaticStarredSync(parent context.Context, now time.Time, force bool) {
 	loc := s.LondonLoc
 	if loc == nil {
 		loc = time.UTC
@@ -70,15 +70,17 @@ func (s *Server) runAutomaticStarredSync(parent context.Context, now time.Time) 
 	if !starredWeeklySyncWindowActive(now, loc) {
 		return
 	}
-	checkCtx, checkCancel := context.WithTimeout(parent, 10*time.Second)
-	recent, err := s.hasRecentAutomaticStarredSync(checkCtx)
-	checkCancel()
-	if err != nil {
-		log.Printf("weekly starred-player sync check failed: %v", err)
-		return
-	}
-	if recent {
-		return
+	if !force {
+		checkCtx, checkCancel := context.WithTimeout(parent, 10*time.Second)
+		recent, err := s.hasRecentAutomaticStarredSync(checkCtx)
+		checkCancel()
+		if err != nil {
+			log.Printf("weekly starred-player sync check failed: %v", err)
+			return
+		}
+		if recent {
+			return
+		}
 	}
 
 	lockCtx, lockCancel := context.WithTimeout(parent, 10*time.Second)
@@ -139,7 +141,10 @@ func (s *Server) startStarredWeeklySync(parent context.Context) context.CancelFu
 		case <-ctx.Done():
 			return
 		case started := <-initial.C:
-			s.runAutomaticStarredSync(ctx, started)
+			// Always perform the bounded startup refresh. StoreSnapshot's source hash
+			// and parser revision prevent duplicate imports while allowing a deployed
+			// parser fix to rebuild unchanged published data.
+			s.runAutomaticStarredSync(ctx, started, true)
 		}
 		for {
 			now := time.Now()
@@ -150,7 +155,7 @@ func (s *Server) startStarredWeeklySync(parent context.Context) context.CancelFu
 				timer.Stop()
 				return
 			case scheduled := <-timer.C:
-				s.runAutomaticStarredSync(ctx, scheduled)
+				s.runAutomaticStarredSync(ctx, scheduled, false)
 			}
 		}
 	}()
