@@ -82,7 +82,7 @@ func TestWriteStarredBreachesCSVIncludesReviewStatusAndScorecard(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeStarredBreachesCSV(recorder, 2026, []starred.Breach{breach}, map[string]starredFindingState{
 		starredFindingKey(breach): {ID: 42, Status: "accepted"},
-	}, nil, nil, true)
+	}, nil, nil, nil, true)
 	if contentDisposition := recorder.Header().Get("Content-Disposition"); !strings.Contains(contentDisposition, "starred-player-breaches-2026-including-closed-all-dates.csv") {
 		t.Fatalf("unexpected content disposition: %q", contentDisposition)
 	}
@@ -181,6 +181,16 @@ func TestStarredFindingActionsRequireSeparateDraftAndApproval(t *testing.T) {
 		if !strings.Contains(junior, want) {
 			t.Fatalf("junior actions do not contain %q: %s", want, junior)
 		}
+	}
+	sunday := breach
+	sunday.Appearance.PlayingDay = "Sunday"
+	sunday.Appearance.CompetitionType = "League"
+	sunday.Appearance.CompetitionName = "GMCL Sunday Division 1"
+	if actions := starredFindingActionsHTML(sunday, starredFindingState{}, "token", 2026, "", ""); !strings.Contains(actions, "Record Sunday exemption") {
+		t.Fatalf("Sunday league finding should offer the exemption workflow: %s", actions)
+	}
+	if strings.Contains(pending, "Record Sunday exemption") {
+		t.Fatalf("Saturday finding must not offer a Sunday exemption: %s", pending)
 	}
 }
 

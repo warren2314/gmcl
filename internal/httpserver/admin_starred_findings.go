@@ -116,7 +116,7 @@ func starredBreachExportRows(breaches []starred.Breach, states map[string]starre
 	return filterOutstandingStarredBreaches(breaches, states)
 }
 
-func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, from, to *time.Time, includeClosed bool) {
+func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, exemptions []starredExemption, from, to *time.Time, includeClosed bool) {
 	rangeLabel := "all-dates"
 	if from != nil && to != nil {
 		rangeLabel = from.Format("2006-01-02") + "-to-" + to.Format("2006-01-02")
@@ -138,11 +138,15 @@ func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred
 		if breach.NeedsExemptionReview {
 			evidence = "Junior tag - verify exemption"
 		}
+		reviewStatus := starredFindingStatus(states[starredFindingKey(breach)])
+		if exemption := starredExemptionForBreach(breach, exemptions); exemption != nil {
+			reviewStatus = "Approved Sunday exemption - " + starredExemptionTypeLabel(exemption.ExemptionType)
+		}
 		_ = writer.Write([]string{
 			breach.Appearance.MatchDate.Format("2006-01-02"), starredBreachDay(breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType),
 			breach.Appearance.CompetitionName, breach.Appearance.CompetitionType, breach.Appearance.ClubName, breach.Appearance.PlayerName, breach.StarredName,
 			strconv.FormatInt(breach.Appearance.PlayerID, 10), "List " + breach.ListType, breach.Appearance.TeamName, evidence,
-			starredFindingStatus(states[starredFindingKey(breach)]), strconv.FormatInt(breach.Appearance.MatchID, 10),
+			reviewStatus, strconv.FormatInt(breach.Appearance.MatchID, 10),
 			fmt.Sprintf("https://gmcl.co.uk/admin/starred-players?season=%d&view=scorecard&match_id=%d#card-detail", year, breach.Appearance.MatchID),
 		})
 	}
@@ -325,7 +329,11 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 		acceptPrompt = "Accept this junior exemption and close every finding for this player?"
 		acceptLabel = "Accept junior exemption — close all"
 	}
-	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('%s')">%s<button class="btn btn-sm btn-outline-primary w-100">%s</button></form><form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, escapeHTML(acceptPrompt), hidden, escapeHTML(acceptLabel), hidden)
+	exemptionAction := ""
+	if exemptionURL := starredExemptionRequestURL(b, year); exemptionURL != "" {
+		exemptionAction = fmt.Sprintf(`<a class="btn btn-sm btn-outline-success w-100" href="%s">Record Sunday exemption</a>`, escapeHTML(exemptionURL))
+	}
+	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('%s')">%s<button class="btn btn-sm btn-outline-primary w-100">%s</button></form>%s<form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, escapeHTML(acceptPrompt), hidden, escapeHTML(acceptLabel), exemptionAction, hidden)
 }
 
 func starredFindingKey(b starred.Breach) string {

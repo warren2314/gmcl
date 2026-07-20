@@ -58,6 +58,13 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
 		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
+		exemptions := s.loadStarredExemptions(ctx, year)
+		pendingExemptionCount := 0
+		for _, exemption := range exemptions {
+			if exemption.Status == "pending" {
+				pendingExemptionCount++
+			}
+		}
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
 		filteredAuditBreaches := eval.Breaches
 		if breachFilterErr == nil {
@@ -84,10 +91,14 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 			includeClosed := r.URL.Query().Get("include_closed") == "1"
 			exportBreaches := starredBreachExportRows(filteredAuditBreaches, findingStates, includeClosed)
-			writeStarredBreachesCSV(w, year, exportBreaches, findingStates, breachFrom, breachTo, includeClosed)
+			if !includeClosed {
+				exportBreaches = filterStarredBreachesWithoutApprovedExemption(exportBreaches, exemptions)
+			}
+			writeStarredBreachesCSV(w, year, exportBreaches, findingStates, exemptions, breachFrom, breachTo, includeClosed)
 			return
 		}
 		outstandingBreaches := filterOutstandingStarredBreaches(eval.Breaches, findingStates)
+		outstandingBreaches = filterStarredBreachesWithoutApprovedExemption(outstandingBreaches, exemptions)
 		filteredBreaches := outstandingBreaches
 		if breachFilterErr == nil {
 			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
@@ -136,7 +147,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid">
 <style>
-#starred-overview,#card-detail,#sync,#identity-matches,#amendments,#potential-breaches,#club-lists,#july-31-test,.starred-breach-group{scroll-margin-top:4.5rem}
+#starred-overview,#card-detail,#sync,#identity-matches,#amendments,#sunday-exemptions,#potential-breaches,#club-lists,#july-31-test,.starred-breach-group{scroll-margin-top:4.5rem}
 .starred-section-nav{position:sticky;top:0;z-index:1020;background:var(--bs-body-bg);border-bottom:1px solid var(--bs-border-color)}
 </style>
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 31 July.</p></div>
@@ -154,17 +165,18 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 		unmappedCount := len(unmappedPeriods)
 		outstandingCandidates := countOutstandingUnstarredCandidates(year, eval.Candidates, candidateReviewStates)
-		fmt.Fprintf(w, `<div class="starred-section-nav py-2 mb-4"><div class="d-flex flex-wrap gap-2 align-items-center"><span class="small fw-semibold text-muted me-1">Jump to</span>%s%s%s%s%s%s%s</div></div>`,
+		fmt.Fprintf(w, `<div class="starred-section-nav py-2 mb-4"><div class="d-flex flex-wrap gap-2 align-items-center"><span class="small fw-semibold text-muted me-1">Jump to</span>%s%s%s%s%s%s%s%s</div></div>`,
 			starredNavPill("#starred-overview", "Overview", -1, ""),
 			starredNavPill("#sync", "1&nbsp;&middot; Import data", pendingCount, "text-bg-primary"),
 			starredNavPill("#identity-matches", "2&nbsp;&middot; Identities", unmappedCount, "text-bg-info"),
 			starredNavPill("#amendments", "Amendments", len(issues), "text-bg-secondary"),
+			starredNavPill("#sunday-exemptions", "Exemptions", pendingExemptionCount, "text-bg-warning text-dark"),
 			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(outstandingBreaches), "text-bg-danger"),
 			starredNavPill("#club-lists", "Club lists", clubIssueCount, "text-bg-warning text-dark"),
 			starredNavPill("#july-31-test", "4&nbsp;&middot; 31 July test", outstandingCandidates, "text-bg-warning text-dark"))
 		fmt.Fprintf(w, `<div id="starred-overview" class="row g-3 mb-4">
 <div class="col-xl-5"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Imported season data</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2">%s%s%s%s</div></div></div></div>
-<div class="col-xl-7"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Action queue — what needs a decision</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2 row-cols-md-3 row-cols-lg-5">%s%s%s%s%s</div></div></div></div>
+<div class="col-xl-7"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Action queue — what needs a decision</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2 row-cols-md-3 row-cols-lg-6">%s%s%s%s%s%s</div></div></div></div>
 </div>`,
 			starredHelpIcon("Imported season data", "How much source data has been imported for this season. Every check on this page is only as complete as these numbers — if scorecards are still pending, run the import in step 1 before trusting the results."),
 			starredDataTileHTML("List A at cutoff", "List A", "Players on the published List A on the review date. A List A player may only play for their club's 1st XI in League and Cup matches.", strconv.Itoa(currentA), "", fmt.Sprintf("/admin/starred-players?season=%d&view=list-a#card-detail", year), "View players"),
@@ -174,6 +186,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
+			starredActionTileHTML(pendingExemptionCount, "Exemption requests", "Sunday exemptions", "Sunday player-eligibility requests awaiting a decision. Only approved Sunday league exemptions suppress covered findings.", "#sunday-exemptions", "Review requests", "warning"),
 			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or escalated as a letter to the club captain.", "#potential-breaches", "Review evidence", "danger"),
 			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
 			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
@@ -289,6 +302,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		} else {
 			fmt.Fprintf(w, `<div id="amendments" class="card shadow-sm mb-4"><div class="card-header">%s</div><div class="card-body text-success py-3">&#10003; Every published amendment was applied automatically — nothing needs review.</div></div>`, amendmentsHeader)
 		}
+		s.renderStarredExemptions(w, year, periods, r, csrf, exemptions)
 
 		breachGroups := groupStarredBreaches(filteredBreaches)
 		breachFromValue := strings.TrimSpace(r.URL.Query().Get("breach_from"))
