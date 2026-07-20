@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,50 @@ func sampleStarredBreach() starred.Breach {
 			PlayerName:      "Alex Player",
 			PlayerKey:       "alexplayer",
 		},
+	}
+}
+
+func TestStarredBreachDateRangeIsInclusiveAndAllowsOneSidedFilters(t *testing.T) {
+	request := httptest.NewRequest("GET", "/admin/starred-players?breach_from=2026-05-23&breach_to=2026-06-01", nil)
+	from, to, err := parseStarredBreachDateRange(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	breaches := make([]starred.Breach, 3)
+	for index, date := range []time.Time{
+		time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		breaches[index] = sampleStarredBreach()
+		breaches[index].Appearance.MatchDate = date
+	}
+	filtered := filterStarredBreachesByDate(breaches, from, to)
+	if len(filtered) != 2 || filtered[0].Appearance.MatchDate.Day() != 23 || filtered[1].Appearance.MatchDate.Day() != 1 {
+		t.Fatalf("filtered breaches=%#v", filtered)
+	}
+
+	request = httptest.NewRequest("GET", "/admin/starred-players?breach_to=2026-05-23", nil)
+	from, to, err = parseStarredBreachDateRange(request)
+	if err != nil || from != nil || to == nil || len(filterStarredBreachesByDate(breaches, from, to)) != 2 {
+		t.Fatalf("one-sided date filter failed: from=%v to=%v err=%v", from, to, err)
+	}
+}
+
+func TestWriteStarredBreachesCSVIncludesReviewStatusAndScorecard(t *testing.T) {
+	breach := sampleStarredBreach()
+	breach.StarredName = "Alexander Player"
+	recorder := httptest.NewRecorder()
+	writeStarredBreachesCSV(recorder, 2026, []starred.Breach{breach}, map[string]starredFindingState{
+		starredFindingKey(breach): {ID: 42, Status: "accepted"},
+	}, nil, nil)
+	if contentDisposition := recorder.Header().Get("Content-Disposition"); !strings.Contains(contentDisposition, "starred-player-breaches-2026-all-dates.csv") {
+		t.Fatalf("unexpected content disposition: %q", contentDisposition)
+	}
+	for _, want := range []string{"Review status", "Accepted / closed", "Alexander Player", "match_id=7458963"} {
+		if !strings.Contains(recorder.Body.String(), want) {
+			t.Fatalf("CSV does not contain %q:\n%s", want, recorder.Body.String())
+		}
 	}
 }
 

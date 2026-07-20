@@ -25,6 +25,8 @@ type starredPlayerReviewRow struct {
 	Counts     map[int]int
 	Total      int
 	FirstPct   float64
+	RuleGames  int
+	RulePct    float64
 	Signal     string
 }
 
@@ -88,7 +90,7 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 	rows := make(map[string]*starredPlayerReviewRow)
 	seen := make(map[string]struct{})
 	for _, appearance := range appearances {
-		if !strings.EqualFold(appearance.PlayingDay, "Saturday") || appearance.TeamLevel < 1 || (selectedDivision != "" && clubDivisions[appearance.ClubKey] != selectedDivision) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
+		if appearance.TeamLevel < 1 || (selectedDivision != "" && clubDivisions[appearance.ClubKey] != selectedDivision) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
 			continue
 		}
 		key := identityKey(appearance.ClubKey, appearance.PlayerKey, appearance.PlayerID)
@@ -122,8 +124,13 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 	for _, row := range rows {
 		if row.Total > 0 {
 			row.FirstPct = float64(row.Counts[1]) * 100 / float64(row.Total)
+			row.RuleGames = row.Counts[1]
+			if row.ListType == "B" {
+				row.RuleGames += row.Counts[2]
+			}
+			row.RulePct = float64(row.RuleGames) * 100 / float64(row.Total)
 		}
-		row.Signal = starredRetentionSignal(row.ListType, row.FirstPct, green, orange)
+		row.Signal = starredRetentionSignal(row.ListType, row.RulePct, green, orange)
 		out = append(out, *row)
 	}
 	signalRank := map[string]int{"red": 0, "orange": 1, "green": 2, "neutral": 3}
@@ -178,7 +185,8 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
-	fmt.Fprintf(w, `Player list review</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+	fmt.Fprintf(w, `Player list review%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
+		starredHelpIcon("Player list review", "Every open-age player in the selected division or club, with their appearances split by team. Rule games are the games at the level the player's list permits (List A: 1st XI only; List B: 1st + 2nd XI), and Rule % is that share of all their games. Green suggests keeping the player starred, orange means monitor, red suggests a removal review — adjust the thresholds to suit, nothing is changed automatically."), year)
 	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="player-review"><div class="col-md-3"><label class="form-label fw-semibold">Saturday division</label><select class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose division…</option>`, year)
 	for _, division := range divisions {
 		selected := ""
@@ -200,7 +208,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
 		}
 	}
-	fmt.Fprintf(w, `</select></div><div class="col-md-2"><label class="form-label">Green at/above 1st XI %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="green" value="%.1f"></div><div class="col-md-2"><label class="form-label">Orange at/above %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="orange" value="%.1f"></div><div class="col-auto"><button class="btn btn-primary">Run review</button></div></form><div class="form-text">Provisional review parameters only: green means retain, orange means monitor, and red means consider removing an existing starred player. No list is changed automatically.</div></div>`, green, orange)
+	fmt.Fprintf(w, `</select></div><div class="col-md-2"><label class="form-label">Green at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="green" value="%.1f"></div><div class="col-md-2"><label class="form-label">Orange at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="orange" value="%.1f"></div><div class="col-auto"><button class="btn btn-primary">Run review</button></div></form><div class="form-text">Counts all classified open-age XI appearances: List A uses the 1st XI percentage; List B uses the combined 1st XI and 2nd XI percentage. Green means retain, orange means monitor, and red means removal review. No list is changed automatically.</div></div>`, green, orange)
 	if selectedDivision == "" {
 		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose a Saturday division to review all of its clubs and players.</div></div>`)
 		return
@@ -225,7 +233,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	for level := 1; level <= 6; level++ {
 		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
 	}
-	fmt.Fprint(w, `<th class="text-center">Total</th><th class="text-center">1st XI %</th></tr></thead><tbody>`)
+	fmt.Fprint(w, `<th class="text-center">Total</th><th class="text-center">Rule games</th><th class="text-center">Rule %</th></tr></thead><tbody>`)
 	for _, row := range rows {
 		badgeClass, badgeLabel := signalBadge(row.Signal)
 		listLabel := "—"
@@ -241,10 +249,10 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			}
 			fmt.Fprintf(w, `<td class="text-center text-nowrap">%d <span class="text-muted small">(%.0f%%)</span></td>`, row.Counts[level], percentage)
 		}
-		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%.1f%%</td></tr>`, row.Total, row.FirstPct)
+		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%.1f%%</td></tr>`, row.Total, row.RuleGames, row.RulePct)
 	}
 	if len(rows) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="12" class="text-center text-muted py-3">No Saturday appearances were found for this selection.</td></tr>`)
+		fmt.Fprint(w, `<tr><td colspan="13" class="text-center text-muted py-3">No classified open-age XI appearances were found for this selection.</td></tr>`)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
@@ -254,7 +262,7 @@ func (s *Server) writeStarredPlayerReviewCSV(w http.ResponseWriter, ctx context.
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-review-%d.csv"`, year))
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"Division", "Club", "Player", "Play-Cricket Player ID", "Current List", "Review Signal", "1st XI Games", "1st XI %", "2nd XI Games", "2nd XI %", "3rd XI Games", "3rd XI %", "4th XI Games", "4th XI %", "5th XI Games", "5th XI %", "6th XI Games", "6th XI %", "Total Games", "Green Threshold", "Orange Threshold"})
+	_ = writer.Write([]string{"Division", "Club", "Player", "Play-Cricket Player ID", "Current List", "Review Signal", "1st XI Games", "1st XI %", "2nd XI Games", "2nd XI %", "3rd XI Games", "3rd XI %", "4th XI Games", "4th XI %", "5th XI Games", "5th XI %", "6th XI Games", "6th XI %", "Total Games", "Rule Games", "Rule %", "Green Threshold", "Orange Threshold"})
 	for _, row := range rows {
 		_, signal := signalBadge(row.Signal)
 		record := []string{row.Division, row.ClubName, row.PlayerName, strconv.FormatInt(row.PlayerID, 10), row.ListType, signal}
@@ -265,7 +273,7 @@ func (s *Server) writeStarredPlayerReviewCSV(w http.ResponseWriter, ctx context.
 			}
 			record = append(record, strconv.Itoa(row.Counts[level]), strconv.FormatFloat(percentage, 'f', 1, 64))
 		}
-		record = append(record, strconv.Itoa(row.Total), strconv.FormatFloat(green, 'f', 1, 64), strconv.FormatFloat(orange, 'f', 1, 64))
+		record = append(record, strconv.Itoa(row.Total), strconv.Itoa(row.RuleGames), strconv.FormatFloat(row.RulePct, 'f', 1, 64), strconv.FormatFloat(green, 'f', 1, 64), strconv.FormatFloat(orange, 'f', 1, 64))
 		_ = writer.Write(record)
 	}
 	writer.Flush()

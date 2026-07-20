@@ -156,5 +156,9 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	internalMux.Post("/process-sanction-outbox", s.handleInternalSanctionOutbox())
 	r.Mount("/internal", internalMux)
 
-	return r, func() { pool.Close() }, nil
+	stopStarredWeeklySync := s.startStarredWeeklySync(context.Background())
+	return r, func() {
+		stopStarredWeeklySync()
+		pool.Close()
+	}, nil
 }

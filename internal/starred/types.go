@@ -111,6 +111,7 @@ type Candidate struct {
 	PlayerName     string
 	PlayerKey      string
 	FirstXILeague  int
+	TopTwoXILeague int
 	AllLeague      int
 	Percentage     float64
 	AlreadyStarred bool
@@ -129,4 +130,15 @@ type MappingSuggestion struct {
 	CandidateID      int64
 	CandidateName    string
 	Distance         int
+}
+
+// IdentitySearchResult is a scorecard identity returned by the manual mapping
+// search. MatchCount counts distinct scorecards rather than repeated rows.
+type IdentitySearchResult struct {
+	PlayerID   int64
+	PlayerName string
+	ClubNames  []string
+	MatchCount int
+	FirstSeen  time.Time
+	LastSeen   time.Time
 }

@@ -68,6 +68,36 @@ func TestBuildPeriodsDeduplicatesPlayerRepeatedInTwoSourceSlots(t *testing.T) {
 	}
 }
 
+func TestBuildPeriodsPrefersEstablishedListForAmbiguousSameDayAmendment(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	amendmentDate := time.Date(2026, 6, 14, 0, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		SeasonYear: 2026,
+		Entries: []Entry{
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", ListType: "A", PlayerName: "Muhammad Nauman", PlayerKey: NormalizeName("Muhammad Nauman")},
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", ListType: "B", PlayerName: "Sajawal Khan", PlayerKey: NormalizeName("Sajawal Khan")},
+		},
+		Amendments: []Amendment{
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", Sequence: 1, Date: &amendmentDate, Outgoing: "Muhammad Nauman", OutgoingKey: NormalizeName("Muhammad Nauman"), Incoming: "Sajawal Khan", IncomingKey: NormalizeName("Sajawal Khan"), RawValue: "Muhammad Nauman replaced by Sajawal Khan (14/06/2026)", Status: "parsed"},
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", Sequence: 2, Date: &amendmentDate, Outgoing: "Sajawal Khan", OutgoingKey: NormalizeName("Sajawal Khan"), Incoming: "Usman Ahmad", IncomingKey: NormalizeName("Usman Ahmad"), RawValue: "Sajawal Khan replaced by Usman Ahmad (14/06/2026)", Status: "parsed"},
+		},
+	}
+
+	periods, issues := BuildPeriods(snapshot, start)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%#v", issues)
+	}
+	active := make(map[string]string)
+	for _, period := range periods {
+		if period.ValidTo == nil {
+			active[period.PlayerName] = period.ListType
+		}
+	}
+	if active["Sajawal Khan"] != "A" || active["Usman Ahmad"] != "B" {
+		t.Fatalf("active lists=%#v; want Sajawal on A and Usman on B", active)
+	}
+}
+
 func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	start := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
 	periods := []Period{{SeasonYear: 2026, ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: start}}
@@ -94,9 +124,29 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	}
 }
 
-func TestReviewCutoffStopsAtJune30(t *testing.T) {
-	got := ReviewCutoff(2026, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
-	want := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+func TestEvaluateListBCandidatesCombinesFirstAndSecondXILeagueGames(t *testing.T) {
+	date := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	apps := []Appearance{
+		{MatchID: 1, MatchDate: date, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 2, PlayerID: 10, PlayerName: "Second XI Player", PlayerKey: "secondxiplayer"},
+		{MatchID: 2, MatchDate: date.AddDate(0, 0, 7), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 3, PlayerID: 10, PlayerName: "Second XI Player", PlayerKey: "secondxiplayer"},
+	}
+	evaluation := Evaluate(nil, apps, nil, time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC))
+	if len(evaluation.Candidates) != 1 {
+		t.Fatalf("candidates=%d want 1: %#v", len(evaluation.Candidates), evaluation.Candidates)
+	}
+	candidate := evaluation.Candidates[0]
+	if candidate.FirstXILeague != 0 || candidate.TopTwoXILeague != 1 || candidate.AllLeague != 2 || candidate.Percentage != 0.5 {
+		t.Fatalf("unexpected combined List B calculation: %#v", candidate)
+	}
+}
+
+func TestReviewCutoffAdvancesUntilJuly31(t *testing.T) {
+	current := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if got := ReviewCutoff(2026, current); !got.Equal(current) {
+		t.Fatalf("current cutoff=%s want %s", got, current)
+	}
+	got := ReviewCutoff(2026, time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC))
+	want := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("cutoff=%s want %s", got, want)
 	}
@@ -178,5 +228,43 @@ func TestSuggestMappingsRecognisesCommonPlayCricketNameVariants(t *testing.T) {
 		if got[source] != candidate {
 			t.Errorf("suggestion for %q=%q want %q; all=%#v", source, got[source], candidate, got)
 		}
+	}
+}
+
+func TestConfirmedMappingRemovesIdentitySuggestion(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []Period{{ClubName: "Example CC", ClubKey: "example", PlayerName: "Jon Phillips", PlayerKey: NormalizeName("Jon Phillips"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)}}
+	appearances := []Appearance{{ClubKey: "example", PlayerID: 44, PlayerName: "John Phillips", PlayerKey: NormalizeName("John Phillips")}}
+	mappings := []IdentityMapping{{ClubKey: "example", StarredPlayerKey: NormalizeName("Jon Phillips"), PlayerID: 44}}
+
+	if got := SuggestMappings(periods, appearances, mappings, cutoff); len(got) != 0 {
+		t.Fatalf("confirmed identity was still suggested: %#v", got)
+	}
+}
+
+func TestSearchAppearanceIdentitiesSearchesAllNamesAndGroupsScorecards(t *testing.T) {
+	first := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
+	appearances := []Appearance{
+		{MatchID: 10, MatchDate: first, ClubName: "Alpha CC", TeamLevel: 1, PlayerID: 44, PlayerName: "J Phillips"},
+		{MatchID: 10, MatchDate: first, ClubName: "Alpha CC", TeamLevel: 1, PlayerID: 44, PlayerName: "John Phillips"},
+		{MatchID: 11, MatchDate: last, ClubName: "Beta CC", TeamLevel: 2, PlayerID: 44, PlayerName: "John Phillips"},
+		{MatchID: 12, MatchDate: last, ClubName: "Beta Women", TeamLevel: 1, PlayerID: 55, PlayerName: "Jane Phillips"},
+		{MatchID: 13, MatchDate: last, ClubName: "Gamma CC", TeamLevel: 0, PlayerID: 66, PlayerName: "Phil Phillips"},
+	}
+
+	got := SearchAppearanceIdentities(appearances, "phillips", 50)
+	if len(got) != 1 {
+		t.Fatalf("results=%d want 1: %#v", len(got), got)
+	}
+	if got[0].PlayerID != 44 || got[0].PlayerName != "John Phillips" || got[0].MatchCount != 2 {
+		t.Fatalf("unexpected identity summary: %#v", got[0])
+	}
+	if strings.Join(got[0].ClubNames, ",") != "Alpha CC,Beta CC" || !got[0].FirstSeen.Equal(first) || !got[0].LastSeen.Equal(last) {
+		t.Fatalf("unexpected identity evidence: %#v", got[0])
+	}
+	byID := SearchAppearanceIdentities(appearances, "44", 50)
+	if len(byID) != 1 || byID[0].PlayerID != 44 {
+		t.Fatalf("player ID search failed: %#v", byID)
 	}
 }

@@ -22,6 +22,10 @@ import (
 
 const DefaultPublishedCSVURL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS_jUUxFnK1V0zjnrHfIjp-MAEftFsjXrzjSj0hKBywU8T_r9KBQ8mmdo_agQp1BF5XEZC59-jIoILa/pub?gid=1336530032&single=true&output=csv"
 
+// snapshotParserRevision must change whenever parsing or period-building rules
+// change in a way that requires unchanged source bytes to be rebuilt.
+const snapshotParserRevision = "2"
+
 type ImportResult struct {
 	RunID          int64
 	Entries        int
@@ -74,9 +78,9 @@ func StoreSnapshot(ctx context.Context, pool *db.Pool, snapshot Snapshot, body [
 	sum := sha256.Sum256(body)
 	hash := hex.EncodeToString(sum[:])
 	var latestID int64
-	var latestHash string
-	err := pool.QueryRow(ctx, `SELECT id, source_sha256 FROM starred_import_runs WHERE season_year=$1 AND status='complete' ORDER BY imported_at DESC, id DESC LIMIT 1`, snapshot.SeasonYear).Scan(&latestID, &latestHash)
-	if err == nil && latestHash == hash {
+	var latestHash, latestParserRevision string
+	err := pool.QueryRow(ctx, `SELECT id,source_sha256,parser_revision FROM starred_import_runs WHERE season_year=$1 AND status='complete' ORDER BY imported_at DESC,id DESC LIMIT 1`, snapshot.SeasonYear).Scan(&latestID, &latestHash, &latestParserRevision)
+	if err == nil && latestHash == hash && latestParserRevision == snapshotParserRevision {
 		return ImportResult{RunID: latestID, Entries: len(snapshot.Entries), Amendments: len(snapshot.Amendments), AlreadyCurrent: true}, nil
 	}
 	if err != nil && err != pgx.ErrNoRows {
@@ -95,9 +99,9 @@ func StoreSnapshot(ctx context.Context, pool *db.Pool, snapshot Snapshot, body [
 	defer tx.Rollback(ctx)
 	var runID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO starred_import_runs(season_year, source_url, source_sha256, entry_count, amendment_count, issue_count)
-		VALUES($1,$2,$3,$4,$5,$6) RETURNING id
-	`, snapshot.SeasonYear, sourceURL, hash, len(snapshot.Entries), len(snapshot.Amendments), len(rosterIssues)).Scan(&runID)
+		INSERT INTO starred_import_runs(season_year,source_url,source_sha256,parser_revision,entry_count,amendment_count,issue_count)
+		VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id
+	`, snapshot.SeasonYear, sourceURL, hash, snapshotParserRevision, len(snapshot.Entries), len(snapshot.Amendments), len(rosterIssues)).Scan(&runID)
 	if err != nil {
 		return ImportResult{}, err
 	}

@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -28,6 +29,97 @@ type starredBreachGroup struct {
 	Day      string
 	Division string
 	Breaches []starred.Breach
+}
+
+func parseStarredBreachDateRange(r *http.Request) (from, to *time.Time, err error) {
+	parse := func(field, label string) (*time.Time, error) {
+		value := strings.TrimSpace(r.URL.Query().Get(field))
+		if value == "" {
+			return nil, nil
+		}
+		parsed, parseErr := time.Parse("2006-01-02", value)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid breach %s date", label)
+		}
+		return &parsed, nil
+	}
+	if from, err = parse("breach_from", "from"); err != nil {
+		return nil, nil, err
+	}
+	if to, err = parse("breach_to", "to"); err != nil {
+		return nil, nil, err
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, nil, fmt.Errorf("breach from date must be on or before the to date")
+	}
+	return from, to, nil
+}
+
+func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time) []starred.Breach {
+	if from == nil && to == nil {
+		return breaches
+	}
+	filtered := make([]starred.Breach, 0, len(breaches))
+	for _, breach := range breaches {
+		date := time.Date(breach.Appearance.MatchDate.Year(), breach.Appearance.MatchDate.Month(), breach.Appearance.MatchDate.Day(), 0, 0, 0, 0, time.UTC)
+		if from != nil && date.Before(*from) {
+			continue
+		}
+		if to != nil && date.After(*to) {
+			continue
+		}
+		filtered = append(filtered, breach)
+	}
+	return filtered
+}
+
+func starredFindingStatus(state starredFindingState) string {
+	if state.ID == 0 {
+		return "Outstanding"
+	}
+	switch state.Status {
+	case "accepted":
+		return "Accepted / closed"
+	case "draft":
+		return "Draft letter"
+	case "approved":
+		return "Approved / sending"
+	case "sent":
+		return "Letter sent"
+	case "send_failed":
+		return "Send failed"
+	default:
+		return state.Status
+	}
+}
+
+func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, from, to *time.Time) {
+	rangeLabel := "all-dates"
+	if from != nil && to != nil {
+		rangeLabel = from.Format("2006-01-02") + "-to-" + to.Format("2006-01-02")
+	} else if from != nil {
+		rangeLabel = "from-" + from.Format("2006-01-02")
+	} else if to != nil {
+		rangeLabel = "through-" + to.Format("2006-01-02")
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-breaches-%d-%s.csv"`, year, rangeLabel))
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"Match date", "Day", "Division", "Competition", "Format", "Club", "Player", "Published starred name", "Play-Cricket Player ID", "List", "Team", "Evidence", "Review status", "Match ID", "Scorecard"})
+	for _, breach := range breaches {
+		evidence := "Review"
+		if breach.NeedsExemptionReview {
+			evidence = "Junior tag - verify exemption"
+		}
+		_ = writer.Write([]string{
+			breach.Appearance.MatchDate.Format("2006-01-02"), starredBreachDay(breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType),
+			breach.Appearance.CompetitionName, breach.Appearance.CompetitionType, breach.Appearance.ClubName, breach.Appearance.PlayerName, breach.StarredName,
+			strconv.FormatInt(breach.Appearance.PlayerID, 10), "List " + breach.ListType, breach.Appearance.TeamName, evidence,
+			starredFindingStatus(states[starredFindingKey(breach)]), strconv.FormatInt(breach.Appearance.MatchID, 10),
+			fmt.Sprintf("https://gmcl.co.uk/admin/starred-players?season=%d&view=scorecard&match_id=%d#card-detail", year, breach.Appearance.MatchID),
+		})
+	}
+	writer.Flush()
 }
 
 func starredBreachDay(b starred.Breach) string {
@@ -163,7 +255,7 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 		return fmt.Sprintf(`<a class="badge %s text-decoration-none" href="/admin/starred-players/findings/%d">%s</a>`, class, state.ID, escapeHTML(label))
 	}
 	hidden := fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="match_id" value="%d"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="list_type" value="%s">`, escapeHTML(csrf), year, b.Appearance.MatchID, b.Appearance.PlayerID, escapeHTML(b.Appearance.ClubKey), escapeHTML(b.Appearance.PlayerKey), escapeHTML(b.ListType))
-	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('Accept and close this finding with no offence letter?')">%s<button class="btn btn-sm btn-outline-success w-100">Accept / close — no offence</button></form><form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-danger w-100">Not accepted — draft letter</button></form></div>`, hidden, hidden)
+	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('Accept and close this finding with no offence letter?')">%s<button class="btn btn-sm btn-outline-primary w-100">Accept / close — no offence</button></form><form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, hidden, hidden)
 }
 
 func starredFindingKey(b starred.Breach) string {
@@ -211,7 +303,7 @@ func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, p
 			return breach, nil
 		}
 	}
-	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 30 June compliance evaluation")
+	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 31 July compliance evaluation")
 }
 
 func parseStarredFindingForm(r *http.Request) (year int, matchID, playerID int64, clubKey, playerKey, listType string, err error) {
@@ -426,8 +518,10 @@ func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Starred-player letter")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<div class="container" style="max-width:900px"><div class="d-flex justify-content-between align-items-start mb-4"><div><h4 class="mb-1">Rule 3.5 letter draft</h4><p class="text-muted mb-0">%s — %s — %s — Match %d</p></div><a class="btn btn-outline-secondary btn-sm" href="/admin/starred-players?season=%d#potential-breaches">Back to findings</a></div>`, escapeHTML(club), escapeHTML(player), matchDate.Format("02 Jan 2006"), matchID, year)
-		fmt.Fprintf(w, `<div class="card shadow-sm mb-3"><div class="card-header fw-semibold">Evidence</div><div class="card-body"><div class="row g-3"><div class="col-md-3"><div class="small text-muted">List</div><strong>List %s</strong></div><div class="col-md-3"><div class="small text-muted">Team</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Captain</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Recipient</div><strong>%s</strong></div></div><a class="btn btn-sm btn-outline-primary mt-3" href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">Open scorecard evidence</a></div></div>`, escapeHTML(listType), escapeHTML(team), escapeHTML(captainName), escapeHTML(captainEmail), year, matchID)
+		fmt.Fprintf(w, `<div class="container" style="max-width:900px"><div class="d-flex justify-content-between align-items-start mb-4"><div><h4 class="mb-1">Rule 3.5 letter draft</h4><p class="text-muted mb-0">%s — %s — %s — Match %d</p></div><a class="btn btn-outline-primary btn-sm" href="/admin/starred-players?season=%d#potential-breaches">Back to findings</a></div>`, escapeHTML(club), escapeHTML(player), matchDate.Format("02 Jan 2006"), matchID, year)
+		fmt.Fprintf(w, `<div class="card shadow-sm mb-3"><div class="card-header fw-semibold">Evidence%s</div><div class="card-body">`+``,
+			starredHelpIcon("Evidence", "The finding this letter is about. The recipient is the captain recorded for the team on the match date — if no email shows here, update the team and captain records before approving the letter."))
+		fmt.Fprintf(w, `<div class="row g-3"><div class="col-md-3"><div class="small text-muted">List</div><strong>List %s</strong></div><div class="col-md-3"><div class="small text-muted">Team</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Captain</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Recipient</div><strong>%s</strong></div></div><a class="btn btn-sm btn-outline-primary mt-3" href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">Open scorecard evidence</a></div></div>`, escapeHTML(listType), escapeHTML(team), escapeHTML(captainName), escapeHTML(captainEmail), year, matchID)
 		if captainEmail == "" {
 			fmt.Fprint(w, `<div class="alert alert-danger">No active captain email could be matched to this team and match date. Update the team/captain record before approving this letter.</div>`)
 		}
@@ -437,8 +531,8 @@ func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
 		if status == "sent" {
 			fmt.Fprint(w, `<div class="alert alert-success">This approved letter has been sent to the captain. The record is now locked.</div>`)
 		}
-		fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/findings/%d/approve"><input type="hidden" name="csrf_token" value="%s"><div class="card shadow-sm"><div class="card-header fw-semibold">Editable letter</div><div class="card-body"><div class="mb-3"><label class="form-label fw-semibold">Subject</label><input class="form-control" name="email_subject" value="%s" required></div><div><label class="form-label fw-semibold">Body</label><textarea class="form-control font-monospace" name="email_body" rows="24" required>%s</textarea></div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Status: %s. Sending requires this separate approval.</span><button class="btn btn-success" %s onclick="return confirm('Approve this exact letter and send it to %s?')">Approve &amp; Send to Captain</button></div></div></form></div>`, id, escapeHTML(csrf), escapeHTML(subject), escapeHTML(body), escapeHTML(status), disabledIf(captainEmail == "" || (status != "draft" && status != "send_failed")), escapeHTML(captainEmail))
-		pageFooter(w)
+		fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/findings/%d/approve"><input type="hidden" name="csrf_token" value="%s"><div class="card shadow-sm"><div class="card-header fw-semibold">Editable letter`+starredHelpIcon("Editable letter", "A pre-filled Rule 3.5 notice to the club captain, including the scorecard evidence. Edit the subject and body freely — nothing is sent until you approve this exact text, and the send is recorded in the audit trail.")+`</div><div class="card-body"><div class="mb-3"><label class="form-label fw-semibold">Subject</label><input class="form-control" name="email_subject" value="%s" required></div><div><label class="form-label fw-semibold">Body</label><textarea class="form-control font-monospace" name="email_body" rows="24" required>%s</textarea></div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Status: %s. Sending requires this separate approval.</span><button class="btn btn-primary" %s onclick="return confirm('Approve this exact letter and send it to %s?')">Approve &amp; Send to Captain</button></div></div></form></div>`, id, escapeHTML(csrf), escapeHTML(subject), escapeHTML(body), escapeHTML(status), disabledIf(captainEmail == "" || (status != "draft" && status != "send_failed")), escapeHTML(captainEmail))
+		pageFooterWithScript(w, starredPopoverInitScript)
 	}
 }
 

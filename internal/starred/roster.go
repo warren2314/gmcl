@@ -71,17 +71,52 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		}
 
 		list, resolvedKey := "", ""
+		hintedList := ""
+		if strings.Contains(rawLower, "b list") || strings.Contains(rawLower, "list b") {
+			hintedList = "B"
+		} else if strings.Contains(rawLower, "a list") || strings.Contains(rawLower, "list a") {
+			hintedList = "A"
+		}
+		type amendmentTarget struct {
+			list string
+			key  string
+			from time.Time
+			kind string
+		}
+		var targets []amendmentTarget
 		for _, candidateList := range []string{"A", "B"} {
 			if key, ok := resolveActiveKey(active[a.ClubKey][candidateList], a.OutgoingKey); ok {
-				list, resolvedKey = candidateList, key
-				break
+				period := active[a.ClubKey][candidateList][key].period
+				targets = append(targets, amendmentTarget{list: candidateList, key: key, from: period.ValidFrom, kind: period.SourceKind})
 			}
 		}
-		if list == "" && (strings.Contains(rawLower, "b list") || strings.Contains(rawLower, "list b")) {
-			list = "B"
+		if len(targets) > 0 {
+			if hintedList != "" {
+				for _, target := range targets {
+					if target.list == hintedList {
+						list, resolvedKey = target.list, target.key
+						break
+					}
+				}
+			}
+			// A published player can legitimately be on both lists after another
+			// amendment on the same date. Prefer their established list place over
+			// a just-created amendment period instead of silently choosing List A.
+			sort.SliceStable(targets, func(i, j int) bool {
+				if !targets[i].from.Equal(targets[j].from) {
+					return targets[i].from.Before(targets[j].from)
+				}
+				if targets[i].kind != targets[j].kind {
+					return targets[i].kind == "base"
+				}
+				return targets[i].list < targets[j].list
+			})
+			if list == "" {
+				list, resolvedKey = targets[0].list, targets[0].key
+			}
 		}
-		if list == "" && (strings.Contains(rawLower, "a list") || strings.Contains(rawLower, "list a")) {
-			list = "A"
+		if list == "" {
+			list = hintedList
 		}
 		if resolvedKey != "" {
 			closePeriod(a.ClubKey, list, resolvedKey, *a.Date)

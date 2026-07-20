@@ -37,6 +37,26 @@ func TestActiveStarredPeriodsByClubUsesCutoffAndListOrder(t *testing.T) {
 	}
 }
 
+func TestActiveUnmappedStarredPeriodsRemovesAcceptedPlayers(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Accepted Player", PlayerKey: "accepted", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Needs Match", PlayerKey: "needsmatch", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Needs Match", PlayerKey: "needsmatch", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "accepted", PlayerID: 99}}
+
+	got := activeUnmappedStarredPeriods(periods, mappings, cutoff)
+	if len(got) != 1 || got[0].PlayerKey != "needsmatch" {
+		t.Fatalf("unmapped periods=%#v want only Needs Match", got)
+	}
+	sourceID := starredMappingSourceID(got[0])
+	selected, ok := findUnmappedStarredPeriod(got, sourceID)
+	if !ok || selected.PlayerName != "Needs Match" {
+		t.Fatalf("source selection failed: %#v, %v", selected, ok)
+	}
+}
+
 func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	clubs := map[string]string{"alpha": "Alpha CC", "beta": "Beta CC", "gamma": "Gamma CC"}
 	appearances := []starred.Appearance{
@@ -70,7 +90,7 @@ func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	}
 }
 
-func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T) {
+func TestStarredTeamCountsUsesMappedIdentityAllDaysAndDeduplicates(t *testing.T) {
 	periods := []starred.Period{
 		{ClubKey: "alpha", PlayerKey: "amy", PlayerName: "Amy Player"},
 		{ClubKey: "alpha", PlayerKey: "zed", PlayerName: "Zed Player"},
@@ -85,9 +105,9 @@ func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T
 		{MatchID: 6, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 3, PlayerKey: "zed"},
 	}
 	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "amy", PlayerID: 99}}
-	got := starredSaturdayTeamCounts(periods, appearances, mappings)
-	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 1 {
-		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=1", got["alpha|amy"])
+	got := starredTeamCounts(periods, appearances, mappings)
+	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 2 {
+		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=2 including Sunday", got["alpha|amy"])
 	}
 	if got["alpha|zed"][3] != 1 {
 		t.Fatalf("name-matched Zed counts=%#v want 3rd=1", got["alpha|zed"])
