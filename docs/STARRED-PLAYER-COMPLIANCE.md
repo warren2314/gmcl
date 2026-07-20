@@ -3,6 +3,18 @@
 The super-admin page at `/admin/starred-players` combines the published GMCL
 List A/List B sheet with Play-Cricket team sheets.
 
+## Page layout
+
+The page is organised as a workflow: an overview (imported-data counts and an
+action queue whose tiles turn green when nothing is outstanding), then numbered
+sections — Step 1 import data, Step 2 match identities (with the amendments
+review), Step 3 review potential breaches (with club list completeness), and
+Step 4 the 31 July test. A sticky "Jump to" bar shows outstanding counts per
+section, and every section heading carries a "?" help popover explaining what
+the section is for and how its numbers are calculated. Section anchors
+(`#potential-breaches`, `#july-31-test`, `#identity-matches`, `#card-detail`)
+are stable and used by post-action redirects.
+
 ## Data sources
 
 - The published Google Sheet embedded at

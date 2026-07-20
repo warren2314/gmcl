@@ -185,7 +185,8 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
-	fmt.Fprintf(w, `Player list review</span><a class="btn btn-sm btn-outline-secondary" href="/admin/starred-players?season=%d">Close</a></div>`, year)
+	fmt.Fprintf(w, `Player list review%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
+		starredHelpIcon("Player list review", "Every open-age player in the selected division or club, with their appearances split by team. Rule games are the games at the level the player's list permits (List A: 1st XI only; List B: 1st + 2nd XI), and Rule % is that share of all their games. Green suggests keeping the player starred, orange means monitor, red suggests a removal review — adjust the thresholds to suit, nothing is changed automatically."), year)
 	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="player-review"><div class="col-md-3"><label class="form-label fw-semibold">Saturday division</label><select class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose division…</option>`, year)
 	for _, division := range divisions {
 		selected := ""
