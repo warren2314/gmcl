@@ -111,6 +111,7 @@ type Candidate struct {
 	PlayerName     string
 	PlayerKey      string
 	FirstXILeague  int
+	TopTwoXILeague int
 	AllLeague      int
 	Percentage     float64
 	AlreadyStarred bool

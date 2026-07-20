@@ -57,6 +57,11 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
 		}
+		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
+		filteredBreaches := eval.Breaches
+		if breachFilterErr == nil {
+			filteredBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
+		}
 		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
 		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
 		if runes := []rune(mappingQuery); len(runes) > 100 {
@@ -72,6 +77,14 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			return
 		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
+		if r.URL.Query().Get("export") == "breaches-csv" {
+			if breachFilterErr != nil {
+				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeStarredBreachesCSV(w, year, filteredBreaches, findingStates, breachFrom, breachTo)
+			return
+		}
 		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
 		acceptedCandidateCount := 0
 		for _, state := range candidateReviewStates {
@@ -182,8 +195,20 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 }());
 </script>`)
 
-		breachGroups := groupStarredBreaches(eval.Breaches)
+		breachGroups := groupStarredBreaches(filteredBreaches)
 		fmt.Fprint(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">Potential List A / List B breaches by division</div><div class="small text-muted">Accept and close a finding where no offence should be pursued, or create an editable letter for separate approval before it is sent.</div></div>`)
+		breachExportQuery := url.Values{"season": {strconv.Itoa(year)}, "export": {"breaches-csv"}}
+		if value := strings.TrimSpace(r.URL.Query().Get("breach_from")); value != "" {
+			breachExportQuery.Set("breach_from", value)
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("breach_to")); value != "" {
+			breachExportQuery.Set("breach_to", value)
+		}
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div></form><div class="form-text">Showing %d of %d potential breaches. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(r.URL.Query().Get("breach_from")), escapeHTML(r.URL.Query().Get("breach_to")), year, escapeHTML(breachExportQuery.Encode()), len(filteredBreaches), len(eval.Breaches))
+		if breachFilterErr != nil {
+			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
+		}
+		fmt.Fprint(w, `</div>`)
 		if len(breachGroups) > 0 {
 			fmt.Fprint(w, `<div class="card-body border-bottom d-flex flex-wrap gap-2">`)
 			for index, group := range breachGroups {
@@ -192,8 +217,8 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprint(w, `</div>`)
 		}
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Format</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
-		if len(eval.Breaches) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No potential breaches found in imported scorecards.</td></tr>`)
+		if len(filteredBreaches) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No potential breaches found for the selected dates.</td></tr>`)
 		}
 		for groupIndex, group := range breachGroups {
 			findingWord := "findings"
@@ -222,7 +247,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprint(w, `</tbody></table></div></div>`)
 		}
 
-		fmt.Fprintf(w, `<div id="july-31-test" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">31 July league-appearance test</div><div class="small text-muted">Review a player's games or accept and close the List B review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`, acceptedCandidateCount)
+		fmt.Fprintf(w, `<div id="july-31-test" class="card shadow-sm mb-4"><div class="card-header"><div class="fw-semibold">31 July league-appearance test</div><div class="small text-muted">List B reviews use combined 1st XI and 2nd XI league appearances. Review a player's games or accept and close the review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.</div></div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st + 2nd XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`, acceptedCandidateCount)
 		shown := 0
 		for _, c := range eval.Candidates {
 			if c.AlreadyStarred || candidateReviewStates[starredCandidateKey(year, c)].Status == "accepted" {
@@ -230,7 +255,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 			shown++
 			appearanceSearch := starredAppearanceSearch(c.PlayerName, c.PlayerID)
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.FirstXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
+			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.TopTwoXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
 		}
 		if shown == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No unstarred candidates currently meet the threshold.</td></tr>`)
@@ -566,7 +591,7 @@ func starredMappedPlayerID(period starred.Period, mappings []starred.IdentityMap
 	return 0
 }
 
-func starredSaturdayTeamCounts(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping) map[string]map[int]int {
+func starredTeamCounts(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping) map[string]map[int]int {
 	mappedIDs := make(map[string]int64, len(mappings))
 	for _, mapping := range mappings {
 		mappedIDs[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = mapping.PlayerID
@@ -578,7 +603,7 @@ func starredSaturdayTeamCounts(periods []starred.Period, appearances []starred.A
 		mappedID := mappedIDs[key]
 		seen := make(map[string]struct{})
 		for _, appearance := range appearances {
-			if appearance.ClubKey != period.ClubKey || appearance.TeamLevel < 1 || !strings.EqualFold(appearance.PlayingDay, "Saturday") {
+			if appearance.ClubKey != period.ClubKey || appearance.TeamLevel < 1 {
 				continue
 			}
 			matches := appearance.PlayerKey == period.PlayerKey
@@ -750,7 +775,6 @@ func (s *Server) loadStarredAppearanceClubOptions(ctx context.Context, year int,
 		SELECT club_key,MIN(club_name),COUNT(DISTINCT play_cricket_match_id)::int
 		FROM starred_appearances
 		WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0
-		  AND LOWER(COALESCE(playing_day,''))='saturday'
 		  AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)'
 		GROUP BY club_key ORDER BY MIN(club_name)`, year, cutoff)
 	if err != nil {
@@ -857,7 +881,7 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 		return
 	}
 	active := activeStarredPeriodsByClub(periods, cutoff, selectedClub)
-	teamCounts := starredSaturdayTeamCounts(active, appearances, mappings)
+	teamCounts := starredTeamCounts(active, appearances, mappings)
 	maxTeamLevel := 4
 	for _, playerCounts := range teamCounts {
 		for level := range playerCounts {
@@ -874,7 +898,7 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 			listBCount++
 		}
 	}
-	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><h5 class="mb-0">%s</h5><div class="small text-muted">Saturday appearances from imported scorecards through %s.</div></div><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), cutoff.Format("02 January 2006"), listACount, listBCount)
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><h5 class="mb-0">%s</h5><div class="small text-muted">All classified open-age XI appearances from imported scorecards through %s.</div></div><div><span class="badge bg-danger me-1">List A: %d</span><span class="badge bg-primary">List B: %d</span></div></div>`, escapeHTML(clubName), cutoff.Format("02 January 2006"), listACount, listBCount)
 	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>List</th><th>Player</th>`)
 	for level := 1; level <= maxTeamLevel; level++ {
 		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))

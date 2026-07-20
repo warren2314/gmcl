@@ -117,10 +117,10 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 		adminID := s.resolveAdminID(r)
 		var reviewID int64
 		err = s.DB.QueryRow(ctx, `
-			INSERT INTO starred_candidate_reviews(candidate_key,season_year,club_name,club_key,play_cricket_player_id,player_name,player_key,first_xi_league,all_league,percentage,status,decision_note,reviewed_by,reviewed_at)
-			VALUES($1,$2,$3,$4,NULLIF($5,0),$6,$7,$8,$9,$10,'accepted',NULLIF($11,''),$12,now())
+			INSERT INTO starred_candidate_reviews(candidate_key,season_year,club_name,club_key,play_cricket_player_id,player_name,player_key,first_xi_league,first_second_xi_league,all_league,percentage,status,decision_note,reviewed_by,reviewed_at)
+			VALUES($1,$2,$3,$4,NULLIF($5,0),$6,$7,$8,$9,$10,$11,'accepted',NULLIF($12,''),$13,now())
 			ON CONFLICT(candidate_key) DO NOTHING
-			RETURNING id`, starredCandidateKey(year, candidate), year, candidate.ClubName, candidate.ClubKey, candidate.PlayerID, candidate.PlayerName, candidate.PlayerKey, candidate.FirstXILeague, candidate.AllLeague, candidate.Percentage, strings.TrimSpace(r.FormValue("decision_note")), adminID).Scan(&reviewID)
+			RETURNING id`, starredCandidateKey(year, candidate), year, candidate.ClubName, candidate.ClubKey, candidate.PlayerID, candidate.PlayerName, candidate.PlayerKey, candidate.FirstXILeague, candidate.TopTwoXILeague, candidate.AllLeague, candidate.Percentage, strings.TrimSpace(r.FormValue("decision_note")), adminID).Scan(&reviewID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			redirectStarredAnchor(w, r, year, "This List B review was already accepted and closed.", "", "july-31-test")
 			return
@@ -131,7 +131,7 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 		}
 		s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_accepted", "starred_candidate_review", &reviewID, map[string]any{
 			"season": year, "club": candidate.ClubName, "player": candidate.PlayerName,
-			"play_cricket_player_id": candidate.PlayerID, "first_xi_league": candidate.FirstXILeague,
+			"play_cricket_player_id": candidate.PlayerID, "first_xi_league": candidate.FirstXILeague, "first_second_xi_league": candidate.TopTwoXILeague,
 			"all_league": candidate.AllLeague, "percentage": candidate.Percentage,
 		})
 		redirectStarredAnchor(w, r, year, "List B review accepted and removed from the outstanding list for "+candidate.PlayerName+".", "", "july-31-test")

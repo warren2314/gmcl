@@ -68,6 +68,36 @@ func TestBuildPeriodsDeduplicatesPlayerRepeatedInTwoSourceSlots(t *testing.T) {
 	}
 }
 
+func TestBuildPeriodsPrefersEstablishedListForAmbiguousSameDayAmendment(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	amendmentDate := time.Date(2026, 6, 14, 0, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		SeasonYear: 2026,
+		Entries: []Entry{
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", ListType: "A", PlayerName: "Muhammad Nauman", PlayerKey: NormalizeName("Muhammad Nauman")},
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", ListType: "B", PlayerName: "Sajawal Khan", PlayerKey: NormalizeName("Sajawal Khan")},
+		},
+		Amendments: []Amendment{
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", Sequence: 1, Date: &amendmentDate, Outgoing: "Muhammad Nauman", OutgoingKey: NormalizeName("Muhammad Nauman"), Incoming: "Sajawal Khan", IncomingKey: NormalizeName("Sajawal Khan"), RawValue: "Muhammad Nauman replaced by Sajawal Khan (14/06/2026)", Status: "parsed"},
+			{SeasonYear: 2026, ClubName: "South West Manchester CC", ClubKey: "southwestmanchester", Sequence: 2, Date: &amendmentDate, Outgoing: "Sajawal Khan", OutgoingKey: NormalizeName("Sajawal Khan"), Incoming: "Usman Ahmad", IncomingKey: NormalizeName("Usman Ahmad"), RawValue: "Sajawal Khan replaced by Usman Ahmad (14/06/2026)", Status: "parsed"},
+		},
+	}
+
+	periods, issues := BuildPeriods(snapshot, start)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%#v", issues)
+	}
+	active := make(map[string]string)
+	for _, period := range periods {
+		if period.ValidTo == nil {
+			active[period.PlayerName] = period.ListType
+		}
+	}
+	if active["Sajawal Khan"] != "A" || active["Usman Ahmad"] != "B" {
+		t.Fatalf("active lists=%#v; want Sajawal on A and Usman on B", active)
+	}
+}
+
 func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	start := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
 	periods := []Period{{SeasonYear: 2026, ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: start}}
@@ -91,6 +121,22 @@ func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 		if c.PlayerName == "Jane Smith" && c.AllLeague != 1 {
 			t.Fatalf("cup was included in league denominator: %#v", c)
 		}
+	}
+}
+
+func TestEvaluateListBCandidatesCombinesFirstAndSecondXILeagueGames(t *testing.T) {
+	date := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	apps := []Appearance{
+		{MatchID: 1, MatchDate: date, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 2, PlayerID: 10, PlayerName: "Second XI Player", PlayerKey: "secondxiplayer"},
+		{MatchID: 2, MatchDate: date.AddDate(0, 0, 7), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 3, PlayerID: 10, PlayerName: "Second XI Player", PlayerKey: "secondxiplayer"},
+	}
+	evaluation := Evaluate(nil, apps, nil, time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC))
+	if len(evaluation.Candidates) != 1 {
+		t.Fatalf("candidates=%d want 1: %#v", len(evaluation.Candidates), evaluation.Candidates)
+	}
+	candidate := evaluation.Candidates[0]
+	if candidate.FirstXILeague != 0 || candidate.TopTwoXILeague != 1 || candidate.AllLeague != 2 || candidate.Percentage != 0.5 {
+		t.Fatalf("unexpected combined List B calculation: %#v", candidate)
 	}
 }
 

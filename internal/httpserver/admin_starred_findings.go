@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -28,6 +29,97 @@ type starredBreachGroup struct {
 	Day      string
 	Division string
 	Breaches []starred.Breach
+}
+
+func parseStarredBreachDateRange(r *http.Request) (from, to *time.Time, err error) {
+	parse := func(field, label string) (*time.Time, error) {
+		value := strings.TrimSpace(r.URL.Query().Get(field))
+		if value == "" {
+			return nil, nil
+		}
+		parsed, parseErr := time.Parse("2006-01-02", value)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid breach %s date", label)
+		}
+		return &parsed, nil
+	}
+	if from, err = parse("breach_from", "from"); err != nil {
+		return nil, nil, err
+	}
+	if to, err = parse("breach_to", "to"); err != nil {
+		return nil, nil, err
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, nil, fmt.Errorf("breach from date must be on or before the to date")
+	}
+	return from, to, nil
+}
+
+func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time) []starred.Breach {
+	if from == nil && to == nil {
+		return breaches
+	}
+	filtered := make([]starred.Breach, 0, len(breaches))
+	for _, breach := range breaches {
+		date := time.Date(breach.Appearance.MatchDate.Year(), breach.Appearance.MatchDate.Month(), breach.Appearance.MatchDate.Day(), 0, 0, 0, 0, time.UTC)
+		if from != nil && date.Before(*from) {
+			continue
+		}
+		if to != nil && date.After(*to) {
+			continue
+		}
+		filtered = append(filtered, breach)
+	}
+	return filtered
+}
+
+func starredFindingStatus(state starredFindingState) string {
+	if state.ID == 0 {
+		return "Outstanding"
+	}
+	switch state.Status {
+	case "accepted":
+		return "Accepted / closed"
+	case "draft":
+		return "Draft letter"
+	case "approved":
+		return "Approved / sending"
+	case "sent":
+		return "Letter sent"
+	case "send_failed":
+		return "Send failed"
+	default:
+		return state.Status
+	}
+}
+
+func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred.Breach, states map[string]starredFindingState, from, to *time.Time) {
+	rangeLabel := "all-dates"
+	if from != nil && to != nil {
+		rangeLabel = from.Format("2006-01-02") + "-to-" + to.Format("2006-01-02")
+	} else if from != nil {
+		rangeLabel = "from-" + from.Format("2006-01-02")
+	} else if to != nil {
+		rangeLabel = "through-" + to.Format("2006-01-02")
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-breaches-%d-%s.csv"`, year, rangeLabel))
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"Match date", "Day", "Division", "Competition", "Format", "Club", "Player", "Published starred name", "Play-Cricket Player ID", "List", "Team", "Evidence", "Review status", "Match ID", "Scorecard"})
+	for _, breach := range breaches {
+		evidence := "Review"
+		if breach.NeedsExemptionReview {
+			evidence = "Junior tag - verify exemption"
+		}
+		_ = writer.Write([]string{
+			breach.Appearance.MatchDate.Format("2006-01-02"), starredBreachDay(breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType),
+			breach.Appearance.CompetitionName, breach.Appearance.CompetitionType, breach.Appearance.ClubName, breach.Appearance.PlayerName, breach.StarredName,
+			strconv.FormatInt(breach.Appearance.PlayerID, 10), "List " + breach.ListType, breach.Appearance.TeamName, evidence,
+			starredFindingStatus(states[starredFindingKey(breach)]), strconv.FormatInt(breach.Appearance.MatchID, 10),
+			fmt.Sprintf("https://gmcl.co.uk/admin/starred-players?season=%d&view=scorecard&match_id=%d#card-detail", year, breach.Appearance.MatchID),
+		})
+	}
+	writer.Flush()
 }
 
 func starredBreachDay(b starred.Breach) string {

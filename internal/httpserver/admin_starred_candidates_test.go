@@ -11,7 +11,7 @@ func sampleStarredCandidate() starred.Candidate {
 	return starred.Candidate{
 		ClubName: "Example CC", ClubKey: "example", PlayerID: 12345,
 		PlayerName: "Alex Player", PlayerKey: "alexplayer",
-		FirstXILeague: 6, AllLeague: 10, Percentage: 0.6,
+		FirstXILeague: 4, TopTwoXILeague: 6, AllLeague: 10, Percentage: 0.6,
 	}
 }
 

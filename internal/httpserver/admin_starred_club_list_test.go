@@ -90,7 +90,7 @@ func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	}
 }
 
-func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T) {
+func TestStarredTeamCountsUsesMappedIdentityAllDaysAndDeduplicates(t *testing.T) {
 	periods := []starred.Period{
 		{ClubKey: "alpha", PlayerKey: "amy", PlayerName: "Amy Player"},
 		{ClubKey: "alpha", PlayerKey: "zed", PlayerName: "Zed Player"},
@@ -105,9 +105,9 @@ func TestStarredSaturdayTeamCountsUsesMappedIdentityAndDeduplicates(t *testing.T
 		{MatchID: 6, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 3, PlayerKey: "zed"},
 	}
 	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "amy", PlayerID: 99}}
-	got := starredSaturdayTeamCounts(periods, appearances, mappings)
-	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 1 {
-		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=1", got["alpha|amy"])
+	got := starredTeamCounts(periods, appearances, mappings)
+	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 2 {
+		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=2 including Sunday", got["alpha|amy"])
 	}
 	if got["alpha|zed"][3] != 1 {
 		t.Fatalf("name-matched Zed counts=%#v want 3rd=1", got["alpha|zed"])
