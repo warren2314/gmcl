@@ -69,7 +69,7 @@ services:
       - N8N_PROTOCOL=https
       - WEBHOOK_URL=https://n8n.gmcl.co.uk/
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      - GMCL_BASE_URL=https://gmcl.co.uk
+      - GMCL_BASE_URL=https://rules-staging.gmcl.co.uk
     env_file:
       - .env
     volumes:
