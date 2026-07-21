@@ -13,6 +13,15 @@ Authenticated questions are routed by intent, not by keyword alone:
   answer is narrowed to the kind of sanction asked about (cards, bans, fines,
   points) and to any player named in the question; matching compares recorded
   player names against the question, never a guess parsed from it.
+- **Submission and sign-in-link questions** — "Has my report gone in?",
+  "I never received the email link" — are answered for signed-in captains
+  with deterministic lookups over the same tables as the admin Link
+  Diagnostics page: recent submissions, magic-link tokens (valid, used, or
+  expired), link and reminder sends, active email overrides, and delivery
+  events including bounces. Email addresses are partially masked, and the
+  reply always ends with the remedy (request a fresh link from the home
+  page). Rulebook questions about submissions ("When must match details be
+  entered on Play-Cricket?") stay with the rules pipeline.
 - **Rulebook questions that merely mention cards** — "How many yellow cards
   before a suspension?", "Can we appeal a card?" — go to the cited retrieval
   pipeline like any other rules question. When phrasing is ambiguous the

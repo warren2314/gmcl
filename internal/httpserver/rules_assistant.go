@@ -121,6 +121,7 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 		recordIntent := isSanctionRecordQuestion(input.Question)
 		var recordAnswer func() (string, []map[string]any, error)
 		lookupCondition, lookupModel := "", ""
+		lookupStatus := "Checking approved sanctions…"
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
 			if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil && isSanctionLookupQuestion(input.Question) {
 				club, matched := importClub{}, false
@@ -135,21 +136,28 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 					lookupModel = "deterministic-admin-sanctions-v1"
 				}
 			}
-		} else if recordIntent {
-			if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {
+		} else if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {
+			if recordIntent {
 				recordAnswer = func() (string, []map[string]any, error) {
 					return s.captainSanctionsAnswer(ctx, captain, input.Question)
 				}
 				lookupCondition = "Authenticated lookup for your team only"
 				lookupModel = "deterministic-sanctions-v1"
+			} else if isSubmissionLookupQuestion(input.Question) {
+				recordAnswer = func() (string, []map[string]any, error) {
+					return s.captainSubmissionAnswer(ctx, captain, input.Question)
+				}
+				lookupCondition = "Authenticated lookup for your team only"
+				lookupModel = "deterministic-submissions-v1"
+				lookupStatus = "Checking your submissions and sign-in links…"
 			}
 		}
 		if recordAnswer != nil {
-			writeSSE(w, "status", map[string]any{"message": "Checking approved sanctions…"})
+			writeSSE(w, "status", map[string]any{"message": lookupStatus})
 			flusher.Flush()
 			answerText, caseCitations, lookupErr := recordAnswer()
 			if lookupErr != nil {
-				writeSSE(w, "error", map[string]any{"message": "I could not load the authorised sanction record. Please try again shortly."})
+				writeSSE(w, "error", map[string]any{"message": "I could not load the authorised record. Please try again shortly."})
 				flusher.Flush()
 				return
 			}
@@ -215,6 +223,12 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 
 var sanctionQuestionWordRE = regexp.MustCompile(`[a-z']+`)
 
+// normalisedQuestionText lowercases the question and strips punctuation so
+// phrase markers like " me " still match at the end of a sentence ("for me?").
+func normalisedQuestionText(question string) string {
+	return " " + strings.Join(sanctionQuestionWordRE.FindAllString(strings.ToLower(question), -1), " ") + " "
+}
+
 func questionContainsAny(paddedQuestion string, markers ...string) bool {
 	for _, marker := range markers {
 		if strings.Contains(paddedQuestion, marker) {
@@ -252,7 +266,7 @@ func isSanctionRecordQuestion(question string) bool {
 	if !isSanctionLookupQuestion(question) {
 		return false
 	}
-	q := " " + strings.ToLower(question) + " "
+	q := normalisedQuestionText(question)
 	if questionContainsAny(q, "what happens", " if we ", " if i ", " if a ", " can we ", " can i ", " can a ", " could ", " would ", " should ", " how do ", " how does ", " allowed ", " rule say", " rules say", " under rule ", " process ", " procedure ", " explain ", " tell me ", " what does ", " mean ", " fine to ", " fine if ", " okay ", " ok ") {
 		return false
 	}
@@ -344,7 +358,7 @@ func sanctionRecordLine(row sanctionRecordRow, includeTeam bool) string {
 // a name parsed out of the question — so it stays deterministic. Surnames that
 // double as everyday cricket words are ignored to avoid false focus.
 func focusSanctionRows(question string, rows []sanctionRecordRow) []sanctionRecordRow {
-	q := " " + strings.Join(sanctionQuestionWordRE.FindAllString(strings.ToLower(question), -1), " ") + " "
+	q := normalisedQuestionText(question)
 	commonWords := map[string]bool{"ball": true, "wood": true, "field": true, "green": true, "day": true, "may": true, "west": true, "east": true, "north": true, "south": true, "young": true, "long": true, "small": true, "little": true, "white": true, "black": true, "brown": true}
 	var focused []sanctionRecordRow
 	for _, row := range rows {
