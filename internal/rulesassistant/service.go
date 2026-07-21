@@ -605,6 +605,28 @@ func isJuniorCupEligibilityQuery(question string) bool {
 		(strings.Contains(question, "eligible") || strings.Contains(question, "play") || strings.Contains(question, "game") || strings.Contains(question, "entry"))
 }
 
+// lexicalSynonyms maps everyday phrasing to the vocabulary the published
+// rules actually use, so the full-text channel can find the right chunk even
+// when the question never uses rulebook wording. The embedding channel covers
+// broader paraphrases; this list stays small and unambiguous.
+var lexicalSynonyms = map[string][]string{
+	"rain":      {"weather", "abandoned"},
+	"rained":    {"weather", "abandoned"},
+	"rainy":     {"weather"},
+	"washout":   {"weather", "abandoned"},
+	"cancelled": {"abandoned"},
+	"keeper":    {"wicketkeeper"},
+	"sub":       {"substitute"},
+	"subs":      {"substitute"},
+	"banned":    {"suspension"},
+	"suspended": {"suspension"},
+	"kids":      {"junior"},
+	"child":     {"junior"},
+	"children":  {"junior"},
+	"youth":     {"junior"},
+	"pro":       {"professional"},
+}
+
 func buildLexicalQuery(question string) string {
 	stop := map[string]bool{
 		"a": true, "about": true, "an": true, "and": true, "are": true, "at": true,
@@ -625,6 +647,14 @@ func buildLexicalQuery(question string) string {
 		}
 		seen[word] = true
 		terms = append(terms, word)
+	}
+	for _, word := range words {
+		for _, synonym := range lexicalSynonyms[word] {
+			if !seen[synonym] {
+				seen[synonym] = true
+				terms = append(terms, synonym)
+			}
+		}
 	}
 	if seen["summer"] && seen["camp"] && !seen["cup"] {
 		terms = append(terms, "cup")
@@ -769,8 +799,28 @@ func stripInternalCitationMarkers(value string) string {
 }
 
 func needsPreviousQuestion(question string) bool {
-	words := searchWordRE.FindAllString(strings.ToLower(question), -1)
-	if len(words) == 0 || len(words) > 8 {
+	trimmed := strings.ToLower(strings.TrimSpace(question))
+	words := searchWordRE.FindAllString(trimmed, -1)
+	if len(words) == 0 {
+		return false
+	}
+	// Connective openers and anaphora depend on the previous turn even when a
+	// domain keyword is present: "And what about the cup?" cannot be retrieved
+	// on its own.
+	if len(words) <= 12 {
+		for _, opener := range []string{"and ", "but ", "so ", "also ", "what about", "how about", "what else", "same "} {
+			if strings.HasPrefix(trimmed, opener) {
+				return true
+			}
+		}
+		for _, word := range words {
+			switch word {
+			case "that", "this", "those", "these", "they", "them", "he", "she", "him", "her", "same", "again", "instead":
+				return true
+			}
+		}
+	}
+	if len(words) > 8 {
 		return false
 	}
 	for _, word := range words {

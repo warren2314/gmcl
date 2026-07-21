@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -110,54 +111,64 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 			http.Error(w, "streaming unavailable", http.StatusInternalServerError)
 			return
 		}
-		statusMessage := "Checking the published rules…"
-		if strings.HasPrefix(r.URL.Path, "/admin/") && isSanctionLookupQuestion(input.Question) {
-			statusMessage = "Checking approved sanctions…"
-		}
-		writeSSE(w, "status", map[string]any{"message": statusMessage})
-		flusher.Flush()
-		// Sanction questions use deterministic, authenticated lookups. Captains
-		// remain restricted to their own team; admins can name any club while
-		// testing from the protected /admin endpoint.
-		if isSanctionLookupQuestion(input.Question) {
-			var answerText, lookupCondition, lookupModel string
-			var caseCitations []map[string]any
-			var lookupErr error
-			authorisedLookup := false
-			if strings.HasPrefix(r.URL.Path, "/admin/") {
-				if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil {
-					authorisedLookup = true
-					answerText, caseCitations, lookupErr = s.adminSanctionsAnswer(ctx, input.Question)
+		// Questions about the asker's own disciplinary records use deterministic,
+		// authenticated lookups. Captains remain restricted to their own team;
+		// admins can name any club while testing from the protected /admin
+		// endpoint. Rulebook questions that merely mention cards, bans, or fines
+		// ("how many yellow cards before a suspension?") must continue to the
+		// cited retrieval pipeline below, so record routing needs record intent,
+		// not just a sanction term.
+		recordIntent := isSanctionRecordQuestion(input.Question)
+		var recordAnswer func() (string, []map[string]any, error)
+		lookupCondition, lookupModel := "", ""
+		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil && isSanctionLookupQuestion(input.Question) {
+				club, matched := importClub{}, false
+				if clubs, clubsErr := s.loadSanctionLookupClubs(ctx); clubsErr == nil {
+					club, matched = matchSanctionLookupClub(input.Question, clubs)
+				}
+				if recordIntent || matched {
+					recordAnswer = func() (string, []map[string]any, error) {
+						return s.adminSanctionsAnswer(ctx, input.Question, club, matched)
+					}
 					lookupCondition = "Authenticated admin lookup across approved club sanctions"
 					lookupModel = "deterministic-admin-sanctions-v1"
 				}
-			} else if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {
-				authorisedLookup = true
-				answerText, caseCitations, lookupErr = s.captainSanctionsAnswer(ctx, captain)
+			}
+		} else if recordIntent {
+			if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {
+				recordAnswer = func() (string, []map[string]any, error) {
+					return s.captainSanctionsAnswer(ctx, captain, input.Question)
+				}
 				lookupCondition = "Authenticated lookup for your team only"
 				lookupModel = "deterministic-sanctions-v1"
 			}
-			if authorisedLookup {
-				if lookupErr != nil {
-					writeSSE(w, "error", map[string]any{"message": "I could not load the authorised sanction record. Please try again shortly."})
-					flusher.Flush()
-					return
-				}
-				messageID := uuid.New()
-				citationsJSON, _ := json.Marshal(caseCitations)
-				_, storeErr := s.DB.Exec(ctx, `INSERT INTO rule_chat_messages(id,conversation_id,release_id,user_question,assistant_answer,clarification_needed,citations,retrieved_chunk_ids,model,prompt_tokens,completion_tokens,latency_ms)
-					VALUES($1,$2,NULL,$3,$4,FALSE,$5,'[]'::jsonb,$6,0,0,0)`, messageID, conversationID, input.Question, answerText, citationsJSON, lookupModel)
-				if storeErr != nil {
-					writeSSE(w, "error", map[string]any{"message": "The lookup completed but could not be recorded."})
-					flusher.Flush()
-					return
-				}
-				writeSSE(w, "answer", map[string]any{"message_id": messageID, "answer": answerText, "clarification_needed": false, "clarification_questions": []string{}, "applicable_conditions": []string{lookupCondition}, "citations": caseCitations, "rules_as_of": time.Now().In(s.LondonLoc).Format("2 January 2006")})
-				writeSSE(w, "done", map[string]bool{"ok": true})
+		}
+		if recordAnswer != nil {
+			writeSSE(w, "status", map[string]any{"message": "Checking approved sanctions…"})
+			flusher.Flush()
+			answerText, caseCitations, lookupErr := recordAnswer()
+			if lookupErr != nil {
+				writeSSE(w, "error", map[string]any{"message": "I could not load the authorised sanction record. Please try again shortly."})
 				flusher.Flush()
 				return
 			}
+			messageID := uuid.New()
+			citationsJSON, _ := json.Marshal(caseCitations)
+			_, storeErr := s.DB.Exec(ctx, `INSERT INTO rule_chat_messages(id,conversation_id,release_id,user_question,assistant_answer,clarification_needed,citations,retrieved_chunk_ids,model,prompt_tokens,completion_tokens,latency_ms)
+				VALUES($1,$2,NULL,$3,$4,FALSE,$5,'[]'::jsonb,$6,0,0,0)`, messageID, conversationID, input.Question, answerText, citationsJSON, lookupModel)
+			if storeErr != nil {
+				writeSSE(w, "error", map[string]any{"message": "The lookup completed but could not be recorded."})
+				flusher.Flush()
+				return
+			}
+			writeSSE(w, "answer", map[string]any{"message_id": messageID, "answer": answerText, "clarification_needed": false, "clarification_questions": []string{}, "applicable_conditions": []string{lookupCondition}, "citations": caseCitations, "rules_as_of": time.Now().In(s.LondonLoc).Format("2 January 2006")})
+			writeSSE(w, "done", map[string]bool{"ok": true})
+			flusher.Flush()
+			return
 		}
+		writeSSE(w, "status", map[string]any{"message": "Checking the published rules…"})
+		flusher.Flush()
 		conversationContext := ""
 		previousUserQuestion := ""
 		historyRows, _ := s.DB.Query(ctx, `SELECT user_question,assistant_answer FROM rule_chat_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 3`, conversationID)
@@ -202,14 +213,176 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 	}
 }
 
-func isSanctionLookupQuestion(q string) bool {
-	q = strings.ToLower(q)
-	for _, term := range []string{"sanction", "card", "ban", "fine", "points deduction", "appeal", "totting"} {
-		if strings.Contains(q, term) {
+var sanctionQuestionWordRE = regexp.MustCompile(`[a-z']+`)
+
+func questionContainsAny(paddedQuestion string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(paddedQuestion, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// isSanctionLookupQuestion reports whether a question mentions disciplinary
+// sanctions at all. Matching is on whole words so "abandoned" does not count
+// as "ban". It is deliberately broad: isSanctionRecordQuestion decides whether
+// the asker wants their actual records rather than the rulebook.
+func isSanctionLookupQuestion(q string) bool {
+	words := map[string]bool{}
+	for _, word := range sanctionQuestionWordRE.FindAllString(strings.ToLower(q), -1) {
+		words[word] = true
+	}
+	for _, term := range []string{"sanction", "sanctions", "card", "cards", "carded", "ban", "bans", "banned", "fine", "fines", "fined", "appeal", "appeals", "appealed", "totting", "suspension", "suspensions", "suspended", "deduction", "deductions", "docked"} {
+		if words[term] {
+			return true
+		}
+	}
+	return false
+}
+
+// isSanctionRecordQuestion decides whether an authenticated question asks
+// about the asker's actual disciplinary records ("why do we have a yellow
+// card?") rather than what the rulebook says ("how many yellow cards before a
+// suspension?"). Only record questions may use the deterministic database
+// lookup; everything else must reach the cited rules pipeline. When phrasing
+// is ambiguous the rules pipeline wins, because it can never leak or misstate
+// a case record.
+func isSanctionRecordQuestion(question string) bool {
+	if !isSanctionLookupQuestion(question) {
+		return false
+	}
+	q := " " + strings.ToLower(question) + " "
+	if questionContainsAny(q, "what happens", " if we ", " if i ", " if a ", " can we ", " can i ", " can a ", " could ", " would ", " should ", " how do ", " how does ", " allowed ", " rule say", " rules say", " under rule ", " process ", " procedure ", " explain ", " tell me ", " what does ", " mean ", " fine to ", " fine if ", " okay ", " ok ") {
+		return false
+	}
+	if questionContainsAny(q, " my ", " our ", " we ", " i ") {
+		return true
+	}
+	// Receipt phrasing about a named person: "Why did Joe Bloggs get a red
+	// card?". Generic subjects stay with the rulebook.
+	if questionContainsAny(q, "why do ", "why does ", "why did ", "why has ", "why have ", "why was ", "why were ") &&
+		questionContainsAny(q, " got ", " get ", " given ", " issued ", " received ", " receive ", " has ", " have ", " was ", " were ") {
+		return !questionContainsAny(q, " a player ", " a team ", " a club ", " the league ", " gmcl ", " someone ", " anyone ")
+	}
+	return questionContainsAny(q, " show ", " list ")
+}
+
+// sanctionKindFilter narrows a record lookup to the kinds of sanction the
+// question actually asks about. A nil slice means every kind; the noun is
+// used in the reply ("card", "ban", "fine", "points", "sanction").
+func sanctionKindFilter(question string) ([]string, string) {
+	q := strings.ToLower(question)
+	var kinds []string
+	var nouns []string
+	add := func(noun string, types ...string) {
+		nouns = append(nouns, noun)
+		for _, t := range types {
+			duplicate := false
+			for _, existing := range kinds {
+				if existing == t {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				kinds = append(kinds, t)
+			}
+		}
+	}
+	if questionContainsAny(q, "card", "totting", "yellow", "red") {
+		add("card", "yellow_card", "red_card", "suspended_red")
+	}
+	if questionContainsAny(q, "ban", "suspen") {
+		add("ban", "player_ban", "team_ban", "suspended_red")
+	}
+	if questionContainsAny(q, "fine", "fined") {
+		add("fine", "fine")
+	}
+	if questionContainsAny(q, "deduct", "docked", "points") {
+		add("points", "card_points", "points_adjustment")
+	}
+	if len(nouns) != 1 {
+		if len(nouns) == 0 {
+			return nil, "sanction"
+		}
+		return kinds, "sanction"
+	}
+	return kinds, nouns[0]
+}
+
+type sanctionRecordRow struct {
+	CaseID                                                   int64
+	Ref, Team, Player, Reason, Status, Effect, RuleRef, Date string
+	Points                                                   int
+}
+
+func sanctionRecordLine(row sanctionRecordRow, includeTeam bool) string {
+	detail := fmt.Sprintf("%s: %s", row.Ref, effectLabel(row.Effect))
+	if row.Player != "" {
+		detail += " for " + row.Player
+	}
+	if includeTeam && row.Team != "" {
+		detail += " (" + row.Team + ")"
+	}
+	detail += " — " + row.Reason + " (" + row.Status
+	if row.Date != "" {
+		detail += ", effective " + row.Date
+	}
+	if row.Points != 0 {
+		detail += fmt.Sprintf(", %d-point deduction", row.Points)
+	}
+	if row.RuleRef != "" {
+		detail += ", rule " + row.RuleRef
+	}
+	detail += ")"
+	return detail
+}
+
+// focusSanctionRows narrows records to any player actually named in the
+// question. Matching compares the recorded names against the question — never
+// a name parsed out of the question — so it stays deterministic. Surnames that
+// double as everyday cricket words are ignored to avoid false focus.
+func focusSanctionRows(question string, rows []sanctionRecordRow) []sanctionRecordRow {
+	q := " " + strings.Join(sanctionQuestionWordRE.FindAllString(strings.ToLower(question), -1), " ") + " "
+	commonWords := map[string]bool{"ball": true, "wood": true, "field": true, "green": true, "day": true, "may": true, "west": true, "east": true, "north": true, "south": true, "young": true, "long": true, "small": true, "little": true, "white": true, "black": true, "brown": true}
+	var focused []sanctionRecordRow
+	for _, row := range rows {
+		name := strings.ToLower(strings.TrimSpace(row.Player))
+		if name == "" {
+			continue
+		}
+		if strings.Contains(q, " "+name+" ") {
+			focused = append(focused, row)
+			continue
+		}
+		parts := strings.Fields(name)
+		surname := parts[len(parts)-1]
+		if len(surname) >= 4 && !commonWords[surname] && strings.Contains(q, " "+surname+" ") {
+			focused = append(focused, row)
+		}
+	}
+	if len(focused) == 0 {
+		return rows
+	}
+	return focused
+}
+
+func (s *Server) loadSanctionLookupClubs(ctx context.Context) ([]importClub, error) {
+	clubRows, err := s.DB.Query(ctx, `SELECT id,name FROM clubs ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer clubRows.Close()
+	clubs := []importClub{}
+	for clubRows.Next() {
+		var club importClub
+		if err = clubRows.Scan(&club.ID, &club.Name); err != nil {
+			return nil, err
+		}
+		clubs = append(clubs, club)
+	}
+	return clubs, clubRows.Err()
 }
 
 func matchSanctionLookupClub(question string, clubs []importClub) (importClub, bool) {
@@ -226,33 +399,29 @@ func matchSanctionLookupClub(question string, clubs []importClub) (importClub, b
 	return best, bestLength > 0
 }
 
-func (s *Server) adminSanctionsAnswer(ctx context.Context, question string) (string, []map[string]any, error) {
-	clubRows, err := s.DB.Query(ctx, `SELECT id,name FROM clubs ORDER BY name`)
-	if err != nil {
-		return "", nil, err
+func filterSanctionRowsByKind(rows []sanctionRecordRow, kinds []string) []sanctionRecordRow {
+	if kinds == nil {
+		return rows
 	}
-	clubs := []importClub{}
-	for clubRows.Next() {
-		var club importClub
-		if err = clubRows.Scan(&club.ID, &club.Name); err != nil {
-			clubRows.Close()
-			return "", nil, err
+	var out []sanctionRecordRow
+	for _, row := range rows {
+		for _, kind := range kinds {
+			if row.Effect == kind {
+				out = append(out, row)
+				break
+			}
 		}
-		clubs = append(clubs, club)
 	}
-	if err = clubRows.Err(); err != nil {
-		clubRows.Close()
-		return "", nil, err
-	}
-	clubRows.Close()
-	club, matched := matchSanctionLookupClub(question, clubs)
+	return out
+}
+
+func (s *Server) adminSanctionsAnswer(ctx context.Context, question string, club importClub, matched bool) (string, []map[string]any, error) {
 	if !matched {
 		return "Please name the club in your sanctions question, for example: “Why does Woodley have cards?” I will only return approved records and will not expose evidence, correspondence, reporter details, or internal notes.", nil, nil
 	}
-
-	cardsOnly := strings.Contains(strings.ToLower(question), "card") || strings.Contains(strings.ToLower(question), "totting")
+	kinds, kindNoun := sanctionKindFilter(question)
 	rows, err := s.DB.Query(ctx, `
-		SELECT c.id,c.reference,COALESCE(t.name,''),COALESCE(c.public_summary,''),e.status,e.effect_type,
+		SELECT c.id,c.reference,COALESCE(t.name,''),COALESCE(NULLIF(e.player_name,''),COALESCE(c.player_name,'')),COALESCE(c.public_summary,''),e.status,e.effect_type,
 		       COALESCE(e.points,0),COALESCE(d.rule_reference,''),
 		       COALESCE(to_char(COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) AT TIME ZONE 'Europe/London','DD Mon YYYY'),'')
 		FROM sanction_cases c
@@ -260,112 +429,109 @@ func (s *Server) adminSanctionsAnswer(ctx context.Context, question string) (str
 		JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
 		LEFT JOIN teams t ON t.id=c.team_id
 		WHERE c.club_id=$1 AND c.status IN ('approved','published','appealed','closed')
-		  AND (NOT $2::boolean OR e.effect_type IN ('yellow_card','red_card','suspended_red'))
 		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
-		ORDER BY COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) DESC LIMIT 20`, club.ID, cardsOnly)
+		ORDER BY COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) DESC LIMIT 25`, club.ID)
 	if err != nil {
 		return "", nil, err
 	}
 	defer rows.Close()
-	lines := []string{}
-	citations := []map[string]any{}
+	var all []sanctionRecordRow
 	for rows.Next() {
-		var caseID int64
-		var ref, team, reason, status, effect, ruleRef, date string
-		var points int
-		if err = rows.Scan(&caseID, &ref, &team, &reason, &status, &effect, &points, &ruleRef, &date); err != nil {
+		var row sanctionRecordRow
+		if err = rows.Scan(&row.CaseID, &row.Ref, &row.Team, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date); err != nil {
 			return "", nil, err
 		}
-		detail := fmt.Sprintf("%s: %s", ref, effectLabel(effect))
-		if team != "" {
-			detail += " for " + team
-		}
-		detail += " — " + reason + " (" + status
-		if date != "" {
-			detail += ", effective " + date
-		}
-		if points != 0 {
-			detail += fmt.Sprintf(", %d-point deduction", points)
-		}
-		if ruleRef != "" {
-			detail += ", rule " + ruleRef
-		}
-		detail += ")"
-		lines = append(lines, detail)
-		citations = append(citations, map[string]any{"title": "Case " + ref, "url": fmt.Sprintf("/admin/cases/%d", caseID), "rule_reference": ruleRef})
+		all = append(all, row)
 	}
 	if err = rows.Err(); err != nil {
 		return "", nil, err
 	}
-	if len(lines) == 0 {
-		kind := "sanctions"
-		if cardsOnly {
-			kind = "card sanctions"
-		}
-		return fmt.Sprintf("I found no approved %s for %s. Staged imports, draft proposals, evidence, and internal notes are deliberately excluded from this lookup.", kind, club.Name), citations, nil
+	if len(all) == 0 {
+		return fmt.Sprintf("I found no approved sanctions for %s. Staged imports, draft proposals, evidence, and internal notes are deliberately excluded from this lookup.", club.Name), []map[string]any{}, nil
 	}
-	kind := "approved sanction"
-	if cardsOnly {
-		kind = "approved card"
+	shown := focusSanctionRows(question, filterSanctionRowsByKind(all, kinds))
+	intro := fmt.Sprintf("%s has %d approved %s record(s). These are the recorded reasons:", club.Name, len(shown), kindNoun)
+	if len(shown) == 0 {
+		shown = all
+		intro = fmt.Sprintf("%s has no approved %s records. It does have %d other approved sanction record(s):", club.Name, kindNoun, len(shown))
+	} else if len(shown) < len(all) {
+		intro = fmt.Sprintf("%s has %d approved %s record(s) matching your question (of %d approved records in total). These are the recorded reasons:", club.Name, len(shown), kindNoun, len(all))
 	}
-	return fmt.Sprintf("%s has %d %s record(s). These are the recorded reasons:\n\n%s\n\nThis admin lookup excludes evidence, correspondence, reporter details, and internal notes. Open a cited case to inspect the authorised case record.", club.Name, len(lines), kind, strings.Join(lines, "\n")), citations, nil
+	lines := make([]string, 0, len(shown))
+	citations := make([]map[string]any, 0, len(shown))
+	for _, row := range shown {
+		lines = append(lines, sanctionRecordLine(row, true))
+		citations = append(citations, map[string]any{"title": "Case " + row.Ref, "url": fmt.Sprintf("/admin/cases/%d", row.CaseID), "rule_reference": row.RuleRef})
+	}
+	return intro + "\n\n" + strings.Join(lines, "\n") + "\n\nThis admin lookup excludes evidence, correspondence, reporter details, and internal notes. Open a cited case to inspect the authorised case record.", citations, nil
 }
 
-func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSession) (string, []map[string]any, error) {
+func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSession, question string) (string, []map[string]any, error) {
+	kinds, kindNoun := sanctionKindFilter(question)
 	rows, err := s.DB.Query(ctx, `
-		SELECT c.reference,c.public_summary,c.public_status,e.effect_type,COALESCE(e.points,0),
+		SELECT c.reference,COALESCE(NULLIF(e.player_name,''),COALESCE(c.player_name,'')),c.public_summary,c.public_status,e.effect_type,COALESCE(e.points,0),
 		       COALESCE(d.rule_reference,''),COALESCE(to_char(e.starts_at AT TIME ZONE 'Europe/London','DD Mon YYYY'),'')
 		FROM sanction_cases c
 		JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved'
 		JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
 		WHERE c.team_id=$1 AND c.status IN ('approved','published','appealed','closed')
 		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
-		ORDER BY COALESCE(e.starts_at,c.approved_at) DESC LIMIT 10`, sess.TeamID)
+		ORDER BY COALESCE(e.starts_at,c.approved_at) DESC LIMIT 25`, sess.TeamID)
 	if err != nil {
 		return "", nil, err
 	}
 	defer rows.Close()
-	lines := []string{}
-	citations := []map[string]any{}
+	var all []sanctionRecordRow
 	yellowBalance, redCount := 0, 0
 	for rows.Next() {
-		var ref, reason, status, effect, ruleRef, date string
-		var points int
-		if err = rows.Scan(&ref, &reason, &status, &effect, &points, &ruleRef, &date); err != nil {
+		var row sanctionRecordRow
+		if err = rows.Scan(&row.Ref, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date); err != nil {
 			return "", nil, err
 		}
-		detail := fmt.Sprintf("%s: %s — %s (%s", ref, effectLabel(effect), reason, status)
-		if date != "" {
-			detail += ", effective " + date
-		}
-		if points != 0 {
-			detail += fmt.Sprintf(", %d-point deduction", points)
-		}
-		if ruleRef != "" {
-			detail += ", rule " + ruleRef
-		}
-		detail += ")"
-		lines = append(lines, detail)
-		citations = append(citations, map[string]any{"title": "Case " + ref, "url": "/captain/discipline", "rule_reference": ruleRef})
-		if effect == "yellow_card" && (status == "active" || status == "suspended") {
+		all = append(all, row)
+		if row.Effect == "yellow_card" && (row.Status == "active" || row.Status == "suspended") {
 			yellowBalance++
 		}
-		if effect == "red_card" {
+		if row.Effect == "red_card" {
 			redCount++
 		}
 	}
 	if err = rows.Err(); err != nil {
 		return "", nil, err
 	}
-	if len(lines) == 0 {
-		return "There are no approved sanctions recorded for your team. I can still answer a general question about the published rules.", citations, nil
+	if len(all) == 0 {
+		return "There are no approved sanctions recorded for your team. I can still answer a general question about the published rules.", []map[string]any{}, nil
 	}
-	remaining := 3 - (yellowBalance % 3)
-	if remaining == 0 {
-		remaining = 3
+	shown := focusSanctionRows(question, filterSanctionRowsByKind(all, kinds))
+	intro := fmt.Sprintf("Your team has %d approved %s record(s).", len(shown), kindNoun)
+	if len(shown) == 0 {
+		shown = all
+		intro = fmt.Sprintf("Your team has no approved %s records. It does have %d other approved sanction record(s).", kindNoun, len(shown))
+	} else if len(shown) < len(all) {
+		intro = fmt.Sprintf("Your team has %d approved %s record(s) matching your question, of %d approved records in total.", len(shown), kindNoun, len(all))
 	}
-	answer := fmt.Sprintf("Your team has %d approved sanction record(s). The current recorded balance is %d effective yellow card(s) and %d red card(s); on that balance, %d further yellow card(s) would reach the next three-yellow threshold.\n\n%s\n\nThis lookup excludes evidence, correspondence, reporter details, and internal notes. Quote the case reference if you need to challenge or appeal a record.", len(lines), yellowBalance, redCount, remaining, strings.Join(lines, "\n"))
-	return answer, citations, nil
+	// The card balance only helps when the captain asked about cards (or asked
+	// generally); a fines question should not lead with yellow-card arithmetic.
+	includeBalance := kinds == nil
+	for _, kind := range kinds {
+		if kind == "yellow_card" || kind == "red_card" || kind == "suspended_red" {
+			includeBalance = true
+		}
+	}
+	if includeBalance {
+		remaining := 3 - (yellowBalance % 3)
+		if remaining == 0 {
+			remaining = 3
+		}
+		intro += fmt.Sprintf(" The current recorded balance is %d effective yellow card(s) and %d red card(s); on that balance, %d further yellow card(s) would reach the next three-yellow threshold.", yellowBalance, redCount, remaining)
+	}
+	lines := make([]string, 0, len(shown))
+	citations := make([]map[string]any, 0, len(shown))
+	for _, row := range shown {
+		lines = append(lines, sanctionRecordLine(row, false))
+		citations = append(citations, map[string]any{"title": "Case " + row.Ref, "url": "/captain/discipline", "rule_reference": row.RuleRef})
+	}
+	return intro + "\n\n" + strings.Join(lines, "\n") + "\n\nThis lookup excludes evidence, correspondence, reporter details, and internal notes. Quote the case reference if you need to challenge or appeal a record. If you wanted to know what the rulebook says instead, ask the question in general terms — for example: “What happens after three yellow cards?”", citations, nil
 }
 
 func normaliseRulesScope(level, competition string) (string, bool) {

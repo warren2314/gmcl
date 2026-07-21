@@ -142,6 +142,34 @@ func TestNeedsPreviousQuestionOnlyForDependentFollowups(t *testing.T) {
 	}
 }
 
+func TestNeedsPreviousQuestionKeepsContextForConnectivesAndAnaphora(t *testing.T) {
+	// Domain keywords used to sever context even when the question cannot
+	// stand alone: "And what about the cup?" is meaningless without history.
+	for _, question := range []string{"And what about the cup?", "But does that apply to junior players?", "Also in the league?", "Does that rule apply on Sunday?"} {
+		if !needsPreviousQuestion(question) {
+			t.Fatalf("dependent follow-up %q lost the previous question", question)
+		}
+	}
+	if needsPreviousQuestion("How many overs does a junior bowl in a league match?") {
+		t.Fatal("long self-contained question was tied to conversation history")
+	}
+}
+
+func TestBuildLexicalQueryExpandsEverydayPhrasing(t *testing.T) {
+	got := buildLexicalQuery("What if the game is rained off?")
+	for _, term := range []string{"weather", "abandoned", "rained"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
+	got = buildLexicalQuery("Can the keeper use a sub?")
+	for _, term := range []string{"wicketkeeper", "substitute"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
+}
+
 func TestStripInternalCitationMarkers(t *testing.T) {
 	input := "Weather applies here. [chunk 491] It may use DLS. [Chunk 498] Final point. [505]"
 	want := "Weather applies here. It may use DLS. Final point."
