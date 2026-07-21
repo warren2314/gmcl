@@ -148,8 +148,10 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 	}
 
 	missingReportItem := ""
+	starredReplacementItem := ""
 	if role == "super_admin" {
 		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions</a></li>`
+		starredReplacementItem = navLink("/admin/starred-player-replacements", "Player Replacements")
 	}
 
 	sanctionsMenu := fmt.Sprintf(`
@@ -206,6 +208,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		%s
 		%s
 		%s
+		%s
 		%s`,
 		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
 		dropdownActive("/admin/rankings", "/admin/pitch-marks"),
@@ -215,6 +218,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		navLink("/admin/rules-assistant", "A1 Rules Assistant"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),
+		starredReplacementItem,
 	)
 
 	systemMenu := fmt.Sprintf(`

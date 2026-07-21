@@ -233,7 +233,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	for level := 1; level <= 6; level++ {
 		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
 	}
-	fmt.Fprint(w, `<th class="text-center">Total</th><th class="text-center">Rule games</th><th class="text-center">Rule %</th></tr></thead><tbody>`)
+	fmt.Fprint(w, `<th class="text-center">Total</th><th class="text-center">Rule games</th><th class="text-center">Rule %</th><th>Action</th></tr></thead><tbody>`)
 	for _, row := range rows {
 		badgeClass, badgeLabel := signalBadge(row.Signal)
 		listLabel := "—"
@@ -249,10 +249,15 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			}
 			fmt.Fprintf(w, `<td class="text-center text-nowrap">%d <span class="text-muted small">(%.0f%%)</span></td>`, row.Counts[level], percentage)
 		}
-		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%.1f%%</td></tr>`, row.Total, row.RuleGames, row.RulePct)
+		action := ""
+		if row.ListType != "" {
+			q := url.Values{"season": {strconv.Itoa(year)}, "club_key": {row.ClubKey}, "player_key": {row.PlayerKey}, "green": {strconv.FormatFloat(green, 'f', 1, 64)}, "orange": {strconv.FormatFloat(orange, 'f', 1, 64)}}
+			action = fmt.Sprintf(`<a class="btn btn-sm btn-outline-danger text-nowrap" href="/admin/starred-player-replacements/new?%s">Request replacement</a>`, escapeHTML(q.Encode()))
+		}
+		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%.1f%%</td><td>%s</td></tr>`, row.Total, row.RuleGames, row.RulePct, action)
 	}
 	if len(rows) == 0 {
-		fmt.Fprint(w, `<tr><td colspan="13" class="text-center text-muted py-3">No classified open-age XI appearances were found for this selection.</td></tr>`)
+		fmt.Fprint(w, `<tr><td colspan="14" class="text-center text-muted py-3">No classified open-age XI appearances were found for this selection.</td></tr>`)
 	}
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
