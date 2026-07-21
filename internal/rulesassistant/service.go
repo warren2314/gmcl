@@ -625,6 +625,12 @@ var lexicalSynonyms = map[string][]string{
 	"children":  {"junior"},
 	"youth":     {"junior"},
 	"pro":       {"professional"},
+	// A competition's "format" is written as duration, overs, or deliveries.
+	"format":  {"duration", "overs", "deliveries"},
+	"formats": {"duration", "overs", "deliveries"},
+	"ball":    {"deliveries"},
+	"balls":   {"deliveries"},
+	"hundred": {"100"},
 }
 
 func buildLexicalQuery(question string) string {

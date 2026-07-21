@@ -168,6 +168,20 @@ func TestBuildLexicalQueryExpandsEverydayPhrasing(t *testing.T) {
 			t.Fatalf("query %q does not contain synonym %q", got, term)
 		}
 	}
+	// Gold question 102: the rulebook writes a competition's format as
+	// duration and deliveries ("100 deliveries per innings"), never "format".
+	got = buildLexicalQuery("What format is the junior summer cup played in?")
+	for _, term := range []string{"duration", "deliveries", "overs"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
+	got = buildLexicalQuery("Is the summer cup hundred ball?")
+	for _, term := range []string{"100", "deliveries"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
 }
 
 func TestStripInternalCitationMarkers(t *testing.T) {
