@@ -753,6 +753,9 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanction Email")
 		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
+		if sanctionsEmailDisabled() {
+			fmt.Fprint(w, `<div class="container" style="max-width:800px"><div class="alert alert-warning"><strong>Testing mode:</strong> sanctions email sending is disabled in this environment. Drafts can be reviewed, but they cannot be approved or sent.</div></div>`)
+		}
 
 		cardLabel := "Yellow Card"
 		if sd.Colour == "red" {
@@ -790,6 +793,10 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
       </div>`, escapeHTML(pointsVal))
 		}
 
+		sendButton := `<button class="btn btn-success" type="submit">Approve &amp; Send</button>`
+		if sanctionsEmailDisabled() {
+			sendButton = `<button class="btn btn-success" type="button" disabled>Sending disabled</button>`
+		}
 		fmt.Fprintf(w, `
       <div class="mb-3">
         <label class="form-label fw-semibold">Email body</label>
@@ -797,7 +804,7 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
       </div>
     </div>
     <div class="card-footer d-flex gap-2">
-      <button class="btn btn-success" type="submit">Approve &amp; Send</button>
+      %s
     </div>
   </div>
 </form>
@@ -806,7 +813,7 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
   <button class="btn btn-outline-secondary btn-sm" type="submit"
           onclick="return confirm('Skip sending the email for this sanction?')">Skip email</button>
 </form>
-</div>`, escapeHTML(sd.EmailBody), sd.ID, csrfToken)
+</div>`, escapeHTML(sd.EmailBody), sendButton, sd.ID, csrfToken)
 
 		pageFooter(w)
 	}
@@ -815,6 +822,10 @@ func (s *Server) handleAdminSanctionEmailPage() http.HandlerFunc {
 // handleAdminSanctionEmailApprove saves edits, sets email_status=approved, and sends to all recipients.
 func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if sanctionsEmailDisabled() {
+			http.Error(w, "sanctions email sending is disabled in this environment", http.StatusServiceUnavailable)
+			return
+		}
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
 			return

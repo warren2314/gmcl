@@ -25,6 +25,7 @@ APP_ENV=staging
 APP_BASE_URL=https://${domain}
 PUBLIC_BASE_URL=https://${domain}
 PUBLIC_ALT_BASE_URL=https://${domain}
+SANCTIONS_EMAIL_DISABLED=true
 ENABLE_HSTS=1
 
 MIGRATE=1

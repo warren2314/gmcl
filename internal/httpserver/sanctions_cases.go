@@ -428,11 +428,18 @@ func (s *Server) handleSanctionReportSubmit() http.HandlerFunc {
 			return
 		}
 		link := sanctionsBaseURL() + "/sanctions/report/verify?token=" + raw
-		_ = email.NewFromEnv().Send(emailAddr, "Verify GMCL sanctions report "+ref, "Please verify your report.\n\n"+link+"\n\nCase reference: "+ref)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pageHead(w, "Check your email")
+		pageTitle := "Check your email"
+		message := "Check your email and use the verification link within 24 hours."
+		if sanctionsEmailDisabled() {
+			pageTitle = "Report received"
+			message = "Testing mode is active, so no verification email was sent. The report has been retained for workflow testing."
+		} else {
+			_ = email.NewFromEnv().Send(emailAddr, "Verify GMCL sanctions report "+ref, "Please verify your report.\n\n"+link+"\n\nCase reference: "+ref)
+		}
+		pageHead(w, pageTitle)
 		writeCaptainNav(w)
-		fmt.Fprintf(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Report received</h1><p>Check your email and use the verification link within 24 hours.</p><p class="mb-0">Reference: <strong>%s</strong></p></div></main>`, escapeHTML(ref))
+		fmt.Fprintf(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Report received</h1><p>%s</p><p class="mb-0">Reference: <strong>%s</strong></p></div></main>`, escapeHTML(message), escapeHTML(ref))
 		pageFooter(w)
 	}
 }
@@ -563,6 +570,10 @@ func (s *Server) handleSanctionCaseResponseSubmit() http.HandlerFunc {
 
 func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if sanctionsEmailDisabled() {
+			http.Error(w, "sanctions email sending is disabled in this environment", http.StatusServiceUnavailable)
+			return
+		}
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		tx, err := s.DB.Begin(r.Context())
 		if err != nil {
@@ -788,7 +799,12 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if status == "approved" || status == "published" || status == "appealed" {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/request-response" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><p class="mb-2">Send the affected team captain a 14-day secure case-response link.</p><button class="btn btn-outline-danger">Request club response</button></div></form><form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Correction reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record immutable correction</button></div></form></aside></div></main>`, id, csrf, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
+		if sanctionsEmailDisabled() {
+			fmt.Fprint(w, `<div class="card mb-3"><div class="card-body"><p class="mb-2">Send the affected team captain a 14-day secure case-response link.</p><button class="btn btn-outline-danger" disabled>Request disabled in testing mode</button><div class="form-text">Sanctions email sending is disabled in this environment.</div></div></div>`)
+		} else {
+			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/request-response" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><p class="mb-2">Send the affected team captain a 14-day secure case-response link.</p><button class="btn btn-outline-danger">Request club response</button></div></form>`, id, csrf)
+		}
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Correction reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record immutable correction</button></div></form></aside></div></main>`, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
 		pageFooter(w)
 	}
 }
@@ -1001,27 +1017,6 @@ func copyEvidence(file multipart.File, header *multipart.FileHeader) (string, st
 		return "", "", 0, "", fmt.Errorf("evidence exceeds 10 MB")
 	}
 	return key, hex.EncodeToString(hash.Sum(nil)), n, media, nil
-}
-
-func (s *Server) createGroundsReviewFromSubmission(ctx context.Context, r *http.Request, submissionID int64, sess *captainSession, matchDate time.Time, scores map[string]int) {
-	var clubID int32
-	if s.DB.QueryRow(ctx, `SELECT club_id FROM teams WHERE id=$1`, sess.TeamID).Scan(&clubID) != nil {
-		return
-	}
-	tx, err := s.DB.Begin(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback(ctx)
-	var caseID int64
-	err = tx.QueryRow(ctx, `INSERT INTO sanction_cases(source_type,status,season_id,week_id,club_id,team_id,match_date,submission_id,public_summary,private_summary) VALUES('grounds_facilities','triage',$1,$2,$3,$4,$5,$6,'Captain report recorded an unfit pitch or ground rating requiring review',$7) ON CONFLICT(submission_id,source_type) WHERE submission_id IS NOT NULL DO NOTHING RETURNING id`, sess.SeasonID, sess.WeekID, clubID, sess.TeamID, matchDate, submissionID, fmt.Sprintf("Unfit criteria: %+v", scores)).Scan(&caseID)
-	if err != nil {
-		return
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,request_id) VALUES($1,'automated_finding','captain',$2,$3,'Unfit rating requires Grounds and Facilities review',$4,$5)`, caseID, sess.CaptainID, sess.SubmitterName, mapJSONHTTP(scores), requestID(r))
-	if err == nil {
-		_ = tx.Commit(ctx)
-	}
 }
 
 func mapJSONHTTP(v any) []byte { b, _ := json.Marshal(v); return b }

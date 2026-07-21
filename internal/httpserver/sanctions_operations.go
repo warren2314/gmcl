@@ -17,6 +17,10 @@ import (
 
 func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if sanctionsEmailDisabled() {
+			http.Error(w, "sanctions email sending is disabled in this environment", http.StatusServiceUnavailable)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 		defer cancel()
 		var globalEnabled bool

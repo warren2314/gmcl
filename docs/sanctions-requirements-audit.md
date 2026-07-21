@@ -14,7 +14,7 @@ acceptance gates are evidenced.
 | Requirement | Status | Evidence / remaining work |
 |---|---|---|
 | Captain reports can create card candidates | Implemented | Captain-report/non-submission candidates use the case service and the common card calculator. |
-| Disciplinary, ineligible-player, grounds/facilities, forfeiture and Play-Cricket intake | Partial | Public/manual case intake supports each source. Grounds ratings create review cases only for explicit unfit criteria. Automated Play-Cricket and forfeiture findings are not yet end-to-end. |
+| Disciplinary, ineligible-player, grounds/facilities, forfeiture and Play-Cricket intake | Partial | Public/manual case intake supports each source. Captain ground reports remain outside the sanctions workflow. Automated Play-Cricket and forfeiture findings are not yet end-to-end. |
 | Three yellows convert to a red; remaining yellows carry | Implemented | `internal/sanctions/policy.go` and append-only ledger. |
 | Red ordinal determines card-system points | Implemented | The calculator uses the team red ordinal. |
 | Third club red creates Board-intervention work | Implemented | Approval creates a `board_intervention` follow-up task managed from the immutable follow-up queue. |

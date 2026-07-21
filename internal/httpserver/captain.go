@@ -1291,11 +1291,6 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 			"umpire1_type":      umpire1Type,
 			"umpire2_type":      umpire2Type,
 		})
-		if unevenness == 6 || seam == 6 || carry == 6 || turn == 6 {
-			s.createGroundsReviewFromSubmission(ctx, r, submissionID, sess, matchDate, map[string]int{
-				"unevenness_of_bounce": unevenness, "seam_movement": seam, "carry_bounce": carry, "turn": turn,
-			})
-		}
 	}
 }
 
