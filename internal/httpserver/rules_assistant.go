@@ -123,17 +123,26 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 		lookupCondition, lookupModel := "", ""
 		lookupStatus := "Checking approved sanctions…"
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
-			if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil && isSanctionLookupQuestion(input.Question) {
+			sanctionTerms := isSanctionLookupQuestion(input.Question)
+			submissionTerms := hasSubmissionLookupTerms(input.Question)
+			if _, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil && (sanctionTerms || submissionTerms) {
 				club, matched := importClub{}, false
 				if clubs, clubsErr := s.loadSanctionLookupClubs(ctx); clubsErr == nil {
 					club, matched = matchSanctionLookupClub(input.Question, clubs)
 				}
-				if recordIntent || matched {
+				if sanctionTerms && (recordIntent || matched) {
 					recordAnswer = func() (string, []map[string]any, error) {
 						return s.adminSanctionsAnswer(ctx, input.Question, club, matched)
 					}
 					lookupCondition = "Authenticated admin lookup across approved club sanctions"
 					lookupModel = "deterministic-admin-sanctions-v1"
+				} else if submissionTerms && matched {
+					recordAnswer = func() (string, []map[string]any, error) {
+						return s.adminSubmissionAnswer(ctx, input.Question, club, matched)
+					}
+					lookupCondition = "Authenticated admin lookup for a named club"
+					lookupModel = "deterministic-admin-submissions-v1"
+					lookupStatus = "Checking submissions and sign-in links…"
 				}
 			}
 		} else if captain, sessionErr := getCaptainSessionFromRequest(r); sessionErr == nil {

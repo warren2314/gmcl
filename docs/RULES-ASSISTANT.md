@@ -22,6 +22,13 @@ Authenticated questions are routed by intent, not by keyword alone:
   reply always ends with the remedy (request a fresh link from the home
   page). Rulebook questions about submissions ("When must match details be
   entered on Play-Cricket?") stay with the rules pipeline.
+- **Admin club lookups** — from the protected admin chat, naming a club
+  ("Has Woodley submitted their report?", "Why didn't the Worsley captain
+  get their link?") returns the same diagnosis per team: report status,
+  link/token state, overrides, reminders, and delivery warnings, with a
+  deep link into Link Diagnostics. Naming a team ("Woodley 2nd XI") narrows
+  the answer. This is also how the captain skills are tested on staging,
+  where no captain sessions exist.
 - **Rulebook questions that merely mention cards** — "How many yellow cards
   before a suspension?", "Can we appeal a card?" — go to the cited retrieval
   pipeline like any other rules question. When phrasing is ambiguous the
