@@ -39,6 +39,7 @@ SESSION_SECRET=${session_secret}
 ADMIN_SESSION_SECRET=${admin_secret}
 CSRF_SECRET=${csrf_secret}
 RULES_ASSISTANT_SECRET=${rules_secret}
+RULES_ASSISTANT_ENABLED=true
 N8N_HMAC_SECRET=${n8n_secret}
 INTERNAL_HMAC_SECRET=${n8n_secret}
 
@@ -50,6 +51,15 @@ ENVEOF
 
   printf '%s\n' "${admin_password}" > /root/gmcl-staging-admin-password
   chmod 600 .env /root/gmcl-staging-admin-password
+fi
+
+# The public A1 routes default to disabled. Keep the dedicated rules staging
+# environment explicitly enabled, including when an existing .env predates the
+# feature flag or a later deployment recreates the app container.
+if grep -q '^RULES_ASSISTANT_ENABLED=' .env; then
+  sed -i 's/^RULES_ASSISTANT_ENABLED=.*/RULES_ASSISTANT_ENABLED=true/' .env
+else
+  printf '\nRULES_ASSISTANT_ENABLED=true\n' >> .env
 fi
 
 cp Caddyfile.production Caddyfile
