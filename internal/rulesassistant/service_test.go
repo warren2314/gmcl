@@ -74,10 +74,43 @@ func TestValidateCorpusRequiresEveryRuleGroup(t *testing.T) {
 }
 
 func TestExtractRuleReference(t *testing.T) {
-	for input, want := range map[string]string{"What does rule 3.5.2 mean?": "3.5.2", "Penalty under 8.1": "8.1", "no reference here": ""} {
+	for input, want := range map[string]string{
+		"What does rule 3.5.2 mean?": "3.5.2",
+		"Penalty under 8.1":          "8.1",
+		"no reference here":          "",
+		// Bare digits are list numbers or counts, never rule references.
+		"Penalties Section 1":                       "",
+		"What happens if we get 3 yellow cards?":    "",
+		"Rule 8":                                    "8",
+		"8.1.1.4. Offence - Failure to submit form": "8.1.1.4",
+		"See Rule 3 for eligibility, then 8.1":      "3",
+	} {
 		if got := extractRuleReference(input); got != want {
 			t.Errorf("%q: got %q want %q", input, got, want)
 		}
+	}
+}
+
+func TestParseHTMLDoesNotTreatSectionNumbersAsRuleReferences(t *testing.T) {
+	raw := `<html><title>GMCL RULES - PENALTIES</title><body>WELCOME TO GMCL FOR YOUR MOBILE
+<h1>GMCL RULES - PENALTIES</h1>
+<h2>Penalties Section 1</h2><p>Debts to league or other clubs and late withdrawal of teams are covered by the penalty tables on the linked pages.</p>
+<h2>8.1.1.4. Offence - Failure to submit complete starred player form</h2><p>Yellow for the club's highest placed team, and a red card when the club fails to submit by the subsequently required date.</p>
+Proud Sponsors</body></html>`
+	doc := parseHTML("https://example.test/pages/rules-pen-menu", raw)
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "1" {
+			t.Fatalf("section list number extracted as rule reference: %+v", chunk)
+		}
+	}
+	foundDotted := false
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "8.1.1.4" {
+			foundDotted = true
+		}
+	}
+	if !foundDotted {
+		t.Fatalf("dotted penalty reference was not extracted: %+v", doc.Chunks)
 	}
 }
 

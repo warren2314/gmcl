@@ -32,7 +32,8 @@ var (
 	blankRE               = regexp.MustCompile(`\n{3,}`)
 	breakRE               = regexp.MustCompile(`(?i)</?(?:h[1-6]|p|div|li|tr|br|section|article)[^>]*>`)
 	scriptRE              = regexp.MustCompile(`(?is)<(?:script[^>]*>.*?</script|style[^>]*>.*?</style|svg[^>]*>.*?</svg)>`)
-	ruleRefRE             = regexp.MustCompile(`(?i)\b(?:rule\s*)?([1-8](?:\.\d+){0,4})\b`)
+	rulePrefixedRefRE     = regexp.MustCompile(`(?i)\brule\s*([1-8](?:\.\d+){0,4})\b`)
+	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+){1,4})\b`)
 	updatedRE             = regexp.MustCompile(`(?i)(updated[^\n]{0,100}|\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})`)
 	searchWordRE          = regexp.MustCompile(`[a-z0-9]+`)
 	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*|under\s+)(?:9|11|13|15|18)s?\b`)
@@ -372,7 +373,10 @@ func looksLikeHeading(line string) bool {
 	if len(line) > 180 {
 		return false
 	}
-	if ruleRefRE.MatchString(line) && len(line) < 130 {
+	// Only a real reference marks a heading: "Rule 3" or a dotted number like
+	// "8.1.1.4". Bare digits used to make every short numeric line ("Prem 1
+	// £500...") a heading, fragmenting penalty tables into tiny chunks.
+	if (rulePrefixedRefRE.MatchString(line) || dottedRuleRefRE.MatchString(line)) && len(line) < 130 {
 		return true
 	}
 	letters, upper := 0, 0
@@ -387,12 +391,21 @@ func looksLikeHeading(line string) bool {
 	return letters > 3 && upper*100/letters > 75
 }
 
+// extractRuleReference returns the first plausible rule reference in the
+// text. A bare group number counts only when introduced by the word "rule"
+// ("Rule 8"); otherwise at least one dotted level is required ("8.1.2"). List
+// numbering ("Penalties Section 1") and counts ("3 yellow cards") are never
+// rule references — bare digits used to mislabel every penalties-menu chunk
+// as Rule 1 and skewed question-side reference boosting.
 func extractRuleReference(value string) string {
-	match := ruleRefRE.FindStringSubmatch(value)
-	if len(match) == 2 {
-		return match[1]
+	reference, position := "", -1
+	if match := rulePrefixedRefRE.FindStringSubmatchIndex(value); match != nil {
+		reference, position = value[match[2]:match[3]], match[0]
 	}
-	return ""
+	if match := dottedRuleRefRE.FindStringSubmatchIndex(value); match != nil && (position == -1 || match[0] < position) {
+		reference = value[match[2]:match[3]]
+	}
+	return reference
 }
 
 func validateCorpus(docs []parsedDocument) error {
