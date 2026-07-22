@@ -783,7 +783,7 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 	if needsPreviousQuestion(question) && previousUserQuestion != "" {
 		retrievalQuestion = previousUserQuestion + "\nFollow-up: " + question
 	}
-	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 10)
+	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 12)
 	if err != nil {
 		return Answer{}, err
 	}
