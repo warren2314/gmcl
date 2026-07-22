@@ -36,7 +36,7 @@ var (
 	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+){1,4})\b`)
 	updatedRE             = regexp.MustCompile(`(?i)(updated[^\n]{0,100}|\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})`)
 	searchWordRE          = regexp.MustCompile(`[a-z0-9]+`)
-	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*|under\s+)(?:9|11|13|15|18)s?\b`)
+	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*[-/]?\s*|under\s+)(?:9|11|13|15|18)s?\b`)
 	inlineChunkCitationRE = regexp.MustCompile(`(?i)\s*\[(?:chunk(?:_id)?\s*[=:]?\s*)?\d+\]`)
 	modelCitationTokenRE  = regexp.MustCompile(`\s*citechunk_id=\d+`)
 	contentStart          = regexp.MustCompile(`(?i)WELCOME TO GMCL FOR YOUR MOBILE`)
@@ -172,7 +172,7 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 				docs[di].Chunks[ci].EmbeddingLiteral = existingEmbedding
 				continue
 			}
-			emb, embedErr := s.embed(ctx, docs[di].Chunks[ci].Content)
+			emb, embedErr := s.embed(ctx, docs[di].Chunks[ci].Heading+"\n"+docs[di].Chunks[ci].Content)
 			if embedErr != nil {
 				return releaseID, fmt.Errorf("embed %s chunk %d: %w", docs[di].URL, ci, embedErr)
 			}
@@ -314,9 +314,23 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		if len(content) < 35 {
 			return
 		}
-		ref := extractRuleReference(heading + " " + content)
-		chunks = append(chunks, parsedChunk{RuleReference: ref, Heading: heading, Content: content, Hash: hashText(content)})
+		// Content starts with the chunk's own heading line, so it yields the
+		// chunk's precise reference; the heading trail would yield the top
+		// ancestor ("7.10") instead. The trail is still part of the
+		// searchable identity: a leaf like "There are no LBW's in this
+		// competition" is only findable for "U11" questions through its
+		// ancestors, so heading and content together form the hash (and
+		// therefore the embedding input).
+		ref := extractRuleReference(content)
+		if ref == "" {
+			ref = deepestRuleReference(heading)
+		}
+		chunks = append(chunks, parsedChunk{RuleReference: ref, Heading: heading, Content: content, Hash: hashText(heading + "\n" + content)})
 	}
+	// Ancestor headings by dotted-reference depth: "7.10.2. U11 Pairs" stays
+	// part of the heading for every 7.10.2.x chunk beneath it.
+	type headingCrumb struct{ ref, text string }
+	var trail []headingCrumb
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -324,7 +338,29 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		}
 		if looksLikeHeading(line) {
 			flush()
-			heading = truncate(line, 300)
+			ref := extractRuleReference(line)
+			if ref == "" {
+				trail = trail[:0]
+			} else {
+				for len(trail) > 0 {
+					last := trail[len(trail)-1]
+					if last.ref != "" && strings.HasPrefix(ref, last.ref+".") {
+						break
+					}
+					trail = trail[:len(trail)-1]
+				}
+			}
+			trail = append(trail, headingCrumb{ref: ref, text: line})
+			parts := make([]string, len(trail))
+			for i, crumb := range trail {
+				parts[i] = crumb.text
+			}
+			joined := strings.Join(parts, " › ")
+			for len(joined) > 300 && len(parts) > 2 {
+				parts = parts[1:]
+				joined = strings.Join(parts, " › ")
+			}
+			heading = truncate(joined, 300)
 			// The heading line is rule text too: many leaf rules are a single
 			// short numbered line ("7.10.2.11.2. LBW: There are no LBW's in
 			// this competition"). Dropping heading text from the content used
@@ -411,6 +447,24 @@ func extractRuleReference(value string) string {
 		reference = value[match[2]:match[3]]
 	}
 	return reference
+}
+
+// deepestRuleReference returns the most specific reference in the text — in a
+// heading trail like "7.10. … › 7.10.2. … › 7.10.2.11. …" that is the last,
+// deepest level rather than the first ancestor.
+func deepestRuleReference(value string) string {
+	best, bestDepth := "", -1
+	for _, match := range rulePrefixedRefRE.FindAllStringSubmatch(value, -1) {
+		if depth := strings.Count(match[1], "."); depth > bestDepth {
+			best, bestDepth = match[1], depth
+		}
+	}
+	for _, match := range dottedRuleRefRE.FindAllString(value, -1) {
+		if depth := strings.Count(match, "."); depth > bestDepth {
+			best, bestDepth = match, depth
+		}
+	}
+	return best
 }
 
 func validateCorpus(docs []parsedDocument) error {
@@ -609,7 +663,12 @@ func isJuniorRulesQuery(question string) bool {
 	if strings.Contains(question, "junior rule") || strings.Contains(question, "junior cup") {
 		return true
 	}
-	if juniorAgeRE.MatchString(question) && (strings.Contains(question, "summer") || strings.Contains(question, "cup") || strings.Contains(question, "camp")) {
+	// A named age group (U9-U18) only exists in junior cricket, so the
+	// question is a junior question unless it explicitly reaches into
+	// open-age rules ("can a U15 play senior cricket?").
+	if juniorAgeRE.MatchString(question) &&
+		!strings.Contains(question, "senior") && !strings.Contains(question, "open age") &&
+		!strings.Contains(question, "open-age") && !strings.Contains(question, "adult") {
 		return true
 	}
 	return strings.Contains(question, "junior") && strings.Contains(question, "summer") &&
@@ -649,6 +708,12 @@ var lexicalSynonyms = map[string][]string{
 	"ball":    {"deliveries"},
 	"balls":   {"deliveries"},
 	"hundred": {"100"},
+	// Age groups appear in the rules both as "U11" and "Under 11".
+	"u9":  {"under", "9"},
+	"u11": {"under", "11"},
+	"u13": {"under", "13"},
+	"u15": {"under", "15"},
+	"u18": {"under", "18"},
 }
 
 func buildLexicalQuery(question string) string {
