@@ -25,7 +25,11 @@ import (
 const defaultSourceURL = "https://www.gtrmcrcricket.co.uk/pages/rules-main-menu"
 
 var (
-	hrefRE                = regexp.MustCompile(`(?i)href\s*=\s*["']([^"']+)["']`)
+	hrefRE = regexp.MustCompile(`(?i)href\s*=\s*["']([^"']+)["']`)
+	// Shopblocks dynamic tiles carry their destination in a data-dynamic JSON
+	// attribute rather than an href. The whole of Rule 4 (competition pages)
+	// is only reachable through these links.
+	dynamicTileLinkRE     = regexp.MustCompile(`"link_custom"\s*:\s*"([^"]+)"`)
 	titleRE               = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	tagRE                 = regexp.MustCompile(`(?s)<[^>]+>`)
 	spaceRE               = regexp.MustCompile(`[ \t\r\f\v]+`)
@@ -66,7 +70,7 @@ func New(database *db.Pool) *Service {
 		sourceURL = defaultSourceURL
 	}
 	return &Service{
-		DB: database, HTTPClient: &http.Client{Timeout: 20 * time.Second},
+		DB: database, HTTPClient: &http.Client{Timeout: 60 * time.Second},
 		APIKey: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), ChatModel: chatModel,
 		EmbedModel: embedModel, SourceURL: sourceURL,
 	}
@@ -269,9 +273,17 @@ func (s *Service) crawl(ctx context.Context) ([]parsedDocument, error) {
 
 func discoverLinks(root *url.URL, current, raw string) []string {
 	base, _ := url.Parse(current)
+	content := pageContent(raw)
+	var candidates []string
+	for _, match := range hrefRE.FindAllStringSubmatch(content, -1) {
+		candidates = append(candidates, match[1])
+	}
+	for _, match := range dynamicTileLinkRE.FindAllStringSubmatch(content, -1) {
+		candidates = append(candidates, strings.ReplaceAll(match[1], `\/`, "/"))
+	}
 	set := map[string]bool{}
-	for _, match := range hrefRE.FindAllStringSubmatch(pageContent(raw), -1) {
-		href := strings.TrimSpace(html.UnescapeString(match[1]))
+	for _, candidate := range candidates {
+		href := strings.TrimSpace(html.UnescapeString(candidate))
 		u, err := base.Parse(href)
 		if err != nil || u.Hostname() != root.Hostname() {
 			continue
@@ -762,7 +774,7 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 	if needsPreviousQuestion(question) && previousUserQuestion != "" {
 		retrievalQuestion = previousUserQuestion + "\nFollow-up: " + question
 	}
-	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 8)
+	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 10)
 	if err != nil {
 		return Answer{}, err
 	}
@@ -801,6 +813,7 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 			"Be conversational. Answer every part that the evidence supports, then ask at most two short, targeted clarification questions only when the missing answer would materially change the result.",
 			"Do not ask for a fact the user has already supplied. If there is a likely typo or reasonable interpretation, state the conditional interpretation, give the useful answer under that interpretation, and ask the user to confirm it.",
 			"Treat a selected match context as the user's explicit scope. Apply that scope to retrieval and the answer, and do not ask the user to choose Senior or Junior, or League or Cup, when they already selected it.",
+			"Treat clarification_needed as an inability flag: set it true only when the evidence left the core question unanswered. If you have substantively answered the question, keep clarification_needed false even when you add a check question or note a condition inside the answer text.",
 			"When clarification is not needed, return an empty clarification_questions array. When it is needed, put the questions in clarification_questions as well as ending the answer naturally.",
 			"Make clear that an explanation is an interpretation and that only GMCL can make a formal ruling.",
 		}, " "),
