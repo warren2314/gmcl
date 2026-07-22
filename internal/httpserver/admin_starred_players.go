@@ -322,7 +322,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</div></div><div class="alert alert-info rounded-0 border-start-0 border-end-0 mb-0 py-2 small"><strong>Transfers:</strong> once a published player is linked to a Play-Cricket player ID, their imported appearances follow that ID across both the old and new GMCL club, including 1st and 2nd XI games. A move outside GMCL cannot be inferred from GMCL scorecards alone and will remain a registration/manual check until player-registration data is connected.</div>`)
 		if len(suggestions) > 0 {
-			fmt.Fprintf(w, `<div class="table-responsive"><table class="table table-sm align-middle mb-0"><caption class="caption-top px-3 pb-1 fw-semibold">Suggested from scorecards — showing up to 100 of %d; the next suggestions appear as matches are confirmed</caption><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th>Confidence</th><th></th></tr></thead><tbody>`, len(suggestions))
+			fmt.Fprintf(w, `<div class="table-responsive"><table class="table table-sm align-middle mb-0"><caption class="caption-top px-3 pb-1 fw-semibold">Suggested candidates — showing up to 100 of %d suggestions. This is not the full unmatched queue; every unmatched player is listed below.</caption><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th>Confidence</th><th></th></tr></thead><tbody>`, len(suggestions))
 			for i, x := range suggestions {
 				if i >= 100 {
 					break
@@ -335,7 +335,27 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 			fmt.Fprint(w, `</tbody></table></div>`)
 		}
-		fmt.Fprint(w, `<div class="card-body border-top"><h6 class="mb-2">Search all imported scorecards</h6><p class="small text-muted">Choose the unmatched published player, then search by any part of a scorecard name or by Play-Cricket player ID.</p>`)
+		if len(unmappedPeriods) > 0 {
+			fmt.Fprintf(w, `<div class="card-body border-top"><div class="d-flex flex-column flex-md-row justify-content-between gap-2 align-items-md-center mb-3"><div><h6 class="mb-1">Manual review queue (%d)</h6><p class="small text-muted mb-0">This is the complete unmatched list, including players with no automatic suggestion. Open each player to search the imported scorecards.</p></div><input class="form-control" id="starred-manual-queue-filter" style="max-width:22rem" type="search" placeholder="Filter club or player" aria-label="Filter manual review queue"></div><div id="starred-manual-queue" class="list-group list-group-flush border rounded">`, len(unmappedPeriods))
+			for _, period := range unmappedPeriods {
+				sourceID := starredMappingSourceID(period)
+				searchText := strings.ToLower(period.ClubName + " " + period.PlayerName + " " + period.ListType)
+				fmt.Fprintf(w, `<div class="list-group-item d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2 starred-manual-queue-row" data-search="%s"><div><div class="fw-semibold">%s</div><div class="small text-muted">%s · List %s</div></div><a class="btn btn-sm btn-outline-primary flex-shrink-0" href="/admin/starred-players?season=%d&amp;mapping_source=%s&amp;mapping_q=%s#identity-search">Search scorecards</a></div>`, escapeHTML(searchText), escapeHTML(period.PlayerName), escapeHTML(period.ClubName), escapeHTML(period.ListType), year, url.QueryEscape(sourceID), url.QueryEscape(period.PlayerName))
+			}
+			fmt.Fprint(w, `</div></div><script>
+(function () {
+  const filter = document.getElementById('starred-manual-queue-filter');
+  if (!filter) return;
+  filter.addEventListener('input', function () {
+    const query = filter.value.trim().toLowerCase();
+    document.querySelectorAll('.starred-manual-queue-row').forEach(function (row) {
+      row.hidden = query !== '' && !row.dataset.search.includes(query);
+    });
+  });
+}());
+</script>`)
+		}
+		fmt.Fprint(w, `<div id="identity-search" class="card-body border-top"><h6 class="mb-2">Search all imported scorecards</h6><p class="small text-muted">Choose the unmatched published player, then search by any part of a scorecard name or by Play-Cricket player ID.</p>`)
 		if loadErr != nil {
 			fmt.Fprint(w, `<div class="alert alert-warning mb-0">Synchronise the published list before matching identities.</div></div></div>`)
 		} else if len(unmappedPeriods) == 0 {
