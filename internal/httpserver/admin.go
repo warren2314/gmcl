@@ -173,6 +173,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/sync-list", s.handleAdminStarredPlayersSyncList())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/sync-appearances", s.handleAdminStarredPlayersSyncAppearances())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/mapping", s.handleAdminStarredPlayersMapping())
+		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/mapping/auto", s.handleAdminStarredPlayersAutoMatch())
+		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/mapping/unmatch", s.handleAdminStarredPlayersUnmatch())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/candidates/accept", s.handleAdminStarredCandidateAccept())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions", s.handleAdminStarredExemptionCreate())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions/{id}/status", s.handleAdminStarredExemptionStatus())

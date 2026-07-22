@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +16,64 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 	"cricket-ground-feedback/internal/starred"
 )
+
+func highConfidenceStarredSuggestions(suggestions []starred.MappingSuggestion) []starred.MappingSuggestion {
+	out := make([]starred.MappingSuggestion, 0, len(suggestions))
+	for _, suggestion := range suggestions {
+		if suggestion.Confidence == "high" {
+			out = append(out, suggestion)
+		}
+	}
+	return out
+}
+
+func markRevokedStarredSuggestionsForReview(suggestions []starred.MappingSuggestion, blocked map[string]bool) []starred.MappingSuggestion {
+	out := append([]starred.MappingSuggestion(nil), suggestions...)
+	for i := range out {
+		key := out[i].ClubKey + "|" + out[i].StarredPlayerKey + "|" + strconv.FormatInt(out[i].CandidateID, 10)
+		if blocked[key] {
+			out[i].Confidence = "review"
+			out[i].Reason = "Previously unmatched by an administrator; manual confirmation required"
+		}
+	}
+	return out
+}
+
+func (s *Server) protectRevokedStarredSuggestions(ctx context.Context, year int, suggestions []starred.MappingSuggestion) []starred.MappingSuggestion {
+	blocked := make(map[string]bool)
+	rows, err := s.DB.Query(ctx, `SELECT club_key,starred_player_key,COALESCE((before_data->>'play_cricket_player_id')::bigint,0) FROM starred_identity_mapping_events WHERE season_year=$1 AND action='revoked'`, year)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var clubKey, playerKey string
+			var candidateID int64
+			if rows.Scan(&clubKey, &playerKey, &candidateID) == nil && candidateID > 0 {
+				blocked[clubKey+"|"+playerKey+"|"+strconv.FormatInt(candidateID, 10)] = true
+			}
+		}
+	}
+	return markRevokedStarredSuggestionsForReview(suggestions, blocked)
+}
+
+func writeUnmatchedStarredPlayersCSV(w http.ResponseWriter, year int, periods []starred.Period, suggestions []starred.MappingSuggestion) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-unmatched-%d.csv"`, year))
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"Club", "List", "Published player", "Suggested Play-Cricket player", "Player ID", "Confidence", "Reason"})
+	bySource := make(map[string]starred.MappingSuggestion, len(suggestions))
+	for _, suggestion := range suggestions {
+		bySource[suggestion.ClubKey+"|"+suggestion.StarredPlayerKey] = suggestion
+	}
+	for _, period := range periods {
+		suggestion := bySource[period.ClubKey+"|"+period.PlayerKey]
+		playerID := ""
+		if suggestion.CandidateID > 0 {
+			playerID = strconv.FormatInt(suggestion.CandidateID, 10)
+		}
+		_ = writer.Write([]string{period.ClubName, period.ListType, period.PlayerName, suggestion.CandidateName, playerID, suggestion.Confidence, suggestion.Reason})
+	}
+	writer.Flush()
+}
 
 func starredSeasonYear(r *http.Request) int {
 	if y, err := strconv.Atoi(strings.TrimSpace(r.FormValue("season"))); err == nil && y >= 2000 && y <= 2100 {
@@ -55,7 +114,16 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if loadErr == nil {
 			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
 			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
+			suggestions = s.protectRevokedStarredSuggestions(ctx, year, suggestions)
 			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
+		}
+		if r.URL.Query().Get("export") == "unmatched-csv" {
+			if loadErr != nil {
+				http.Error(w, "starred-player data is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeUnmatchedStarredPlayersCSV(w, year, unmappedPeriods, suggestions)
+			return
 		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
 		exemptions := s.loadStarredExemptions(ctx, year)
@@ -245,13 +313,25 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		fmt.Fprintf(w, `<div id="identity-matches" class="card shadow-sm mb-4"><div class="card-header">%s</div>`,
 			starredSectionTitle("Step 2", "Match player identities", "Confirmed matches leave this action list immediately. The mapping and a separate administrator audit event are retained.",
 				"Why identities must be matched", "The published lists only give a player's name, but scorecards identify players by a Play-Cricket ID. Confirming a match ties every appearance to the right published entry, so breaches are detected even when a name is spelt differently on a scorecard. Suggested matches are ranked by name similarity; use the search below for anyone not suggested."))
+		autoSuggestions := highConfidenceStarredSuggestions(suggestions)
+		fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-column flex-lg-row justify-content-between gap-3"><div><h6 class="mb-1">Automatic matching</h6><p class="small text-muted mb-0">Only a unique exact normalised name at the listed club is eligible. Similar, abbreviated or ambiguous names always remain for manual review.</p></div><div class="d-flex flex-wrap gap-2 align-items-start"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;export=unmatched-csv">Download %d unmatched</a>`, year, len(unmappedPeriods))
+		if len(autoSuggestions) > 0 {
+			fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/mapping/auto" onsubmit="return confirm('Auto-match %d unique exact player identities? Fuzzy suggestions will not be included.')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-success">Auto-match %d high-confidence</button></form>`, len(autoSuggestions), escapeHTML(csrf), year, len(autoSuggestions))
+		} else {
+			fmt.Fprint(w, `<button class="btn btn-outline-success" disabled>No safe automatic matches</button>`)
+		}
+		fmt.Fprint(w, `</div></div><div class="alert alert-info rounded-0 border-start-0 border-end-0 mb-0 py-2 small"><strong>Transfers:</strong> once a published player is linked to a Play-Cricket player ID, their imported appearances follow that ID across both the old and new GMCL club, including 1st and 2nd XI games. A move outside GMCL cannot be inferred from GMCL scorecards alone and will remain a registration/manual check until player-registration data is connected.</div>`)
 		if len(suggestions) > 0 {
-			fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm align-middle mb-0"><caption class="caption-top px-3 pb-1 fw-semibold">Suggested from scorecards</caption><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th></th></tr></thead><tbody>`)
+			fmt.Fprintf(w, `<div class="table-responsive"><table class="table table-sm align-middle mb-0"><caption class="caption-top px-3 pb-1 fw-semibold">Suggested from scorecards — showing up to 100 of %d; the next suggestions appear as matches are confirmed</caption><thead><tr><th>Club</th><th>Published name</th><th>Play-Cricket candidate</th><th>Confidence</th><th></th></tr></thead><tbody>`, len(suggestions))
 			for i, x := range suggestions {
 				if i >= 100 {
 					break
 				}
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s <code>%d</code></td><td><form method="post" action="/admin/starred-players/mapping"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="candidate_id" value="%d"><input type="hidden" name="candidate_name" value="%s"><button class="btn btn-sm btn-outline-primary">Confirm</button></form></td></tr>`, escapeHTML(x.ClubName), escapeHTML(x.StarredName), escapeHTML(x.CandidateName), x.CandidateID, escapeHTML(csrf), year, escapeHTML(x.ClubKey), escapeHTML(x.StarredPlayerKey), x.CandidateID, escapeHTML(x.CandidateName))
+				badge := `<span class="badge text-bg-warning">Review</span>`
+				if x.Confidence == "high" {
+					badge = `<span class="badge text-bg-success">High</span>`
+				}
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s <code>%d</code></td><td>%s<div class="small text-muted">%s</div></td><td><form method="post" action="/admin/starred-players/mapping"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="candidate_id" value="%d"><input type="hidden" name="candidate_name" value="%s"><button class="btn btn-sm btn-outline-primary">Confirm</button></form></td></tr>`, escapeHTML(x.ClubName), escapeHTML(x.StarredName), escapeHTML(x.CandidateName), x.CandidateID, badge, escapeHTML(x.Reason), escapeHTML(csrf), year, escapeHTML(x.ClubKey), escapeHTML(x.StarredPlayerKey), x.CandidateID, escapeHTML(x.CandidateName))
 			}
 			fmt.Fprint(w, `</tbody></table></div>`)
 		}
@@ -290,6 +370,33 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				fmt.Fprint(w, `</tbody></table></div></div>`)
 			}
 			fmt.Fprint(w, `</div></div>`)
+		}
+		if len(mappings) > 0 {
+			periodBySource := make(map[string]starred.Period)
+			for _, period := range periods {
+				if !cutoff.Before(period.ValidFrom) && (period.ValidTo == nil || cutoff.Before(*period.ValidTo)) {
+					periodBySource[period.ClubKey+"|"+period.PlayerKey] = period
+				}
+			}
+			confirmedMappings := append([]starred.IdentityMapping(nil), mappings...)
+			sort.Slice(confirmedMappings, func(i, j int) bool {
+				left := periodBySource[confirmedMappings[i].ClubKey+"|"+confirmedMappings[i].StarredPlayerKey]
+				right := periodBySource[confirmedMappings[j].ClubKey+"|"+confirmedMappings[j].StarredPlayerKey]
+				return strings.ToLower(left.ClubName+"|"+left.PlayerName) < strings.ToLower(right.ClubName+"|"+right.PlayerName)
+			})
+			fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-body"><details><summary class="fw-semibold" style="cursor:pointer">Correct or unmatch a confirmed identity (%d)</summary><p class="small text-muted mt-3">Unmatching removes the link from calculations immediately, returns the published player to the manual queue, and retains an immutable before/after event with your reason.</p><form method="post" action="/admin/starred-players/mapping/unmatch" class="row g-2 align-items-end"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><div class="col-lg-6"><label class="form-label" for="mapping-unmatch-id">Confirmed identity</label><select class="form-select" id="mapping-unmatch-id" name="mapping_id" required><option value="">Choose a confirmed match</option>`, len(confirmedMappings), escapeHTML(csrf), year)
+			for _, mapping := range confirmedMappings {
+				period := periodBySource[mapping.ClubKey+"|"+mapping.StarredPlayerKey]
+				clubName, playerName := period.ClubName, period.PlayerName
+				if clubName == "" {
+					clubName = mapping.ClubKey
+				}
+				if playerName == "" {
+					playerName = mapping.StarredPlayerKey
+				}
+				fmt.Fprintf(w, `<option value="%d">%s — %s → %s (#%d)</option>`, mapping.ID, escapeHTML(clubName), escapeHTML(playerName), escapeHTML(mapping.PlayerName), mapping.PlayerID)
+			}
+			fmt.Fprint(w, `</select></div><div class="col-lg-4"><label class="form-label" for="mapping-unmatch-reason">Correction reason</label><input class="form-control" id="mapping-unmatch-reason" name="reason" required maxlength="500" placeholder="e.g. linked to the wrong Fielding"></div><div class="col-lg-2"><button class="btn btn-outline-danger w-100" onclick="return confirm('Unmatch this identity and return it to review?')">Unmatch</button></div></form></details></div></div>`)
 		}
 		amendmentsHeader := starredSectionTitle("", "Amendments requiring review", "Dated changes to the published sheet that could not be applied automatically. Nothing is guessed — decide what each change was meant to do, then correct the published sheet and re-sync.",
 			"What is an amendment issue", "Clubs change their lists during the season by adding dated amendments to the published sheet. When the wording of an amendment is ambiguous — for example a name that matches nobody on the list — the importer keeps it here for a person instead of guessing. The published text column shows exactly what the sheet says.")
@@ -689,10 +796,10 @@ func starredTeamCounts(periods []starred.Period, appearances []starred.Appearanc
 		mappedID := mappedIDs[key]
 		seen := make(map[string]struct{})
 		for _, appearance := range appearances {
-			if appearance.ClubKey != period.ClubKey || appearance.TeamLevel < 1 {
+			if appearance.TeamLevel < 1 {
 				continue
 			}
-			matches := appearance.PlayerKey == period.PlayerKey
+			matches := appearance.ClubKey == period.ClubKey && appearance.PlayerKey == period.PlayerKey
 			if mappedID > 0 {
 				matches = appearance.PlayerID == mappedID
 			}
@@ -1023,7 +1130,7 @@ func starredListForAppearance(periods []starred.Period, mappings []starred.Ident
 		mappedIDs[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = mapping.PlayerID
 	}
 	for _, period := range periods {
-		if period.ClubKey != appearance.ClubKey || appearance.MatchDate.Before(period.ValidFrom) || (period.ValidTo != nil && !appearance.MatchDate.Before(*period.ValidTo)) {
+		if appearance.MatchDate.Before(period.ValidFrom) || (period.ValidTo != nil && !appearance.MatchDate.Before(*period.ValidTo)) {
 			continue
 		}
 		if mappedID := mappedIDs[period.ClubKey+"|"+period.PlayerKey]; mappedID > 0 {
@@ -1032,7 +1139,7 @@ func starredListForAppearance(periods []starred.Period, mappings []starred.Ident
 			}
 			continue
 		}
-		if period.PlayerKey == appearance.PlayerKey {
+		if period.ClubKey == appearance.ClubKey && period.PlayerKey == appearance.PlayerKey {
 			return period.ListType
 		}
 	}
@@ -1210,6 +1317,84 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 			"play_cricket_player_id": id, "play_cricket_player_name": candidateName,
 		})
 		redirectStarredAnchor(w, r, year, "Identity mapping confirmed for "+target.PlayerName+". It has been removed from the action list.", "", "identity-matches")
+	}
+}
+
+func (s *Server) handleAdminStarredPlayersAutoMatch() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		year := starredSeasonYear(r)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		periods, appearances, mappings, _, err := starred.LoadEvaluationInputs(ctx, s.DB, year)
+		if err != nil {
+			redirectStarredAnchor(w, r, year, "", "Could not load identities for automatic matching: "+err.Error(), "identity-matches")
+			return
+		}
+		cutoff := starred.ReviewCutoff(year, time.Now())
+		reviewAppearances := make([]starred.Appearance, 0, len(appearances))
+		for _, appearance := range appearances {
+			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) && !starred.IsWomensAppearance(appearance) {
+				reviewAppearances = append(reviewAppearances, appearance)
+			}
+		}
+		reviewAppearances = remapStarredAppearanceClubs(reviewAppearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
+		suggestions := starred.SuggestMappings(periods, reviewAppearances, mappings, cutoff)
+		suggestions = s.protectRevokedStarredSuggestions(ctx, year, suggestions)
+		safe := highConfidenceStarredSuggestions(suggestions)
+		if len(safe) == 0 {
+			redirectStarredAnchor(w, r, year, "No unique exact identity matches are currently available.", "", "identity-matches")
+			return
+		}
+		adminID := adminIDForRequest(r)
+		if err = starred.SaveSuggestedIdentityMappings(ctx, s.DB, year, safe, adminID); err != nil {
+			redirectStarredAnchor(w, r, year, "", "Automatic matching was rolled back: "+err.Error(), "identity-matches")
+			return
+		}
+		var auditAdminID *int32
+		if adminID > 0 {
+			auditAdminID = &adminID
+		}
+		s.audit(ctx, r, "admin", auditAdminID, "starred_identity_mappings_auto_confirmed", "starred_identity_mapping", nil, map[string]any{
+			"season": year, "count": len(safe), "confidence": "unique_exact_normalised_name",
+		})
+		redirectStarredAnchor(w, r, year, fmt.Sprintf("Automatically matched %d unique exact player identities. Similar or ambiguous names remain for manual review.", len(safe)), "", "identity-matches")
+	}
+}
+
+func (s *Server) handleAdminStarredPlayersUnmatch() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		year := starredSeasonYear(r)
+		mappingID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("mapping_id")), 10, 64)
+		reason := strings.TrimSpace(r.FormValue("reason"))
+		if err != nil || mappingID < 1 || reason == "" || len([]rune(reason)) > 500 {
+			http.Error(w, "a confirmed identity and correction reason are required", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		adminID := adminIDForRequest(r)
+		mapping, err := starred.RevokeIdentityMapping(ctx, s.DB, year, mappingID, adminID, reason)
+		if err != nil {
+			redirectStarredAnchor(w, r, year, "", "Could not unmatch that identity: "+err.Error(), "identity-matches")
+			return
+		}
+		var auditAdminID *int32
+		if adminID > 0 {
+			auditAdminID = &adminID
+		}
+		s.audit(ctx, r, "admin", auditAdminID, "starred_identity_mapping_revoked", "starred_identity_mapping", &mapping.ID, map[string]any{
+			"season": year, "club_key": mapping.ClubKey, "starred_player_key": mapping.StarredPlayerKey,
+			"play_cricket_player_id": mapping.PlayerID, "play_cricket_player_name": mapping.PlayerName, "reason": reason,
+		})
+		redirectStarredAnchor(w, r, year, "Identity match removed and returned to review. The previous link and correction reason remain in the immutable history.", "", "identity-matches")
 	}
 }
 

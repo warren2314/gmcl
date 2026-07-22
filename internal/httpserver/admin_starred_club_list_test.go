@@ -103,14 +103,42 @@ func TestStarredTeamCountsUsesMappedIdentityAllDaysAndDeduplicates(t *testing.T)
 		{MatchID: 4, ClubKey: "alpha", PlayingDay: "Sunday", TeamLevel: 2, PlayerID: 99, PlayerKey: "different-name"},
 		{MatchID: 5, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 100, PlayerKey: "amy"},
 		{MatchID: 6, ClubKey: "alpha", PlayingDay: "Saturday", TeamLevel: 3, PlayerKey: "zed"},
+		{MatchID: 7, ClubKey: "beta", PlayingDay: "Saturday", TeamLevel: 1, PlayerID: 99, PlayerKey: "different-name"},
 	}
 	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "amy", PlayerID: 99}}
 	got := starredTeamCounts(periods, appearances, mappings)
-	if got["alpha|amy"][1] != 2 || got["alpha|amy"][2] != 2 {
-		t.Fatalf("mapped Amy counts=%#v want 1st=2, 2nd=2 including Sunday", got["alpha|amy"])
+	if got["alpha|amy"][1] != 3 || got["alpha|amy"][2] != 2 {
+		t.Fatalf("mapped Amy counts=%#v want 1st=3 including a transferred-club appearance, 2nd=2 including Sunday", got["alpha|amy"])
 	}
 	if got["alpha|zed"][3] != 1 {
 		t.Fatalf("name-matched Zed counts=%#v want 3rd=1", got["alpha|zed"])
+	}
+}
+
+func TestStarredListForAppearanceUsesMappedIdentityAfterTransfer(t *testing.T) {
+	date := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	periods := []starred.Period{{ClubKey: "alpha", ListType: "A", PlayerName: "Amy Player", PlayerKey: "amy", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)}}
+	mappings := []starred.IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: "amy", PlayerID: 99}}
+	appearance := starred.Appearance{ClubKey: "beta", MatchDate: date, PlayerID: 99, PlayerKey: "different"}
+	if got := starredListForAppearance(periods, mappings, appearance); got != "A" {
+		t.Fatalf("transferred appearance list=%q want A", got)
+	}
+}
+
+func TestHighConfidenceStarredSuggestionsExcludesFuzzyReview(t *testing.T) {
+	suggestions := []starred.MappingSuggestion{{StarredName: "Exact", Confidence: "high"}, {StarredName: "Fuzzy", Confidence: "review"}}
+	got := highConfidenceStarredSuggestions(suggestions)
+	if len(got) != 1 || got[0].StarredName != "Exact" {
+		t.Fatalf("safe suggestions=%#v", got)
+	}
+}
+
+func TestRevokedStarredSuggestionCannotBeAutomaticallyRematched(t *testing.T) {
+	suggestions := []starred.MappingSuggestion{{ClubKey: "alpha", StarredPlayerKey: "arytonfielding", CandidateID: 99, StarredName: "Aryton Fielding", Confidence: "high"}}
+	blocked := map[string]bool{"alpha|arytonfielding|99": true}
+	protected := markRevokedStarredSuggestionsForReview(suggestions, blocked)
+	if protected[0].Confidence != "review" || len(highConfidenceStarredSuggestions(protected)) != 0 {
+		t.Fatalf("revoked candidate remained auto-matchable: %#v", protected)
 	}
 }
 
