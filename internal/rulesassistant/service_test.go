@@ -151,6 +151,21 @@ func TestIsJuniorRulesQueryTreatsAgeGroupsAsJunior(t *testing.T) {
 	}
 }
 
+func TestJuniorAgeGroupPhraseMatchesHeadingWording(t *testing.T) {
+	for question, want := range map[string]string{
+		"Are LBWs in play in U11 cricket?":       "under 11",
+		"Are LBW in play in U/11 cricket":        "under 11",
+		"How many overs for Under 13s?":          "under 13",
+		"What about the U18s summer cup?":        "under 18",
+		"How many overs in the Premier League?":  "",
+		"Can a starred player play second team?": "",
+	} {
+		if got := juniorAgeGroupPhrase(question); got != want {
+			t.Errorf("juniorAgeGroupPhrase(%q)=%q want %q", question, got, want)
+		}
+	}
+}
+
 func TestDeepestRuleReferencePrefersTheLeafLevel(t *testing.T) {
 	heading := "7.10. LEAGUE AND SUMMER CUP RULES › 7.10.2. Under 11s › 7.10.2.11. Scoring"
 	if got := deepestRuleReference(heading); got != "7.10.2.11" {
