@@ -11,8 +11,8 @@ services:
       - APP_HTTP_ADDR=:8080
       - MIGRATE=1
       - MIGRATE_DIR=/migrations
-      - PUBLIC_BASE_URL=https://rules-staging.gmcl.co.uk
-      - PUBLIC_ALT_BASE_URL=https://rules-staging.gmcl.co.uk
+      - PUBLIC_BASE_URL=https://gmcl.co.uk
+      - PUBLIC_ALT_BASE_URL=https://www.gmcl.co.uk
       - SANCTIONS_BASE_URL=https://sanctions.gmcl.co.uk
       - RULES_ASSISTANT_ENABLED=${RULES_ASSISTANT_ENABLED:-false}
       - STARRED_WEEKLY_SYNC_ENABLED=${STARRED_WEEKLY_SYNC_ENABLED:-true}
@@ -69,7 +69,7 @@ services:
       - N8N_PROTOCOL=https
       - WEBHOOK_URL=https://n8n.gmcl.co.uk/
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      - GMCL_BASE_URL=https://rules-staging.gmcl.co.uk
+      - GMCL_BASE_URL=https://gmcl.co.uk
     env_file:
       - .env
     volumes:
