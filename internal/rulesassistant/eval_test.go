@@ -80,6 +80,28 @@ func TestScoreEvalAnswerUnavailableMustRefuse(t *testing.T) {
 	}
 }
 
+func TestScoreEvalAnswerAcceptsVariedRefusalWording(t *testing.T) {
+	entry := EvalEntry{Type: "unavailable"}
+	// Grounded answers that decline to assert the unknown, then add helpful
+	// context, must count as refusals however they are phrased.
+	for _, text := range []string{
+		"The published rules do not identify a named winner. The award goes to the highest average.",
+		"The rules do not confirm that the child is safe to play. The club must assess welfare.",
+		"I cannot determine the result from the published rules.",
+		"The supplied rules do not predict this season's outcome.",
+	} {
+		answer := Answer{Text: text, Citations: []Citation{{ChunkID: 1, RuleReference: "6.2"}}}
+		if pass, reasons := ScoreEvalAnswer(entry, answer, nil); !pass {
+			t.Fatalf("refusal %q scored as fail: %v", text, reasons)
+		}
+	}
+	// A confident assertion with no hedge must still fail an unavailable item.
+	confident := Answer{Text: "Woodley will win the batting award this year.", Citations: []Citation{{ChunkID: 1, RuleReference: "6.2"}}}
+	if pass, _ := ScoreEvalAnswer(entry, confident, nil); pass {
+		t.Fatal("a confident prediction must fail an unavailable question")
+	}
+}
+
 func TestScoreEvalAnswerClarificationExpectations(t *testing.T) {
 	entry := EvalEntry{Type: "ambiguous", ExpectClarification: true}
 	if pass, _ := ScoreEvalAnswer(entry, Answer{Text: "Here is a full answer.", Citations: []Citation{{ChunkID: 1}}}, nil); pass {

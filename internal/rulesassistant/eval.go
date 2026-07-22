@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -128,14 +129,22 @@ func SummariseEval(results []EvalResult) EvalSummary {
 	return summary
 }
 
+// evalRefusalRE matches the family of "the rules do not <verb> …" and
+// "cannot <verb> …" hedges a grounded answer uses when the published rules do
+// not settle the question. It is deliberately broad: an unanswerable question
+// passes when the answer declines to assert the unknown, however it is worded.
+var evalRefusalRE = regexp.MustCompile(`(?i)\b(?:do|does|did|could|would|will|can|is|are|was|were)\s?(?:not|n't)\s+(?:contain|state|identif|specif|give|confirm|say|set out|provide|establish|determin|list|name|predict|guarantee|know|address|cover|answer)`)
+
 var evalRefusalPhrases = []string{
-	"cannot", "can't", "not able", "unable", "do not contain", "don't contain",
-	"does not contain", "doesn't contain", "not covered", "no published rule",
+	"cannot", "can't", "not able", "unable", "not covered", "no published rule",
 	"not in the published rules", "not something the published rules", "outside the published rules",
 	"could not find enough relevant evidence",
 }
 
 func evalContainsRefusal(haystack string) bool {
+	if evalRefusalRE.MatchString(haystack) {
+		return true
+	}
 	for _, phrase := range evalRefusalPhrases {
 		if strings.Contains(haystack, phrase) {
 			return true
