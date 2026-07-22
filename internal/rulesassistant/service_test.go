@@ -91,6 +91,30 @@ func TestExtractRuleReference(t *testing.T) {
 	}
 }
 
+func TestParseHTMLKeepsSingleLineLeafRules(t *testing.T) {
+	// Many published rules are one short numbered line. They must become
+	// chunks with their text and reference intact — heading detection used to
+	// swallow the line and then drop the empty chunk, erasing the rule.
+	raw := `<html><title>Rules-Junior</title><body>WELCOME TO GMCL FOR YOUR MOBILE
+<h2>7.10.2. U11 Pairs Cricket</h2>
+<p>7.10.2.11.2. LBW : There are no LBW&rsquo;s in this competition</p>
+<p>7.10.4.8.2. In the Summer Cup the full duration is 100 deliveries per innings</p>
+Proud Sponsors</body></html>`
+	doc := parseHTML("https://example.test/pages/rules-junior", raw)
+	wantRefs := map[string]string{"7.10.2.11.2": "no LBW", "7.10.4.8.2": "100 deliveries"}
+	for ref, needle := range wantRefs {
+		found := false
+		for _, chunk := range doc.Chunks {
+			if chunk.RuleReference == ref && strings.Contains(chunk.Content, needle) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("leaf rule %s (%q) missing from chunks: %+v", ref, needle, doc.Chunks)
+		}
+	}
+}
+
 func TestParseHTMLDoesNotTreatSectionNumbersAsRuleReferences(t *testing.T) {
 	raw := `<html><title>GMCL RULES - PENALTIES</title><body>WELCOME TO GMCL FOR YOUR MOBILE
 <h1>GMCL RULES - PENALTIES</h1>
