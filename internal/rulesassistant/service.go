@@ -573,7 +573,12 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		return 0, time.Time{}, nil, err
 	}
 	ref := extractRuleReference(question)
-	lexicalQuery := buildLexicalQuery(question)
+	lexicalTerms := lexicalQueryTerms(question)
+	lexicalQuery := "cricket"
+	if len(lexicalTerms) > 0 {
+		lexicalQuery = strings.Join(lexicalTerms, " | ")
+	}
+	rareTerm := s.rarestQueryTerm(ctx, releaseID, lexicalTerms)
 	juniorRulesIntent := strings.Contains(selectedScope, "Junior rules") || isJuniorRulesQuery(question)
 	seniorRulesIntent := strings.Contains(selectedScope, "Senior rules")
 	juniorCupEligibilityIntent := isJuniorCupEligibilityQuery(question)
@@ -610,15 +615,27 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		),
 		exact_reference AS (
 			SELECT id,row_number() OVER (
-				ORDER BY CASE WHEN lower(COALESCE(rule_reference,''))=lower($3) THEN 0 ELSE 1 END,
+				ORDER BY CASE WHEN lower(COALESCE(rule_reference,''))=lower($3) THEN 0
+				              WHEN lower(COALESCE(rule_reference,'')) LIKE lower($3)||'.%' THEN 1
+				              ELSE 2 END,
+				         CASE WHEN char_length(content) < 80 THEN 1 ELSE 0 END,
 				         length(COALESCE(rule_reference,''))
 			) AS rank
 			FROM corpus
 			WHERE $3<>'' AND (
 				lower(COALESCE(rule_reference,''))=lower($3)
 				OR lower(COALESCE(rule_reference,'')) LIKE lower($3)||'.%'
+				OR position(lower($3)||'.' in lower(content)) > 0
 			)
 			LIMIT 50
+		),
+		rare_term AS (
+			SELECT id,row_number() OVER (
+				ORDER BY ts_rank_cd(search_vector,to_tsquery('english',$9)) DESC
+			) AS rank
+			FROM corpus
+			WHERE $9<>'' AND search_vector @@ to_tsquery('english',$9)
+			LIMIT 20
 		),
 		domain AS (
 			SELECT id,row_number() OVER (
@@ -644,6 +661,8 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			UNION ALL
 			SELECT id,2.0/(1+rank) AS contribution FROM exact_reference
 			UNION ALL
+			SELECT id,1.5/(5+rank) AS contribution FROM rare_term
+			UNION ALL
 			SELECT id,2.0/(10+rank) AS contribution FROM domain
 			UNION ALL
 			SELECT id,3.0/(1+rank) AS contribution FROM junior_cup_entry
@@ -654,7 +673,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		SELECT c.id,COALESCE(c.rule_reference,''),c.heading_path,c.content,c.canonical_url,c.title,f.score
 		FROM fused f JOIN corpus c ON c.id=f.id
 		ORDER BY f.score DESC,c.id
-		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent)
+		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent, rareTerm)
 	if err != nil {
 		return 0, time.Time{}, nil, err
 	}
@@ -729,6 +748,14 @@ var lexicalSynonyms = map[string][]string{
 }
 
 func buildLexicalQuery(question string) string {
+	terms := lexicalQueryTerms(question)
+	if len(terms) == 0 {
+		return "cricket"
+	}
+	return strings.Join(terms, " | ")
+}
+
+func lexicalQueryTerms(question string) []string {
 	stop := map[string]bool{
 		"a": true, "about": true, "an": true, "and": true, "are": true, "at": true,
 		"be": true, "before": true, "by": true, "does": true, "explain": true, "for": true,
@@ -760,10 +787,31 @@ func buildLexicalQuery(question string) string {
 	if seen["summer"] && seen["camp"] && !seen["cup"] {
 		terms = append(terms, "cup")
 	}
-	if len(terms) == 0 {
-		return "cricket"
+	return terms
+}
+
+// rarestQueryTerm finds the query term matching the fewest chunks in the
+// release. Postgres full-text ranking has no notion of term rarity, so a
+// distinctive term like "lbw" loses to chunks stuffed with common words like
+// "cricket" and "play"; a dedicated channel for the rarest term keeps the
+// precise rule in the candidate set. Terms matching nothing or matching too
+// much of the corpus are ignored.
+func (s *Service) rarestQueryTerm(ctx context.Context, releaseID int64, terms []string) string {
+	const tooCommon = 150
+	best, bestCount := "", -1
+	for _, term := range terms {
+		var count int
+		if err := s.DB.QueryRow(ctx, `SELECT count(*) FROM rule_chunks WHERE release_id=$1 AND search_vector @@ to_tsquery('english',$2)`, releaseID, term).Scan(&count); err != nil || count == 0 {
+			continue
+		}
+		if bestCount == -1 || count < bestCount {
+			best, bestCount = term, count
+		}
 	}
-	return strings.Join(terms, " | ")
+	if bestCount == -1 || bestCount > tooCommon {
+		return ""
+	}
+	return best
 }
 
 func (s *Service) Answer(ctx context.Context, question, selectedScope, conversationContext, previousUserQuestion string) (Answer, error) {
@@ -814,6 +862,7 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 			"Do not ask for a fact the user has already supplied. If there is a likely typo or reasonable interpretation, state the conditional interpretation, give the useful answer under that interpretation, and ask the user to confirm it.",
 			"Treat a selected match context as the user's explicit scope. Apply that scope to retrieval and the answer, and do not ask the user to choose Senior or Junior, or League or Cup, when they already selected it.",
 			"Treat clarification_needed as an inability flag: set it true only when the evidence left the core question unanswered. If you have substantively answered the question, keep clarification_needed false even when you add a check question or note a condition inside the answer text.",
+			"For explain and summarise requests, answer from whatever the supplied extracts cover and note any missing sub-sections inside the answer; partial coverage is not a reason to set clarification_needed.",
 			"When clarification is not needed, return an empty clarification_questions array. When it is needed, put the questions in clarification_questions as well as ending the answer naturally.",
 			"Make clear that an explanation is an interpretation and that only GMCL can make a formal ruling.",
 		}, " "),
