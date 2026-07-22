@@ -80,6 +80,28 @@ func TestScoreEvalAnswerUnavailableMustRefuse(t *testing.T) {
 	}
 }
 
+func TestScoreEvalAnswerAcceptsVariedRefusalWording(t *testing.T) {
+	entry := EvalEntry{Type: "unavailable"}
+	// Grounded answers that decline to assert the unknown, then add helpful
+	// context, must count as refusals however they are phrased.
+	for _, text := range []string{
+		"The published rules do not identify a named winner. The award goes to the highest average.",
+		"The rules do not confirm that the child is safe to play. The club must assess welfare.",
+		"I cannot determine the result from the published rules.",
+		"The supplied rules do not predict this season's outcome.",
+	} {
+		answer := Answer{Text: text, Citations: []Citation{{ChunkID: 1, RuleReference: "6.2"}}}
+		if pass, reasons := ScoreEvalAnswer(entry, answer, nil); !pass {
+			t.Fatalf("refusal %q scored as fail: %v", text, reasons)
+		}
+	}
+	// A confident assertion with no hedge must still fail an unavailable item.
+	confident := Answer{Text: "Woodley will win the batting award this year.", Citations: []Citation{{ChunkID: 1, RuleReference: "6.2"}}}
+	if pass, _ := ScoreEvalAnswer(entry, confident, nil); pass {
+		t.Fatal("a confident prediction must fail an unavailable question")
+	}
+}
+
 func TestScoreEvalAnswerClarificationExpectations(t *testing.T) {
 	entry := EvalEntry{Type: "ambiguous", ExpectClarification: true}
 	if pass, _ := ScoreEvalAnswer(entry, Answer{Text: "Here is a full answer.", Citations: []Citation{{ChunkID: 1}}}, nil); pass {
@@ -89,8 +111,39 @@ func TestScoreEvalAnswerClarificationExpectations(t *testing.T) {
 		t.Fatalf("clarification must pass, got %v", reasons)
 	}
 	direct := EvalEntry{Type: "direct"}
+	// A hedge with no grounding is still a failure: nothing was answered.
 	if pass, _ := ScoreEvalAnswer(direct, Answer{Text: "Which competition?", ClarificationNeeded: true}, nil); pass {
-		t.Fatal("clarification on a direct question must fail so a human reviews it")
+		t.Fatal("an ungrounded clarification on a direct question must fail")
+	}
+}
+
+func TestHedgingIsReportedNotFailed(t *testing.T) {
+	// A grounded, substantive answer that also sets clarification_needed is
+	// correct-but-cautious. It must pass on correctness and be flagged as
+	// hedged, because the model sets that flag inconsistently between runs
+	// and failing on it made the score swing on identical code.
+	entry := EvalEntry{Type: "direct"}
+	answer := Answer{
+		Text:                "Promotion is decided by pots, matched in ranking order.",
+		ClarificationNeeded: true,
+		Citations:           []Citation{{ChunkID: 1, RuleReference: "6.1.2.1"}},
+	}
+	pass, reasons := ScoreEvalAnswer(entry, answer, nil)
+	if !pass {
+		t.Fatalf("grounded hedged answer must pass on correctness: %v", reasons)
+	}
+	if !EvalHedged(entry, answer) {
+		t.Fatal("grounded hedged answer must be reported as hedged")
+	}
+	// Gold violations still fail regardless of hedging.
+	gold := EvalEntry{Type: "direct", MustContain: []string{"no lbw"}}
+	wrong := Answer{Text: "Yes, LBW is in play.", Citations: []Citation{{ChunkID: 1, RuleReference: "7.1.2"}}}
+	if pass, _ := ScoreEvalAnswer(gold, wrong, nil); pass {
+		t.Fatal("an answer contradicting a verified gold fact must fail")
+	}
+	// Questions that expect a clarification are not counted as hedging.
+	if EvalHedged(EvalEntry{Type: "ambiguous"}, answer) {
+		t.Fatal("ambiguous questions must not be counted as hedging")
 	}
 }
 

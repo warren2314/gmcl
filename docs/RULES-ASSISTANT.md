@@ -22,6 +22,13 @@ Authenticated questions are routed by intent, not by keyword alone:
   reply always ends with the remedy (request a fresh link from the home
   page). Rulebook questions about submissions ("When must match details be
   entered on Play-Cricket?") stay with the rules pipeline.
+- **Admin club lookups** — from the protected admin chat, naming a club
+  ("Has Woodley submitted their report?", "Why didn't the Worsley captain
+  get their link?") returns the same diagnosis per team: report status,
+  link/token state, overrides, reminders, and delivery warnings, with a
+  deep link into Link Diagnostics. Naming a team ("Woodley 2nd XI") narrows
+  the answer. This is also how the captain skills are tested on staging,
+  where no captain sessions exist.
 - **Rulebook questions that merely mention cards** — "How many yellow cards
   before a suspension?", "Can we appeal a card?" — go to the cited retrieval
   pipeline like any other rules question. When phrasing is ambiguous the
@@ -75,10 +82,22 @@ The exit code is non-zero below the `-min-pass` threshold, so the command can
 gate a deployment. Use `-group`, `-id`, or `-limit` for a quick spot check and
 `-verbose` to print every answer.
 
-Scoring combines type-based defaults (direct questions must produce a cited
-answer; unavailable questions must be refused; injection attempts must stay
-grounded or ask for clarification) with optional gold expectations stored on
-each question: `expected_rule` (a citation must sit under that rule),
+Scoring separates **correctness** from **caution**, because they are different
+problems:
+
+- **Pass/fail** enforces correctness only: a direct question must produce a
+  cited answer, an unanswerable one must be refused, injection attempts must
+  stay grounded, and no answer may contradict a verified gold fact.
+- **Contradicted a verified answer** must be zero. This is the number that
+  means the assistant was actually *wrong*.
+- **Hedge rate** is reported separately. An answer that is grounded and
+  substantive but also sets `clarification_needed` is correct-but-cautious;
+  it passes and is flagged `hedge`. Failing on that flag made the score swing
+  three to four points between runs on identical code, because the model sets
+  it inconsistently on borderline questions — which masked genuinely wrong
+  answers. Track the hedge rate down over time; do not gate on it.
+
+Scoring also applies optional gold expectations stored on each question: `expected_rule` (a citation must sit under that rule),
 `must_contain` (`|` separates alternatives), `must_not_contain`,
 `expect_clarification`, and a free-text `notes` field for reviewers. Add gold
 facts only after verifying them against the published rules, and record the

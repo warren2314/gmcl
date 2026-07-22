@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,6 +75,8 @@ func main() {
 		verdict := "PASS"
 		if !result.Pass {
 			verdict = "FAIL"
+		} else if result.Hedged {
+			verdict = "hedge"
 		}
 		fmt.Printf("[%3d/%d] %s  #%d (%s/%s) %s\n", done, len(filtered), verdict, result.Entry.ID, result.Entry.Group, result.Entry.Type, truncateLine(result.Entry.Question, 90))
 		if !result.Pass {
@@ -101,6 +104,8 @@ func main() {
 		fmt.Printf(" Gold-answer questions: %d/%d passed.", summary.GoldPassed, summary.GoldTotal)
 	}
 	fmt.Println()
+	fmt.Printf("Contradicted a verified answer: %d (this must be zero).\n", summary.Contra)
+	fmt.Printf("Answered but hedged: %d (%.1f%%) — quality signal, not a failure.\n", summary.Hedged, summary.HedgeRate)
 	if len(summary.ByType) > 0 {
 		fmt.Print("Failures by type:")
 		for evalType, count := range summary.ByType {
@@ -118,6 +123,9 @@ func main() {
 			"results":      results,
 		}
 		encoded, _ := json.MarshalIndent(report, "", "  ")
+		if dir := filepath.Dir(*out); dir != "." && dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
 		if err := os.WriteFile(*out, encoded, 0o644); err != nil {
 			fatalf("could not write report: %v", err)
 		}

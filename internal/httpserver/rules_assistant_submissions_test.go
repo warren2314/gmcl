@@ -123,3 +123,46 @@ func TestFormatCaptainSubmissionAnswerValidTokenState(t *testing.T) {
 		t.Fatalf("valid token state missing: %s", answer)
 	}
 }
+
+func TestHasSubmissionLookupTermsForAdminClubQuestions(t *testing.T) {
+	// Admin questions carry no ownership marker; the club name is the scope.
+	for _, question := range []string{"Has Woodley submitted their report?", "Why didn't the Worsley captain get their sign-in link email?"} {
+		if !hasSubmissionLookupTerms(question) {
+			t.Errorf("expected submission terms for %q", question)
+		}
+	}
+	for _, question := range []string{"What is the deadline for Woodley's report?", "What happens if a report is late?", "When must match details be entered on Play-Cricket?"} {
+		if hasSubmissionLookupTerms(question) {
+			t.Errorf("expected rulebook routing for %q", question)
+		}
+	}
+}
+
+func TestFormatAdminSubmissionAnswerCoversEveryTeamState(t *testing.T) {
+	withCaptain := submissionStatusFixture()
+	captainless := captainSubmissionStatus{Now: withCaptain.Now}
+	teams := []adminSubmissionTeam{
+		{TeamName: "1st XI", HasCaptain: true, Status: withCaptain},
+		{TeamName: "2nd XI", HasCaptain: false, Status: captainless},
+	}
+	answer, citations := formatAdminSubmissionAnswer("Worsley CC", teams, 1)
+	for _, want := range []string{
+		"Report and sign-in-link status for Worsley CC",
+		"1st XI — captain Casey Captain (o…@example.com)",
+		"latest submitted Sat 18 Jul 09:20",
+		"2nd XI — no active captain on record",
+		"Reports: none recorded.",
+		"1 further team(s) not shown",
+		"Email addresses are masked",
+	} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("admin answer missing %q:\n%s", want, answer)
+		}
+	}
+	if strings.Contains(answer, "override@example.com") || strings.Contains(answer, "casey@example.com") {
+		t.Fatalf("full email leaked: %s", answer)
+	}
+	if len(citations) != 2 || !strings.Contains(citations[0]["url"].(string), "/admin/link-diagnostics?q=Worsley+CC") {
+		t.Fatalf("citations=%v", citations)
+	}
+}

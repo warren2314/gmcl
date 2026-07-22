@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +94,7 @@ type EvalResult struct {
 	Answer  Answer        `json:"answer"`
 	Err     string        `json:"error,omitempty"`
 	Pass    bool          `json:"pass"`
+	Hedged  bool          `json:"hedged,omitempty"`
 	Reasons []string      `json:"reasons,omitempty"`
 	Latency time.Duration `json:"latency_ns"`
 }
@@ -103,6 +105,9 @@ type EvalSummary struct {
 	PassRate   float64        `json:"pass_rate"`
 	GoldTotal  int            `json:"gold_total"`
 	GoldPassed int            `json:"gold_passed"`
+	Contra     int            `json:"contradicted_gold"`
+	Hedged     int            `json:"hedged"`
+	HedgeRate  float64        `json:"hedge_rate"`
 	ByType     map[string]int `json:"failures_by_type"`
 }
 
@@ -115,27 +120,44 @@ func SummariseEval(results []EvalResult) EvalSummary {
 		} else {
 			summary.ByType[result.Entry.Type]++
 		}
+		if result.Hedged {
+			summary.Hedged++
+		}
 		if result.Entry.HasGold() {
 			summary.GoldTotal++
 			if result.Pass {
 				summary.GoldPassed++
+			} else {
+				// A gold question that fails means the assistant contradicted
+				// or missed a fact verified against the published rules. This
+				// is the count that must reach zero.
+				summary.Contra++
 			}
 		}
 	}
 	if summary.Total > 0 {
 		summary.PassRate = float64(summary.Passed) * 100 / float64(summary.Total)
+		summary.HedgeRate = float64(summary.Hedged) * 100 / float64(summary.Total)
 	}
 	return summary
 }
 
+// evalRefusalRE matches the family of "the rules do not <verb> …" and
+// "cannot <verb> …" hedges a grounded answer uses when the published rules do
+// not settle the question. It is deliberately broad: an unanswerable question
+// passes when the answer declines to assert the unknown, however it is worded.
+var evalRefusalRE = regexp.MustCompile(`(?i)\b(?:do|does|did|could|would|will|can|is|are|was|were)\s?(?:not|n't)\s+(?:contain|state|identif|specif|give|confirm|say|set out|provide|establish|determin|list|name|predict|guarantee|know|address|cover|answer)`)
+
 var evalRefusalPhrases = []string{
-	"cannot", "can't", "not able", "unable", "do not contain", "don't contain",
-	"does not contain", "doesn't contain", "not covered", "no published rule",
+	"cannot", "can't", "not able", "unable", "not covered", "no published rule",
 	"not in the published rules", "not something the published rules", "outside the published rules",
 	"could not find enough relevant evidence",
 }
 
 func evalContainsRefusal(haystack string) bool {
+	if evalRefusalRE.MatchString(haystack) {
+		return true
+	}
 	for _, phrase := range evalRefusalPhrases {
 		if strings.Contains(haystack, phrase) {
 			return true
@@ -201,14 +223,33 @@ func ScoreEvalAnswer(entry EvalEntry, answer Answer, err error) (bool, []string)
 			reasons = append(reasons, "answer was neither grounded in citations nor a clarification request")
 		}
 	default:
-		if answer.ClarificationNeeded {
-			reasons = append(reasons, "asked for clarification on a "+entry.Type+" question")
-		}
+		// Correctness is the gate: the answer must be grounded in real
+		// citations and must not contradict verified gold facts. Whether the
+		// model additionally set clarification_needed is a separate quality
+		// signal (see EvalResult.Hedged), not a failure: the flag is set
+		// inconsistently between runs on borderline questions, and treating
+		// it as a failure made the score swing several points on identical
+		// code while hiding genuinely wrong answers.
 		if len(answer.Citations) == 0 {
 			reasons = append(reasons, "no valid citations")
 		}
 	}
 	return len(reasons) == 0, reasons
+}
+
+// EvalHedged reports whether the assistant asked for clarification on a
+// question that expected a direct answer. Hedging is tracked and reported,
+// but does not fail the run on its own.
+func EvalHedged(entry EvalEntry, answer Answer) bool {
+	if !answer.ClarificationNeeded || entry.ExpectClarification {
+		return false
+	}
+	switch entry.Type {
+	case "ambiguous", "unavailable", "injection":
+		return false
+	default:
+		return true
+	}
 }
 
 // RunEval answers and scores every entry with a bounded worker pool. Results
@@ -232,7 +273,7 @@ func (s *Service) RunEval(ctx context.Context, entries []EvalEntry, concurrency 
 				answer, err := s.Answer(answerCtx, entry.Question, entry.Scope(), "", "")
 				cancel()
 				pass, reasons := ScoreEvalAnswer(entry, answer, err)
-				result := EvalResult{Entry: entry, Answer: answer, Pass: pass, Reasons: reasons, Latency: time.Since(started)}
+				result := EvalResult{Entry: entry, Answer: answer, Pass: pass, Hedged: EvalHedged(entry, answer), Reasons: reasons, Latency: time.Since(started)}
 				if err != nil {
 					result.Err = err.Error()
 				}

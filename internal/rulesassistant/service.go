@@ -25,17 +25,22 @@ import (
 const defaultSourceURL = "https://www.gtrmcrcricket.co.uk/pages/rules-main-menu"
 
 var (
-	hrefRE                = regexp.MustCompile(`(?i)href\s*=\s*["']([^"']+)["']`)
+	hrefRE = regexp.MustCompile(`(?i)href\s*=\s*["']([^"']+)["']`)
+	// Shopblocks dynamic tiles carry their destination in a data-dynamic JSON
+	// attribute rather than an href. The whole of Rule 4 (competition pages)
+	// is only reachable through these links.
+	dynamicTileLinkRE     = regexp.MustCompile(`"link_custom"\s*:\s*"([^"]+)"`)
 	titleRE               = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	tagRE                 = regexp.MustCompile(`(?s)<[^>]+>`)
 	spaceRE               = regexp.MustCompile(`[ \t\r\f\v]+`)
 	blankRE               = regexp.MustCompile(`\n{3,}`)
 	breakRE               = regexp.MustCompile(`(?i)</?(?:h[1-6]|p|div|li|tr|br|section|article)[^>]*>`)
 	scriptRE              = regexp.MustCompile(`(?is)<(?:script[^>]*>.*?</script|style[^>]*>.*?</style|svg[^>]*>.*?</svg)>`)
-	ruleRefRE             = regexp.MustCompile(`(?i)\b(?:rule\s*)?([1-8](?:\.\d+){0,4})\b`)
+	rulePrefixedRefRE     = regexp.MustCompile(`(?i)\brule\s*([1-8](?:\.\d+){0,4})\b`)
+	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+){1,4})\b`)
 	updatedRE             = regexp.MustCompile(`(?i)(updated[^\n]{0,100}|\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})`)
 	searchWordRE          = regexp.MustCompile(`[a-z0-9]+`)
-	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*|under\s+)(?:9|11|13|15|18)s?\b`)
+	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*[-/]?\s*|under\s+)(9|11|13|15|18)s?\b`)
 	inlineChunkCitationRE = regexp.MustCompile(`(?i)\s*\[(?:chunk(?:_id)?\s*[=:]?\s*)?\d+\]`)
 	modelCitationTokenRE  = regexp.MustCompile(`\s*citechunk_id=\d+`)
 	contentStart          = regexp.MustCompile(`(?i)WELCOME TO GMCL FOR YOUR MOBILE`)
@@ -65,7 +70,7 @@ func New(database *db.Pool) *Service {
 		sourceURL = defaultSourceURL
 	}
 	return &Service{
-		DB: database, HTTPClient: &http.Client{Timeout: 20 * time.Second},
+		DB: database, HTTPClient: &http.Client{Timeout: 60 * time.Second},
 		APIKey: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), ChatModel: chatModel,
 		EmbedModel: embedModel, SourceURL: sourceURL,
 	}
@@ -171,7 +176,7 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 				docs[di].Chunks[ci].EmbeddingLiteral = existingEmbedding
 				continue
 			}
-			emb, embedErr := s.embed(ctx, docs[di].Chunks[ci].Content)
+			emb, embedErr := s.embed(ctx, docs[di].Chunks[ci].Heading+"\n"+docs[di].Chunks[ci].Content)
 			if embedErr != nil {
 				return releaseID, fmt.Errorf("embed %s chunk %d: %w", docs[di].URL, ci, embedErr)
 			}
@@ -268,9 +273,17 @@ func (s *Service) crawl(ctx context.Context) ([]parsedDocument, error) {
 
 func discoverLinks(root *url.URL, current, raw string) []string {
 	base, _ := url.Parse(current)
+	content := pageContent(raw)
+	var candidates []string
+	for _, match := range hrefRE.FindAllStringSubmatch(content, -1) {
+		candidates = append(candidates, match[1])
+	}
+	for _, match := range dynamicTileLinkRE.FindAllStringSubmatch(content, -1) {
+		candidates = append(candidates, strings.ReplaceAll(match[1], `\/`, "/"))
+	}
 	set := map[string]bool{}
-	for _, match := range hrefRE.FindAllStringSubmatch(pageContent(raw), -1) {
-		href := strings.TrimSpace(html.UnescapeString(match[1]))
+	for _, candidate := range candidates {
+		href := strings.TrimSpace(html.UnescapeString(candidate))
 		u, err := base.Parse(href)
 		if err != nil || u.Hostname() != root.Hostname() {
 			continue
@@ -313,9 +326,23 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		if len(content) < 35 {
 			return
 		}
-		ref := extractRuleReference(heading + " " + content)
-		chunks = append(chunks, parsedChunk{RuleReference: ref, Heading: heading, Content: content, Hash: hashText(content)})
+		// Content starts with the chunk's own heading line, so it yields the
+		// chunk's precise reference; the heading trail would yield the top
+		// ancestor ("7.10") instead. The trail is still part of the
+		// searchable identity: a leaf like "There are no LBW's in this
+		// competition" is only findable for "U11" questions through its
+		// ancestors, so heading and content together form the hash (and
+		// therefore the embedding input).
+		ref := extractRuleReference(content)
+		if ref == "" {
+			ref = deepestRuleReference(heading)
+		}
+		chunks = append(chunks, parsedChunk{RuleReference: ref, Heading: heading, Content: content, Hash: hashText(heading + "\n" + content)})
 	}
+	// Ancestor headings by dotted-reference depth: "7.10.2. U11 Pairs" stays
+	// part of the heading for every 7.10.2.x chunk beneath it.
+	type headingCrumb struct{ ref, text string }
+	var trail []headingCrumb
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -323,7 +350,34 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		}
 		if looksLikeHeading(line) {
 			flush()
-			heading = truncate(line, 300)
+			ref := extractRuleReference(line)
+			if ref == "" {
+				trail = trail[:0]
+			} else {
+				for len(trail) > 0 {
+					last := trail[len(trail)-1]
+					if last.ref != "" && strings.HasPrefix(ref, last.ref+".") {
+						break
+					}
+					trail = trail[:len(trail)-1]
+				}
+			}
+			trail = append(trail, headingCrumb{ref: ref, text: line})
+			parts := make([]string, len(trail))
+			for i, crumb := range trail {
+				parts[i] = crumb.text
+			}
+			joined := strings.Join(parts, " › ")
+			for len(joined) > 300 && len(parts) > 2 {
+				parts = parts[1:]
+				joined = strings.Join(parts, " › ")
+			}
+			heading = truncate(joined, 300)
+			// The heading line is rule text too: many leaf rules are a single
+			// short numbered line ("7.10.2.11.2. LBW: There are no LBW's in
+			// this competition"). Dropping heading text from the content used
+			// to erase every such rule from the corpus.
+			buf.WriteString(line)
 			continue
 		}
 		if buf.Len() > 0 {
@@ -372,7 +426,10 @@ func looksLikeHeading(line string) bool {
 	if len(line) > 180 {
 		return false
 	}
-	if ruleRefRE.MatchString(line) && len(line) < 130 {
+	// Only a real reference marks a heading: "Rule 3" or a dotted number like
+	// "8.1.1.4". Bare digits used to make every short numeric line ("Prem 1
+	// £500...") a heading, fragmenting penalty tables into tiny chunks.
+	if (rulePrefixedRefRE.MatchString(line) || dottedRuleRefRE.MatchString(line)) && len(line) < 130 {
 		return true
 	}
 	letters, upper := 0, 0
@@ -387,12 +444,39 @@ func looksLikeHeading(line string) bool {
 	return letters > 3 && upper*100/letters > 75
 }
 
+// extractRuleReference returns the first plausible rule reference in the
+// text. A bare group number counts only when introduced by the word "rule"
+// ("Rule 8"); otherwise at least one dotted level is required ("8.1.2"). List
+// numbering ("Penalties Section 1") and counts ("3 yellow cards") are never
+// rule references — bare digits used to mislabel every penalties-menu chunk
+// as Rule 1 and skewed question-side reference boosting.
 func extractRuleReference(value string) string {
-	match := ruleRefRE.FindStringSubmatch(value)
-	if len(match) == 2 {
-		return match[1]
+	reference, position := "", -1
+	if match := rulePrefixedRefRE.FindStringSubmatchIndex(value); match != nil {
+		reference, position = value[match[2]:match[3]], match[0]
 	}
-	return ""
+	if match := dottedRuleRefRE.FindStringSubmatchIndex(value); match != nil && (position == -1 || match[0] < position) {
+		reference = value[match[2]:match[3]]
+	}
+	return reference
+}
+
+// deepestRuleReference returns the most specific reference in the text — in a
+// heading trail like "7.10. … › 7.10.2. … › 7.10.2.11. …" that is the last,
+// deepest level rather than the first ancestor.
+func deepestRuleReference(value string) string {
+	best, bestDepth := "", -1
+	for _, match := range rulePrefixedRefRE.FindAllStringSubmatch(value, -1) {
+		if depth := strings.Count(match[1], "."); depth > bestDepth {
+			best, bestDepth = match[1], depth
+		}
+	}
+	for _, match := range dottedRuleRefRE.FindAllString(value, -1) {
+		if depth := strings.Count(match, "."); depth > bestDepth {
+			best, bestDepth = match, depth
+		}
+	}
+	return best
 }
 
 func validateCorpus(docs []parsedDocument) error {
@@ -493,6 +577,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 	juniorRulesIntent := strings.Contains(selectedScope, "Junior rules") || isJuniorRulesQuery(question)
 	seniorRulesIntent := strings.Contains(selectedScope, "Senior rules")
 	juniorCupEligibilityIntent := isJuniorCupEligibilityQuery(question)
+	ageGroupPhrase := juniorAgeGroupPhrase(question)
 	rows, err := s.DB.Query(ctx, `
 		WITH corpus AS (
 			SELECT c.id,c.rule_reference,c.heading_path,c.content,c.search_vector,c.embedding,
@@ -526,13 +611,17 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		),
 		exact_reference AS (
 			SELECT id,row_number() OVER (
-				ORDER BY CASE WHEN lower(COALESCE(rule_reference,''))=lower($3) THEN 0 ELSE 1 END,
+				ORDER BY CASE WHEN lower(COALESCE(rule_reference,''))=lower($3) THEN 0
+				              WHEN lower(COALESCE(rule_reference,'')) LIKE lower($3)||'.%' THEN 1
+				              ELSE 2 END,
+				         CASE WHEN char_length(content) < 80 THEN 1 ELSE 0 END,
 				         length(COALESCE(rule_reference,''))
 			) AS rank
 			FROM corpus
 			WHERE $3<>'' AND (
 				lower(COALESCE(rule_reference,''))=lower($3)
 				OR lower(COALESCE(rule_reference,'')) LIKE lower($3)||'.%'
+				OR position(lower($3)||'.' in lower(content)) > 0
 			)
 			LIMIT 50
 		),
@@ -553,6 +642,18 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			FROM corpus
 			WHERE $7::boolean AND lower(COALESCE(rule_reference,''))='7.5.1.2'
 		),
+		age_group AS (
+			-- Ranked by vector distance, not text rank: the age-group filter
+			-- already guarantees topicality, and text ranking inside it favours
+			-- verbose chunks that repeat common words over the short leaf rule
+			-- that actually answers the question.
+			SELECT id,row_number() OVER (
+				ORDER BY embedding <=> $1::vector
+			) AS rank
+			FROM corpus
+			WHERE $9<>'' AND lower(heading_path) LIKE '%'||$9||'%'
+			LIMIT 20
+		),
 		ranked AS (
 			SELECT id,1.0/(60+rank) AS contribution FROM lexical
 			UNION ALL
@@ -563,6 +664,8 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			SELECT id,2.0/(10+rank) AS contribution FROM domain
 			UNION ALL
 			SELECT id,3.0/(1+rank) AS contribution FROM junior_cup_entry
+			UNION ALL
+			SELECT id,1.0/(5+rank) AS contribution FROM age_group
 		),
 		fused AS (
 			SELECT id,sum(contribution) AS score FROM ranked GROUP BY id
@@ -570,7 +673,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		SELECT c.id,COALESCE(c.rule_reference,''),c.heading_path,c.content,c.canonical_url,c.title,f.score
 		FROM fused f JOIN corpus c ON c.id=f.id
 		ORDER BY f.score DESC,c.id
-		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent)
+		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent, ageGroupPhrase)
 	if err != nil {
 		return 0, time.Time{}, nil, err
 	}
@@ -591,11 +694,28 @@ func isJuniorRulesQuery(question string) bool {
 	if strings.Contains(question, "junior rule") || strings.Contains(question, "junior cup") {
 		return true
 	}
-	if juniorAgeRE.MatchString(question) && (strings.Contains(question, "summer") || strings.Contains(question, "cup") || strings.Contains(question, "camp")) {
+	// A named age group (U9-U18) only exists in junior cricket, so the
+	// question is a junior question unless it explicitly reaches into
+	// open-age rules ("can a U15 play senior cricket?").
+	if juniorAgeRE.MatchString(question) &&
+		!strings.Contains(question, "senior") && !strings.Contains(question, "open age") &&
+		!strings.Contains(question, "open-age") && !strings.Contains(question, "adult") {
 		return true
 	}
 	return strings.Contains(question, "junior") && strings.Contains(question, "summer") &&
 		(strings.Contains(question, "cup") || strings.Contains(question, "camp") || strings.Contains(question, "league game"))
+}
+
+// juniorAgeGroupPhrase returns the age-group wording used in rule headings
+// ("under 11") when the question names one ("U11", "U/11", "Under 11s").
+// Age-group rules live under headings like "7.10.3. Under 11s Hardball", and
+// their leaf rules often do not repeat the age group in their own text, so
+// the heading trail is the only link between the question and the rule.
+func juniorAgeGroupPhrase(question string) string {
+	if match := juniorAgeRE.FindStringSubmatch(question); match != nil {
+		return "under " + match[1]
+	}
+	return ""
 }
 
 func isJuniorCupEligibilityQuery(question string) bool {
@@ -625,9 +745,29 @@ var lexicalSynonyms = map[string][]string{
 	"children":  {"junior"},
 	"youth":     {"junior"},
 	"pro":       {"professional"},
+	// A competition's "format" is written as duration, overs, or deliveries.
+	"format":  {"duration", "overs", "deliveries"},
+	"formats": {"duration", "overs", "deliveries"},
+	"ball":    {"deliveries"},
+	"balls":   {"deliveries"},
+	"hundred": {"100"},
+	// Age groups appear in the rules both as "U11" and "Under 11".
+	"u9":  {"under", "9"},
+	"u11": {"under", "11"},
+	"u13": {"under", "13"},
+	"u15": {"under", "15"},
+	"u18": {"under", "18"},
 }
 
 func buildLexicalQuery(question string) string {
+	terms := lexicalQueryTerms(question)
+	if len(terms) == 0 {
+		return "cricket"
+	}
+	return strings.Join(terms, " | ")
+}
+
+func lexicalQueryTerms(question string) []string {
 	stop := map[string]bool{
 		"a": true, "about": true, "an": true, "and": true, "are": true, "at": true,
 		"be": true, "before": true, "by": true, "does": true, "explain": true, "for": true,
@@ -659,10 +799,7 @@ func buildLexicalQuery(question string) string {
 	if seen["summer"] && seen["camp"] && !seen["cup"] {
 		terms = append(terms, "cup")
 	}
-	if len(terms) == 0 {
-		return "cricket"
-	}
-	return strings.Join(terms, " | ")
+	return terms
 }
 
 func (s *Service) Answer(ctx context.Context, question, selectedScope, conversationContext, previousUserQuestion string) (Answer, error) {
@@ -673,7 +810,7 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 	if needsPreviousQuestion(question) && previousUserQuestion != "" {
 		retrievalQuestion = previousUserQuestion + "\nFollow-up: " + question
 	}
-	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 8)
+	releaseID, published, chunks, err := s.retrieve(ctx, retrievalQuestion, selectedScope, 12)
 	if err != nil {
 		return Answer{}, err
 	}
@@ -712,6 +849,8 @@ func (s *Service) Answer(ctx context.Context, question, selectedScope, conversat
 			"Be conversational. Answer every part that the evidence supports, then ask at most two short, targeted clarification questions only when the missing answer would materially change the result.",
 			"Do not ask for a fact the user has already supplied. If there is a likely typo or reasonable interpretation, state the conditional interpretation, give the useful answer under that interpretation, and ask the user to confirm it.",
 			"Treat a selected match context as the user's explicit scope. Apply that scope to retrieval and the answer, and do not ask the user to choose Senior or Junior, or League or Cup, when they already selected it.",
+			"Treat clarification_needed as an inability flag: set it true only when the evidence left the core question unanswered. If you have substantively answered the question, keep clarification_needed false even when you add a check question or note a condition inside the answer text.",
+			"For explain and summarise requests, answer from whatever the supplied extracts cover and note any missing sub-sections inside the answer; partial coverage is not a reason to set clarification_needed.",
 			"When clarification is not needed, return an empty clarification_questions array. When it is needed, put the questions in clarification_questions as well as ending the answer naturally.",
 			"Make clear that an explanation is an interpretation and that only GMCL can make a formal ruling.",
 		}, " "),

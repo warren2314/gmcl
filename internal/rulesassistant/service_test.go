@@ -36,6 +36,23 @@ func TestParseHTMLPreservesRuleHeadings(t *testing.T) {
 	}
 }
 
+func TestDiscoverLinksReadsShopblocksDynamicTileLinks(t *testing.T) {
+	// The Rule 4 competition pages are only reachable through data-dynamic
+	// tile JSON, not href attributes; missing them removed a fifth of the
+	// rulebook from the corpus.
+	root, _ := url.Parse("https://gmcl.test/pages/rules-menu-comps")
+	raw := `WELCOME TO GMCL FOR YOUR MOBILE
+<div class=block data-dynamic='{"dynamic_compact":"1","text":"4.6. GMCL Saturday Division 3","link_custom":"https://gmcl.test/pages/rules-d3"}'></div>
+<div class=block data-dynamic='{"text":"4.40. GMCL20 Competition","link_custom":"https:\/\/gmcl.test\/pages\/rules-20"}'></div>
+<div class=block data-dynamic='{"text":"External","link_custom":"https://evil.test/pages/rules-x"}'></div>
+Proud Sponsors`
+	links := discoverLinks(root, root.String(), raw)
+	want := []string{"https://gmcl.test/pages/rules-20", "https://gmcl.test/pages/rules-d3"}
+	if len(links) != len(want) || links[0] != want[0] || links[1] != want[1] {
+		t.Fatalf("links=%v want %v", links, want)
+	}
+}
+
 func TestDiscoverLinksUsesRulesContentAndAcceptsUnnumberedSlugs(t *testing.T) {
 	root, _ := url.Parse("https://gmcl.test/pages/rules-main-menu")
 	raw := `<a href="/pages/site-navigation">Global navigation</a>
@@ -74,10 +91,108 @@ func TestValidateCorpusRequiresEveryRuleGroup(t *testing.T) {
 }
 
 func TestExtractRuleReference(t *testing.T) {
-	for input, want := range map[string]string{"What does rule 3.5.2 mean?": "3.5.2", "Penalty under 8.1": "8.1", "no reference here": ""} {
+	for input, want := range map[string]string{
+		"What does rule 3.5.2 mean?": "3.5.2",
+		"Penalty under 8.1":          "8.1",
+		"no reference here":          "",
+		// Bare digits are list numbers or counts, never rule references.
+		"Penalties Section 1":                       "",
+		"What happens if we get 3 yellow cards?":    "",
+		"Rule 8":                                    "8",
+		"8.1.1.4. Offence - Failure to submit form": "8.1.1.4",
+		"See Rule 3 for eligibility, then 8.1":      "3",
+	} {
 		if got := extractRuleReference(input); got != want {
 			t.Errorf("%q: got %q want %q", input, got, want)
 		}
+	}
+}
+
+func TestParseHTMLKeepsSingleLineLeafRules(t *testing.T) {
+	// Many published rules are one short numbered line. They must become
+	// chunks with their text and reference intact — heading detection used to
+	// swallow the line and then drop the empty chunk, erasing the rule.
+	raw := `<html><title>Rules-Junior</title><body>WELCOME TO GMCL FOR YOUR MOBILE
+<h2>7.10.2. U11 Pairs Cricket</h2>
+<p>7.10.2.11.2. LBW : There are no LBW&rsquo;s in this competition</p>
+<p>7.10.4.8.2. In the Summer Cup the full duration is 100 deliveries per innings</p>
+Proud Sponsors</body></html>`
+	doc := parseHTML("https://example.test/pages/rules-junior", raw)
+	wantRefs := map[string]string{"7.10.2.11.2": "no LBW", "7.10.4.8.2": "100 deliveries"}
+	for ref, needle := range wantRefs {
+		found := false
+		for _, chunk := range doc.Chunks {
+			if chunk.RuleReference == ref && strings.Contains(chunk.Content, needle) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("leaf rule %s (%q) missing from chunks: %+v", ref, needle, doc.Chunks)
+		}
+	}
+	// The ancestor heading supplies the age-group context that the leaf line
+	// itself lacks — an "Are LBWs in play in U11?" search can only match this
+	// chunk through "U11 Pairs Cricket" in its heading trail.
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "7.10.2.11.2" && !strings.Contains(chunk.Heading, "U11 Pairs Cricket") {
+			t.Fatalf("leaf chunk lost its ancestor heading: %q", chunk.Heading)
+		}
+	}
+}
+
+func TestIsJuniorRulesQueryTreatsAgeGroupsAsJunior(t *testing.T) {
+	for _, question := range []string{"Are LBWs in play in U11 cricket?", "Are LBW in play in U/11 cricket", "How many overs does an Under 13 bowler get?"} {
+		if !isJuniorRulesQuery(question) {
+			t.Fatalf("age-group question %q was not routed to the junior rules", question)
+		}
+	}
+	if isJuniorRulesQuery("Can a U15 play open age senior cricket?") {
+		t.Fatal("cross-over question into senior cricket must not be restricted to Rule 7")
+	}
+}
+
+func TestJuniorAgeGroupPhraseMatchesHeadingWording(t *testing.T) {
+	for question, want := range map[string]string{
+		"Are LBWs in play in U11 cricket?":       "under 11",
+		"Are LBW in play in U/11 cricket":        "under 11",
+		"How many overs for Under 13s?":          "under 13",
+		"What about the U18s summer cup?":        "under 18",
+		"How many overs in the Premier League?":  "",
+		"Can a starred player play second team?": "",
+	} {
+		if got := juniorAgeGroupPhrase(question); got != want {
+			t.Errorf("juniorAgeGroupPhrase(%q)=%q want %q", question, got, want)
+		}
+	}
+}
+
+func TestDeepestRuleReferencePrefersTheLeafLevel(t *testing.T) {
+	heading := "7.10. LEAGUE AND SUMMER CUP RULES › 7.10.2. Under 11s › 7.10.2.11. Scoring"
+	if got := deepestRuleReference(heading); got != "7.10.2.11" {
+		t.Fatalf("deepest reference=%q", got)
+	}
+}
+
+func TestParseHTMLDoesNotTreatSectionNumbersAsRuleReferences(t *testing.T) {
+	raw := `<html><title>GMCL RULES - PENALTIES</title><body>WELCOME TO GMCL FOR YOUR MOBILE
+<h1>GMCL RULES - PENALTIES</h1>
+<h2>Penalties Section 1</h2><p>Debts to league or other clubs and late withdrawal of teams are covered by the penalty tables on the linked pages.</p>
+<h2>8.1.1.4. Offence - Failure to submit complete starred player form</h2><p>Yellow for the club's highest placed team, and a red card when the club fails to submit by the subsequently required date.</p>
+Proud Sponsors</body></html>`
+	doc := parseHTML("https://example.test/pages/rules-pen-menu", raw)
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "1" {
+			t.Fatalf("section list number extracted as rule reference: %+v", chunk)
+		}
+	}
+	foundDotted := false
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "8.1.1.4" {
+			foundDotted = true
+		}
+	}
+	if !foundDotted {
+		t.Fatalf("dotted penalty reference was not extracted: %+v", doc.Chunks)
 	}
 }
 
@@ -164,6 +279,20 @@ func TestBuildLexicalQueryExpandsEverydayPhrasing(t *testing.T) {
 	}
 	got = buildLexicalQuery("Can the keeper use a sub?")
 	for _, term := range []string{"wicketkeeper", "substitute"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
+	// Gold question 102: the rulebook writes a competition's format as
+	// duration and deliveries ("100 deliveries per innings"), never "format".
+	got = buildLexicalQuery("What format is the junior summer cup played in?")
+	for _, term := range []string{"duration", "deliveries", "overs"} {
+		if !strings.Contains(got, term) {
+			t.Fatalf("query %q does not contain synonym %q", got, term)
+		}
+	}
+	got = buildLexicalQuery("Is the summer cup hundred ball?")
+	for _, term := range []string{"100", "deliveries"} {
 		if !strings.Contains(got, term) {
 			t.Fatalf("query %q does not contain synonym %q", got, term)
 		}
