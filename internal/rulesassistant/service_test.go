@@ -36,6 +36,23 @@ func TestParseHTMLPreservesRuleHeadings(t *testing.T) {
 	}
 }
 
+func TestDiscoverLinksReadsShopblocksDynamicTileLinks(t *testing.T) {
+	// The Rule 4 competition pages are only reachable through data-dynamic
+	// tile JSON, not href attributes; missing them removed a fifth of the
+	// rulebook from the corpus.
+	root, _ := url.Parse("https://gmcl.test/pages/rules-menu-comps")
+	raw := `WELCOME TO GMCL FOR YOUR MOBILE
+<div class=block data-dynamic='{"dynamic_compact":"1","text":"4.6. GMCL Saturday Division 3","link_custom":"https://gmcl.test/pages/rules-d3"}'></div>
+<div class=block data-dynamic='{"text":"4.40. GMCL20 Competition","link_custom":"https:\/\/gmcl.test\/pages\/rules-20"}'></div>
+<div class=block data-dynamic='{"text":"External","link_custom":"https://evil.test/pages/rules-x"}'></div>
+Proud Sponsors`
+	links := discoverLinks(root, root.String(), raw)
+	want := []string{"https://gmcl.test/pages/rules-20", "https://gmcl.test/pages/rules-d3"}
+	if len(links) != len(want) || links[0] != want[0] || links[1] != want[1] {
+		t.Fatalf("links=%v want %v", links, want)
+	}
+}
+
 func TestDiscoverLinksUsesRulesContentAndAcceptsUnnumberedSlugs(t *testing.T) {
 	root, _ := url.Parse("https://gmcl.test/pages/rules-main-menu")
 	raw := `<a href="/pages/site-navigation">Global navigation</a>
