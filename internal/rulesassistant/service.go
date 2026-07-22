@@ -325,6 +325,11 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		if looksLikeHeading(line) {
 			flush()
 			heading = truncate(line, 300)
+			// The heading line is rule text too: many leaf rules are a single
+			// short numbered line ("7.10.2.11.2. LBW: There are no LBW's in
+			// this competition"). Dropping heading text from the content used
+			// to erase every such rule from the corpus.
+			buf.WriteString(line)
 			continue
 		}
 		if buf.Len() > 0 {
