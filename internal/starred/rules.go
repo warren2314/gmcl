@@ -26,13 +26,13 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 
 	periodMatches := func(p Period, a Appearance) bool {
-		if p.ClubKey != a.ClubKey || a.MatchDate.Before(p.ValidFrom) || (p.ValidTo != nil && !a.MatchDate.Before(*p.ValidTo)) {
+		if a.MatchDate.Before(p.ValidFrom) || (p.ValidTo != nil && !a.MatchDate.Before(*p.ValidTo)) {
 			return false
 		}
 		if id := mappingBySource[p.ClubKey+"|"+p.PlayerKey]; id > 0 {
 			return a.PlayerID == id
 		}
-		return p.PlayerKey == a.PlayerKey
+		return p.ClubKey == a.ClubKey && p.PlayerKey == a.PlayerKey
 	}
 	var out Evaluation
 	for _, a := range appearances {
@@ -134,13 +134,24 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 		id        int64
 		name, key string
 	}
+	uniqueCandidateIDs := func(values []candidate) []candidate {
+		seen := make(map[int64]bool, len(values))
+		out := make([]candidate, 0, len(values))
+		for _, value := range values {
+			if value.id > 0 && !seen[value.id] {
+				seen[value.id] = true
+				out = append(out, value)
+			}
+		}
+		return out
+	}
 	byClub := make(map[string][]candidate)
 	seenCandidate := make(map[string]bool)
 	for _, a := range appearances {
 		if a.PlayerID == 0 {
 			continue
 		}
-		key := a.ClubKey + "|" + itoa64(a.PlayerID)
+		key := a.ClubKey + "|" + itoa64(a.PlayerID) + "|" + a.PlayerKey
 		if seenCandidate[key] {
 			continue
 		}
@@ -160,12 +171,12 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 		seenSource[sourceKey] = true
 		best := candidate{}
 		bestDistance := 1 << 30
+		var exact []candidate
 		var aliases []candidate
 		for _, c := range byClub[p.ClubKey] {
 			if c.key == p.PlayerKey {
-				bestDistance = 0
-				best = c
-				break
+				exact = append(exact, c)
+				continue
 			}
 			if likelyNameAlias(p.PlayerName, c.name) {
 				aliases = append(aliases, c)
@@ -175,11 +186,24 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 				bestDistance, best = d, c
 			}
 		}
+		exact = uniqueCandidateIDs(exact)
+		aliases = uniqueCandidateIDs(aliases)
+		if len(exact) == 1 {
+			out = append(out, MappingSuggestion{
+				ClubName: p.ClubName, ClubKey: p.ClubKey, StarredName: p.PlayerName, StarredPlayerKey: p.PlayerKey,
+				CandidateID: exact[0].id, CandidateName: exact[0].name, Distance: 0,
+				Confidence: "high", Reason: "Unique exact normalised name at the listed club",
+			})
+			continue
+		}
+		if len(exact) > 1 {
+			continue
+		}
 		if len(aliases) == 1 {
 			best = aliases[0]
 			bestDistance = editDistance(p.PlayerKey, best.key)
 		}
-		if best.id == 0 || bestDistance == 0 {
+		if best.id == 0 {
 			continue
 		}
 		limit := 3
@@ -187,7 +211,15 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 			limit = 4
 		}
 		if len(aliases) == 1 || bestDistance <= limit {
-			out = append(out, MappingSuggestion{p.ClubName, p.ClubKey, p.PlayerName, p.PlayerKey, best.id, best.name, bestDistance})
+			reason := "Closest unique name within review distance"
+			if len(aliases) == 1 {
+				reason = "Unique likely name alias at the listed club"
+			}
+			out = append(out, MappingSuggestion{
+				ClubName: p.ClubName, ClubKey: p.ClubKey, StarredName: p.PlayerName, StarredPlayerKey: p.PlayerKey,
+				CandidateID: best.id, CandidateName: best.name, Distance: bestDistance,
+				Confidence: "review", Reason: reason,
+			})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -357,14 +358,14 @@ func LoadEvaluationInputs(ctx context.Context, pool *db.Pool, seasonYear int) ([
 		apps = append(apps, a)
 	}
 	rows.Close()
-	rows, err = pool.Query(ctx, `SELECT season_year,club_key,starred_player_key,play_cricket_player_id,COALESCE(play_cricket_name,'') FROM starred_identity_mappings WHERE season_year=$1 AND status='confirmed'`, seasonYear)
+	rows, err = pool.Query(ctx, `SELECT id,season_year,club_key,starred_player_key,play_cricket_player_id,COALESCE(play_cricket_name,'') FROM starred_identity_mappings WHERE season_year=$1 AND status='confirmed'`, seasonYear)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	var maps []IdentityMapping
 	for rows.Next() {
 		var m IdentityMapping
-		if err = rows.Scan(&m.SeasonYear, &m.ClubKey, &m.StarredPlayerKey, &m.PlayerID, &m.PlayerName); err != nil {
+		if err = rows.Scan(&m.ID, &m.SeasonYear, &m.ClubKey, &m.StarredPlayerKey, &m.PlayerID, &m.PlayerName); err != nil {
 			rows.Close()
 			return nil, nil, nil, nil, err
 		}
@@ -434,9 +435,80 @@ func LoadClubStatuses(ctx context.Context, pool *db.Pool, seasonYear int, asOf t
 	return out, rows.Err()
 }
 
-func SaveIdentityMapping(ctx context.Context, pool *db.Pool, seasonYear int, clubKey, playerKey string, playerID int64, playerName string, adminID int32) error {
-	_, err := pool.Exec(ctx, `INSERT INTO starred_identity_mappings(season_year,club_key,starred_player_key,play_cricket_player_id,play_cricket_name,confirmed_by,confirmed_at) VALUES($1,$2,$3,$4,$5,NULLIF($6,0),now()) ON CONFLICT(season_year,club_key,starred_player_key) DO UPDATE SET play_cricket_player_id=EXCLUDED.play_cricket_player_id,play_cricket_name=EXCLUDED.play_cricket_name,status='confirmed',confirmed_by=EXCLUDED.confirmed_by,confirmed_at=now()`, seasonYear, clubKey, playerKey, playerID, playerName, adminID)
+func saveIdentityMappingTx(ctx context.Context, tx pgx.Tx, seasonYear int, clubKey, playerKey string, playerID int64, playerName string, adminID int32, reason string) error {
+	var mappingID int64
+	var before []byte
+	err := tx.QueryRow(ctx, `SELECT id,jsonb_build_object('status',status,'play_cricket_player_id',play_cricket_player_id,'play_cricket_name',play_cricket_name) FROM starred_identity_mappings WHERE season_year=$1 AND club_key=$2 AND starred_player_key=$3 FOR UPDATE`, seasonYear, clubKey, playerKey).Scan(&mappingID, &before)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `INSERT INTO starred_identity_mappings(season_year,club_key,starred_player_key,play_cricket_player_id,play_cricket_name,confirmed_by,confirmed_at) VALUES($1,$2,$3,$4,$5,NULLIF($6,0),now()) RETURNING id`, seasonYear, clubKey, playerKey, playerID, playerName, adminID).Scan(&mappingID)
+		before = nil
+	} else if err == nil {
+		_, err = tx.Exec(ctx, `UPDATE starred_identity_mappings SET play_cricket_player_id=$2,play_cricket_name=$3,status='confirmed',confirmed_by=NULLIF($4,0),confirmed_at=now() WHERE id=$1`, mappingID, playerID, playerName, adminID)
+	}
+	if err != nil {
+		return err
+	}
+	after, _ := json.Marshal(map[string]any{"status": "confirmed", "play_cricket_player_id": playerID, "play_cricket_name": playerName})
+	_, err = tx.Exec(ctx, `INSERT INTO starred_identity_mapping_events(mapping_id,season_year,club_key,starred_player_key,action,before_data,after_data,reason,actor_admin_id) VALUES($1,$2,$3,$4,'confirmed',$5::jsonb,$6::jsonb,$7,NULLIF($8,0))`, mappingID, seasonYear, clubKey, playerKey, nullableJSON(before), string(after), reason, adminID)
 	return err
+}
+
+func nullableJSON(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return string(value)
+}
+
+func SaveIdentityMapping(ctx context.Context, pool *db.Pool, seasonYear int, clubKey, playerKey string, playerID int64, playerName string, adminID int32) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = saveIdentityMappingTx(ctx, tx, seasonYear, clubKey, playerKey, playerID, playerName, adminID, "Confirmed manually by an administrator"); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func SaveSuggestedIdentityMappings(ctx context.Context, pool *db.Pool, seasonYear int, suggestions []MappingSuggestion, adminID int32) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, suggestion := range suggestions {
+		if suggestion.Confidence != "high" {
+			return fmt.Errorf("refusing to auto-match non-high-confidence identity %s", suggestion.StarredName)
+		}
+		if err = saveIdentityMappingTx(ctx, tx, seasonYear, suggestion.ClubKey, suggestion.StarredPlayerKey, suggestion.CandidateID, suggestion.CandidateName, adminID, "Automatic high-confidence match: "+suggestion.Reason); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func RevokeIdentityMapping(ctx context.Context, pool *db.Pool, seasonYear int, mappingID int64, adminID int32, reason string) (IdentityMapping, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return IdentityMapping{}, err
+	}
+	defer tx.Rollback(ctx)
+	var mapping IdentityMapping
+	var before []byte
+	err = tx.QueryRow(ctx, `SELECT id,season_year,club_key,starred_player_key,play_cricket_player_id,COALESCE(play_cricket_name,''),jsonb_build_object('status',status,'play_cricket_player_id',play_cricket_player_id,'play_cricket_name',play_cricket_name) FROM starred_identity_mappings WHERE id=$1 AND season_year=$2 AND status='confirmed' FOR UPDATE`, mappingID, seasonYear).Scan(&mapping.ID, &mapping.SeasonYear, &mapping.ClubKey, &mapping.StarredPlayerKey, &mapping.PlayerID, &mapping.PlayerName, &before)
+	if err != nil {
+		return IdentityMapping{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE starred_identity_mappings SET status='ignored',confirmed_by=NULLIF($2,0),confirmed_at=now() WHERE id=$1`, mappingID, adminID); err != nil {
+		return IdentityMapping{}, err
+	}
+	after := `{"status":"ignored"}`
+	if _, err = tx.Exec(ctx, `INSERT INTO starred_identity_mapping_events(mapping_id,season_year,club_key,starred_player_key,action,before_data,after_data,reason,actor_admin_id) VALUES($1,$2,$3,$4,'revoked',$5::jsonb,$6::jsonb,$7,NULLIF($8,0))`, mapping.ID, mapping.SeasonYear, mapping.ClubKey, mapping.StarredPlayerKey, string(before), after, reason, adminID); err != nil {
+		return IdentityMapping{}, err
+	}
+	return mapping, tx.Commit(ctx)
 }
 
 func nullText(s string) any {

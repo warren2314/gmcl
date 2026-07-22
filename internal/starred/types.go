@@ -90,6 +90,7 @@ type Appearance struct {
 }
 
 type IdentityMapping struct {
+	ID               int64
 	SeasonYear       int
 	ClubKey          string
 	StarredPlayerKey string
@@ -130,6 +131,8 @@ type MappingSuggestion struct {
 	CandidateID      int64
 	CandidateName    string
 	Distance         int
+	Confidence       string
+	Reason           string
 }
 
 // IdentitySearchResult is a scorecard identity returned by the manual mapping

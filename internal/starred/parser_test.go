@@ -262,6 +262,35 @@ func TestConfirmedMappingRemovesIdentitySuggestion(t *testing.T) {
 	}
 }
 
+func TestSuggestMappingsMarksOnlyUniqueExactIdentityHighConfidence(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Alpha CC", ClubKey: "alpha", PlayerName: "Sam Jones", PlayerKey: NormalizeName("Sam Jones"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	appearances := []Appearance{
+		{ClubKey: "alpha", PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")},
+		{ClubKey: "alpha", PlayerID: 20, PlayerName: "Sam Jones", PlayerKey: NormalizeName("Sam Jones")},
+		{ClubKey: "alpha", PlayerID: 21, PlayerName: "Sam Jones", PlayerKey: NormalizeName("Sam Jones")},
+	}
+	suggestions := SuggestMappings(periods, appearances, nil, cutoff)
+	if len(suggestions) != 1 || suggestions[0].StarredName != "Jane Smith" || suggestions[0].Confidence != "high" || suggestions[0].CandidateID != 10 {
+		t.Fatalf("unexpected safe suggestions: %#v", suggestions)
+	}
+}
+
+func TestMappedStarredIdentityFollowsTransferBetweenGMCLClubs(t *testing.T) {
+	date := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	periods := []Period{{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)}}
+	appearances := []Appearance{{MatchID: 50, MatchDate: date, CompetitionType: "League", ClubName: "Beta CC", ClubKey: "beta", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 10, PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith")}}
+	mappings := []IdentityMapping{{ClubKey: "alpha", StarredPlayerKey: NormalizeName("Jane Smith"), PlayerID: 10}}
+
+	evaluation := Evaluate(periods, appearances, mappings, date.AddDate(0, 0, 1))
+	if len(evaluation.Breaches) != 1 || evaluation.Breaches[0].Appearance.ClubKey != "beta" {
+		t.Fatalf("transferred appearance was not evaluated under the confirmed global player ID: %#v", evaluation.Breaches)
+	}
+}
+
 func TestSearchAppearanceIdentitiesSearchesAllNamesAndGroupsScorecards(t *testing.T) {
 	first := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
 	last := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
