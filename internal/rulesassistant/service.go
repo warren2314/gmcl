@@ -643,9 +643,12 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			WHERE $7::boolean AND lower(COALESCE(rule_reference,''))='7.5.1.2'
 		),
 		age_group AS (
+			-- Ranked by vector distance, not text rank: the age-group filter
+			-- already guarantees topicality, and text ranking inside it favours
+			-- verbose chunks that repeat common words over the short leaf rule
+			-- that actually answers the question.
 			SELECT id,row_number() OVER (
-				ORDER BY ts_rank_cd(search_vector,to_tsquery('english',$2)) DESC,
-				         embedding <=> $1::vector
+				ORDER BY embedding <=> $1::vector
 			) AS rank
 			FROM corpus
 			WHERE $9<>'' AND lower(heading_path) LIKE '%'||$9||'%'
