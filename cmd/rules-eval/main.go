@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -118,6 +119,9 @@ func main() {
 			"results":      results,
 		}
 		encoded, _ := json.MarshalIndent(report, "", "  ")
+		if dir := filepath.Dir(*out); dir != "." && dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
 		if err := os.WriteFile(*out, encoded, 0o644); err != nil {
 			fatalf("could not write report: %v", err)
 		}
