@@ -573,12 +573,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		return 0, time.Time{}, nil, err
 	}
 	ref := extractRuleReference(question)
-	lexicalTerms := lexicalQueryTerms(question)
-	lexicalQuery := "cricket"
-	if len(lexicalTerms) > 0 {
-		lexicalQuery = strings.Join(lexicalTerms, " | ")
-	}
-	rareTerm := s.rarestQueryTerm(ctx, releaseID, lexicalTerms)
+	lexicalQuery := buildLexicalQuery(question)
 	juniorRulesIntent := strings.Contains(selectedScope, "Junior rules") || isJuniorRulesQuery(question)
 	seniorRulesIntent := strings.Contains(selectedScope, "Senior rules")
 	juniorCupEligibilityIntent := isJuniorCupEligibilityQuery(question)
@@ -629,14 +624,6 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			)
 			LIMIT 50
 		),
-		rare_term AS (
-			SELECT id,row_number() OVER (
-				ORDER BY ts_rank_cd(search_vector,to_tsquery('english',$9)) DESC
-			) AS rank
-			FROM corpus
-			WHERE $9<>'' AND search_vector @@ to_tsquery('english',$9)
-			LIMIT 20
-		),
 		domain AS (
 			SELECT id,row_number() OVER (
 				ORDER BY ts_rank_cd(search_vector,to_tsquery('english',$2)) DESC,
@@ -661,8 +648,6 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			UNION ALL
 			SELECT id,2.0/(1+rank) AS contribution FROM exact_reference
 			UNION ALL
-			SELECT id,1.5/(5+rank) AS contribution FROM rare_term
-			UNION ALL
 			SELECT id,2.0/(10+rank) AS contribution FROM domain
 			UNION ALL
 			SELECT id,3.0/(1+rank) AS contribution FROM junior_cup_entry
@@ -673,7 +658,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		SELECT c.id,COALESCE(c.rule_reference,''),c.heading_path,c.content,c.canonical_url,c.title,f.score
 		FROM fused f JOIN corpus c ON c.id=f.id
 		ORDER BY f.score DESC,c.id
-		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent, rareTerm)
+		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent)
 	if err != nil {
 		return 0, time.Time{}, nil, err
 	}
@@ -788,30 +773,6 @@ func lexicalQueryTerms(question string) []string {
 		terms = append(terms, "cup")
 	}
 	return terms
-}
-
-// rarestQueryTerm finds the query term matching the fewest chunks in the
-// release. Postgres full-text ranking has no notion of term rarity, so a
-// distinctive term like "lbw" loses to chunks stuffed with common words like
-// "cricket" and "play"; a dedicated channel for the rarest term keeps the
-// precise rule in the candidate set. Terms matching nothing or matching too
-// much of the corpus are ignored.
-func (s *Service) rarestQueryTerm(ctx context.Context, releaseID int64, terms []string) string {
-	const tooCommon = 150
-	best, bestCount := "", -1
-	for _, term := range terms {
-		var count int
-		if err := s.DB.QueryRow(ctx, `SELECT count(*) FROM rule_chunks WHERE release_id=$1 AND search_vector @@ to_tsquery('english',$2)`, releaseID, term).Scan(&count); err != nil || count == 0 {
-			continue
-		}
-		if bestCount == -1 || count < bestCount {
-			best, bestCount = term, count
-		}
-	}
-	if bestCount == -1 || bestCount > tooCommon {
-		return ""
-	}
-	return best
 }
 
 func (s *Service) Answer(ctx context.Context, question, selectedScope, conversationContext, previousUserQuestion string) (Answer, error) {
