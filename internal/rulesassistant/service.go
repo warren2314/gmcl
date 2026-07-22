@@ -40,7 +40,7 @@ var (
 	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+){1,4})\b`)
 	updatedRE             = regexp.MustCompile(`(?i)(updated[^\n]{0,100}|\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})`)
 	searchWordRE          = regexp.MustCompile(`[a-z0-9]+`)
-	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*[-/]?\s*|under\s+)(?:9|11|13|15|18)s?\b`)
+	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*[-/]?\s*|under\s+)(9|11|13|15|18)s?\b`)
 	inlineChunkCitationRE = regexp.MustCompile(`(?i)\s*\[(?:chunk(?:_id)?\s*[=:]?\s*)?\d+\]`)
 	modelCitationTokenRE  = regexp.MustCompile(`\s*citechunk_id=\d+`)
 	contentStart          = regexp.MustCompile(`(?i)WELCOME TO GMCL FOR YOUR MOBILE`)
@@ -577,6 +577,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 	juniorRulesIntent := strings.Contains(selectedScope, "Junior rules") || isJuniorRulesQuery(question)
 	seniorRulesIntent := strings.Contains(selectedScope, "Senior rules")
 	juniorCupEligibilityIntent := isJuniorCupEligibilityQuery(question)
+	ageGroupPhrase := juniorAgeGroupPhrase(question)
 	rows, err := s.DB.Query(ctx, `
 		WITH corpus AS (
 			SELECT c.id,c.rule_reference,c.heading_path,c.content,c.search_vector,c.embedding,
@@ -641,6 +642,15 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			FROM corpus
 			WHERE $7::boolean AND lower(COALESCE(rule_reference,''))='7.5.1.2'
 		),
+		age_group AS (
+			SELECT id,row_number() OVER (
+				ORDER BY ts_rank_cd(search_vector,to_tsquery('english',$2)) DESC,
+				         embedding <=> $1::vector
+			) AS rank
+			FROM corpus
+			WHERE $9<>'' AND lower(heading_path) LIKE '%'||$9||'%'
+			LIMIT 20
+		),
 		ranked AS (
 			SELECT id,1.0/(60+rank) AS contribution FROM lexical
 			UNION ALL
@@ -651,6 +661,8 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 			SELECT id,2.0/(10+rank) AS contribution FROM domain
 			UNION ALL
 			SELECT id,3.0/(1+rank) AS contribution FROM junior_cup_entry
+			UNION ALL
+			SELECT id,1.0/(5+rank) AS contribution FROM age_group
 		),
 		fused AS (
 			SELECT id,sum(contribution) AS score FROM ranked GROUP BY id
@@ -658,7 +670,7 @@ func (s *Service) retrieve(ctx context.Context, question, selectedScope string, 
 		SELECT c.id,COALESCE(c.rule_reference,''),c.heading_path,c.content,c.canonical_url,c.title,f.score
 		FROM fused f JOIN corpus c ON c.id=f.id
 		ORDER BY f.score DESC,c.id
-		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent)
+		LIMIT $5`, vectorLiteral(emb), lexicalQuery, ref, releaseID, limit, juniorRulesIntent, juniorCupEligibilityIntent, seniorRulesIntent, ageGroupPhrase)
 	if err != nil {
 		return 0, time.Time{}, nil, err
 	}
@@ -689,6 +701,18 @@ func isJuniorRulesQuery(question string) bool {
 	}
 	return strings.Contains(question, "junior") && strings.Contains(question, "summer") &&
 		(strings.Contains(question, "cup") || strings.Contains(question, "camp") || strings.Contains(question, "league game"))
+}
+
+// juniorAgeGroupPhrase returns the age-group wording used in rule headings
+// ("under 11") when the question names one ("U11", "U/11", "Under 11s").
+// Age-group rules live under headings like "7.10.3. Under 11s Hardball", and
+// their leaf rules often do not repeat the age group in their own text, so
+// the heading trail is the only link between the question and the rule.
+func juniorAgeGroupPhrase(question string) string {
+	if match := juniorAgeRE.FindStringSubmatch(question); match != nil {
+		return "under " + match[1]
+	}
+	return ""
 }
 
 func isJuniorCupEligibilityQuery(question string) bool {
