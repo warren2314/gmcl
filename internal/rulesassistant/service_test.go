@@ -113,6 +113,32 @@ Proud Sponsors</body></html>`
 			t.Fatalf("leaf rule %s (%q) missing from chunks: %+v", ref, needle, doc.Chunks)
 		}
 	}
+	// The ancestor heading supplies the age-group context that the leaf line
+	// itself lacks — an "Are LBWs in play in U11?" search can only match this
+	// chunk through "U11 Pairs Cricket" in its heading trail.
+	for _, chunk := range doc.Chunks {
+		if chunk.RuleReference == "7.10.2.11.2" && !strings.Contains(chunk.Heading, "U11 Pairs Cricket") {
+			t.Fatalf("leaf chunk lost its ancestor heading: %q", chunk.Heading)
+		}
+	}
+}
+
+func TestIsJuniorRulesQueryTreatsAgeGroupsAsJunior(t *testing.T) {
+	for _, question := range []string{"Are LBWs in play in U11 cricket?", "Are LBW in play in U/11 cricket", "How many overs does an Under 13 bowler get?"} {
+		if !isJuniorRulesQuery(question) {
+			t.Fatalf("age-group question %q was not routed to the junior rules", question)
+		}
+	}
+	if isJuniorRulesQuery("Can a U15 play open age senior cricket?") {
+		t.Fatal("cross-over question into senior cricket must not be restricted to Rule 7")
+	}
+}
+
+func TestDeepestRuleReferencePrefersTheLeafLevel(t *testing.T) {
+	heading := "7.10. LEAGUE AND SUMMER CUP RULES › 7.10.2. Under 11s › 7.10.2.11. Scoring"
+	if got := deepestRuleReference(heading); got != "7.10.2.11" {
+		t.Fatalf("deepest reference=%q", got)
+	}
 }
 
 func TestParseHTMLDoesNotTreatSectionNumbersAsRuleReferences(t *testing.T) {
