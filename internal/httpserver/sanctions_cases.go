@@ -950,11 +950,17 @@ func (s *Server) handleAdminCaseAssignSelf() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'investigator_assigned','admin',$2,$3,'Investigation assigned',jsonb_build_object('assigned_admin_id',$4),jsonb_build_object('assigned_admin_id',$2),$5)`, id, *actor.ID, actor.Label, previous, actor.RequestID)
+		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'investigator_assigned','admin',$2,$3,'Investigation assigned',jsonb_build_object('assigned_admin_id',$4::integer),jsonb_build_object('assigned_admin_id',$2::bigint),$5)`, id, *actor.ID, actor.Label, previous, actor.RequestID)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE sanction_cases SET assigned_admin_id=$2,status=CASE WHEN status IN ('submitted','triage') THEN 'investigating' ELSE status END,updated_at=now() WHERE id=$1`, id, *actor.ID)
 		}
-		if err != nil || tx.Commit(r.Context()) != nil {
+		if err != nil {
+			slog.Error("assign sanction case", "case_id", id, "admin_id", *actor.ID, "error", err)
+			http.Error(w, "assignment failed", 500)
+			return
+		}
+		if err = tx.Commit(r.Context()); err != nil {
+			slog.Error("commit sanction case assignment", "case_id", id, "admin_id", *actor.ID, "error", err)
 			http.Error(w, "assignment failed", 500)
 			return
 		}
