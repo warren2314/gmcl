@@ -606,8 +606,10 @@ Scorecard evidence:
 
 Please review this information and reply with any relevant exemption or correction. No final determination should be inferred beyond the contents of this approved notice.
 
+%s
+
 Regards,
-Greater Manchester Cricket League`, name, breach.Appearance.ClubName, breach.Appearance.PlayerName, breach.ListType, breach.Appearance.MatchDate.Format("02 January 2006"), breach.Appearance.TeamName, breach.Appearance.CompetitionName, breach.Appearance.MatchID, restriction, evidence)
+Greater Manchester Cricket League`, name, breach.Appearance.ClubName, breach.Appearance.PlayerName, breach.ListType, breach.Appearance.MatchDate.Format("02 January 2006"), breach.Appearance.TeamName, breach.Appearance.CompetitionName, breach.Appearance.MatchID, restriction, evidence, starredEmailActionFooter)
 	return subject, body
 }
 
@@ -626,6 +628,11 @@ func (s *Server) handleAdminStarredFindingEscalate() http.HandlerFunc {
 			return
 		}
 		captain := s.captainForStarredBreach(ctx, breach)
+		recipient, err := starredClubEmail(breach.Appearance.ClubKey, breach.Appearance.ClubName)
+		if err != nil {
+			redirectStarred(w, r, year, "", "Could not determine club email: "+err.Error())
+			return
+		}
 		subject, body := starredFindingDraft(breach, captain, s.starredScorecardEvidence(ctx, breach))
 		adminID := s.resolveAdminID(r)
 		var findingID int64
@@ -634,12 +641,12 @@ func (s *Server) handleAdminStarredFindingEscalate() http.HandlerFunc {
 			VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,0),$9,$10,$11,'draft',NULLIF($12,0),NULLIF($13,''),NULLIF($14,''),$15,$16,$17,now())
 			ON CONFLICT(finding_key) DO UPDATE SET status='draft',captain_id=EXCLUDED.captain_id,captain_name=EXCLUDED.captain_name,captain_email=EXCLUDED.captain_email,email_subject=EXCLUDED.email_subject,email_body=EXCLUDED.email_body,reviewed_by=EXCLUDED.reviewed_by,reviewed_at=now(),send_error=NULL,updated_at=now()
 			WHERE starred_finding_reviews.status <> 'sent'
-			RETURNING id`, starredFindingKey(breach), year, matchID, breach.Appearance.MatchDate, breach.Appearance.ClubName, breach.Appearance.ClubKey, breach.Appearance.TeamName, breach.Appearance.PlayerID, breach.Appearance.PlayerName, breach.Appearance.PlayerKey, breach.ListType, captain.ID, captain.Name, captain.Email, subject, body, adminID).Scan(&findingID)
+			RETURNING id`, starredFindingKey(breach), year, matchID, breach.Appearance.MatchDate, breach.Appearance.ClubName, breach.Appearance.ClubKey, breach.Appearance.TeamName, breach.Appearance.PlayerID, breach.Appearance.PlayerName, breach.Appearance.PlayerKey, breach.ListType, captain.ID, captain.Name, recipient, subject, body, adminID).Scan(&findingID)
 		if err != nil {
 			redirectStarred(w, r, year, "", "Could not create letter draft: "+err.Error())
 			return
 		}
-		s.audit(ctx, r, "admin", adminID, "starred_finding_escalated", "starred_finding_review", &findingID, map[string]any{"match_id": matchID, "captain_email": captain.Email})
+		s.audit(ctx, r, "admin", adminID, "starred_finding_escalated", "starred_finding_review", &findingID, map[string]any{"match_id": matchID, "recipient": recipient})
 		http.Redirect(w, r, fmt.Sprintf("/admin/starred-players/findings/%d", findingID), http.StatusSeeOther)
 	}
 }
@@ -656,11 +663,14 @@ func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
 		var year int
 		var matchID int64
 		var matchDate time.Time
-		var club, team, player, listType, status, captainName, captainEmail, subject, body, sendError string
-		err = s.DB.QueryRow(ctx, `SELECT season_year,play_cricket_match_id,match_date,club_name,team_name,player_name,list_type,status,COALESCE(captain_name,''),COALESCE(captain_email,''),COALESCE(email_subject,''),COALESCE(email_body,''),COALESCE(send_error,'') FROM starred_finding_reviews WHERE id=$1`, id).Scan(&year, &matchID, &matchDate, &club, &team, &player, &listType, &status, &captainName, &captainEmail, &subject, &body, &sendError)
+		var club, clubKey, team, player, listType, status, captainName, captainEmail, subject, body, sendError string
+		err = s.DB.QueryRow(ctx, `SELECT season_year,play_cricket_match_id,match_date,club_name,club_key,team_name,player_name,list_type,status,COALESCE(captain_name,''),COALESCE(captain_email,''),COALESCE(email_subject,''),COALESCE(email_body,''),COALESCE(send_error,'') FROM starred_finding_reviews WHERE id=$1`, id).Scan(&year, &matchID, &matchDate, &club, &clubKey, &team, &player, &listType, &status, &captainName, &captainEmail, &subject, &body, &sendError)
 		if err != nil {
 			http.Error(w, "finding not found", http.StatusNotFound)
 			return
+		}
+		if recipient, recipientErr := starredClubEmail(clubKey, club); recipientErr == nil {
+			captainEmail = recipient
 		}
 		csrf := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -668,18 +678,18 @@ func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container" style="max-width:900px"><div class="d-flex justify-content-between align-items-start mb-4"><div><h4 class="mb-1">Rule 3.5 letter draft</h4><p class="text-muted mb-0">%s — %s — %s — Match %d</p></div><a class="btn btn-outline-primary btn-sm" href="/admin/starred-players?season=%d#potential-breaches">Back to findings</a></div>`, escapeHTML(club), escapeHTML(player), matchDate.Format("02 Jan 2006"), matchID, year)
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-3"><div class="card-header fw-semibold">Evidence%s</div><div class="card-body">`+``,
-			starredHelpIcon("Evidence", "The finding this letter is about. The recipient is the captain recorded for the team on the match date — if no email shows here, update the team and captain records before approving the letter."))
+			starredHelpIcon("Evidence", "The finding this letter is about. Starred-player communications are sent to the club mailbox derived from the club key."))
 		fmt.Fprintf(w, `<div class="row g-3"><div class="col-md-3"><div class="small text-muted">List</div><strong>List %s</strong></div><div class="col-md-3"><div class="small text-muted">Team</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Captain</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Recipient</div><strong>%s</strong></div></div><a class="btn btn-sm btn-outline-primary mt-3" href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">Open scorecard evidence</a></div></div>`, escapeHTML(listType), escapeHTML(team), escapeHTML(captainName), escapeHTML(captainEmail), year, matchID)
 		if captainEmail == "" {
-			fmt.Fprint(w, `<div class="alert alert-danger">No active captain email could be matched to this team and match date. Update the team/captain record before approving this letter.</div>`)
+			fmt.Fprint(w, `<div class="alert alert-danger">The club email address could not be determined. Return to the finding and recreate the draft.</div>`)
 		}
 		if sendError != "" {
 			fmt.Fprintf(w, `<div class="alert alert-danger">Previous send failed: %s</div>`, escapeHTML(sendError))
 		}
 		if status == "sent" {
-			fmt.Fprint(w, `<div class="alert alert-success">This approved letter has been sent to the captain. The record is now locked.</div>`)
+			fmt.Fprint(w, `<div class="alert alert-success">This approved letter has been sent to the club. The record is now locked.</div>`)
 		}
-		fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/findings/%d/approve"><input type="hidden" name="csrf_token" value="%s"><div class="card shadow-sm"><div class="card-header fw-semibold">Editable letter`+starredHelpIcon("Editable letter", "A pre-filled Rule 3.5 notice to the club captain, including the scorecard evidence. Edit the subject and body freely — nothing is sent until you approve this exact text, and the send is recorded in the audit trail.")+`</div><div class="card-body"><div class="mb-3"><label class="form-label fw-semibold">Subject</label><input class="form-control" name="email_subject" value="%s" required></div><div><label class="form-label fw-semibold">Body</label><textarea class="form-control font-monospace" name="email_body" rows="24" required>%s</textarea></div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Status: %s. Sending requires this separate approval.</span><button class="btn btn-primary" %s onclick="return confirm('Approve this exact letter and send it to %s?')">Approve &amp; Send to Captain</button></div></div></form></div>`, id, escapeHTML(csrf), escapeHTML(subject), escapeHTML(body), escapeHTML(status), disabledIf(captainEmail == "" || (status != "draft" && status != "send_failed")), escapeHTML(captainEmail))
+		fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/findings/%d/approve"><input type="hidden" name="csrf_token" value="%s"><div class="card shadow-sm"><div class="card-header fw-semibold">Editable letter`+starredHelpIcon("Editable letter", "A pre-filled Rule 3.5 notice to the club, including the scorecard evidence. Edit the subject and body freely — nothing is sent until you approve this exact text, and the send is recorded in the audit trail.")+`</div><div class="card-body"><div class="mb-3"><label class="form-label fw-semibold">Subject</label><input class="form-control" name="email_subject" value="%s" required></div><div><label class="form-label fw-semibold">Body</label><textarea class="form-control font-monospace" name="email_body" rows="24" required>%s</textarea></div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Status: %s. Sending requires this separate approval.</span><button class="btn btn-primary" %s onclick="return confirm('Approve this exact letter and send it to %s?')">Approve &amp; Send to Club</button></div></div></form></div>`, id, escapeHTML(csrf), escapeHTML(subject), escapeHTML(body), escapeHTML(status), disabledIf(captainEmail == "" || (status != "draft" && status != "send_failed")), escapeHTML(captainEmail))
 		pageFooterWithScript(w, starredPopoverInitScript)
 	}
 }
@@ -704,9 +714,14 @@ func (s *Server) handleAdminStarredFindingApprove() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
 		var year int
-		var recipient, status string
-		if err := s.DB.QueryRow(ctx, `SELECT season_year,COALESCE(captain_email,''),status FROM starred_finding_reviews WHERE id=$1`, id).Scan(&year, &recipient, &status); err != nil {
+		var clubKey, clubName, recipient, status string
+		if err := s.DB.QueryRow(ctx, `SELECT season_year,club_key,club_name,status FROM starred_finding_reviews WHERE id=$1`, id).Scan(&year, &clubKey, &clubName, &status); err != nil {
 			http.Error(w, "finding not found", http.StatusNotFound)
+			return
+		}
+		recipient, err = starredClubEmail(clubKey, clubName)
+		if err != nil {
+			http.Error(w, "club email is missing or invalid", http.StatusBadRequest)
 			return
 		}
 		if status == "sent" {
@@ -718,11 +733,11 @@ func (s *Server) handleAdminStarredFindingApprove() http.HandlerFunc {
 			return
 		}
 		if _, err := mail.ParseAddress(recipient); err != nil {
-			http.Error(w, "captain email is missing or invalid", http.StatusBadRequest)
+			http.Error(w, "club email is missing or invalid", http.StatusBadRequest)
 			return
 		}
 		adminID := s.resolveAdminID(r)
-		result, err := s.DB.Exec(ctx, `UPDATE starred_finding_reviews SET email_subject=$1,email_body=$2,status='approved',approved_by=$3,approved_at=now(),send_error=NULL,updated_at=now() WHERE id=$4 AND status IN ('draft','send_failed')`, subject, body, adminID, id)
+		result, err := s.DB.Exec(ctx, `UPDATE starred_finding_reviews SET email_subject=$1,email_body=$2,captain_email=$3,status='approved',approved_by=$4,approved_at=now(),send_error=NULL,updated_at=now() WHERE id=$5 AND status IN ('draft','send_failed')`, subject, body, recipient, adminID, id)
 		if err != nil {
 			http.Error(w, "could not approve letter", http.StatusInternalServerError)
 			return

@@ -47,6 +47,35 @@ func starredPlayerReviewCutoff(r *http.Request, year int, maximum time.Time) tim
 	return maximum
 }
 
+func starredReviewSelectedDivisions(r *http.Request) []string {
+	values := r.URL.Query()["division"]
+	if len(values) == 0 {
+		values = r.Form["division"]
+	}
+	seen := make(map[string]struct{})
+	selected := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		selected = append(selected, value)
+	}
+	return selected
+}
+
+func starredReviewDivisionSet(divisions []string) map[string]struct{} {
+	selected := make(map[string]struct{}, len(divisions))
+	for _, division := range divisions {
+		selected[division] = struct{}{}
+	}
+	return selected
+}
+
 func starredReviewThresholds(r *http.Request) (green, orange float64) {
 	green, orange = 50, 25
 	if value, err := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("green")), 64); err == nil && value >= 0 && value <= 100 {
@@ -74,13 +103,21 @@ func starredRetentionSignal(listType string, firstPct, green, orange float64) st
 	return "red"
 }
 
-func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, cutoff time.Time, clubDivisions map[string]string, selectedDivision, selectedClub string, green, orange float64) []starredPlayerReviewRow {
+func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, cutoff time.Time, clubDivisions map[string]string, selectedDivisions []string, selectedClub string, green, orange float64) []starredPlayerReviewRow {
+	selectedDivisionSet := starredReviewDivisionSet(selectedDivisions)
+	divisionSelected := func(clubKey string) bool {
+		if len(selectedDivisionSet) == 0 {
+			return true
+		}
+		_, selected := selectedDivisionSet[clubDivisions[clubKey]]
+		return selected
+	}
 	activePeriods := make([]starred.Period, 0)
 	for _, period := range periods {
 		if cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
 			continue
 		}
-		if (selectedDivision == "" || clubDivisions[period.ClubKey] == selectedDivision) && (selectedClub == "" || period.ClubKey == selectedClub) {
+		if divisionSelected(period.ClubKey) && (selectedClub == "" || period.ClubKey == selectedClub) {
 			activePeriods = append(activePeriods, period)
 		}
 	}
@@ -108,7 +145,7 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 	seen := make(map[string]struct{})
 	teamFixtures := make(map[string]map[int]map[int64]struct{})
 	for _, appearance := range appearances {
-		if appearance.TeamLevel < 1 || appearance.MatchDate.After(cutoff) || (selectedDivision != "" && clubDivisions[appearance.ClubKey] != selectedDivision) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
+		if appearance.TeamLevel < 1 || appearance.MatchDate.After(cutoff) || !divisionSelected(appearance.ClubKey) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
 			continue
 		}
 		if teamFixtures[appearance.ClubKey] == nil {
@@ -196,7 +233,7 @@ func (s *Server) starredReviewData(ctx context.Context, year int, cutoff time.Ti
 		}
 	}
 	green, orange := starredReviewThresholds(r)
-	rows := buildStarredPlayerReviewRows(periods, appearances, mappings, cutoff, clubDivisions, strings.TrimSpace(r.URL.Query().Get("division")), strings.TrimSpace(r.URL.Query().Get("club")), green, orange)
+	rows := buildStarredPlayerReviewRows(periods, appearances, mappings, cutoff, clubDivisions, starredReviewSelectedDivisions(r), strings.TrimSpace(r.URL.Query().Get("club")), green, orange)
 	return divisions, clubNames, rows, green, orange
 }
 
@@ -298,21 +335,22 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	cutoff = starredPlayerReviewCutoff(r, year, cutoff)
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	requestStates := s.loadStarredCandidateReviewStates(ctx, year)
-	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
+	selectedDivisions := starredReviewSelectedDivisions(r)
+	selectedDivisionSet := starredReviewDivisionSet(selectedDivisions)
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
 	fmt.Fprintf(w, `Player list review%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
 		starredHelpIcon("Player list review", "Appearances are counted through the chosen date. Each percentage compares the player's games with fixtures played by the relevant team: 1st XI for List A, and combined 1st plus 2nd XI for List B."), year)
-	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="player-review"><div class="col-md-2"><label class="form-label fw-semibold">Games through</label><input class="form-control" type="date" name="review_date" value="%s"></div><div class="col-md-3"><label class="form-label fw-semibold">Saturday division</label><select class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose division...</option>`, year, cutoff.Format("2006-01-02"))
+	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="player-review"><div class="col-md-2"><label class="form-label fw-semibold">Games through</label><input class="form-control" type="date" name="review_date" value="%s"></div><div class="col-md-3"><label class="form-label fw-semibold">Saturday divisions</label><select class="form-select" name="division" multiple size="6" required>`, year, cutoff.Format("2006-01-02"))
 	for _, division := range divisions {
 		selected := ""
-		if division.Label == selectedDivision {
+		if _, ok := selectedDivisionSet[division.Label]; ok {
 			selected = " selected"
 		}
 		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(division.Label), selected, escapeHTML(division.Label))
 	}
-	fmt.Fprint(w, `</select></div><div class="col-md-3"><label class="form-label fw-semibold">Club</label><select class="form-select" name="club"><option value="">All clubs in division</option>`)
+	fmt.Fprint(w, `</select><div class="form-text">Hold Ctrl (Windows) or Command (Mac) to select more than one.</div></div><div class="col-md-3"><label class="form-label fw-semibold">Club</label><select class="form-select" name="club"><option value="">All clubs in selected divisions</option>`)
 	for _, division := range divisions {
-		if division.Label != selectedDivision {
+		if _, ok := selectedDivisionSet[division.Label]; !ok {
 			continue
 		}
 		for _, clubKey := range division.Clubs {
@@ -324,8 +362,8 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 		}
 	}
 	fmt.Fprintf(w, `</select></div><div class="col-md-2"><label class="form-label">Green at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="green" value="%.1f"></div><div class="col-md-2"><label class="form-label">Orange at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="orange" value="%.1f"></div><div class="col-auto"><button class="btn btn-primary">Run review</button></div></form><div class="form-text">Percentages are player appearances divided by fixtures played by that team through %s. An unstarred player at 50%% or more of 1st XI fixtures can be sent for a List B review.</div></div>`, green, orange, cutoff.Format("02 January 2006"))
-	if selectedDivision == "" {
-		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose a Saturday division to review all of its clubs and players.</div></div>`)
+	if len(selectedDivisions) == 0 {
+		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose one or more Saturday divisions to review their clubs and players.</div></div>`)
 		return
 	}
 	greenCount, orangeCount, redCount := 0, 0, 0
@@ -339,7 +377,10 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			redCount++
 		}
 	}
-	exportQuery := url.Values{"season": {strconv.Itoa(year)}, "view": {"player-review"}, "review_date": {cutoff.Format("2006-01-02")}, "division": {selectedDivision}, "green": {strconv.FormatFloat(green, 'f', 1, 64)}, "orange": {strconv.FormatFloat(orange, 'f', 1, 64)}, "export": {"csv"}}
+	exportQuery := url.Values{"season": {strconv.Itoa(year)}, "view": {"player-review"}, "review_date": {cutoff.Format("2006-01-02")}, "green": {strconv.FormatFloat(green, 'f', 1, 64)}, "orange": {strconv.FormatFloat(orange, 'f', 1, 64)}, "export": {"csv"}}
+	for _, division := range selectedDivisions {
+		exportQuery.Add("division", division)
+	}
 	if selectedClub != "" {
 		exportQuery.Set("club", selectedClub)
 	}
@@ -358,13 +399,25 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 		action := fmt.Sprintf(`<span class="badge %s">%s</span>`, badgeClass, badgeLabel)
 		if row.ListType == "" && row.FirstPct >= 50 {
 			candidate := starred.Candidate{ClubName: row.ClubName, ClubKey: row.ClubKey, PlayerID: row.PlayerID, PlayerName: row.PlayerName, PlayerKey: row.PlayerKey}
-			switch requestStates[starredCandidateKey(year, candidate)].Status {
-			case "requested":
-				action = `<span class="badge bg-info text-dark">Star request sent</span>`
-			case "accepted":
+			var divisionInputs strings.Builder
+			for _, division := range selectedDivisions {
+				fmt.Fprintf(&divisionInputs, `<input type="hidden" name="division" value="%s">`, escapeHTML(division))
+			}
+			requestForm := func(label string) string {
+				return fmt.Sprintf(`<form method="post" action="/admin/starred-players/candidates/request" onsubmit="return confirm('Send this player for a List B review to the club email?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="review_date" value="%s">%s<input type="hidden" name="club" value="%s"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="player_key" value="%s"><button class="btn btn-sm btn-outline-primary">%s</button></form>`, escapeHTML(middleware.CSRFToken(r)), year, cutoff.Format("2006-01-02"), divisionInputs.String(), escapeHTML(selectedClub), escapeHTML(row.ClubKey), row.PlayerID, escapeHTML(row.PlayerKey), escapeHTML(label))
+			}
+			state := requestStates[starredCandidateKey(year, candidate)]
+			switch {
+			case state.Status == "requested" && state.EmailSentAt != nil:
+				action = fmt.Sprintf(`<span class="badge bg-info text-dark">Email sent to %s</span>`, escapeHTML(state.EmailRecipient))
+			case state.Status == "requested" && state.EmailSendError != "":
+				action = `<div class="small text-danger mb-1">Previous email failed</div>` + requestForm("Retry star request email")
+			case state.Status == "requested":
+				action = requestForm("Send star request email")
+			case state.Status == "accepted":
 				action = `<span class="badge bg-success">Review closed</span>`
 			default:
-				action = fmt.Sprintf(`<form method="post" action="/admin/starred-players/candidates/request" onsubmit="return confirm('Send this player for a List B review?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="review_date" value="%s"><input type="hidden" name="division" value="%s"><input type="hidden" name="club" value="%s"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="player_key" value="%s"><button class="btn btn-sm btn-outline-primary">Request to be starred</button></form>`, escapeHTML(middleware.CSRFToken(r)), year, cutoff.Format("2006-01-02"), escapeHTML(selectedDivision), escapeHTML(selectedClub), escapeHTML(row.ClubKey), row.PlayerID, escapeHTML(row.PlayerKey))
+				action = requestForm("Request to be starred")
 			}
 		}
 		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)

@@ -17,6 +17,11 @@ import (
 
 const starredExemptionGuidanceURL = "https://www.gtrmcrcricket.co.uk/pages/exemption-requests"
 
+const starredExemptionInsertSQL = `
+	INSERT INTO starred_exemptions(season_year,club_key,club_name,play_cricket_player_id,player_key,player_name,play_cricket_match_id,exemption_type,status,valid_from,valid_to,wicket_keeper,notes,created_by,decided_by,decided_at)
+	VALUES($1,$2,$3,NULLIF($4,0),$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14::integer,CASE WHEN $9::text IN ('approved','refused') THEN $14::integer ELSE NULL::integer END,CASE WHEN $9::text IN ('approved','refused') THEN now() ELSE NULL END)
+	RETURNING id`
+
 type starredExemption struct {
 	ID            int64
 	SeasonYear    int
@@ -288,10 +293,7 @@ func (s *Server) handleAdminStarredExemptionCreate() http.HandlerFunc {
 		_ = s.DB.QueryRow(ctx, `SELECT club_name FROM starred_periods WHERE season_year=$1 AND club_key=$2 ORDER BY valid_from DESC LIMIT 1`, year, clubKey).Scan(&clubName)
 		adminID := s.resolveAdminID(r)
 		var exemptionID int64
-		err = s.DB.QueryRow(ctx, `
-			INSERT INTO starred_exemptions(season_year,club_key,club_name,play_cricket_player_id,player_key,player_name,play_cricket_match_id,exemption_type,status,valid_from,valid_to,wicket_keeper,notes,created_by,decided_by,decided_at)
-			VALUES($1,$2,$3,NULLIF($4,0),$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,CASE WHEN $9 IN ('approved','refused') THEN $14 ELSE NULL END,CASE WHEN $9 IN ('approved','refused') THEN now() ELSE NULL END)
-			RETURNING id`, year, clubKey, clubName, playerID, playerKey, playerName, matchID, exemptionType, status, validFrom, validTo, r.FormValue("wicket_keeper") == "1", notes, adminID).Scan(&exemptionID)
+		err = s.DB.QueryRow(ctx, starredExemptionInsertSQL, year, clubKey, clubName, playerID, playerKey, playerName, matchID, exemptionType, status, validFrom, validTo, r.FormValue("wicket_keeper") == "1", notes, adminID).Scan(&exemptionID)
 		if err != nil {
 			redirectStarredAnchor(w, r, year, "", "Could not save exemption request: "+err.Error(), "sunday-exemptions")
 			return

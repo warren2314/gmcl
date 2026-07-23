@@ -18,6 +18,14 @@ func sundayStarredBreach() starred.Breach {
 	return breach
 }
 
+func TestStarredExemptionInsertPinsRepeatedParameterTypes(t *testing.T) {
+	for _, required := range []string{"$14::integer", "$9::text", "NULL::integer"} {
+		if !strings.Contains(starredExemptionInsertSQL, required) {
+			t.Fatalf("exemption INSERT must contain %q to avoid PostgreSQL 42P08: %s", required, starredExemptionInsertSQL)
+		}
+	}
+}
+
 func TestStarredSundayExemptionEligibilityExcludesSaturdayCupAndT20(t *testing.T) {
 	breach := sundayStarredBreach()
 	if !starredSundayExemptionEligible(breach) {
