@@ -1,0 +1,72 @@
+name: Production health
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: gmcl-production-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check public health
+        id: initial
+        continue-on-error: true
+        run: curl --fail --silent --show-error --retry 2 --retry-delay 5 --max-time 20 https://gmcl.co.uk/health
+
+      - name: Configure recovery SSH
+        if: steps.initial.outcome == 'failure'
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$PROD_SSH_KEY"
+          test -n "$PROD_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/gmcl
+          chmod 600 ~/.ssh/gmcl
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Restart current production release
+        id: recovery
+        if: steps.initial.outcome == 'failure'
+        continue-on-error: true
+        env:
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          test -n "$PROD_SSH_HOST"
+          test -n "$PROD_SSH_USER"
+          ssh -o BatchMode=yes -i ~/.ssh/gmcl "$PROD_SSH_USER@$PROD_SSH_HOST" \
+            "cd /opt/gmcl && bash scripts/recover-production.sh"
+
+      - name: Verify recovery
+        id: verify
+        if: steps.initial.outcome == 'failure'
+        continue-on-error: true
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --max-time 20 https://gmcl.co.uk/health
+
+      - name: Open recovery incident
+        if: steps.initial.outcome == 'failure' && steps.verify.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[production] Automated health recovery failed"
+          open_count="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number --jq 'length')"
+          if [[ "$open_count" == "0" ]]; then
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --body "The scheduled production health check failed and restarting the currently deployed containers did not restore https://gmcl.co.uk/health. Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
+          exit 1
