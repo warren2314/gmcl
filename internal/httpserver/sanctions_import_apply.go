@@ -674,6 +674,13 @@ func applySanctionImportCandidate(ctx context.Context, tx pgx.Tx, batchID int64,
 			return err
 		}
 	}
+	if candidate.TeamID != nil && weekID != nil {
+		if colour, ok := legacyColourForImportedCard(candidate.EffectType, candidate.YellowDelta, candidate.RedDelta); ok {
+			if err = linkImportedLegacySanction(ctx, tx, caseID, *candidate.TeamID, *weekID, colour, adminID, actorLabel, requestID); err != nil {
+				return err
+			}
+		}
+	}
 	after, _ := json.Marshal(map[string]any{"reference": reference, "decision_revision_id": decisionID, "effect_type": candidate.EffectType, "source_batch_id": batchID, "source_row_number": candidate.RowNumber})
 	_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,request_id) VALUES($1,'historical_import_applied','import',$2,$3,$4,$5::jsonb,$6)`, caseID, adminID, actorLabel, "Approved public source imported without recalculation", string(after), requestID)
 	if err != nil {
@@ -681,5 +688,51 @@ func applySanctionImportCandidate(ctx context.Context, tx pgx.Tx, batchID int64,
 	}
 	mapping, _ := json.Marshal(map[string]any{"club_id": candidate.ClubID, "team_id": candidate.TeamID, "effect_type": candidate.EffectType, "reference": reference})
 	_, err = tx.Exec(ctx, `UPDATE sanction_import_mappings SET case_id=$2,mapping=$3::jsonb,status='applied',reviewed_by_admin_id=$4,reviewed_at=now() WHERE import_row_id=$1 AND status='pending'`, candidate.RowID, caseID, string(mapping), adminID)
+	return err
+}
+
+func legacyColourForImportedCard(effectType string, yellowDelta, redDelta int) (string, bool) {
+	switch {
+	case effectType == "yellow_card" && yellowDelta > 0:
+		return "yellow", true
+	case effectType == "red_card" && redDelta > 0:
+		return "red", true
+	default:
+		return "", false
+	}
+}
+
+func linkImportedLegacySanction(ctx context.Context, tx pgx.Tx, caseID int64, teamID, weekID int32, colour string, adminID int32, actorLabel, requestID string) error {
+	var sanctionID int64
+	var beforeData []byte
+	err := tx.QueryRow(ctx, `
+		SELECT id,to_jsonb(sa)
+		FROM sanctions sa
+		WHERE team_id=$1
+		  AND week_id=$2
+		  AND colour::text=$3
+		  AND case_id IS NULL
+		  AND status IN ('active','served')
+		ORDER BY id
+		LIMIT 1
+		FOR UPDATE`, teamID, weekID, colour).Scan(&sanctionID, &beforeData)
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var afterData []byte
+	if err = tx.QueryRow(ctx, `UPDATE sanctions SET case_id=$2 WHERE id=$1 AND case_id IS NULL RETURNING to_jsonb(sanctions)`, sanctionID, caseID).Scan(&afterData); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO sanction_events
+		    (sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id)
+		VALUES
+		    ($1,'historical_import_linked',now(),'Legacy read-model card linked to its canonical imported case',$2,$3,
+		     'Prevent duplicate card totting after historical import',$4::jsonb,$5::jsonb,$6)`,
+		sanctionID, adminID, actorLabel, string(beforeData), string(afterData), requestID)
 	return err
 }

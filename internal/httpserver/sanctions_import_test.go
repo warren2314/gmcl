@@ -84,6 +84,32 @@ func TestParsePublishedCardCandidatePreservesRecordedConversion(t *testing.T) {
 	}
 }
 
+func TestLegacyColourForImportedCardLinksOnlyEffectiveCards(t *testing.T) {
+	tests := []struct {
+		name        string
+		effectType  string
+		yellowDelta int
+		redDelta    int
+		wantColour  string
+		wantLink    bool
+	}{
+		{name: "yellow", effectType: "yellow_card", yellowDelta: 1, wantColour: "yellow", wantLink: true},
+		{name: "red", effectType: "red_card", yellowDelta: -2, redDelta: 1, wantColour: "red", wantLink: true},
+		{name: "suspended red", effectType: "suspended_red", wantLink: false},
+		{name: "reversed yellow", effectType: "yellow_card", yellowDelta: -1, wantLink: false},
+		{name: "non-card", effectType: "team_ban", wantLink: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotColour, gotLink := legacyColourForImportedCard(test.effectType, test.yellowDelta, test.redDelta)
+			if gotColour != test.wantColour || gotLink != test.wantLink {
+				t.Fatalf("legacyColourForImportedCard(%q,%d,%d) = (%q,%v), want (%q,%v)",
+					test.effectType, test.yellowDelta, test.redDelta, gotColour, gotLink, test.wantColour, test.wantLink)
+			}
+		})
+	}
+}
+
 func TestTeamBanDatesCoverEveryRecordedSeason(t *testing.T) {
 	start, end := teamBanDates("Banned 27&28")
 	if start == nil || end == nil {
