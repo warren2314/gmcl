@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -80,6 +81,7 @@ func (s *Server) handleAdminMissingSubmissionsReport() http.HandlerFunc {
 
 		data, err := s.loadMissingSubmissionsReport(ctx)
 		if err != nil {
+			slog.Error("load missing submissions report", "error", err)
 			http.Error(w, "report error", http.StatusInternalServerError)
 			return
 		}
@@ -109,6 +111,7 @@ func (s *Server) handleAdminMissingSubmissionsReportCSV() http.HandlerFunc {
 
 		data, err := s.loadMissingSubmissionsReport(ctx)
 		if err != nil {
+			slog.Error("load missing submissions report CSV", "error", err)
 			http.Error(w, "report error", http.StatusInternalServerError)
 			return
 		}
@@ -315,11 +318,11 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		                 AND sa.reason = 'non_submission'
 		                 AND sa.status IN ('active', 'served')
 		           ), '') AS sanction_status,
-		           COALESCE(staged.case_id,0),
-		           COALESCE(staged.reference,''),
-		           COALESCE(staged.case_status,''),
-		           COALESCE(staged.effect_type,''),
-		           COALESCE(staged.points,0)
+		           COALESCE(staged.case_id,0) AS case_id,
+		           COALESCE(staged.reference,'') AS reference,
+		           COALESCE(staged.case_status,'') AS case_status,
+		           COALESCE(staged.effect_type,'') AS effect_type,
+		           COALESCE(staged.points,0) AS points
 		    FROM expected_fixtures ef
 		    LEFT JOIN legacy_submissions ls
 		      ON ls.team_id = ef.team_id AND ls.match_date = ef.match_date
