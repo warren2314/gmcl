@@ -12,14 +12,18 @@ import (
 	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/starred"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type starredCandidateReviewState struct {
-	ID     int64
-	Status string
+	ID             int64
+	Status         string
+	EmailRecipient string
+	EmailSentAt    *time.Time
+	EmailSendError string
 }
 
 func starredCandidateKey(year int, candidate starred.Candidate) string {
@@ -34,7 +38,7 @@ func starredCandidateKey(year int, candidate starred.Candidate) string {
 
 func (s *Server) loadStarredCandidateReviewStates(ctx context.Context, seasonYear int) map[string]starredCandidateReviewState {
 	states := make(map[string]starredCandidateReviewState)
-	rows, err := s.DB.Query(ctx, `SELECT candidate_key,id,status FROM starred_candidate_reviews WHERE season_year=$1`, seasonYear)
+	rows, err := s.DB.Query(ctx, `SELECT candidate_key,id,status,COALESCE(email_recipient,''),email_sent_at,COALESCE(email_send_error,'') FROM starred_candidate_reviews WHERE season_year=$1`, seasonYear)
 	if err != nil {
 		return states
 	}
@@ -42,7 +46,7 @@ func (s *Server) loadStarredCandidateReviewStates(ctx context.Context, seasonYea
 	for rows.Next() {
 		var key string
 		var state starredCandidateReviewState
-		if rows.Scan(&key, &state.ID, &state.Status) == nil {
+		if rows.Scan(&key, &state.ID, &state.Status, &state.EmailRecipient, &state.EmailSentAt, &state.EmailSendError) == nil {
 			states[key] = state
 		}
 	}
@@ -144,7 +148,7 @@ func (s *Server) verifiedStarredPlayerRequest(ctx context.Context, year int, cut
 		return starredPlayerReviewRow{}, err
 	}
 	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
-	rows := buildStarredPlayerReviewRows(periods, appearances, mappings, cutoff, nil, "", clubKey, 50, 25)
+	rows := buildStarredPlayerReviewRows(periods, appearances, mappings, cutoff, nil, nil, clubKey, 50, 25)
 	for _, row := range rows {
 		if row.ListType != "" || row.FirstPct < 50 {
 			continue
@@ -165,8 +169,10 @@ func redirectStarredPlayerReview(w http.ResponseWriter, r *http.Request, year in
 		"view":        {"player-review"},
 		"review_date": {cutoff.Format("2006-01-02")},
 	}
-	if division := strings.TrimSpace(r.FormValue("division")); division != "" {
-		query.Set("division", division)
+	for _, division := range r.Form["division"] {
+		if division = strings.TrimSpace(division); division != "" {
+			query.Add("division", division)
+		}
 	}
 	if club := strings.TrimSpace(r.FormValue("club")); club != "" {
 		query.Set("club", club)
@@ -201,22 +207,28 @@ func (s *Server) handleAdminStarredCandidateRequest() http.HandlerFunc {
 			PlayerName: row.PlayerName, PlayerKey: row.PlayerKey, FirstXILeague: row.Counts[1],
 			TopTwoXILeague: row.Counts[1] + row.Counts[2], AllLeague: row.Total, Percentage: row.FirstPct / 100,
 		}
+		recipient, err := starredClubEmail(row.ClubKey, row.ClubName)
+		if err != nil {
+			redirectStarredPlayerReview(w, r, year, cutoff, "", "Could not determine club email: "+err.Error())
+			return
+		}
 		adminID := s.resolveAdminID(r)
 		var reviewID int64
 		var status string
+		var emailSentAt *time.Time
 		err = s.DB.QueryRow(ctx, `
-			INSERT INTO starred_candidate_reviews(candidate_key,season_year,club_name,club_key,play_cricket_player_id,player_name,player_key,first_xi_league,first_second_xi_league,all_league,percentage,status,decision_note,reviewed_by,reviewed_at,requested_cutoff)
-			VALUES($1,$2,$3,$4,NULLIF($5,0),$6,$7,$8,$9,$10,$11,'requested',NULL,$12,now(),$13::date)
+			INSERT INTO starred_candidate_reviews(candidate_key,season_year,club_name,club_key,play_cricket_player_id,player_name,player_key,first_xi_league,first_second_xi_league,all_league,percentage,status,decision_note,reviewed_by,reviewed_at,requested_cutoff,email_recipient)
+			VALUES($1,$2,$3,$4,NULLIF($5,0),$6,$7,$8,$9,$10,$11,'requested',NULL,$12,now(),$13::date,$14)
 			ON CONFLICT(candidate_key) DO UPDATE SET
 				club_name=EXCLUDED.club_name, player_name=EXCLUDED.player_name,
 				first_xi_league=EXCLUDED.first_xi_league, first_second_xi_league=EXCLUDED.first_second_xi_league,
 				all_league=EXCLUDED.all_league, percentage=EXCLUDED.percentage,
 				requested_cutoff=EXCLUDED.requested_cutoff, reviewed_by=EXCLUDED.reviewed_by,
-				reviewed_at=now(), updated_at=now()
+				email_recipient=EXCLUDED.email_recipient, reviewed_at=now(), updated_at=now()
 			WHERE starred_candidate_reviews.status <> 'accepted'
-			RETURNING id,status`,
+			RETURNING id,status,email_sent_at`,
 			starredCandidateKey(year, candidate), year, row.ClubName, row.ClubKey, row.PlayerID, row.PlayerName, row.PlayerKey,
-			row.Counts[1], row.Counts[1]+row.Counts[2], row.Total, row.FirstPct/100, adminID, cutoff).Scan(&reviewID, &status)
+			row.Counts[1], row.Counts[1]+row.Counts[2], row.Total, row.FirstPct/100, adminID, cutoff, recipient).Scan(&reviewID, &status, &emailSentAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			redirectStarredPlayerReview(w, r, year, cutoff, "This player's review has already been closed.", "")
 			return
@@ -225,11 +237,25 @@ func (s *Server) handleAdminStarredCandidateRequest() http.HandlerFunc {
 			redirectStarredPlayerReview(w, r, year, cutoff, "", "Could not request List B review: "+err.Error())
 			return
 		}
+		if emailSentAt != nil {
+			redirectStarredPlayerReview(w, r, year, cutoff, "The List B review email was already sent to "+recipient+".", "")
+			return
+		}
+		subject, body := starredCandidateRequestEmail(row, cutoff)
+		if err := email.NewFromEnv().Send(recipient, subject, body); err != nil {
+			_, _ = s.DB.Exec(ctx, `UPDATE starred_candidate_reviews SET email_send_error=$1,email_sent_at=NULL,updated_at=now() WHERE id=$2`, err.Error(), reviewID)
+			s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_email_failed", "starred_candidate_review", &reviewID, map[string]any{
+				"season": year, "club": row.ClubName, "player": row.PlayerName, "recipient": recipient, "error": err.Error(),
+			})
+			redirectStarredPlayerReview(w, r, year, cutoff, "", "List B review was recorded, but the email to "+recipient+" failed: "+err.Error())
+			return
+		}
+		_, _ = s.DB.Exec(ctx, `UPDATE starred_candidate_reviews SET email_sent_at=now(),email_send_error=NULL,updated_at=now() WHERE id=$1`, reviewID)
 		s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_requested", "starred_candidate_review", &reviewID, map[string]any{
 			"season": year, "cutoff": cutoff.Format("2006-01-02"), "club": row.ClubName, "player": row.PlayerName,
 			"play_cricket_player_id": row.PlayerID, "first_xi_games": row.Counts[1],
-			"first_xi_team_fixtures": row.TeamGames[1], "percentage": row.FirstPct / 100,
+			"first_xi_team_fixtures": row.TeamGames[1], "percentage": row.FirstPct / 100, "recipient": recipient,
 		})
-		redirectStarredPlayerReview(w, r, year, cutoff, "List B review requested for "+row.PlayerName+".", "")
+		redirectStarredPlayerReview(w, r, year, cutoff, "List B review requested for "+row.PlayerName+" and emailed to "+recipient+".", "")
 	}
 }

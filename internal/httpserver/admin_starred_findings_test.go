@@ -276,7 +276,7 @@ func TestStarredFindingDraftIncludesOffenceAndScorecardEvidence(t *testing.T) {
 	if !strings.Contains(subject, "Example CC") {
 		t.Fatalf("subject does not identify the club: %s", subject)
 	}
-	for _, want := range []string{"Dear Casey Captain", "Rule 3.5", "List A", "Potential offence", "23 May 2026", "7458963", "Alex Player", "Scorecard evidence"} {
+	for _, want := range []string{"Dear Casey Captain", "Rule 3.5", "List A", "Potential offence", "23 May 2026", "7458963", "Alex Player", "Scorecard evidence", "docs.google.com/forms", "gtrmcrcricket.co.uk/pages/rules-3-5", "review should be reconsidered"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("letter does not contain %q:\n%s", want, body)
 		}
