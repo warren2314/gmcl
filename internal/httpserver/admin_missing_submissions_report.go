@@ -37,6 +37,11 @@ type missingSubmissionFixture struct {
 	HasSubmission      bool
 	AdminResolved      bool
 	SanctionStatus     string
+	CaseID             int64
+	CaseReference      string
+	CaseStatus         string
+	CardRequired       string
+	PointsDeduction    int
 }
 
 type missingSubmissionTeamSummary struct {
@@ -78,7 +83,11 @@ func (s *Server) handleAdminMissingSubmissionsReport() http.HandlerFunc {
 			http.Error(w, "report error", http.StatusInternalServerError)
 			return
 		}
-		data.CSVURL = "/admin/reports/missing-submissions.csv"
+		latestWeekID := int32(0)
+		if len(data.Weeks) > 0 {
+			latestWeekID = data.Weeks[len(data.Weeks)-1].ID
+		}
+		data.CSVURL = fmt.Sprintf("/admin/reports/missing-submissions.csv?week_id=%d", latestWeekID)
 
 		csrfToken := ""
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
@@ -104,6 +113,20 @@ func (s *Server) handleAdminMissingSubmissionsReportCSV() http.HandlerFunc {
 			return
 		}
 
+		requestedWeekID := int32(parsePositiveInt(r.URL.Query().Get("week_id")))
+		if requestedWeekID == 0 && len(data.Weeks) > 0 {
+			requestedWeekID = data.Weeks[len(data.Weeks)-1].ID
+		}
+		exportRows := data.Rows
+		if requestedWeekID > 0 {
+			exportRows = exportRows[:0]
+			for _, row := range data.Rows {
+				if row.WeekID == requestedWeekID {
+					exportRows = append(exportRows, row)
+				}
+			}
+		}
+
 		filename := "missing-submissions-" + time.Now().Format("20060102-150405") + ".csv"
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
@@ -123,8 +146,12 @@ func (s *Server) handleAdminMissingSubmissionsReportCSV() http.HandlerFunc {
 			"Admin resolved",
 			"Actionable missing",
 			"Sanction status",
+			"Card required",
+			"Points deduction",
+			"Sanctions case",
+			"Case status",
 		})
-		for _, row := range data.Rows {
+		for _, row := range exportRows {
 			actionable := "Yes"
 			if row.AdminResolved {
 				actionable = "No"
@@ -147,6 +174,10 @@ func (s *Server) handleAdminMissingSubmissionsReportCSV() http.HandlerFunc {
 				resolved,
 				actionable,
 				row.SanctionStatus,
+				missingSubmissionCardLabel(row.CardRequired),
+				strconv.Itoa(row.PointsDeduction),
+				row.CaseReference,
+				row.CaseStatus,
 			})
 		}
 		cw.Flush()
@@ -283,14 +314,42 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		                 AND sa.week_id = ef.week_id
 		                 AND sa.reason = 'non_submission'
 		                 AND sa.status IN ('active', 'served')
-		           ), '') AS sanction_status
+		           ), '') AS sanction_status,
+		           COALESCE(staged.case_id,0),
+		           COALESCE(staged.reference,''),
+		           COALESCE(staged.case_status,''),
+		           COALESCE(staged.effect_type,''),
+		           COALESCE(staged.points,0)
 		    FROM expected_fixtures ef
 		    LEFT JOIN legacy_submissions ls
 		      ON ls.team_id = ef.team_id AND ls.match_date = ef.match_date
+		    LEFT JOIN LATERAL (
+		        SELECT sc.id AS case_id,
+		               sc.reference,
+		               sc.status AS case_status,
+		               effect.effect_type,
+		               effect.points
+		        FROM sanction_cases sc
+		        JOIN LATERAL (
+		            SELECT e.effect_type, COALESCE(e.points,0) AS points
+		            FROM sanction_decision_revisions d
+		            JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
+		            WHERE d.case_id=sc.id
+		            ORDER BY d.revision DESC,e.id DESC
+		            LIMIT 1
+		        ) effect ON TRUE
+		        WHERE sc.team_id=ef.team_id
+		          AND sc.week_id=ef.week_id
+		          AND sc.source_type='captain_report'
+		          AND sc.status NOT IN ('rejected','withdrawn')
+		        ORDER BY sc.id DESC
+		        LIMIT 1
+		    ) staged ON TRUE
 		)
 		SELECT week_id, week_number, season_name, match_date, team_id, club_name, team_name,
 		       play_cricket_match_id, opponent, ground, captain_name, captain_email,
-		       has_submission, admin_resolved, sanction_status
+		       has_submission, admin_resolved, sanction_status,
+		       case_id,reference,case_status,effect_type,points
 		FROM fixture_status
 		ORDER BY week_number DESC, match_date DESC, club_name, team_name, play_cricket_match_id
 	`)
@@ -318,6 +377,11 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 			&row.HasSubmission,
 			&row.AdminResolved,
 			&row.SanctionStatus,
+			&row.CaseID,
+			&row.CaseReference,
+			&row.CaseStatus,
+			&row.CardRequired,
+			&row.PointsDeduction,
 		); err != nil {
 			return data, err
 		}
@@ -357,6 +421,9 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		if row.MatchDate.After(summary.LatestMatchDate) {
 			summary.LatestMatchDate = row.MatchDate
 			summary.LastSanctionState = row.SanctionStatus
+			if row.CaseID > 0 {
+				summary.LastSanctionState = missingSubmissionCardLabel(row.CardRequired) + " — " + row.CaseReference + " — " + strings.ReplaceAll(row.CaseStatus, "_", " ")
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -386,6 +453,16 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 }
 
 func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissionsReportData) {
+	latestWeekID := int32(0)
+	if len(data.Weeks) > 0 {
+		latestWeekID = data.Weeks[len(data.Weeks)-1].ID
+	}
+	stagedCount := 0
+	for _, row := range data.Rows {
+		if row.CaseID > 0 {
+			stagedCount++
+		}
+	}
 	fmt.Fprintf(w, `<div class="container-fluid px-4 py-4">
 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
   <div>
@@ -399,6 +476,7 @@ func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissio
 		escapeHTML(data.GeneratedAt.Format("2 Jan 2006 15:04")),
 		escapeHTML(data.CSVURL),
 	)
+	fmt.Fprintf(w, `<div class="alert alert-info"><strong>Automatic staging is in manual-approval mode.</strong> %d missing-submission sanction case(s) are staged below. Staging calculates the card but does not publish it or queue any email. Open a case to review it.</div>`, stagedCount)
 
 	fmt.Fprintf(w, `<div class="row g-3 mb-4">
   <div class="col-sm-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="text-muted small">Expected Fixtures</div><div class="fs-4 fw-semibold">%d</div></div></div>
@@ -418,6 +496,21 @@ func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissio
 		fmt.Fprint(w, `<div class="alert alert-success">No missing submissions found for the selected two-week period.</div></div>`)
 		return
 	}
+
+	fmt.Fprintf(w, `<div class="card shadow-sm mb-4"><div class="card-body"><div class="row g-3 align-items-end">
+  <div class="col-md-3"><label class="form-label" for="missing-week-filter">Week</label><select class="form-select" id="missing-week-filter"><option value="">All shown weeks</option>`)
+	for _, week := range data.Weeks {
+		selected := ""
+		if week.ID == latestWeekID {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%d"%s>%s — Week %d (%s–%s)</option>`, week.ID, selected, escapeHTML(week.Season), week.Number, week.StartDate.Format("2 Jan"), week.EndDate.Format("2 Jan"))
+	}
+	fmt.Fprint(w, `</select></div>
+  <div class="col-md-3"><label class="form-label" for="missing-card-filter">Card required</label><select class="form-select" id="missing-card-filter"><option value="">All cards</option><option value="yellow_card">Yellow</option><option value="red_card">Red</option><option value="unstaged">Not staged</option></select></div>
+  <div class="col-md-3"><label class="form-label" for="missing-status-filter">Case status</label><select class="form-select" id="missing-status-filter"><option value="">All statuses</option><option value="decision_proposed">Proposed — needs approval</option><option value="published">Published</option><option value="unstaged">Not staged</option></select></div>
+  <div class="col-md-3"><label class="form-label" for="missing-search-filter">Club or team</label><input class="form-control" id="missing-search-filter" type="search" placeholder="Filter club or team"></div>
+</div><div class="small text-muted mt-2" id="missing-filter-count" aria-live="polite"></div></div></div>`)
 
 	fmt.Fprint(w, `<div class="mb-4">
   <h5 class="fw-semibold mb-2">Teams With Missing Reports</h5>
@@ -455,18 +548,30 @@ func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissio
   <h5 class="fw-semibold mb-2">Fixture Detail</h5>
   <div class="table-responsive">
     <table class="table table-sm table-hover align-middle">
-      <thead class="table-light"><tr><th>Week</th><th>Date</th><th>Club</th><th>Team</th><th>Opponent</th><th>Ground</th><th>Match</th><th>Status</th><th>Sanction</th></tr></thead>
+      <thead class="table-light"><tr><th>Week</th><th>Date</th><th>Club</th><th>Team</th><th>Opponent</th><th>Ground</th><th>Match</th><th>Status</th><th>Card required</th><th>Sanctions case</th></tr></thead>
       <tbody>`)
 	for _, row := range data.Rows {
 		status := `<span class="badge bg-danger">Action required</span>`
 		if row.AdminResolved {
 			status = `<span class="badge bg-info text-dark">Admin resolved</span>`
 		}
-		sanction := row.SanctionStatus
-		if sanction == "" {
-			sanction = "-"
+		cardRequired := missingSubmissionCardLabel(row.CardRequired)
+		if row.PointsDeduction > 0 {
+			cardRequired += fmt.Sprintf(" — %d point deduction", row.PointsDeduction)
 		}
-		fmt.Fprintf(w, `<tr>
+		caseStatus := "unstaged"
+		caseHTML := `<span class="text-warning">Not staged yet</span>`
+		if row.CaseID > 0 {
+			caseStatus = row.CaseStatus
+			caseHTML = fmt.Sprintf(`<a href="/admin/cases/%d">%s</a><div class="small text-muted">%s — no email queued</div>`, row.CaseID, escapeHTML(row.CaseReference), escapeHTML(strings.ReplaceAll(row.CaseStatus, "_", " ")))
+		} else if row.SanctionStatus != "" {
+			caseHTML = `<span class="text-muted">Legacy: ` + escapeHTML(row.SanctionStatus) + `</span>`
+		}
+		cardFilter := row.CardRequired
+		if cardFilter == "" {
+			cardFilter = "unstaged"
+		}
+		fmt.Fprintf(w, `<tr class="missing-submission-row" data-week="%d" data-card="%s" data-case-status="%s" data-search="%s">
   <td>%d</td>
   <td>%s</td>
   <td>%s</td>
@@ -474,9 +579,14 @@ func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissio
   <td>%s</td>
   <td>%s</td>
   <td>%d</td>
+  <td>%s</td>
   <td>%s</td>
   <td>%s</td>
 </tr>`,
+			row.WeekID,
+			escapeHTML(cardFilter),
+			escapeHTML(caseStatus),
+			escapeHTML(strings.ToLower(row.ClubName+" "+row.TeamName)),
 			row.WeekNumber,
 			escapeHTML(row.MatchDate.Format("2 Jan 2006")),
 			escapeHTML(row.ClubName),
@@ -485,10 +595,57 @@ func renderMissingSubmissionsReport(w http.ResponseWriter, data missingSubmissio
 			escapeHTML(blankDash(row.Ground)),
 			row.PlayCricketMatchID,
 			status,
-			escapeHTML(sanction),
+			escapeHTML(cardRequired),
+			caseHTML,
 		)
 	}
-	fmt.Fprint(w, `</tbody></table></div></div></div>`)
+	fmt.Fprint(w, `</tbody></table></div></div></div>
+<script>
+(function () {
+  const week = document.getElementById('missing-week-filter');
+  const card = document.getElementById('missing-card-filter');
+  const status = document.getElementById('missing-status-filter');
+  const search = document.getElementById('missing-search-filter');
+  const count = document.getElementById('missing-filter-count');
+  const exportLink = document.querySelector('a[href^="/admin/reports/missing-submissions.csv"]');
+  const rows = Array.from(document.querySelectorAll('.missing-submission-row'));
+  function applyFilters() {
+    const query = search.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach(function (row) {
+      const visible = (!week.value || row.dataset.week === week.value) &&
+        (!card.value || row.dataset.card === card.value) &&
+        (!status.value || row.dataset.caseStatus === status.value) &&
+        (!query || row.dataset.search.includes(query));
+      row.hidden = !visible;
+      if (visible) shown++;
+    });
+    count.textContent = shown + ' missing fixture(s) shown.';
+    if (exportLink) {
+      exportLink.href = '/admin/reports/missing-submissions.csv' + (week.value ? '?week_id=' + encodeURIComponent(week.value) : '');
+    }
+  }
+  [week, card, status, search].forEach(function (control) {
+    control.addEventListener(control === search ? 'input' : 'change', applyFilters);
+  });
+  applyFilters();
+}());
+</script>`)
+}
+
+func missingSubmissionCardLabel(effectType string) string {
+	switch effectType {
+	case "yellow_card":
+		return "Yellow card"
+	case "red_card":
+		return "Red card"
+	case "suspended_red":
+		return "Suspended red card"
+	case "":
+		return "Not staged"
+	default:
+		return strings.ReplaceAll(effectType, "_", " ")
+	}
 }
 
 func blankDash(s string) string {

@@ -150,7 +150,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 	missingReportItem := ""
 	starredReplacementItem := ""
 	if role == "super_admin" {
-		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions</a></li>`
+		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions &amp; Cards</a></li>`
 		starredReplacementItem = navLink("/admin/starred-player-replacements", "Player Replacements")
 	}
 
