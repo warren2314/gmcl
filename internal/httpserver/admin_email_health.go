@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,8 +81,7 @@ type sesNotification struct {
 
 func (s *Server) handleSESEventWebhook() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		expectedToken := strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN"))
-		if expectedToken != "" && r.URL.Query().Get("token") != expectedToken {
+		if !validSESSNSWebhookToken(r.URL.Query().Get("token")) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -137,6 +137,17 @@ func (s *Server) handleSESEventWebhook() http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
+}
+
+func validSESSNSWebhookToken(provided string) bool {
+	current := strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN"))
+	next := strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN_NEXT"))
+	if current == "" && next == "" {
+		return true
+	}
+	providedBytes := []byte(provided)
+	return (current != "" && subtle.ConstantTimeCompare(providedBytes, []byte(current)) == 1) ||
+		(next != "" && subtle.ConstantTimeCompare(providedBytes, []byte(next)) == 1)
 }
 
 func decodeSESWebhook(body []byte, header http.Header) (snsEnvelope, sesNotification, string, error) {

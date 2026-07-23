@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -590,6 +591,20 @@ func (s *Server) loadAIExecutiveUmpireWindow(ctx context.Context, title, period,
 	return win
 }
 
+type openAINarrativeError struct {
+	message   string
+	retryable bool
+}
+
+func (e *openAINarrativeError) Error() string {
+	return e.message
+}
+
+func retryableOpenAINarrativeError(err error) bool {
+	var narrativeErr *openAINarrativeError
+	return errors.As(err, &narrativeErr) && narrativeErr.retryable
+}
+
 func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiveReportPayload) (aiExecutiveNarrative, string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
@@ -621,49 +636,85 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 			"conclusion",
 		},
 	}
-	reqBody, _ := json.Marshal(map[string]any{
-		"model": model,
-		"instructions": strings.Join([]string{
-			"You are writing a professional executive report for a cricket league committee.",
-			"Use only the supplied JSON data. Do not invent figures, clubs, umpires, dates, or trends.",
-			"Write in clear British English for a board-level audience. Be direct, measured, and evidence-led.",
-			"Use a concise board-paper style: short paragraphs, explicit implications, and clear recommended focus areas.",
-			"When report_type is ai_season_to_date, treat latest_report as the current reporting period to the as-of date, and make season_report the main season-start-to-as-of-date analysis.",
-			"Make the season_report analytical rather than static: compare latest-week performance with season-to-date, identify direction of travel from weekly_trend, name notable strongest and concern clubs or grounds, and explain what this means for executive attention.",
-			"The conclusion must be more than a generic close: prioritise the next operational actions, separate immediate compliance actions from medium-term ground or umpire follow-up, and state what should be monitored next week.",
-			"Use the representative_notes only as qualitative context, not as facts beyond the supplied text.",
-			"Where there is limited data, say so plainly and focus on what can be concluded from the available ratings.",
-			"Each value should be one or two concise paragraphs. Mention the most important numbers, but do not simply repeat KPI values.",
-		}, " "),
-		"input":             "Create the executive narrative sections from this report data:\n" + string(data),
-		"max_output_tokens": 4000,
-		"text": map[string]any{
-			"format": map[string]any{
-				"type":        "json_schema",
-				"name":        "executive_narrative",
-				"description": "Narrative sections for a GMCL executive report.",
-				"strict":      true,
-				"schema":      narrativeSchema,
+	instructions := strings.Join([]string{
+		"You are writing a professional executive report for a cricket league committee.",
+		"Use only the supplied JSON data. Do not invent figures, clubs, umpires, dates, or trends.",
+		"Write in clear British English for a board-level audience. Be direct, measured, and evidence-led.",
+		"Use a concise board-paper style: short paragraphs, explicit implications, and clear recommended focus areas.",
+		"When report_type is ai_season_to_date, treat latest_report as the current reporting period to the as-of date, and make season_report the main season-start-to-as-of-date analysis.",
+		"Make the season_report analytical rather than static: compare latest-week performance with season-to-date, identify direction of travel from weekly_trend, name notable strongest and concern clubs or grounds, and explain what this means for executive attention.",
+		"The conclusion must be more than a generic close: prioritise the next operational actions, separate immediate compliance actions from medium-term ground or umpire follow-up, and state what should be monitored next week.",
+		"Use the representative_notes only as qualitative context, not as facts beyond the supplied text.",
+		"Where there is limited data, say so plainly and focus on what can be concluded from the available ratings.",
+		"Return all six required fields. Keep each field between 80 and 180 words so the complete response fits comfortably within the output budget.",
+		"Mention the most important numbers, but do not simply repeat KPI values.",
+	}, " ")
+
+	maxTokens := []int{8000, 16000}
+	var lastErr error
+	for attempt, tokenLimit := range maxTokens {
+		attemptInstructions := instructions
+		if attempt > 0 {
+			attemptInstructions += " This is a retry after an incomplete response. Be especially concise and complete every required field before adding secondary detail."
+		}
+		reqBody, _ := json.Marshal(map[string]any{
+			"model":             model,
+			"instructions":      attemptInstructions,
+			"input":             "Create the executive narrative sections from this report data:\n" + string(data),
+			"max_output_tokens": tokenLimit,
+			"reasoning":         map[string]any{"effort": "low"},
+			"text": map[string]any{
+				"format": map[string]any{
+					"type":        "json_schema",
+					"name":        "executive_narrative",
+					"description": "Narrative sections for a GMCL executive report.",
+					"strict":      true,
+					"schema":      narrativeSchema,
+				},
 			},
-		},
-	})
+		})
+		attemptCtx, cancel := context.WithTimeout(ctx, 70*time.Second)
+		narrative, err := requestOpenAIExecutiveNarrative(attemptCtx, apiKey, reqBody)
+		cancel()
+		if err == nil {
+			return narrative, model, nil
+		}
+		lastErr = err
+		if !retryableOpenAINarrativeError(err) || ctx.Err() != nil {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("OpenAI narrative generation failed")
+	}
+	return aiExecutiveNarrative{}, model, lastErr
+}
+
+func requestOpenAIExecutiveNarrative(ctx context.Context, apiKey string, reqBody []byte) (aiExecutiveNarrative, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
 	if err != nil {
-		return aiExecutiveNarrative{}, model, err
+		return aiExecutiveNarrative{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return aiExecutiveNarrative{}, model, err
+		return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI narrative request failed", retryable: true}
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return aiExecutiveNarrative{}, model, fmt.Errorf("OpenAI response status %d: %s", resp.StatusCode, truncateForReport(string(body), 300))
+		return aiExecutiveNarrative{}, &openAINarrativeError{
+			message:   fmt.Sprintf("OpenAI narrative request returned status %d", resp.StatusCode),
+			retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500,
+		}
 	}
+	return parseOpenAIExecutiveNarrativeResponse(body)
+}
+
+func parseOpenAIExecutiveNarrativeResponse(body []byte) (aiExecutiveNarrative, error) {
 	var parsed struct {
 		OutputText        string `json:"output_text"`
 		Status            string `json:"status"`
@@ -679,7 +730,23 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return aiExecutiveNarrative{}, model, err
+		return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI returned an unreadable narrative response", retryable: true}
+	}
+	if parsed.Status == "incomplete" {
+		reason := strings.TrimSpace(parsed.IncompleteDetails.Reason)
+		if reason == "" {
+			reason = "unknown reason"
+		}
+		return aiExecutiveNarrative{}, &openAINarrativeError{
+			message:   fmt.Sprintf("OpenAI narrative was incomplete (%s)", safeOpenAIReason(reason)),
+			retryable: true,
+		}
+	}
+	if parsed.Status != "" && parsed.Status != "completed" {
+		return aiExecutiveNarrative{}, &openAINarrativeError{
+			message:   fmt.Sprintf("OpenAI narrative finished with status %s", safeOpenAIReason(parsed.Status)),
+			retryable: true,
+		}
 	}
 	text := strings.TrimSpace(parsed.OutputText)
 	if text == "" {
@@ -689,7 +756,7 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 				if c.Text != "" {
 					b.WriteString(c.Text)
 				} else if c.Refusal != "" {
-					return aiExecutiveNarrative{}, model, fmt.Errorf("OpenAI refused report narrative: %s", truncateForReport(c.Refusal, 300))
+					return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI refused the report narrative", retryable: false}
 				}
 			}
 		}
@@ -700,17 +767,45 @@ func (s *Server) callOpenAIExecutiveNarrative(ctx context.Context, rp aiExecutiv
 		if reason == "" {
 			reason = "no output text"
 		}
-		return aiExecutiveNarrative{}, model, fmt.Errorf("OpenAI returned no narrative text (%s; status=%s)", reason, parsed.Status)
+		return aiExecutiveNarrative{}, &openAINarrativeError{
+			message:   fmt.Sprintf("OpenAI returned no narrative text (%s)", safeOpenAIReason(reason)),
+			retryable: true,
+		}
 	}
 	var narrative aiExecutiveNarrative
 	jsonText := extractJSONObject(text)
 	if jsonText == "" {
-		return aiExecutiveNarrative{}, model, fmt.Errorf("OpenAI narrative did not contain a JSON object: %s", truncateForReport(text, 300))
+		return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI returned incomplete structured narrative data", retryable: true}
 	}
 	if err := json.Unmarshal([]byte(jsonText), &narrative); err != nil {
-		return aiExecutiveNarrative{}, model, fmt.Errorf("OpenAI narrative JSON parse failed: %w; output=%s", err, truncateForReport(text, 300))
+		return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI returned invalid structured narrative data", retryable: true}
 	}
-	return narrative, model, nil
+	if !completeAIExecutiveNarrative(narrative) {
+		return aiExecutiveNarrative{}, &openAINarrativeError{message: "OpenAI narrative omitted one or more required sections", retryable: true}
+	}
+	return narrative, nil
+}
+
+func completeAIExecutiveNarrative(n aiExecutiveNarrative) bool {
+	return strings.TrimSpace(n.ExecutiveSummary) != "" &&
+		strings.TrimSpace(n.LatestReport) != "" &&
+		strings.TrimSpace(n.SeasonReport) != "" &&
+		strings.TrimSpace(n.LatestUmpireReport) != "" &&
+		strings.TrimSpace(n.SeasonUmpireReport) != "" &&
+		strings.TrimSpace(n.Conclusion) != ""
+}
+
+func safeOpenAIReason(reason string) string {
+	var out strings.Builder
+	for _, r := range reason {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == ' ' {
+			out.WriteRune(r)
+		}
+	}
+	if cleaned := strings.TrimSpace(out.String()); cleaned != "" {
+		return cleaned
+	}
+	return "unknown reason"
 }
 
 func openAIReportConfigured() bool {

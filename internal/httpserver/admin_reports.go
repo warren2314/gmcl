@@ -1157,7 +1157,7 @@ func (s *Server) renderAIExecutiveReport(w http.ResponseWriter, rp aiExecutiveRe
 	if rp.GeneratedByAI {
 		fmt.Fprintf(w, `<div class="alert alert-success py-2 small">Narrative generated with %s from source-of-truth report data.</div>`, escapeHTML(rp.AIModel))
 	} else if rp.AIError != "" {
-		fmt.Fprintf(w, `<div class="alert alert-warning py-2 small"><strong>Fallback narrative used.</strong> The AI narrative call did not complete cleanly: %s</div>`, escapeHTML(rp.AIError))
+		fmt.Fprint(w, `<div class="alert alert-warning py-2 small"><strong>Fallback narrative used.</strong> The AI narrative did not complete cleanly. No report data was lost; use Regenerate to retry.</div>`)
 	}
 	narrative := effectiveAIExecutiveNarrative(rp)
 
@@ -1342,7 +1342,7 @@ func aiExecutiveSeasonTitle(rp aiExecutiveReportPayload) string {
 
 // generateReport runs in a goroutine and populates the report payload.
 func (s *Server) generateReport(reportID int64, seasonID int32, weekID *int32, reportType, period string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
 	if reportType == "ai_season_to_date" {
