@@ -63,3 +63,27 @@ func TestDecodeSESWebhookRejectsMissingEventType(t *testing.T) {
 		t.Fatalf("expected missing event type error, got %v", err)
 	}
 }
+
+func TestValidSESSNSWebhookTokenSupportsRotation(t *testing.T) {
+	t.Setenv("SES_SNS_WEBHOOK_TOKEN", "current-token")
+	t.Setenv("SES_SNS_WEBHOOK_TOKEN_NEXT", "replacement-token")
+
+	if !validSESSNSWebhookToken("current-token") {
+		t.Fatal("current webhook token should remain valid during rotation")
+	}
+	if !validSESSNSWebhookToken("replacement-token") {
+		t.Fatal("replacement webhook token should be valid during rotation")
+	}
+	if validSESSNSWebhookToken("wrong-token") {
+		t.Fatal("unexpected webhook token accepted")
+	}
+}
+
+func TestValidSESSNSWebhookTokenCanBeUnconfigured(t *testing.T) {
+	t.Setenv("SES_SNS_WEBHOOK_TOKEN", "")
+	t.Setenv("SES_SNS_WEBHOOK_TOKEN_NEXT", "")
+
+	if !validSESSNSWebhookToken("") {
+		t.Fatal("unconfigured webhook should preserve existing open behaviour")
+	}
+}
