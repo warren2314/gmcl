@@ -19,6 +19,7 @@ type Client struct {
 	port       string
 	fromHeader string
 	fromAddr   string
+	replyTo    string
 	username   string
 	password   string
 	heloDomain string
@@ -42,6 +43,7 @@ func NewFromEnv() *Client {
 		port:       getEnv("SMTP_PORT", "25"),
 		fromHeader: fromHeader,
 		fromAddr:   fromAddr,
+		replyTo:    strings.TrimSpace(os.Getenv("SMTP_REPLY_TO")),
 		username:   os.Getenv("SMTP_USERNAME"),
 		password:   os.Getenv("SMTP_PASSWORD"),
 		heloDomain: heloDomain,
@@ -57,6 +59,10 @@ func (c *Client) Send(to, subject, body string) error {
 	if c.host == "" {
 		log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
 		return nil
+	}
+	headers, err := c.messageHeaders(to, subject)
+	if err != nil {
+		return err
 	}
 
 	addr := fmt.Sprintf("%s:%s", c.host, c.port)
@@ -110,9 +116,7 @@ func (c *Client) Send(to, subject, body string) error {
 		return fmt.Errorf("2fa_email_failed: DATA: %w", err)
 	}
 
-	msg := "From: " + c.fromHeader + "\r\n" +
-		"To: " + to + "\r\n" +
-		"Subject: " + subject + "\r\n"
+	msg := headers
 	if c.configSet != "" {
 		msg += "X-SES-CONFIGURATION-SET: " + c.configSet + "\r\n"
 	}
@@ -134,6 +138,20 @@ func (c *Client) Send(to, subject, body string) error {
 	}
 	log.Printf("[email] sent to=%s subject=%q", to, subject)
 	return nil
+}
+
+func (c *Client) messageHeaders(to, subject string) (string, error) {
+	headers := "From: " + c.fromHeader + "\r\n" +
+		"To: " + to + "\r\n" +
+		"Subject: " + subject + "\r\n"
+	if c.replyTo != "" {
+		replyTo, err := mail.ParseAddress(c.replyTo)
+		if err != nil {
+			return "", fmt.Errorf("2fa_email_failed: invalid SMTP_REPLY_TO: %w", err)
+		}
+		headers += "Reply-To: " + replyTo.String() + "\r\n"
+	}
+	return headers, nil
 }
 
 func getEnv(key, def string) string {
