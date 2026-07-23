@@ -1,145 +1,146 @@
 #!/usr/bin/env bash
-# deploy.sh — Pull latest code and roll out a new build with zero-downtime restart.
-#
-# Run on the droplet as the deploy user (or root):
-#   cd /opt/gmcl && bash scripts/deploy.sh
-#
-# Or trigger remotely from CI / your local machine:
-#   ssh deploy@YOUR_DROPLET_IP "cd /opt/gmcl && bash scripts/deploy.sh"
-#
-# What it does:
-#   1. Validates that .env exists and has no un-filled CHANGE_ME values
-#   2. Pulls latest code from the current git branch
-#   3. Builds new Docker images and restarts containers (rolling, DB kept up)
-#   4. Waits for the health endpoint to respond
-#   5. Cleans up old dangling images
+# Deploy an exact tested commit and automatically restore the previous app
+# version if build, container health, or end-to-end health checks fail.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 HEALTH_URL="${HEALTH_URL:-http://localhost/health}"
-HEALTH_TIMEOUT=120   # seconds to wait for /health to respond after restart
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
+DEPLOY_COMMIT="${DEPLOY_COMMIT:-origin/master}"
 
-RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; NC='\033[0m'
-info()    { echo -e "${GREEN}[deploy]${NC} $*"; }
-section() { echo -e "\n${BLUE}▶ $*${NC}"; }
-warn()    { echo -e "${YELLOW}[warn]${NC}  $*"; }
-error()   { echo -e "${RED}[error]${NC} $*"; exit 1; }
+PREVIOUS_COMMIT=""
+TARGET_COMMIT=""
+DEPLOY_STARTED=0
+CADDY_CHANGED=0
+ROLLBACK_ACTIVE=0
+
+log() {
+    printf '[deploy] %s\n' "$*"
+}
+
+fail() {
+    printf '[deploy] ERROR: %s\n' "$*" >&2
+    return 1
+}
+
+wait_for_service() {
+    local service="$1"
+    local timeout="$2"
+    local elapsed=0
+    local container_id
+    local status
+
+    while (( elapsed < timeout )); do
+        container_id="$(docker compose ps -q "${service}")"
+        if [[ -n "${container_id}" ]]; then
+            status="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}" 2>/dev/null || true)"
+            if [[ "${status}" == "healthy" || "${status}" == "running" ]]; then
+                log "${service} is ${status}"
+                return 0
+            fi
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    docker compose ps "${service}" || true
+    docker compose logs --tail=100 "${service}" || true
+    fail "${service} did not become healthy within ${timeout}s"
+}
+
+restore_previous_release() {
+    local failed_status=$?
+    trap - ERR
+
+    if [[ "${ROLLBACK_ACTIVE}" == "1" || "${DEPLOY_STARTED}" != "1" || -z "${PREVIOUS_COMMIT}" ]]; then
+        exit "${failed_status}"
+    fi
+
+    ROLLBACK_ACTIVE=1
+    printf '[deploy] Deployment failed; restoring %s\n' "${PREVIOUS_COMMIT}" >&2
+
+    if git switch --detach "${PREVIOUS_COMMIT}" \
+        && docker compose build app \
+        && docker compose up -d --no-deps app \
+        && wait_for_service app "${HEALTH_TIMEOUT}"; then
+        if [[ "${CADDY_CHANGED}" == "1" ]]; then
+            docker compose up -d --build --no-deps caddy || true
+        fi
+        if curl --fail --silent --show-error --max-time 15 "${HEALTH_URL}" >/dev/null; then
+            printf '[deploy] Rollback succeeded; production is serving %s\n' "${PREVIOUS_COMMIT}" >&2
+        else
+            printf '[deploy] Rollback container is healthy, but end-to-end health still fails\n' >&2
+        fi
+    else
+        printf '[deploy] Automatic rollback failed; manual intervention is required\n' >&2
+    fi
+
+    exit "${failed_status}"
+}
+
+trap restore_previous_release ERR
 
 cd "${APP_DIR}"
+APP_DIR="$(pwd -P)"
+BACKUP_DIR="${APP_DIR}/backups"
 
-# ── Pre-flight checks ────────────────────────────────────────────────────────
-section "Pre-flight checks"
+[[ -f .env ]] || fail ".env is missing from ${APP_DIR}"
+command -v git >/dev/null || fail "git is not installed"
+command -v docker >/dev/null || fail "docker is not installed"
+command -v curl >/dev/null || fail "curl is not installed"
+docker compose version >/dev/null || fail "Docker Compose is unavailable"
 
-[[ -f .env ]] || error ".env not found at ${APP_DIR}/.env — run setup-server.sh first."
-
-# Warn if any CHANGE_ME placeholders remain
-if grep -q "CHANGE_ME" .env; then
-    error ".env still contains CHANGE_ME placeholders. Fill them in before deploying."
+if grep -q 'CHANGE_ME' .env; then
+    fail ".env still contains CHANGE_ME placeholders"
+fi
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    fail "production checkout contains uncommitted tracked changes"
 fi
 
-command -v docker &>/dev/null || error "Docker not installed."
-docker compose version &>/dev/null || error "Docker Compose plugin not installed."
+log "Fetching deployment target"
+git fetch --prune origin master
+git cat-file -e "${DEPLOY_COMMIT}^{commit}" || fail "${DEPLOY_COMMIT} is not a fetched commit"
 
-info "Checks passed."
+PREVIOUS_COMMIT="$(git rev-parse HEAD)"
+TARGET_COMMIT="$(git rev-parse "${DEPLOY_COMMIT}^{commit}")"
 
-# ── Git pull ─────────────────────────────────────────────────────────────────
-section "Pulling latest code"
-
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-TARGET_REF="${DEPLOY_COMMIT:-origin/${BRANCH}}"
-info "Branch: ${BRANCH}"
-info "Target: ${TARGET_REF}"
-
-# Stash any local changes (shouldn't be any in prod, but guard against accidental edits)
-if ! git diff --quiet; then
-    warn "Uncommitted local changes detected — stashing before pull."
-    git stash push -m "deploy-stash-$(date +%s)"
+if ! git merge-base --is-ancestor "${TARGET_COMMIT}" origin/master; then
+    fail "${TARGET_COMMIT} is not contained in origin/master"
 fi
 
-git fetch origin
-git cat-file -e "${TARGET_REF}^{commit}" || error "Deployment target is not a fetched commit: ${TARGET_REF}"
-git reset --hard "${TARGET_REF}"
+if ! git diff --quiet "${PREVIOUS_COMMIT}" "${TARGET_COMMIT}" -- Caddyfile docker/Dockerfile.caddy; then
+    CADDY_CHANGED=1
+fi
 
-COMMIT=$(git log -1 --format="%h  %s  (%cr)" HEAD)
-info "Deploying commit: ${COMMIT}"
-
-# ── Build & restart ──────────────────────────────────────────────────────────
-section "Building images and restarting containers"
-
-# Keep the database image compatible with migrations before the app starts.
-# Existing data remains on the db_data volume.
-docker compose pull db
+log "Creating pre-deploy database backup"
+install -d -m 750 "${BACKUP_DIR}"
+backup_file="${BACKUP_DIR}/gmcl-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_COMMIT:0:12}.dump"
 docker compose up -d --no-deps db
+wait_for_service db 60
+docker compose exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "${backup_file}"
+test -s "${backup_file}" || fail "database backup is empty"
+sha256sum "${backup_file}" > "${backup_file}.sha256"
+find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'gmcl-*.dump*' -mtime +14 -delete
+log "Backup written to ${backup_file}"
 
-section "Waiting for database to become healthy"
-ELAPSED=0
-until [[ "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q db)")" == "healthy" ]]; do
-    if [[ ${ELAPSED} -ge 60 ]]; then
-        error "Database health check timed out after 60s. Check: docker compose logs db"
-    fi
-    echo -n "."
-    sleep 2
-    ELAPSED=$((ELAPSED + 2))
-done
-echo ""
-info "Database healthy (${ELAPSED}s)."
+log "Switching checkout to tested commit ${TARGET_COMMIT}"
+git switch --detach "${TARGET_COMMIT}"
+DEPLOY_STARTED=1
 
-# Step 1: rebuild and restart the app (DB stays up, Caddy keeps serving existing traffic)
-docker compose up -d --build --no-deps --remove-orphans app
+log "Building and starting application"
+docker compose build app
+docker compose up -d --no-deps app
+wait_for_service app "${HEALTH_TIMEOUT}"
 
-# Keep n8n current while preserving its persistent workflow volume.
-docker compose pull n8n
-docker compose up -d n8n
+if [[ "${CADDY_CHANGED}" == "1" ]]; then
+    log "Caddy configuration changed; rebuilding proxy"
+    docker compose up -d --build --no-deps caddy
+fi
 
-# Step 2: wait for app to be healthy before touching Caddy.
-# Port 8080 is only inside the Docker network so we can't curl it from the host.
-# Instead, poll Docker's own healthcheck status.
-section "Waiting for app to become healthy"
-ELAPSED=0
-until [[ "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q app)")" == "healthy" ]]; do
-    if [[ ${ELAPSED} -ge ${HEALTH_TIMEOUT} ]]; then
-        error "App health check timed out after ${HEALTH_TIMEOUT}s. Check: docker compose logs app"
-    fi
-    echo -n "."
-    sleep 3
-    ELAPSED=$((ELAPSED + 3))
-done
-echo ""
-info "App healthy (${ELAPSED}s)."
+log "Checking end-to-end health"
+curl --fail --silent --show-error --retry 5 --retry-delay 3 --max-time 15 "${HEALTH_URL}" >/dev/null
 
-# Step 3: now reload Caddy — app is ready so no 502 window
-section "Reloading Caddy"
-docker compose up -d --build --no-deps caddy
-info "Caddy reloaded."
-
-# ── Health check through Caddy ────────────────────────────────────────────────
-section "Verifying end-to-end health at ${HEALTH_URL}"
-
-ELAPSED=0
-until curl -sf "${HEALTH_URL}" &>/dev/null; do
-    if [[ ${ELAPSED} -ge 30 ]]; then
-        error "End-to-end health check timed out. Check: docker compose logs caddy"
-    fi
-    echo -n "."
-    sleep 2
-    ELAPSED=$((ELAPSED + 2))
-done
-echo ""
-info "End-to-end health check passed (${ELAPSED}s)."
-
-# ── Cleanup ──────────────────────────────────────────────────────────────────
-section "Cleaning up dangling images"
-docker image prune -f --filter "dangling=true" || true
-
-# ── Done ─────────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Deployment complete!  ${COMMIT}${NC}"
-echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
-echo ""
-echo "  Useful commands:"
-echo "  docker compose logs -f app     — live app logs"
-echo "  docker compose logs -f caddy   — live Caddy logs"
-echo "  docker compose ps              — container status"
-echo ""
+printf '%s\n' "${TARGET_COMMIT}" > "${APP_DIR}/.last-successful-deploy"
+docker image prune -f --filter 'dangling=true' --filter 'until=168h' >/dev/null || true
+log "Deployment completed successfully at ${TARGET_COMMIT}"

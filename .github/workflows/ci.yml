@@ -5,6 +5,7 @@ on:
     branches:
       - master
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,7 +16,10 @@ concurrency:
 
 jobs:
   build-test:
+    name: Build and test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -36,51 +40,95 @@ jobs:
       TEST_DB_DSN: postgres://appuser:apppassword@localhost:5432/appdb?sslmode=disable
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out tested commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.5"
+          cache: true
 
-      - name: Install tools
+      - name: Install security tools
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-      - name: Wait for Postgres
+      - name: Verify formatting
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
         run: |
-          for i in {1..20}; do
-            pg_isready -h localhost -p 5432 -U appuser -d appdb && break
+          base="$BASE_SHA"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          mapfile -t go_files < <(git diff --name-only --diff-filter=ACMR "$base" "$GITHUB_SHA" -- '*.go')
+          if [[ "${#go_files[@]}" == "0" ]]; then
+            exit 0
+          fi
+          unformatted="$(gofmt -l "${go_files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'The following changed files require gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Wait for PostgreSQL
+        run: |
+          for attempt in {1..20}; do
+            if pg_isready -h localhost -p 5432 -U appuser -d appdb; then
+              exit 0
+            fi
             sleep 3
           done
+          exit 1
 
-      - name: Run migrations
+      - name: Validate every migration
         run: |
           for migration in migrations/*.sql; do
             psql "$DB_DSN" -v ON_ERROR_STOP=1 -f "$migration"
           done
 
       - name: Run tests
-        run: go test ./...
+        run: go test -race ./...
+
+      - name: Run go vet
+        run: go vet ./...
 
       - name: Run gosec
-        # These rule families are the repository's explicit legacy baseline.
-        # Gosec still fails this job for every unbaselined rule; remove entries
-        # here as the existing findings are remediated.
         run: gosec -exclude=G104,G109,G115,G118,G120,G124,G304,G705,G706,G707,G710 ./...
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+      - name: Verify production image builds
+        run: docker build --file docker/Dockerfile.app --tag gmcl-app:${{ github.sha }} .
 
   deploy-production:
     name: Deploy production
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: build-test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production
+    concurrency:
+      group: gmcl-production
+      cancel-in-progress: false
 
     steps:
+      - name: Validate deployment secrets
+        env:
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$PROD_SSH_HOST"
+          test -n "$PROD_SSH_USER"
+          test -n "$PROD_SSH_KEY"
+          test -n "$PROD_SSH_KNOWN_HOSTS"
+
       - name: Configure production SSH
         env:
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
@@ -91,12 +139,21 @@ jobs:
           chmod 600 ~/.ssh/gmcl
           printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: Deploy tested commit
+      - name: Deploy tested commit with rollback
         env:
           PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
           PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
           DEPLOY_COMMIT: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/gmcl "$PROD_SSH_USER@$PROD_SSH_HOST" \
-            "cd /opt/gmcl && git switch master && DEPLOY_COMMIT=$DEPLOY_COMMIT bash scripts/deploy.sh"
+          ssh -o BatchMode=yes -i ~/.ssh/gmcl "$PROD_SSH_USER@$PROD_SSH_HOST" \
+            "set -e; cd /opt/gmcl; git fetch origin master; \
+             deploy_script=/tmp/gmcl-deploy-$DEPLOY_COMMIT.sh; \
+             git show $DEPLOY_COMMIT:scripts/deploy.sh > \$deploy_script; \
+             chmod 700 \$deploy_script; \
+             trap 'rm -f \$deploy_script' EXIT; \
+             APP_DIR=/opt/gmcl DEPLOY_COMMIT=$DEPLOY_COMMIT bash \$deploy_script"
 
+      - name: Verify public endpoints
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --max-time 20 https://gmcl.co.uk/health
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --max-time 20 https://sanctions.gmcl.co.uk/sanctions >/dev/null

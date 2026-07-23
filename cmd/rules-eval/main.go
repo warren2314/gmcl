@@ -124,9 +124,9 @@ func main() {
 		}
 		encoded, _ := json.MarshalIndent(report, "", "  ")
 		if dir := filepath.Dir(*out); dir != "." && dir != "" {
-			_ = os.MkdirAll(dir, 0o755)
+			_ = os.MkdirAll(dir, 0o750)
 		}
-		if err := os.WriteFile(*out, encoded, 0o644); err != nil {
+		if err := os.WriteFile(*out, encoded, 0o600); err != nil {
 			fatalf("could not write report: %v", err)
 		}
 		fmt.Printf("Report written to %s\n", *out)

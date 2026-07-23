@@ -65,7 +65,7 @@ func (c *Client) Send(to, subject, body string) error {
 		return err
 	}
 
-	addr := fmt.Sprintf("%s:%s", c.host, c.port)
+	addr := net.JoinHostPort(c.host, c.port)
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("2fa_email_failed: dial %s: %w", addr, err)
