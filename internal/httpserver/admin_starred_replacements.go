@@ -86,7 +86,7 @@ func (s *Server) loadStarredReplacementPlayer(ctx context.Context, r *http.Reque
 		}
 	}
 	green, orange := starredReviewThresholds(r)
-	for _, row := range buildStarredPlayerReviewRows(periods, filtered, mappings, cutoff, nil, "", clubKey, green, orange) {
+	for _, row := range buildStarredPlayerReviewRows(periods, filtered, mappings, cutoff, nil, nil, clubKey, green, orange) {
 		if row.ClubKey == clubKey && row.PlayerKey == playerKey && row.ListType != "" {
 			return row, nil
 		}
