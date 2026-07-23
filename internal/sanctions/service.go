@@ -120,7 +120,7 @@ func (s *Service) ProposeDecision(ctx context.Context, req DecisionRequest) (int
 			return 0, err
 		}
 		var openCardProposal bool
-		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.id<>$2 AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, *teamID, req.CaseID).Scan(&openCardProposal)
+		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.id<>$2 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, *teamID, req.CaseID).Scan(&openCardProposal)
 		if openCardProposal {
 			return 0, errors.New("team already has an unresolved card proposal; resolve it before calculating another")
 		}
@@ -229,7 +229,7 @@ func (s *Service) ProposeCardCase(ctx context.Context, req CardCaseRequest) (Pro
 		return ProposedCase{}, err
 	}
 	var openCardProposal bool
-	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, req.TeamID).Scan(&openCardProposal)
+	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, req.TeamID).Scan(&openCardProposal)
 	if openCardProposal {
 		return ProposedCase{}, errors.New("team already has an unresolved card proposal; approve, reject, or correct it before calculating another")
 	}
