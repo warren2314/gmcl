@@ -727,13 +727,191 @@ func (s *Server) handleAdminCaseCreate() http.HandlerFunc {
 	}
 }
 
+type adminCaseDecision struct {
+	Status        string
+	Revision      int
+	PublicReason  string
+	RuleReference string
+	EffectiveAt   time.Time
+}
+
+type adminCaseEffect struct {
+	EffectType         string
+	Status             string
+	PlayerName         string
+	AmountPence        *int64
+	Points             *int
+	StartsAt           *time.Time
+	EndsAt             *time.Time
+	TriggerCondition   string
+	CountsForTotting   bool
+	Explanation        string
+	YellowBalanceAfter string
+	TeamRedCountAfter  string
+}
+
+func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (adminCaseDecision, []adminCaseEffect, bool) {
+	var decisionID int64
+	var decision adminCaseDecision
+	err := s.DB.QueryRow(ctx, `
+		SELECT id,status,revision,public_reason,COALESCE(rule_reference,''),effective_at
+		FROM sanction_decision_revisions
+		WHERE case_id=$1
+		ORDER BY revision DESC,id DESC
+		LIMIT 1`, caseID).Scan(&decisionID, &decision.Status, &decision.Revision, &decision.PublicReason, &decision.RuleReference, &decision.EffectiveAt)
+	if err != nil {
+		return adminCaseDecision{}, nil, false
+	}
+	rows, err := s.DB.Query(ctx, `
+		SELECT effect_type,status,COALESCE(player_name,''),amount_pence,points,starts_at,ends_at,
+		       COALESCE(trigger_condition,''),counts_for_totting,
+		       COALESCE(NULLIF(public_details->>'explanation',''),public_details->>'calculation_explanation',''),
+		       COALESCE(public_details->>'yellow_balance_after',''),
+		       COALESCE(public_details->>'team_red_count_after','')
+		FROM sanction_effect_revisions e
+		WHERE decision_revision_id=$1
+		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
+		ORDER BY id`, decisionID)
+	if err != nil {
+		return adminCaseDecision{}, nil, false
+	}
+	defer rows.Close()
+	effects := make([]adminCaseEffect, 0, 1)
+	for rows.Next() {
+		var effect adminCaseEffect
+		if err := rows.Scan(&effect.EffectType, &effect.Status, &effect.PlayerName, &effect.AmountPence, &effect.Points, &effect.StartsAt, &effect.EndsAt, &effect.TriggerCondition, &effect.CountsForTotting, &effect.Explanation, &effect.YellowBalanceAfter, &effect.TeamRedCountAfter); err != nil {
+			return adminCaseDecision{}, nil, false
+		}
+		effects = append(effects, effect)
+	}
+	if rows.Err() != nil {
+		return adminCaseDecision{}, nil, false
+	}
+	return decision, effects, true
+}
+
+func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect) string {
+	title := "Current decision"
+	switch decision.Status {
+	case "proposed":
+		title = "Proposed punishment"
+	case "approved":
+		title = "Approved punishment"
+	case "rejected":
+		title = "Rejected proposal"
+	case "overturned":
+		title = "Overturned punishment"
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, `<section class="card border-primary mb-4"><div class="card-header d-flex justify-content-between align-items-center"><strong>%s</strong><span class="badge text-bg-primary">%s</span></div><div class="card-body">`, escapeHTML(title), escapeHTML(decision.Status))
+	if len(effects) == 0 {
+		fmt.Fprint(&out, `<div class="alert alert-warning mb-3">This decision has no recorded sanction effect.</div>`)
+	}
+	for _, effect := range effects {
+		fmt.Fprintf(&out, `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><h3 class="h4 mb-2">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(adminSanctionEffectLabel(effect.EffectType)), escapeHTML(effect.Status))
+		if effect.Explanation != "" {
+			fmt.Fprintf(&out, `<p class="mb-2">%s</p>`, escapeHTML(effect.Explanation))
+		}
+		fmt.Fprint(&out, `<dl class="row mb-0">`)
+		if effect.PlayerName != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Player</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.PlayerName))
+		}
+		if effect.AmountPence != nil {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Fine</dt><dd class="col-sm-7">£%.2f</dd>`, float64(*effect.AmountPence)/100)
+		}
+		if effect.Points != nil {
+			label := "Points adjustment"
+			if effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red" {
+				label = "Card-system deduction"
+			}
+			fmt.Fprintf(&out, `<dt class="col-sm-5">%s</dt><dd class="col-sm-7">%d point%s</dd>`, label, *effect.Points, pluralSuffix(*effect.Points))
+		}
+		if effect.YellowBalanceAfter != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Yellow balance after</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.YellowBalanceAfter))
+		}
+		if effect.TeamRedCountAfter != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Team red count after</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountAfter))
+		}
+		if effect.StartsAt != nil {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, effect.StartsAt.Format("02 Jan 2006"))
+		}
+		if effect.EndsAt != nil {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Ends / remedy date</dt><dd class="col-sm-7">%s</dd>`, effect.EndsAt.Format("02 Jan 2006"))
+		}
+		if effect.TriggerCondition != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Trigger</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TriggerCondition))
+		}
+		totting := "No"
+		if effect.CountsForTotting {
+			totting = "Yes"
+		}
+		fmt.Fprintf(&out, `<dt class="col-sm-5">Counts towards card totting</dt><dd class="col-sm-7">%s</dd></dl></div>`, totting)
+	}
+	fmt.Fprintf(&out, `<dl class="row small mb-0"><dt class="col-sm-5">Decision reason</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(decision.PublicReason))
+	if decision.RuleReference != "" {
+		fmt.Fprintf(&out, `<dt class="col-sm-5">Rule reference</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(decision.RuleReference))
+	}
+	fmt.Fprintf(&out, `<dt class="col-sm-5">Revision</dt><dd class="col-sm-7">%d</dd></dl></div></section>`, decision.Revision)
+	return out.String()
+}
+
+func adminSanctionEffectLabel(effect string) string {
+	labels := map[string]string{
+		"yellow_card":       "Yellow card",
+		"red_card":          "Red card",
+		"suspended_red":     "Suspended red card",
+		"player_ban":        "Player ban",
+		"team_ban":          "Team ban",
+		"fine":              "Fine",
+		"card_points":       "Card-system points",
+		"points_adjustment": "Separate points adjustment",
+		"warning":           "Warning",
+		"no_action":         "No action",
+	}
+	if label := labels[effect]; label != "" {
+		return label
+	}
+	return strings.ReplaceAll(effect, "_", " ")
+}
+
+func pluralSuffix(value int) string {
+	if value == 1 || value == -1 {
+		return ""
+	}
+	return "s"
+}
+
+func adminCaseAssignmentHTML(caseID int64, csrf string, assignedAdminID *int32, assignedAdminName string, currentAdminID *int32) string {
+	if sameAdminAssignment(assignedAdminID, currentAdminID) {
+		return `<section class="card mb-3 border-success"><div class="card-body"><strong>Investigator: assigned to you</strong><div class="text-muted small mt-1">No further assignment action is needed.</div></div></section>`
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, `<form method="POST" action="/admin/cases/%d/assign-self" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body">`, caseID, escapeHTML(csrf))
+	button := "Assign investigation to me"
+	if assignedAdminID != nil {
+		name := strings.TrimSpace(assignedAdminName)
+		if name == "" {
+			name = "another administrator"
+		}
+		fmt.Fprintf(&out, `<p class="mb-2"><strong>Current investigator:</strong> %s</p>`, escapeHTML(name))
+		button = "Reassign investigation to me"
+	}
+	fmt.Fprintf(&out, `<button class="btn btn-outline-primary">%s</button></div></form>`, button)
+	return out.String()
+}
+
+func sameAdminAssignment(assignedAdminID, currentAdminID *int32) bool {
+	return assignedAdminID != nil && currentAdminID != nil && *assignedAdminID == *currentAdminID
+}
+
 func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		var ref, source, status, publicSummary, privateSummary, club, team string
-		var proposer, approver *int32
+		var proposer, approver, assignedAdminID *int32
+		var assignedAdminName string
 		var hasProposed bool
-		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,EXISTS(SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &proposer, &approver, &hasProposed)
+		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -748,6 +926,9 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		if status == "triage" && hasProposed {
 			fmt.Fprint(w, `<div class="alert alert-info">This is a shadow-mode calculated candidate. Change the source to manual mode before a future run; this candidate remains available for reconciliation but cannot be published.</div>`)
+		}
+		if decision, effects, ok := s.loadAdminCaseDecision(r.Context(), id); ok {
+			fmt.Fprint(w, adminCaseDecisionHTML(decision, effects))
 		}
 		fmt.Fprint(w, `<section class="card"><div class="card-header">Immutable timeline</div><ul class="list-group list-group-flush">`)
 		events, _ := s.DB.Query(r.Context(), `SELECT event_type,actor_type,COALESCE(actor_label,''),COALESCE(reason,''),created_at,emergency_override FROM sanction_case_events WHERE case_id=$1 ORDER BY id DESC`, id)
@@ -767,7 +948,8 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			}
 		}
 		fmt.Fprint(w, `</ul></section></div><aside class="col-lg-5">`)
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/assign-self" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><button class="btn btn-outline-primary">Assign investigation to me</button></div></form>`, id, csrf)
+		actor := adminActor(r)
+		fmt.Fprint(w, adminCaseAssignmentHTML(id, csrf, assignedAdminID, assignedAdminName, actor.ID))
 		evidenceRows, _ := s.DB.Query(r.Context(), `SELECT id,original_name,media_type,byte_size,sha256,created_at FROM sanction_case_evidence WHERE case_id=$1 ORDER BY id`, id)
 		if evidenceRows != nil {
 			defer evidenceRows.Close()
@@ -948,6 +1130,13 @@ func (s *Server) handleAdminCaseAssignSelf() http.HandlerFunc {
 		var previous *int32
 		if tx.QueryRow(r.Context(), `SELECT assigned_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, id).Scan(&previous) != nil {
 			http.NotFound(w, r)
+			return
+		}
+		// Assignment is an attributed state change, not a repeatable activity.
+		// A refresh or duplicate form submission by the current investigator
+		// must not add another immutable event for the same state.
+		if sameAdminAssignment(previous, actor.ID) {
+			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d", id), http.StatusSeeOther)
 			return
 		}
 		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'investigator_assigned','admin',$2,$3,'Investigation assigned',jsonb_build_object('assigned_admin_id',$4::integer),jsonb_build_object('assigned_admin_id',$2::bigint),$5)`, id, *actor.ID, actor.Label, previous, actor.RequestID)
