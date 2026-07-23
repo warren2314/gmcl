@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -47,5 +48,47 @@ func TestStarredRetentionSignalUsesAdjustableThresholds(t *testing.T) {
 	}
 	if got := starredRetentionSignal("A", 29.9, 60, 30); got != "red" {
 		t.Fatalf("signal=%q want red", got)
+	}
+}
+
+func TestBuildStarredPlayerReviewRowsUsesTeamFixturesAndDateCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Occasional Player", PlayerKey: "occasional", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	apps := []starred.Appearance{
+		{MatchID: 1, MatchDate: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Occasional Player", PlayerKey: "occasional"},
+		{MatchID: 1, MatchDate: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Regular Player", PlayerKey: "regular"},
+		{MatchID: 2, MatchDate: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Regular Player", PlayerKey: "regular"},
+		{MatchID: 3, MatchDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Regular Player", PlayerKey: "regular"},
+		{MatchID: 4, MatchDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Occasional Player", PlayerKey: "occasional"},
+	}
+	rows := buildStarredPlayerReviewRows(periods, apps, nil, cutoff, map[string]string{"alpha": "Premier 1"}, "Premier 1", "", 50, 25)
+	byPlayer := make(map[string]starredPlayerReviewRow)
+	for _, row := range rows {
+		byPlayer[row.PlayerName] = row
+	}
+	occasional := byPlayer["Occasional Player"]
+	if occasional.Counts[1] != 1 || occasional.TeamGames[1] != 3 || occasional.RulePct < 33.3 || occasional.RulePct > 33.4 {
+		t.Fatalf("occasional row should be 1 of 3 team fixtures through cutoff: %#v", occasional)
+	}
+	if occasional.Signal != "orange" {
+		t.Fatalf("signal=%q want orange for 33.3%%", occasional.Signal)
+	}
+	regular := byPlayer["Regular Player"]
+	if regular.FirstPct != 100 || regular.ListType != "" {
+		t.Fatalf("unstarred regular player should be 3 of 3 first-XI fixtures: %#v", regular)
+	}
+}
+
+func TestStarredPlayerReviewCutoffUsesRequestedEarlierDate(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "/admin/starred-players?review_date=2026-06-30", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximum := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
+	got := starredPlayerReviewCutoff(request, 2026, maximum)
+	if got.Format("2006-01-02") != "2026-06-30" {
+		t.Fatalf("cutoff=%s want 2026-06-30", got)
 	}
 }

@@ -137,3 +137,99 @@ func (s *Server) handleAdminStarredCandidateAccept() http.HandlerFunc {
 		redirectStarredAnchor(w, r, year, "List B review accepted and removed from the outstanding list for "+candidate.PlayerName+".", "", "july-31-test")
 	}
 }
+
+func (s *Server) verifiedStarredPlayerRequest(ctx context.Context, year int, cutoff time.Time, playerID int64, clubKey, playerKey string) (starredPlayerReviewRow, error) {
+	periods, appearances, mappings, _, err := starred.LoadEvaluationInputs(ctx, s.DB, year)
+	if err != nil {
+		return starredPlayerReviewRow{}, err
+	}
+	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
+	rows := buildStarredPlayerReviewRows(periods, appearances, mappings, cutoff, nil, "", clubKey, 50, 25)
+	for _, row := range rows {
+		if row.ListType != "" || row.FirstPct < 50 {
+			continue
+		}
+		if playerID > 0 && row.PlayerID == playerID {
+			return row, nil
+		}
+		if playerID == 0 && row.PlayerID == 0 && row.PlayerKey == playerKey {
+			return row, nil
+		}
+	}
+	return starredPlayerReviewRow{}, fmt.Errorf("player is not an unstarred 50%% 1st XI candidate at this review date")
+}
+
+func redirectStarredPlayerReview(w http.ResponseWriter, r *http.Request, year int, cutoff time.Time, message, errMsg string) {
+	query := url.Values{
+		"season":      {strconv.Itoa(year)},
+		"view":        {"player-review"},
+		"review_date": {cutoff.Format("2006-01-02")},
+	}
+	if division := strings.TrimSpace(r.FormValue("division")); division != "" {
+		query.Set("division", division)
+	}
+	if club := strings.TrimSpace(r.FormValue("club")); club != "" {
+		query.Set("club", club)
+	}
+	if message != "" {
+		query.Set("message", message)
+	}
+	if errMsg != "" {
+		query.Set("error", errMsg)
+	}
+	http.Redirect(w, r, "/admin/starred-players?"+query.Encode()+"#card-detail", http.StatusSeeOther)
+}
+
+func (s *Server) handleAdminStarredCandidateRequest() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		year, playerID, clubKey, playerKey, err := parseStarredCandidateForm(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		maximum := starred.ReviewCutoff(year, time.Now())
+		cutoff := starredPlayerReviewCutoff(r, year, maximum)
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		row, err := s.verifiedStarredPlayerRequest(ctx, year, cutoff, playerID, clubKey, playerKey)
+		if err != nil {
+			redirectStarredPlayerReview(w, r, year, cutoff, "", err.Error())
+			return
+		}
+		candidate := starred.Candidate{
+			ClubName: row.ClubName, ClubKey: row.ClubKey, PlayerID: row.PlayerID,
+			PlayerName: row.PlayerName, PlayerKey: row.PlayerKey, FirstXILeague: row.Counts[1],
+			TopTwoXILeague: row.Counts[1] + row.Counts[2], AllLeague: row.Total, Percentage: row.FirstPct / 100,
+		}
+		adminID := s.resolveAdminID(r)
+		var reviewID int64
+		var status string
+		err = s.DB.QueryRow(ctx, `
+			INSERT INTO starred_candidate_reviews(candidate_key,season_year,club_name,club_key,play_cricket_player_id,player_name,player_key,first_xi_league,first_second_xi_league,all_league,percentage,status,decision_note,reviewed_by,reviewed_at,requested_cutoff)
+			VALUES($1,$2,$3,$4,NULLIF($5,0),$6,$7,$8,$9,$10,$11,'requested',NULL,$12,now(),$13::date)
+			ON CONFLICT(candidate_key) DO UPDATE SET
+				club_name=EXCLUDED.club_name, player_name=EXCLUDED.player_name,
+				first_xi_league=EXCLUDED.first_xi_league, first_second_xi_league=EXCLUDED.first_second_xi_league,
+				all_league=EXCLUDED.all_league, percentage=EXCLUDED.percentage,
+				requested_cutoff=EXCLUDED.requested_cutoff, reviewed_by=EXCLUDED.reviewed_by,
+				reviewed_at=now(), updated_at=now()
+			WHERE starred_candidate_reviews.status <> 'accepted'
+			RETURNING id,status`,
+			starredCandidateKey(year, candidate), year, row.ClubName, row.ClubKey, row.PlayerID, row.PlayerName, row.PlayerKey,
+			row.Counts[1], row.Counts[1]+row.Counts[2], row.Total, row.FirstPct/100, adminID, cutoff).Scan(&reviewID, &status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			redirectStarredPlayerReview(w, r, year, cutoff, "This player's review has already been closed.", "")
+			return
+		}
+		if err != nil {
+			redirectStarredPlayerReview(w, r, year, cutoff, "", "Could not request List B review: "+err.Error())
+			return
+		}
+		s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_requested", "starred_candidate_review", &reviewID, map[string]any{
+			"season": year, "cutoff": cutoff.Format("2006-01-02"), "club": row.ClubName, "player": row.PlayerName,
+			"play_cricket_player_id": row.PlayerID, "first_xi_games": row.Counts[1],
+			"first_xi_team_fixtures": row.TeamGames[1], "percentage": row.FirstPct / 100,
+		})
+		redirectStarredPlayerReview(w, r, year, cutoff, "List B review requested for "+row.PlayerName+".", "")
+	}
+}

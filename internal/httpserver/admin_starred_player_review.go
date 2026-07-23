@@ -11,23 +11,40 @@ import (
 	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/middleware"
 	"cricket-ground-feedback/internal/starred"
 )
 
 type starredPlayerReviewRow struct {
-	Division   string
-	ClubName   string
-	ClubKey    string
-	PlayerID   int64
-	PlayerName string
-	PlayerKey  string
-	ListType   string
-	Counts     map[int]int
-	Total      int
-	FirstPct   float64
-	RuleGames  int
-	RulePct    float64
-	Signal     string
+	Division      string
+	ClubName      string
+	ClubKey       string
+	PlayerID      int64
+	PlayerName    string
+	PlayerKey     string
+	ListType      string
+	Counts        map[int]int
+	TeamGames     map[int]int
+	Total         int
+	FirstPct      float64
+	RuleGames     int
+	RuleTeamGames int
+	RulePct       float64
+	Signal        string
+}
+
+func starredPlayerReviewCutoff(r *http.Request, year int, maximum time.Time) time.Time {
+	value := strings.TrimSpace(r.URL.Query().Get("review_date"))
+	if value == "" {
+		value = strings.TrimSpace(r.FormValue("review_date"))
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil && parsed.Year() == year {
+		endOfDay := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, time.UTC)
+		if endOfDay.Before(maximum) {
+			return endOfDay
+		}
+	}
+	return maximum
 }
 
 func starredReviewThresholds(r *http.Request) (green, orange float64) {
@@ -89,14 +106,22 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 	}
 	rows := make(map[string]*starredPlayerReviewRow)
 	seen := make(map[string]struct{})
+	teamFixtures := make(map[string]map[int]map[int64]struct{})
 	for _, appearance := range appearances {
-		if appearance.TeamLevel < 1 || (selectedDivision != "" && clubDivisions[appearance.ClubKey] != selectedDivision) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
+		if appearance.TeamLevel < 1 || appearance.MatchDate.After(cutoff) || (selectedDivision != "" && clubDivisions[appearance.ClubKey] != selectedDivision) || (selectedClub != "" && appearance.ClubKey != selectedClub) {
 			continue
 		}
+		if teamFixtures[appearance.ClubKey] == nil {
+			teamFixtures[appearance.ClubKey] = make(map[int]map[int64]struct{})
+		}
+		if teamFixtures[appearance.ClubKey][appearance.TeamLevel] == nil {
+			teamFixtures[appearance.ClubKey][appearance.TeamLevel] = make(map[int64]struct{})
+		}
+		teamFixtures[appearance.ClubKey][appearance.TeamLevel][appearance.MatchID] = struct{}{}
 		key := identityKey(appearance.ClubKey, appearance.PlayerKey, appearance.PlayerID)
 		row := rows[key]
 		if row == nil {
-			row = &starredPlayerReviewRow{Division: clubDivisions[appearance.ClubKey], ClubName: appearance.ClubName, ClubKey: appearance.ClubKey, PlayerID: appearance.PlayerID, PlayerName: appearance.PlayerName, PlayerKey: appearance.PlayerKey, Counts: make(map[int]int)}
+			row = &starredPlayerReviewRow{Division: clubDivisions[appearance.ClubKey], ClubName: appearance.ClubName, ClubKey: appearance.ClubKey, PlayerID: appearance.PlayerID, PlayerName: appearance.PlayerName, PlayerKey: appearance.PlayerKey, Counts: make(map[int]int), TeamGames: make(map[int]int)}
 			rows[key] = row
 		}
 		if row.PlayerID == 0 && appearance.PlayerID > 0 {
@@ -115,20 +140,27 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 		key := identityKey(period.ClubKey, period.PlayerKey, mappedID)
 		row := rows[key]
 		if row == nil {
-			row = &starredPlayerReviewRow{Division: clubDivisions[period.ClubKey], ClubName: period.ClubName, ClubKey: period.ClubKey, PlayerID: mappedID, PlayerName: period.PlayerName, PlayerKey: period.PlayerKey, Counts: make(map[int]int)}
+			row = &starredPlayerReviewRow{Division: clubDivisions[period.ClubKey], ClubName: period.ClubName, ClubKey: period.ClubKey, PlayerID: mappedID, PlayerName: period.PlayerName, PlayerKey: period.PlayerKey, Counts: make(map[int]int), TeamGames: make(map[int]int)}
 			rows[key] = row
 		}
 		row.ListType = period.ListType
 	}
 	out := make([]starredPlayerReviewRow, 0, len(rows))
 	for _, row := range rows {
-		if row.Total > 0 {
-			row.FirstPct = float64(row.Counts[1]) * 100 / float64(row.Total)
-			row.RuleGames = row.Counts[1]
-			if row.ListType == "B" {
-				row.RuleGames += row.Counts[2]
-			}
-			row.RulePct = float64(row.RuleGames) * 100 / float64(row.Total)
+		for level, matches := range teamFixtures[row.ClubKey] {
+			row.TeamGames[level] = len(matches)
+		}
+		if row.TeamGames[1] > 0 {
+			row.FirstPct = float64(row.Counts[1]) * 100 / float64(row.TeamGames[1])
+		}
+		row.RuleGames = row.Counts[1]
+		row.RuleTeamGames = row.TeamGames[1]
+		if row.ListType == "B" {
+			row.RuleGames += row.Counts[2]
+			row.RuleTeamGames += row.TeamGames[2]
+		}
+		if row.RuleTeamGames > 0 {
+			row.RulePct = float64(row.RuleGames) * 100 / float64(row.RuleTeamGames)
 		}
 		row.Signal = starredRetentionSignal(row.ListType, row.RulePct, green, orange)
 		out = append(out, *row)
@@ -181,7 +213,7 @@ func signalBadge(signal string) (string, string) {
 	}
 }
 
-func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
+func (s *Server) renderStarredPlayerReviewLegacy(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
@@ -262,23 +294,114 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	fmt.Fprint(w, `</tbody></table></div></div>`)
 }
 
+func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
+	cutoff = starredPlayerReviewCutoff(r, year, cutoff)
+	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
+	requestStates := s.loadStarredCandidateReviewStates(ctx, year)
+	selectedDivision := strings.TrimSpace(r.URL.Query().Get("division"))
+	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
+	fmt.Fprintf(w, `Player list review%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
+		starredHelpIcon("Player list review", "Appearances are counted through the chosen date. Each percentage compares the player's games with fixtures played by the relevant team: 1st XI for List A, and combined 1st plus 2nd XI for List B."), year)
+	fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="player-review"><div class="col-md-2"><label class="form-label fw-semibold">Games through</label><input class="form-control" type="date" name="review_date" value="%s"></div><div class="col-md-3"><label class="form-label fw-semibold">Saturday division</label><select class="form-select" name="division" required onchange="this.form.elements.club.value='';this.form.submit()"><option value="">Choose division...</option>`, year, cutoff.Format("2006-01-02"))
+	for _, division := range divisions {
+		selected := ""
+		if division.Label == selectedDivision {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(division.Label), selected, escapeHTML(division.Label))
+	}
+	fmt.Fprint(w, `</select></div><div class="col-md-3"><label class="form-label fw-semibold">Club</label><select class="form-select" name="club"><option value="">All clubs in division</option>`)
+	for _, division := range divisions {
+		if division.Label != selectedDivision {
+			continue
+		}
+		for _, clubKey := range division.Clubs {
+			selected := ""
+			if clubKey == selectedClub {
+				selected = " selected"
+			}
+			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(clubKey), selected, escapeHTML(clubNames[clubKey]))
+		}
+	}
+	fmt.Fprintf(w, `</select></div><div class="col-md-2"><label class="form-label">Green at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="green" value="%.1f"></div><div class="col-md-2"><label class="form-label">Orange at/above rule %%</label><input class="form-control" type="number" min="0" max="100" step="0.1" name="orange" value="%.1f"></div><div class="col-auto"><button class="btn btn-primary">Run review</button></div></form><div class="form-text">Percentages are player appearances divided by fixtures played by that team through %s. An unstarred player at 50%% or more of 1st XI fixtures can be sent for a List B review.</div></div>`, green, orange, cutoff.Format("02 January 2006"))
+	if selectedDivision == "" {
+		fmt.Fprint(w, `<div class="card-body text-center text-muted py-4">Choose a Saturday division to review all of its clubs and players.</div></div>`)
+		return
+	}
+	greenCount, orangeCount, redCount := 0, 0, 0
+	for _, row := range rows {
+		switch row.Signal {
+		case "green":
+			greenCount++
+		case "orange":
+			orangeCount++
+		case "red":
+			redCount++
+		}
+	}
+	exportQuery := url.Values{"season": {strconv.Itoa(year)}, "view": {"player-review"}, "review_date": {cutoff.Format("2006-01-02")}, "division": {selectedDivision}, "green": {strconv.FormatFloat(green, 'f', 1, 64)}, "orange": {strconv.FormatFloat(orange, 'f', 1, 64)}, "export": {"csv"}}
+	if selectedClub != "" {
+		exportQuery.Set("club", selectedClub)
+	}
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><span class="badge bg-success me-1">Retain %d</span><span class="badge bg-warning text-dark me-1">Monitor %d</span><span class="badge bg-danger">Removal review %d</span></div><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div>`, greenCount, orangeCount, redCount, escapeHTML(exportQuery.Encode()))
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>Current list</th><th>Status / action</th>`)
+	for level := 1; level <= 6; level++ {
+		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
+	}
+	fmt.Fprint(w, `<th class="text-center">Total</th><th class="text-center">Rule games</th><th class="text-center">Eligible team fixtures</th><th class="text-center">Rule %</th></tr></thead><tbody>`)
+	for _, row := range rows {
+		badgeClass, badgeLabel := signalBadge(row.Signal)
+		listLabel := "-"
+		if row.ListType != "" {
+			listLabel = "List " + row.ListType
+		}
+		action := fmt.Sprintf(`<span class="badge %s">%s</span>`, badgeClass, badgeLabel)
+		if row.ListType == "" && row.FirstPct >= 50 {
+			candidate := starred.Candidate{ClubName: row.ClubName, ClubKey: row.ClubKey, PlayerID: row.PlayerID, PlayerName: row.PlayerName, PlayerKey: row.PlayerKey}
+			switch requestStates[starredCandidateKey(year, candidate)].Status {
+			case "requested":
+				action = `<span class="badge bg-info text-dark">Star request sent</span>`
+			case "accepted":
+				action = `<span class="badge bg-success">Review closed</span>`
+			default:
+				action = fmt.Sprintf(`<form method="post" action="/admin/starred-players/candidates/request" onsubmit="return confirm('Send this player for a List B review?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="review_date" value="%s"><input type="hidden" name="division" value="%s"><input type="hidden" name="club" value="%s"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="player_key" value="%s"><button class="btn btn-sm btn-outline-primary">Request to be starred</button></form>`, escapeHTML(middleware.CSRFToken(r)), year, cutoff.Format("2006-01-02"), escapeHTML(selectedDivision), escapeHTML(selectedClub), escapeHTML(row.ClubKey), row.PlayerID, escapeHTML(row.PlayerKey))
+			}
+		}
+		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)
+		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), action)
+		for level := 1; level <= 6; level++ {
+			percentage := float64(0)
+			if row.TeamGames[level] > 0 {
+				percentage = float64(row.Counts[level]) * 100 / float64(row.TeamGames[level])
+			}
+			fmt.Fprintf(w, `<td class="text-center text-nowrap">%d/%d <span class="text-muted small">(%.0f%%)</span></td>`, row.Counts[level], row.TeamGames[level], percentage)
+		}
+		fmt.Fprintf(w, `<td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%d</td><td class="text-center fw-semibold">%.1f%%</td></tr>`, row.Total, row.RuleGames, row.RuleTeamGames, row.RulePct)
+	}
+	if len(rows) == 0 {
+		fmt.Fprint(w, `<tr><td colspan="14" class="text-center text-muted py-3">No classified open-age XI appearances were found for this selection.</td></tr>`)
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
+}
+
 func (s *Server) writeStarredPlayerReviewCSV(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
+	cutoff = starredPlayerReviewCutoff(r, year, cutoff)
 	_, _, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-review-%d.csv"`, year))
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"Division", "Club", "Player", "Play-Cricket Player ID", "Current List", "Review Signal", "1st XI Games", "1st XI %", "2nd XI Games", "2nd XI %", "3rd XI Games", "3rd XI %", "4th XI Games", "4th XI %", "5th XI Games", "5th XI %", "6th XI Games", "6th XI %", "Total Games", "Rule Games", "Rule %", "Green Threshold", "Orange Threshold"})
+	_ = writer.Write([]string{"Review Through", "Division", "Club", "Player", "Play-Cricket Player ID", "Current List", "Review Signal", "1st XI Player Games", "1st XI Team Fixtures", "1st XI %", "2nd XI Player Games", "2nd XI Team Fixtures", "2nd XI %", "3rd XI Player Games", "3rd XI Team Fixtures", "3rd XI %", "4th XI Player Games", "4th XI Team Fixtures", "4th XI %", "5th XI Player Games", "5th XI Team Fixtures", "5th XI %", "6th XI Player Games", "6th XI Team Fixtures", "6th XI %", "Total Player Games", "Rule Games", "Eligible Team Fixtures", "Rule %", "Green Threshold", "Orange Threshold"})
 	for _, row := range rows {
 		_, signal := signalBadge(row.Signal)
-		record := []string{row.Division, row.ClubName, row.PlayerName, strconv.FormatInt(row.PlayerID, 10), row.ListType, signal}
+		record := []string{cutoff.Format("2006-01-02"), row.Division, row.ClubName, row.PlayerName, strconv.FormatInt(row.PlayerID, 10), row.ListType, signal}
 		for level := 1; level <= 6; level++ {
 			percentage := float64(0)
-			if row.Total > 0 {
-				percentage = float64(row.Counts[level]) * 100 / float64(row.Total)
+			if row.TeamGames[level] > 0 {
+				percentage = float64(row.Counts[level]) * 100 / float64(row.TeamGames[level])
 			}
-			record = append(record, strconv.Itoa(row.Counts[level]), strconv.FormatFloat(percentage, 'f', 1, 64))
+			record = append(record, strconv.Itoa(row.Counts[level]), strconv.Itoa(row.TeamGames[level]), strconv.FormatFloat(percentage, 'f', 1, 64))
 		}
-		record = append(record, strconv.Itoa(row.Total), strconv.Itoa(row.RuleGames), strconv.FormatFloat(row.RulePct, 'f', 1, 64), strconv.FormatFloat(green, 'f', 1, 64), strconv.FormatFloat(orange, 'f', 1, 64))
+		record = append(record, strconv.Itoa(row.Total), strconv.Itoa(row.RuleGames), strconv.Itoa(row.RuleTeamGames), strconv.FormatFloat(row.RulePct, 'f', 1, 64), strconv.FormatFloat(green, 'f', 1, 64), strconv.FormatFloat(orange, 'f', 1, 64))
 		_ = writer.Write(record)
 	}
 	writer.Flush()
