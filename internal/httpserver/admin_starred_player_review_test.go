@@ -104,6 +104,35 @@ func TestStarredReviewSelectedDivisionsAcceptsMultipleUniqueValues(t *testing.T)
 	}
 }
 
+func TestStarredReviewSignalFilterAcceptsOnlyReviewSignals(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "/admin/starred-players?signal=RED", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := starredReviewSignalFilter(request); got != "red" {
+		t.Fatalf("signal=%q want red", got)
+	}
+	request.URL.RawQuery = "signal=neutral"
+	if got := starredReviewSignalFilter(request); got != "" {
+		t.Fatalf("unsupported signal=%q want empty", got)
+	}
+}
+
+func TestFilterStarredPlayerReviewRowsKeepsOnlySelectedSignal(t *testing.T) {
+	rows := []starredPlayerReviewRow{
+		{PlayerName: "Keep", Signal: "green"},
+		{PlayerName: "Watch", Signal: "orange"},
+		{PlayerName: "Review", Signal: "red"},
+	}
+	filtered := filterStarredPlayerReviewRows(rows, "red")
+	if len(filtered) != 1 || filtered[0].PlayerName != "Review" {
+		t.Fatalf("filtered rows=%#v want only removal review", filtered)
+	}
+	if all := filterStarredPlayerReviewRows(rows, ""); len(all) != len(rows) {
+		t.Fatalf("unfiltered rows=%d want %d", len(all), len(rows))
+	}
+}
+
 func TestBuildStarredPlayerReviewRowsIncludesEverySelectedDivision(t *testing.T) {
 	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
 	apps := []starred.Appearance{

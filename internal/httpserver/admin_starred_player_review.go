@@ -90,6 +90,36 @@ func starredReviewThresholds(r *http.Request) (green, orange float64) {
 	return
 }
 
+func starredReviewSignalFilter(r *http.Request) string {
+	switch signal := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("signal"))); signal {
+	case "green", "orange", "red":
+		return signal
+	default:
+		return ""
+	}
+}
+
+func filterStarredPlayerReviewRows(rows []starredPlayerReviewRow, signal string) []starredPlayerReviewRow {
+	if signal == "" {
+		return rows
+	}
+	filtered := make([]starredPlayerReviewRow, 0, len(rows))
+	for _, row := range rows {
+		if row.Signal == signal {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func cloneStarredReviewURLValues(values url.Values) url.Values {
+	cloned := make(url.Values, len(values))
+	for key, entries := range values {
+		cloned[key] = append([]string(nil), entries...)
+	}
+	return cloned
+}
+
 func starredRetentionSignal(listType string, firstPct, green, orange float64) string {
 	if listType == "" {
 		return "neutral"
@@ -334,6 +364,7 @@ func (s *Server) renderStarredPlayerReviewLegacy(w http.ResponseWriter, ctx cont
 func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
 	cutoff = starredPlayerReviewCutoff(r, year, cutoff)
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
+	selectedSignal := starredReviewSignalFilter(r)
 	requestStates := s.loadStarredCandidateReviewStates(ctx, year)
 	selectedDivisions := starredReviewSelectedDivisions(r)
 	selectedDivisionSet := starredReviewDivisionSet(selectedDivisions)
@@ -384,7 +415,38 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	if selectedClub != "" {
 		exportQuery.Set("club", selectedClub)
 	}
-	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div><span class="badge bg-success me-1">Retain %d</span><span class="badge bg-warning text-dark me-1">Monitor %d</span><span class="badge bg-danger">Removal review %d</span></div><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div>`, greenCount, orangeCount, redCount, escapeHTML(exportQuery.Encode()))
+	if selectedSignal != "" {
+		exportQuery.Set("signal", selectedSignal)
+	}
+	filterQuery := url.Values{"season": {strconv.Itoa(year)}, "view": {"player-review"}, "review_date": {cutoff.Format("2006-01-02")}, "green": {strconv.FormatFloat(green, 'f', 1, 64)}, "orange": {strconv.FormatFloat(orange, 'f', 1, 64)}}
+	for _, division := range selectedDivisions {
+		filterQuery.Add("division", division)
+	}
+	if selectedClub != "" {
+		filterQuery.Set("club", selectedClub)
+	}
+	statusLink := func(signal, class, label string, count int) string {
+		query := cloneStarredReviewURLValues(filterQuery)
+		query.Set("signal", signal)
+		active := ""
+		pressed := "false"
+		if selectedSignal == signal {
+			active = " border border-dark"
+			pressed = "true"
+		}
+		return fmt.Sprintf(`<a class="badge %s%s me-1 text-decoration-none" href="/admin/starred-players?%s" aria-pressed="%s" title="Show only %s players">%s %d</a>`, class, active, escapeHTML(query.Encode()), pressed, escapeHTML(strings.ToLower(label)), escapeHTML(label), count)
+	}
+	clearFilter := ""
+	if selectedSignal != "" {
+		clearFilter = fmt.Sprintf(`<a class="badge bg-secondary text-decoration-none" href="/admin/starred-players?%s">Show all</a>`, escapeHTML(filterQuery.Encode()))
+	}
+	fmt.Fprintf(w, `<div class="card-body border-bottom d-flex flex-wrap justify-content-between align-items-center gap-2"><div>%s%s%s%s</div><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?%s">Export CSV</a></div>`,
+		statusLink("green", "bg-success", "Retain", greenCount),
+		statusLink("orange", "bg-warning text-dark", "Monitor", orangeCount),
+		statusLink("red", "bg-danger", "Removal review", redCount),
+		clearFilter,
+		escapeHTML(exportQuery.Encode()))
+	rows = filterStarredPlayerReviewRows(rows, selectedSignal)
 	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>Current list</th><th>Status / action</th>`)
 	for level := 1; level <= 6; level++ {
 		fmt.Fprintf(w, `<th class="text-center text-nowrap">%s</th>`, starredTeamLevelLabel(level))
@@ -440,6 +502,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 func (s *Server) writeStarredPlayerReviewCSV(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, periods []starred.Period, appearances []starred.Appearance, mappings []starred.IdentityMapping, r *http.Request) {
 	cutoff = starredPlayerReviewCutoff(r, year, cutoff)
 	_, _, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
+	rows = filterStarredPlayerReviewRows(rows, starredReviewSignalFilter(r))
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="starred-player-review-%d.csv"`, year))
 	writer := csv.NewWriter(w)
