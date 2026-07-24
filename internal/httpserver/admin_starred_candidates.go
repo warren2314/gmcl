@@ -177,6 +177,14 @@ func redirectStarredPlayerReview(w http.ResponseWriter, r *http.Request, year in
 	if club := strings.TrimSpace(r.FormValue("club")); club != "" {
 		query.Set("club", club)
 	}
+	if signal := strings.TrimSpace(r.FormValue("signal")); signal == "green" || signal == "orange" || signal == "red" {
+		query.Set("signal", signal)
+	}
+	for _, field := range []string{"green", "orange"} {
+		if value := strings.TrimSpace(r.FormValue(field)); value != "" {
+			query.Set(field, value)
+		}
+	}
 	if message != "" {
 		query.Set("message", message)
 	}

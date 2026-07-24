@@ -55,7 +55,7 @@ acceptance gates are evidenced.
 | Active default, archive, season/subject/type filters | Implemented | Ended bans are excluded from the default and remain in the archive. |
 | Card balance, red count, points and threshold | Implemented | Public card rows show ledger balance and threshold; case detail shows public consequences. |
 | No evidence, correspondence, contacts or internal notes exposed | Implemented | Public queries select approved public fields only. |
-| Authenticated captain own-team lookup; public rules-only | Implemented but hidden pending A1 testing | Deterministic lookup is scoped to the captain session. The A1 interface remains disabled as requested. |
+| Authenticated captain own-team lookup; public rules-only | Implemented but hidden pending Hawk AI testing | Deterministic lookup is scoped to the captain session. The Hawk AI interface remains disabled as requested. |
 | Old public register redirects/links to canonical register | Missing outside this repository | The `gtrmcrcricket.co.uk` page still needs its CMS link/redirect changed after reconciliation. |
 
 ## Migration and rollout

@@ -1,4 +1,4 @@
-// Command rules-eval runs the A1 rules assistant evaluation bank against the
+// Command rules-eval runs the Hawk AI rules assistant evaluation bank against the
 // active rules snapshot and reports a scored pass rate. It calls the service
 // directly (no HTTP rate limits), so it needs DB_DSN and OPENAI_API_KEY and
 // costs real OpenAI tokens per question. Run it after every rules sync, prompt

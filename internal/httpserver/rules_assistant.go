@@ -30,12 +30,12 @@ func (s *Server) rulesService() *rulesassistant.Service { return rulesassistant.
 func (s *Server) handleRulesAssistantPage() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pageHead(w, "A1 Rules Assistant")
+		pageHead(w, "Hawk AI")
 		writeCaptainNav(w)
 		fmt.Fprint(w, `<main class="rules-shell">
   <section class="rules-hero">
-    <img class="rules-bot rules-bot-large" src="/images/gmcl-rules-bot.webp" alt="Friendly GMCL cricket rules robot">
-    <div><p class="rules-kicker">Greater Manchester Cricket League</p><h1>A1 Rules Assistant</h1>
+    <img class="rules-bot rules-bot-large" src="/images/hawk-ai-mascot.webp" alt="Hawk AI cricket hawk mascot">
+    <div><p class="rules-kicker">Greater Manchester Cricket League</p><h1>Hawk AI</h1>
     <p>Ask a question in ordinary language. Answers are based only on the published GMCL rules and include links to their sources.</p></div>
   </section>
   <section class="rules-card" aria-label="Rules chat">
@@ -52,7 +52,7 @@ func (s *Server) handleRulesAssistantPage() http.HandlerFunc {
     <form id="rules-form" class="rules-form">
       <label for="rules-question" class="visually-hidden">Your rules question</label>
       <textarea id="rules-question" maxlength="1200" rows="3" placeholder="For example: Can a starred player play in our Sunday team?" required></textarea>
-      <div class="rules-form-row"><span id="rules-status" role="status"></span><button type="submit">Ask A1</button></div>
+      <div class="rules-form-row"><span id="rules-status" role="status"></span><button type="submit">Ask Hawk AI</button></div>
     </form>
   </section>
   <p class="rules-disclaimer">This assistant provides information from the published rules. It does not make an official GMCL ruling. For a formal decision, contact the league.</p>
@@ -197,7 +197,7 @@ func (s *Server) handleRulesChat() http.HandlerFunc {
 					if previousUserQuestion == "" {
 						previousUserQuestion = q
 					}
-					previous = append(previous, "User: "+q+"\nA1: "+a)
+					previous = append(previous, "User: "+q+"\nHawk AI: "+a)
 				}
 			}
 			historyRows.Close()
@@ -672,13 +672,13 @@ func (s *Server) handleAdminRulesAssistant() http.HandlerFunc {
 		}
 		csrf := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pageHead(w, "A1 Rules Assistant Admin")
+		pageHead(w, "Hawk AI Admin")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		syncButton := ""
 		if adminRoleForRequest(r) == "super_admin" {
 			syncButton = fmt.Sprintf(`<form method="POST" action="/admin/rules-assistant/sync"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-primary">Sync rules now</button></form>`, escapeHTML(csrf))
 		}
-		fmt.Fprintf(w, `<div class="container py-4"><div class="d-flex justify-content-between align-items-center mb-3"><div><h2>A1 Rules Assistant</h2><p class="text-muted mb-0">Published sources, sync health, and recent answer quality.</p></div>%s</div>`, syncButton)
+		fmt.Fprintf(w, `<div class="container py-4"><div class="d-flex justify-content-between align-items-center mb-3"><div><h2>Hawk AI</h2><p class="text-muted mb-0">Published sources, sync health, and recent answer quality.</p></div>%s</div>`, syncButton)
 		fmt.Fprint(w, `<div class="card mb-4"><div class="card-header fw-semibold">Rules snapshots</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>ID</th><th>Status</th><th>Started</th><th>Sources</th><th>Chunks</th><th>Changed</th><th>Result</th><th></th></tr></thead><tbody>`)
 		for _, rel := range releases {
 			action := ""

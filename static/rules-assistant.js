@@ -66,7 +66,7 @@
     const element = addMessage(messages, 'assistant', data.answer);
     if (data.clarification_questions?.length) {
       const followups = createElement('div', 'rules-clarifications');
-      followups.appendChild(createElement('strong', '', 'A1 needs to clarify:'));
+      followups.appendChild(createElement('strong', '', 'Hawk AI needs to clarify:'));
       const list = createElement('ul');
       data.clarification_questions.forEach(value => list.appendChild(createElement('li', '', value)));
       followups.appendChild(list);
@@ -141,7 +141,7 @@
           error: data => addMessage(messages, 'assistant', data.message)
         });
       } catch (_) {
-        addMessage(messages, 'assistant', 'I cannot search the rules just now. Please try again shortly or open the full A1 Rules Assistant for more information.');
+        addMessage(messages, 'assistant', 'I cannot search the rules just now. Please try again shortly or open the full Hawk AI assistant for more information.');
       } finally {
         button.disabled = false;
         status.textContent = '';
@@ -173,14 +173,14 @@
 
   const widget = createElement('div', 'rules-widget');
   widget.innerHTML = `
-    <section class="rules-widget-panel" id="rules-widget-panel" aria-label="A1 Rules Assistant" hidden>
+    <section class="rules-widget-panel" id="rules-widget-panel" aria-label="Hawk AI Rules Assistant" hidden>
       <header class="rules-widget-header">
-        <img src="/images/gmcl-rules-bot-avatar.png" alt="" class="rules-widget-avatar" width="48" height="48">
+        <img src="/images/hawk-ai-mascot.webp" alt="" class="rules-widget-avatar" width="48" height="48">
         <div class="rules-widget-heading">
-          <strong>A1 Rules Assistant</strong>
+          <strong>Hawk AI</strong>
           <span><i aria-hidden="true"></i> ${assistantScope}</span>
         </div>
-        <button type="button" class="rules-widget-close" aria-label="Close A1 Rules Assistant">×</button>
+        <button type="button" class="rules-widget-close" aria-label="Close Hawk AI">×</button>
       </header>
       <div class="rules-widget-messages rules-messages" aria-live="polite">
         <div class="rules-message assistant">${greeting}</div>
@@ -208,9 +208,9 @@
       <footer class="rules-widget-footer"><a href="${config.fullURL || '/rules-assistant'}">${config.admin ? 'Assistant controls and history' : 'Open full assistant'}</a><span>Informational, not an official ruling</span></footer>
     </section>
     <button type="button" class="rules-widget-launcher" aria-expanded="false" aria-controls="rules-widget-panel">
-      <span class="rules-widget-launch-copy"><strong>Ask A1 about GMCL rules</strong><small>Open A1 Rules Assistant</small></span>
-      <span class="rules-widget-bot-wrap"><span class="rules-widget-online" aria-hidden="true"></span><img src="/images/gmcl-rules-bot-avatar.png" alt="" width="68" height="68"></span>
-      <span class="visually-hidden">Open A1 Rules Assistant</span>
+      <span class="rules-widget-launch-copy"><strong>Ask Hawk AI about GMCL rules</strong><small>Open Hawk AI</small></span>
+      <span class="rules-widget-bot-wrap"><span class="rules-widget-online" aria-hidden="true"></span><img src="/images/hawk-ai-mascot.webp" alt="" width="68" height="68"></span>
+      <span class="visually-hidden">Open Hawk AI</span>
     </button>`;
   document.body.appendChild(widget);
 

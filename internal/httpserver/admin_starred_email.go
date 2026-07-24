@@ -10,6 +10,7 @@ import (
 )
 
 const starredClubEmailDomain = "gtrmcrcricket.co.uk"
+const starredRemovalReviewSubject = "Request to Review Player Listing"
 
 const starredEmailActionFooter = `Please update your starred list here:
 https://docs.google.com/forms/d/e/1FAIpQLSeR6_FyGDrAY1PwFLGCMXbuRpo7Gx2jj3l_HxsNOSuoFJ-J4Q/viewform
@@ -56,4 +57,20 @@ Please review the player's status and respond to the league if any correction or
 Regards,
 Greater Manchester Cricket League`, strings.TrimSpace(row.ClubName), row.ClubName, row.PlayerName, cutoff.Format("02 January 2006"), row.Counts[1], row.TeamGames[1], row.FirstPct, starredEmailActionFooter)
 	return subject, body
+}
+
+func starredRemovalReviewEmail(row starredPlayerReviewRow) (string, string) {
+	body := fmt.Sprintf(`Hi %s,
+
+Following our review, we have noted that %s has only participated in a limited number of matches. On that basis, we feel the player should be removed from their current list/category.
+
+Could you please review this and, where possible, provide details of any suitable replacement players for consideration?
+
+The Rule 3.5 review deadline is 31 July. Please complete this review by that date.
+
+%s
+
+Kind regards,
+GMCL`, strings.TrimSpace(row.ClubName), row.PlayerName, starredEmailActionFooter)
+	return starredRemovalReviewSubject, body
 }
