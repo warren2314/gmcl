@@ -366,6 +366,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 	divisions, clubNames, rows, green, orange := s.starredReviewData(ctx, year, cutoff, periods, appearances, mappings, r)
 	selectedSignal := starredReviewSignalFilter(r)
 	requestStates := s.loadStarredCandidateReviewStates(ctx, year)
+	replacementStates := s.loadStarredReplacementEmailStates(ctx, year)
 	selectedDivisions := starredReviewSelectedDivisions(r)
 	selectedDivisionSet := starredReviewDivisionSet(selectedDivisions)
 	selectedClub := strings.TrimSpace(r.URL.Query().Get("club"))
@@ -459,12 +460,12 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			listLabel = "List " + row.ListType
 		}
 		action := fmt.Sprintf(`<span class="badge %s">%s</span>`, badgeClass, badgeLabel)
+		var divisionInputs strings.Builder
+		for _, division := range selectedDivisions {
+			fmt.Fprintf(&divisionInputs, `<input type="hidden" name="division" value="%s">`, escapeHTML(division))
+		}
 		if row.ListType == "" && row.FirstPct >= 50 {
 			candidate := starred.Candidate{ClubName: row.ClubName, ClubKey: row.ClubKey, PlayerID: row.PlayerID, PlayerName: row.PlayerName, PlayerKey: row.PlayerKey}
-			var divisionInputs strings.Builder
-			for _, division := range selectedDivisions {
-				fmt.Fprintf(&divisionInputs, `<input type="hidden" name="division" value="%s">`, escapeHTML(division))
-			}
 			requestForm := func(label string) string {
 				return fmt.Sprintf(`<form method="post" action="/admin/starred-players/candidates/request" onsubmit="return confirm('Send this player for a List B review to the club email?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="review_date" value="%s">%s<input type="hidden" name="club" value="%s"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="player_key" value="%s"><button class="btn btn-sm btn-outline-primary">%s</button></form>`, escapeHTML(middleware.CSRFToken(r)), year, cutoff.Format("2006-01-02"), divisionInputs.String(), escapeHTML(selectedClub), escapeHTML(row.ClubKey), row.PlayerID, escapeHTML(row.PlayerKey), escapeHTML(label))
 			}
@@ -480,6 +481,21 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 				action = `<span class="badge bg-success">Review closed</span>`
 			default:
 				action = requestForm("Request to be starred")
+			}
+		} else if row.ListType != "" {
+			emailForm := func(label string) string {
+				return fmt.Sprintf(`<form method="post" action="/admin/starred-player-replacements/send-club" onsubmit="return confirm('Send a removal and replacement review email to the club?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="review_date" value="%s">%s<input type="hidden" name="club" value="%s"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="signal" value="%s"><input type="hidden" name="green" value="%.1f"><input type="hidden" name="orange" value="%.1f"><button class="btn btn-sm btn-outline-danger text-nowrap">%s</button></form>`, escapeHTML(middleware.CSRFToken(r)), year, cutoff.Format("2006-01-02"), divisionInputs.String(), escapeHTML(selectedClub), escapeHTML(row.ClubKey), escapeHTML(row.PlayerKey), escapeHTML(selectedSignal), green, orange, escapeHTML(label))
+			}
+			state := replacementStates[starredReplacementEmailStateKey(row.ClubKey, row.PlayerKey)]
+			switch state.Status {
+			case "sent":
+				action += fmt.Sprintf(`<div class="small text-success mt-1">Review emailed to %s</div>`, escapeHTML(state.Recipient))
+			case "sending":
+				action += `<div class="small text-muted mt-1">Removal review email is sending</div>`
+			case "send_failed":
+				action += `<div class="small text-danger mt-1">Previous email failed</div>` + emailForm("Retry removal review email")
+			default:
+				action += `<div class="mt-1">` + emailForm("Email removal review") + `</div>`
 			}
 		}
 		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)

@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,24 @@ func TestRulesAssistantEnabledExplicitly(t *testing.T) {
 				t.Fatalf("expected %q to enable rules assistant", value)
 			}
 		})
+	}
+}
+
+func TestRulesAssistantPageUsesHawkAIBranding(t *testing.T) {
+	t.Setenv("RULES_ASSISTANT_ENABLED", "true")
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/rules-assistant", nil)
+
+	(&Server{}).handleRulesAssistantPage().ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	for _, want := range []string{"Hawk AI", "/images/hawk-ai-mascot.webp", "Ask Hawk AI"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rules assistant page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "A1 Rules Assistant") || strings.Contains(body, "Ask A1") {
+		t.Fatal("legacy A1 branding remains on the rules assistant page")
 	}
 }
 

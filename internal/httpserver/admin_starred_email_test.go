@@ -38,3 +38,26 @@ func TestStarredCandidateRequestEmailIncludesEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestStarredRemovalReviewEmailUsesRequestedWording(t *testing.T) {
+	row := starredPlayerReviewRow{ClubName: "Edgworth CC", PlayerName: "Alex Player"}
+	subject, body := starredRemovalReviewEmail(row)
+	if subject != starredRemovalReviewSubject {
+		t.Fatalf("subject=%q", subject)
+	}
+	for _, want := range []string{
+		"Hi Edgworth CC,",
+		"Alex Player has only participated in a limited number of matches",
+		"removed from their current list/category",
+		"provide details of any suitable replacement players for consideration",
+		"Rule 3.5 review deadline is 31 July",
+		"docs.google.com/forms",
+		"review should be reconsidered",
+		"gtrmcrcricket.co.uk/pages/rules-3-5",
+		"Kind regards,\nGMCL",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("removal review email missing %q:\n%s", want, body)
+		}
+	}
+}

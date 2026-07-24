@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const rulesAssistantAssetVersion = "20260719-1"
+const rulesAssistantAssetVersion = "20260724-1"
 
 const (
 	bootstrapCSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -97,7 +97,7 @@ func pageHeadWithCharts(w io.Writer, title string) {
 func writeCaptainNav(w io.Writer) {
 	assistantLink := ""
 	if rulesAssistantEnabled() {
-		assistantLink = `<li class="nav-item"><a class="nav-link" href="/rules-assistant">A1 Rules Assistant</a></li>`
+		assistantLink = `<li class="nav-item"><a class="nav-link" href="/rules-assistant">Hawk AI</a></li>`
 	}
 	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-4">
   <div class="container">
@@ -215,7 +215,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		dropdownActive("/admin/reports"),
 		missingReportItem,
 		sanctionsMenu,
-		navLink("/admin/rules-assistant", "A1 Rules Assistant"),
+		navLink("/admin/rules-assistant", "Hawk AI"),
 		navLink("/admin/fixtures", "Fixtures"),
 		navLink("/admin/teams-captains", "Teams & Captains"),
 		starredReplacementItem,

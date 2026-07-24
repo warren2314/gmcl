@@ -22,7 +22,7 @@ test "$(docker compose exec -T db psql -U gmcl -d gmcl -Atc "SELECT to_regclass(
 
 active_release_count="$(docker compose exec -T db psql -U gmcl -d gmcl -Atc "SELECT COUNT(*) FROM rule_releases WHERE status='active'")"
 if [[ "${active_release_count}" -lt 1 ]]; then
-  echo "ERROR: no active rules release is available; run the initial A1 sync" >&2
+  echo "ERROR: no active rules release is available; run the initial Hawk AI sync" >&2
   exit 1
 fi
 

@@ -53,7 +53,7 @@ ENVEOF
   chmod 600 .env /root/gmcl-staging-admin-password
 fi
 
-# The public A1 routes default to disabled. Keep the dedicated rules staging
+# The public Hawk AI routes default to disabled. Keep the dedicated rules staging
 # environment explicitly enabled, including when an existing .env predates the
 # feature flag or a later deployment recreates the app container.
 if grep -q '^RULES_ASSISTANT_ENABLED=' .env; then
