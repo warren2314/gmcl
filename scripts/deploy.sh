@@ -8,6 +8,7 @@ APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 HEALTH_URL="${HEALTH_URL:-http://localhost/health}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 DEPLOY_COMMIT="${DEPLOY_COMMIT:-origin/master}"
+ALLOW_UNMERGED_COMMIT="${ALLOW_UNMERGED_COMMIT:-0}"
 
 PREVIOUS_COMMIT=""
 TARGET_COMMIT=""
@@ -105,8 +106,11 @@ git cat-file -e "${DEPLOY_COMMIT}^{commit}" || fail "${DEPLOY_COMMIT} is not a f
 PREVIOUS_COMMIT="$(git rev-parse HEAD)"
 TARGET_COMMIT="$(git rev-parse "${DEPLOY_COMMIT}^{commit}")"
 
-if ! git merge-base --is-ancestor "${TARGET_COMMIT}" origin/master; then
+if [[ "${ALLOW_UNMERGED_COMMIT}" != "1" ]] && ! git merge-base --is-ancestor "${TARGET_COMMIT}" origin/master; then
     fail "${TARGET_COMMIT} is not contained in origin/master"
+fi
+if [[ "${ALLOW_UNMERGED_COMMIT}" == "1" ]] && ! git merge-base --is-ancestor "${TARGET_COMMIT}" origin/master; then
+    log "Explicitly deploying unmerged commit ${TARGET_COMMIT}"
 fi
 
 if ! git diff --quiet "${PREVIOUS_COMMIT}" "${TARGET_COMMIT}" -- Caddyfile docker/Dockerfile.caddy; then
@@ -141,6 +145,7 @@ fi
 log "Checking end-to-end health"
 curl --fail --silent --show-error --retry 5 --retry-delay 3 --max-time 15 "${HEALTH_URL}" >/dev/null
 
+printf '%s\n' "${PREVIOUS_COMMIT}" > "${APP_DIR}/.previous-successful-deploy"
 printf '%s\n' "${TARGET_COMMIT}" > "${APP_DIR}/.last-successful-deploy"
 docker image prune -f --filter 'dangling=true' --filter 'until=168h' >/dev/null || true
 log "Deployment completed successfully at ${TARGET_COMMIT}"
