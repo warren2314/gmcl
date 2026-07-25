@@ -25,7 +25,7 @@ const DefaultPublishedCSVURL = "https://docs.google.com/spreadsheets/d/e/2PACX-1
 
 // snapshotParserRevision must change whenever parsing or period-building rules
 // change in a way that requires unchanged source bytes to be rebuilt.
-const snapshotParserRevision = "2"
+const snapshotParserRevision = "3"
 
 type ImportResult struct {
 	RunID          int64

@@ -55,8 +55,8 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		}
 		rawLower := strings.ToLower(a.RawValue)
 		if strings.Contains(rawLower, "to go list b") && strings.Contains(rawLower, "to go to list a") {
-			outKey, outOK := resolveActiveKey(active[a.ClubKey]["A"], a.OutgoingKey)
-			inKey, inOK := resolveActiveKey(active[a.ClubKey]["B"], a.IncomingKey)
+			outKey, outOK := resolveActivePlayer(active[a.ClubKey]["A"], a.OutgoingKey, a.Outgoing)
+			inKey, inOK := resolveActivePlayer(active[a.ClubKey]["B"], a.IncomingKey, a.Incoming)
 			if !outOK || !inOK {
 				issues = append(issues, RosterIssue{a.ClubName, a.Sequence, a.RawValue, "could not resolve List A/List B swap"})
 				continue
@@ -85,7 +85,7 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		}
 		var targets []amendmentTarget
 		for _, candidateList := range []string{"A", "B"} {
-			if key, ok := resolveActiveKey(active[a.ClubKey][candidateList], a.OutgoingKey); ok {
+			if key, ok := resolveActivePlayer(active[a.ClubKey][candidateList], a.OutgoingKey, a.Outgoing); ok {
 				period := active[a.ClubKey][candidateList][key].period
 				targets = append(targets, amendmentTarget{list: candidateList, key: key, from: period.ValidFrom, kind: period.SourceKind})
 			}
@@ -117,6 +117,13 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		}
 		if list == "" {
 			list = hintedList
+		}
+		// The published sheet is maintained as a current list while also retaining
+		// its amendment log. When the outgoing player is no longer present and the
+		// incoming player is already active, the list has already incorporated the
+		// amendment. Treat replaying it as an idempotent success.
+		if resolvedKey == "" && activePlayerList(active[a.ClubKey], a.IncomingKey, a.Incoming) != "" {
+			continue
 		}
 		if resolvedKey != "" {
 			closePeriod(a.ClubKey, list, resolvedKey, *a.Date)
@@ -179,4 +186,58 @@ func resolveActiveKey(values map[string]activePeriod, target string) (string, bo
 		keys = append(keys, key)
 	}
 	return closestUnique(target, keys)
+}
+
+func resolveActivePlayer(values map[string]activePeriod, targetKey, targetName string) (string, bool) {
+	if key, ok := resolveActiveKey(values, targetKey); ok {
+		return key, true
+	}
+	var matched string
+	for key, value := range values {
+		if !likelyRosterNameAlias(targetName, value.period.PlayerName) {
+			continue
+		}
+		if matched != "" {
+			return "", false
+		}
+		matched = key
+	}
+	return matched, matched != ""
+}
+
+func activePlayerList(lists map[string]map[string]activePeriod, playerKey, playerName string) string {
+	for _, list := range []string{"A", "B"} {
+		if _, ok := resolveActivePlayer(lists[list], playerKey, playerName); ok {
+			return list
+		}
+	}
+	return ""
+}
+
+func likelyRosterNameAlias(source, candidate string) bool {
+	sourceWords := strings.Fields(strings.ToLower(source))
+	candidateWords := strings.Fields(strings.ToLower(candidate))
+	if len(sourceWords) < 2 || len(candidateWords) < 2 {
+		return false
+	}
+	sourceFirst, candidateFirst := NormalizeName(sourceWords[0]), NormalizeName(candidateWords[0])
+	sourceLast, candidateLast := NormalizeName(sourceWords[len(sourceWords)-1]), NormalizeName(candidateWords[len(candidateWords)-1])
+	if sourceFirst == "" || candidateFirst == "" || sourceLast == "" || candidateLast == "" {
+		return false
+	}
+	lastMatches := sourceLast == candidateLast ||
+		(len(sourceLast) >= 4 && len(candidateLast) >= 4 && editDistance(sourceLast, candidateLast) <= 2)
+	if !lastMatches {
+		return false
+	}
+	if sourceFirst == candidateFirst ||
+		(len(sourceFirst) >= 4 && len(candidateFirst) >= 4 && editDistance(sourceFirst, candidateFirst) <= 2) ||
+		(len(sourceFirst) >= 3 && len(candidateFirst) >= 3 &&
+			(strings.HasPrefix(sourceFirst, candidateFirst[:3]) || strings.HasPrefix(candidateFirst, sourceFirst[:3]))) {
+		return true
+	}
+	firstAliases := map[string]string{
+		"mike": "michael", "michael": "michael",
+	}
+	return firstAliases[sourceFirst] != "" && firstAliases[sourceFirst] == firstAliases[candidateFirst]
 }

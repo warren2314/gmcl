@@ -81,6 +81,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 			continue
 		}
 		starred := false
+		previouslyStarred := false
 		probe := c.sample
 		probe.MatchDate = cutoff
 		for _, p := range periods {
@@ -88,6 +89,18 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 				starred = true
 				break
 			}
+			sameIdentity := false
+			if id := mappingBySource[p.ClubKey+"|"+p.PlayerKey]; id > 0 {
+				sameIdentity = probe.PlayerID > 0 && probe.PlayerID == id
+			} else {
+				sameIdentity = p.ClubKey == probe.ClubKey && p.PlayerKey == probe.PlayerKey
+			}
+			if sameIdentity && p.ValidTo != nil && !cutoff.Before(*p.ValidTo) {
+				previouslyStarred = true
+			}
+		}
+		if previouslyStarred && !starred {
+			continue
 		}
 		out.Candidates = append(out.Candidates, Candidate{
 			ClubName: c.sample.ClubName, ClubKey: c.sample.ClubKey, PlayerID: c.sample.PlayerID,

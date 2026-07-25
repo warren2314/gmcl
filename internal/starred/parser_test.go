@@ -98,6 +98,69 @@ func TestBuildPeriodsPrefersEstablishedListForAmbiguousSameDayAmendment(t *testi
 	}
 }
 
+func TestBuildPeriodsTreatsAmendmentAlreadyReflectedInCurrentListAsApplied(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	amendmentDate := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		SeasonYear: 2026,
+		Entries: []Entry{{
+			SeasonYear: 2026, ClubName: "Friends United CC", ClubKey: "friendsunited",
+			ListType: "A", PlayerName: "Rameez Alam", PlayerKey: NormalizeName("Rameez Alam"),
+		}},
+		Amendments: []Amendment{{
+			SeasonYear: 2026, ClubName: "Friends United CC", ClubKey: "friendsunited",
+			Sequence: 1, Date: &amendmentDate, Outgoing: "Aman Raza", OutgoingKey: NormalizeName("Aman Raza"),
+			Incoming: "Rameez Alam", IncomingKey: NormalizeName("Rameez Alam"),
+			RawValue: "Aman Raza replaced by Rameez Alam (18/06/2026)", Status: "parsed",
+		}},
+	}
+
+	periods, issues := BuildPeriods(snapshot, start)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%#v", issues)
+	}
+	if len(periods) != 1 || periods[0].PlayerName != "Rameez Alam" || periods[0].ValidTo != nil {
+		t.Fatalf("periods=%#v", periods)
+	}
+}
+
+func TestBuildPeriodsResolvesConservativePublishedNameVariants(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	amendmentDate := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		published string
+		listed    string
+	}{
+		{published: "Danny McCall", listed: "Daniel Mccall"},
+		{published: "Mike King", listed: "Michael King"},
+		{published: "Salliya Kula", listed: "Saliya Kalu"},
+	}
+	for _, test := range tests {
+		t.Run(test.published, func(t *testing.T) {
+			snapshot := Snapshot{
+				SeasonYear: 2026,
+				Entries: []Entry{{
+					SeasonYear: 2026, ClubName: "Example CC", ClubKey: "example",
+					ListType: "B", PlayerName: test.listed, PlayerKey: NormalizeName(test.listed),
+				}},
+				Amendments: []Amendment{{
+					SeasonYear: 2026, ClubName: "Example CC", ClubKey: "example",
+					Sequence: 1, Date: &amendmentDate, Outgoing: test.published, OutgoingKey: NormalizeName(test.published),
+					Incoming: "Replacement Player", IncomingKey: NormalizeName("Replacement Player"),
+					RawValue: test.published + " replaced by Replacement Player (20/05/2026)", Status: "parsed",
+				}},
+			}
+			periods, issues := BuildPeriods(snapshot, start)
+			if len(issues) != 0 {
+				t.Fatalf("issues=%#v", issues)
+			}
+			if len(periods) != 2 || periods[0].ValidTo == nil || periods[1].PlayerName != "Replacement Player" {
+				t.Fatalf("periods=%#v", periods)
+			}
+		})
+	}
+}
+
 func TestEvaluateLeagueOnlyAndListRules(t *testing.T) {
 	start := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
 	periods := []Period{{SeasonYear: 2026, ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A", PlayerName: "Jane Smith", PlayerKey: NormalizeName("Jane Smith"), ValidFrom: start}}
@@ -137,6 +200,28 @@ func TestEvaluateListBCandidatesCombinesFirstAndSecondXILeagueGames(t *testing.T
 	candidate := evaluation.Candidates[0]
 	if candidate.FirstXILeague != 0 || candidate.TopTwoXILeague != 1 || candidate.AllLeague != 2 || candidate.Percentage != 0.5 {
 		t.Fatalf("unexpected combined List B calculation: %#v", candidate)
+	}
+}
+
+func TestEvaluateDoesNotReintroduceReplacedPlayerAsUnstarredCandidate(t *testing.T) {
+	start := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
+	replacedAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
+	periods := []Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Former Player", PlayerKey: "former", ValidFrom: start, ValidTo: &replacedAt},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Replacement Player", PlayerKey: "replacement", ValidFrom: replacedAt},
+	}
+	apps := []Appearance{
+		{MatchID: 1, MatchDate: start, CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Former Player", PlayerKey: "former"},
+		{MatchID: 2, MatchDate: start.AddDate(0, 0, 7), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 2, PlayerName: "Former Player", PlayerKey: "former"},
+		{MatchID: 3, MatchDate: replacedAt.AddDate(0, 0, 7), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Replacement Player", PlayerKey: "replacement"},
+	}
+
+	evaluation := Evaluate(periods, apps, nil, cutoff)
+	for _, candidate := range evaluation.Candidates {
+		if candidate.PlayerName == "Former Player" {
+			t.Fatalf("former starred player was reintroduced as an unstarred candidate: %#v", evaluation.Candidates)
+		}
 	}
 }
 

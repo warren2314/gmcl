@@ -171,6 +171,21 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 		}
 		return clubKey + "|name:" + playerKey
 	}
+	activeIdentities := make(map[string]struct{}, len(activePeriods))
+	for _, period := range activePeriods {
+		key := identityKey(period.ClubKey, period.PlayerKey, knownIDs[period.ClubKey+"|"+period.PlayerKey])
+		activeIdentities[key] = struct{}{}
+	}
+	replacedIdentities := make(map[string]struct{})
+	for _, period := range periods {
+		if period.ValidTo == nil || cutoff.Before(*period.ValidTo) {
+			continue
+		}
+		key := identityKey(period.ClubKey, period.PlayerKey, knownIDs[period.ClubKey+"|"+period.PlayerKey])
+		if _, stillActive := activeIdentities[key]; !stillActive {
+			replacedIdentities[key] = struct{}{}
+		}
+	}
 	rows := make(map[string]*starredPlayerReviewRow)
 	seen := make(map[string]struct{})
 	teamFixtures := make(map[string]map[int]map[int64]struct{})
@@ -186,6 +201,9 @@ func buildStarredPlayerReviewRows(periods []starred.Period, appearances []starre
 		}
 		teamFixtures[appearance.ClubKey][appearance.TeamLevel][appearance.MatchID] = struct{}{}
 		key := identityKey(appearance.ClubKey, appearance.PlayerKey, appearance.PlayerID)
+		if _, replaced := replacedIdentities[key]; replaced {
+			continue
+		}
 		row := rows[key]
 		if row == nil {
 			row = &starredPlayerReviewRow{Division: clubDivisions[appearance.ClubKey], ClubName: appearance.ClubName, ClubKey: appearance.ClubKey, PlayerID: appearance.PlayerID, PlayerName: appearance.PlayerName, PlayerKey: appearance.PlayerKey, Counts: make(map[int]int), TeamGames: make(map[int]int)}

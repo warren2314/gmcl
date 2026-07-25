@@ -153,3 +153,32 @@ func TestBuildStarredPlayerReviewRowsIncludesEverySelectedDivision(t *testing.T)
 		t.Fatalf("selected clubs=%#v want alpha and beta only", gotClubs)
 	}
 }
+
+func TestBuildStarredPlayerReviewRowsShowsReplacementAndHidesFormerStarredPlayer(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	replacedAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Former Player", PlayerKey: "former", ValidFrom: start, ValidTo: &replacedAt},
+		{ClubName: "Alpha CC", ClubKey: "alpha", ListType: "B", PlayerName: "Replacement Player", PlayerKey: "replacement", ValidFrom: replacedAt, SourceKind: "amendment", SourceSequence: 1},
+	}
+	apps := []starred.Appearance{
+		{MatchID: 1, MatchDate: start, ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 1, PlayerName: "Former Player", PlayerKey: "former"},
+		{MatchID: 2, MatchDate: replacedAt.AddDate(0, 0, 7), ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 2, PlayerName: "Unstarred Player", PlayerKey: "unstarred"},
+	}
+
+	rows := buildStarredPlayerReviewRows(periods, apps, nil, cutoff, map[string]string{"alpha": "Premier 1"}, []string{"Premier 1"}, "", 50, 25)
+	byPlayer := make(map[string]starredPlayerReviewRow)
+	for _, row := range rows {
+		byPlayer[row.PlayerName] = row
+	}
+	if _, exists := byPlayer["Former Player"]; exists {
+		t.Fatalf("former starred player should be hidden after replacement: %#v", rows)
+	}
+	if replacement, exists := byPlayer["Replacement Player"]; !exists || replacement.ListType != "B" {
+		t.Fatalf("replacement should be shown on List B: %#v", rows)
+	}
+	if _, exists := byPlayer["Unstarred Player"]; !exists {
+		t.Fatalf("ordinary unstarred candidates must remain visible: %#v", rows)
+	}
+}
