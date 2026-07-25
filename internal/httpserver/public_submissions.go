@@ -96,23 +96,7 @@ func (s *Server) handlePublicSubmissionsStatus() http.HandlerFunc {
 }
 
 func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.ResponseWriter, clubID int) {
-	// Load current week
-	type weekInfo struct {
-		ID         int32
-		Number     int
-		Start, End time.Time
-		SeasonName string
-	}
-	var wk weekInfo
-	err := s.DB.QueryRow(ctx, `
-		SELECT w.id, w.week_number, w.start_date, w.end_date, se.name
-		FROM weeks w
-		JOIN seasons se ON se.id = w.season_id
-		WHERE se.is_archived = FALSE
-		  AND w.start_date <= CURRENT_DATE
-		  AND w.end_date   >= CURRENT_DATE
-		LIMIT 1
-	`).Scan(&wk.ID, &wk.Number, &wk.Start, &wk.End, &wk.SeasonName)
+	wk, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly)
 	if err != nil {
 		fmt.Fprint(w, `<div class="alert alert-warning">No active week found — check back during the season.</div>`)
 		return
@@ -191,7 +175,7 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
 		LEFT JOIN fixture_counts fc ON fc.team_id = t.id
 		WHERE t.club_id = $1 AND t.active = TRUE
 		ORDER BY t.name
-	`, clubID, wk.ID, wk.Start, wk.End)
+	`, clubID, wk.ID, wk.StartDate, wk.EndDate)
 	if err != nil {
 		fmt.Fprint(w, `<div class="alert alert-danger">Error loading teams.</div>`)
 		return
@@ -238,8 +222,8 @@ func (s *Server) renderSubmissionsStatusTable(ctx context.Context, w http.Respon
       <tbody>`,
 		escapeHTML(clubName),
 		wk.Number,
-		wk.Start.Format("2 Jan"),
-		wk.End.Format("2 Jan 2006"),
+		wk.StartDate.Format("2 Jan"),
+		wk.EndDate.Format("2 Jan 2006"),
 		wk.SeasonName,
 		teamsSubmitted, teamsWithFixture,
 	)

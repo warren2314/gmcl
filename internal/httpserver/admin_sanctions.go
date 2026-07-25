@@ -27,10 +27,10 @@ func (s *Server) handleAdminSanctions() http.HandlerFunc {
 
 		var seasonID int32
 		var seasonName string
-		s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-		`).Scan(&seasonID, &seasonName)
+		if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
+			seasonID = resolved.SeasonID
+			seasonName = resolved.SeasonName
+		}
 
 		if sid := r.URL.Query().Get("season_id"); sid != "" {
 			if n, err := strconv.Atoi(sid); err == nil {

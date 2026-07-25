@@ -76,17 +76,13 @@ func (s *Server) handleAdminCompliance() http.HandlerFunc {
 		var weekNum int32
 
 		var complianceStartWeek int32 = 1
-		s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
-			FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE s.is_archived = FALSE
-			ORDER BY
-			    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
-			         WHEN w.start_date > CURRENT_DATE THEN 1
-			         ELSE 2 END,
-			    abs(w.start_date - CURRENT_DATE)
-			LIMIT 1
-		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
+		if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay); err == nil {
+			seasonID = resolved.SeasonID
+			seasonName = resolved.SeasonName
+			weekID = resolved.ID
+			weekNum = resolved.Number
+			complianceStartWeek = resolved.ComplianceStartWeek
+		}
 
 		if wid := r.URL.Query().Get("week_id"); wid != "" {
 			if n, err := strconv.Atoi(wid); err == nil {

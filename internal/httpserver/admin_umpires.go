@@ -219,50 +219,50 @@ var umpireVariantToCanonical = map[string]string{
 	"dave wild":                 "david wild",
 	"fiz yousaf":                "hafiz yousaf",
 	// Reserve
-	"parth banerji":   "parth banerjee",
-	"parth banerli":   "parth banerjee",
+	"parth banerji":    "parth banerjee",
+	"parth banerli":    "parth banerjee",
 	"stephen coulding": "steve coulding",
 	"stevie coulding":  "steve coulding",
 	"steven coulding":  "steve coulding",
 	"bhikhu suka":      "bhikhu sukha",
 	"bhikho suka":      "bhikhu sukha",
 	// Panel
-	"abrar ahmed":              "abrar ahmad",
-	"abs ahmad":                "abrar ahmad",
-	"akhtar salman":            "salman akhtar",
-	"akhtar, salman":           "salman akhtar",
-	"amratial patel":           "amrat patel",
-	"craig ramadin":            "craig ramadhin",
-	"damo grundy":              "damian grundy",
-	"dave cowburn":             "david cowburn",
-	"jay joshi":                "jayprakash joshi",
-	"jayprakesh joshi":         "jayprakash joshi",
-	"frederick leatherbarrow":  "fred leatherbarrow",
-	"kamlesh raijput":          "kamlesh rajput",
-	"kenneth jones":            "ken jones",
-	"mahammedarshad saiyed":    "mahammed arshad saiyed",
-	"mahammed saiyed":          "mahammed arshad saiyed",
-	"mamood rather":            "mahmood rather",
-	"matt hilton":              "matthew hilton",
-	"michael dunkerley":        "mike dunkerley",
-	"michael grimes":           "mike grimes",
-	"mohammad ali akber":       "mohammed ali akber",
-	"paul anthony higgins":     "paul higgins",
-	"pete masters":             "peter masters",
-	"philip yates":             "phil yates",
-	"ramki kalyan":             "ramki kalyanasundaram",
-	"ramki kalgan":             "ramki kalyanasundaram",
-	"saf ishmail":              "sarfraz ismail ahmad",
-	"saf ismail ahmad":         "sarfraz ismail ahmad",
-	"sarfraz ahmad":            "sarfraz ismail ahmad",
-	"sarfraz ismail ahmed":     "sarfraz ismail ahmad",
-	"sohail rana":              "suhail rana",
-	"stephen ward":             "steve ward",
-	"steven burston":           "steve burston",
-	"unwin richard":            "richard unwin",
-	"rick unwin":               "richard unwin",
-	"zohaib shehzad":           "zohaib shazad",
-	"abdul hak motala":         "abdul motala",
+	"abrar ahmed":             "abrar ahmad",
+	"abs ahmad":               "abrar ahmad",
+	"akhtar salman":           "salman akhtar",
+	"akhtar, salman":          "salman akhtar",
+	"amratial patel":          "amrat patel",
+	"craig ramadin":           "craig ramadhin",
+	"damo grundy":             "damian grundy",
+	"dave cowburn":            "david cowburn",
+	"jay joshi":               "jayprakash joshi",
+	"jayprakesh joshi":        "jayprakash joshi",
+	"frederick leatherbarrow": "fred leatherbarrow",
+	"kamlesh raijput":         "kamlesh rajput",
+	"kenneth jones":           "ken jones",
+	"mahammedarshad saiyed":   "mahammed arshad saiyed",
+	"mahammed saiyed":         "mahammed arshad saiyed",
+	"mamood rather":           "mahmood rather",
+	"matt hilton":             "matthew hilton",
+	"michael dunkerley":       "mike dunkerley",
+	"michael grimes":          "mike grimes",
+	"mohammad ali akber":      "mohammed ali akber",
+	"paul anthony higgins":    "paul higgins",
+	"pete masters":            "peter masters",
+	"philip yates":            "phil yates",
+	"ramki kalyan":            "ramki kalyanasundaram",
+	"ramki kalgan":            "ramki kalyanasundaram",
+	"saf ishmail":             "sarfraz ismail ahmad",
+	"saf ismail ahmad":        "sarfraz ismail ahmad",
+	"sarfraz ahmad":           "sarfraz ismail ahmad",
+	"sarfraz ismail ahmed":    "sarfraz ismail ahmad",
+	"sohail rana":             "suhail rana",
+	"stephen ward":            "steve ward",
+	"steven burston":          "steve burston",
+	"unwin richard":           "richard unwin",
+	"rick unwin":              "richard unwin",
+	"zohaib shehzad":          "zohaib shazad",
+	"abdul hak motala":        "abdul motala",
 }
 
 // mergeUmpireVariants combines rows where one name is a known variant of another,
@@ -490,10 +490,10 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			s.DB.QueryRow(ctx, `SELECT name FROM seasons WHERE id=$1`, seasonID).Scan(&seasonName)
 		}
 		if seasonID == 0 {
-			s.DB.QueryRow(ctx, `
-				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-			`).Scan(&seasonID, &seasonName)
+			if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
+				seasonID = resolved.SeasonID
+				seasonName = resolved.SeasonName
+			}
 		}
 
 		minRatings := 2
@@ -824,10 +824,10 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			s.DB.QueryRow(ctx, `SELECT name FROM seasons WHERE id=$1`, seasonID).Scan(&seasonName)
 		}
 		if seasonID == 0 {
-			s.DB.QueryRow(ctx, `
-				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-			`).Scan(&seasonID, &seasonName)
+			if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
+				seasonID = resolved.SeasonID
+				seasonName = resolved.SeasonName
+			}
 		}
 
 		type commentRow struct {
@@ -939,22 +939,22 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			s.DB.QueryRow(ctx, `SELECT name FROM seasons WHERE id=$1`, seasonID).Scan(&seasonName)
 		}
 		if seasonID == 0 {
-			s.DB.QueryRow(ctx, `
-				SELECT s.id, s.name FROM weeks w JOIN seasons s ON w.season_id=s.id
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date LIMIT 1
-			`).Scan(&seasonID, &seasonName)
+			if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
+				seasonID = resolved.SeasonID
+				seasonName = resolved.SeasonName
+			}
 		}
 
 		type scoreRow struct {
-			SubID    int64
-			Date     time.Time
-			Club     string
-			Perf     string
-			DM       *int32
-			MM       *int32
-			PM       *int32
-			PI       *int32
-			TW       *int32
+			SubID int64
+			Date  time.Time
+			Club  string
+			Perf  string
+			DM    *int32
+			MM    *int32
+			PM    *int32
+			PI    *int32
+			TW    *int32
 		}
 
 		var rows []scoreRow

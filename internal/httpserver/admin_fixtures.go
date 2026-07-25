@@ -37,22 +37,14 @@ func (s *Server) handleAdminFixtures() http.HandlerFunc {
 			}
 		}
 
-		// Default: current week if we're inside one, otherwise next upcoming week
 		if weekID == 0 {
-			s.DB.QueryRow(ctx, `
-				SELECT w.id, w.start_date, w.end_date, w.week_number, s.name
-				FROM weeks w JOIN seasons s ON s.id = w.season_id
-				WHERE s.is_archived = FALSE AND CURRENT_DATE BETWEEN w.start_date AND w.end_date
-				LIMIT 1
-			`).Scan(&weekID, &weekStart, &weekEnd, &weekNum, &seasonName)
-		}
-		if weekID == 0 {
-			s.DB.QueryRow(ctx, `
-				SELECT w.id, w.start_date, w.end_date, w.week_number, s.name
-				FROM weeks w JOIN seasons s ON s.id = w.season_id
-				WHERE s.is_archived = FALSE AND w.start_date > CURRENT_DATE
-				ORDER BY w.start_date LIMIT 1
-			`).Scan(&weekID, &weekStart, &weekEnd, &weekNum, &seasonName)
+			if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay); err == nil {
+				weekID = resolved.ID
+				weekStart = resolved.StartDate
+				weekEnd = resolved.EndDate
+				weekNum = resolved.Number
+				seasonName = resolved.SeasonName
+			}
 		}
 
 		// All weeks for selector

@@ -21,23 +21,21 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 			csrfToken = c.Value
 		}
 
+		previewWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		if err != nil {
+			http.Error(w, "No competition week is configured.", http.StatusServiceUnavailable)
+			return
+		}
+
 		// Load all active teams for the selector
 		type teamOpt struct {
-			ID       int32
-			Club     string
-			Team     string
-			SeasonID int32
-			WeekID   int32
+			ID   int32
+			Club string
+			Team string
 		}
 		var teams []teamOpt
 		trows, _ := s.DB.Query(ctx, `
-			SELECT t.id, cl.name, t.name,
-			       (SELECT id FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1),
-			       (SELECT id FROM weeks WHERE season_id=(SELECT id FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1)
-			        ORDER BY
-			            CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0
-			                 WHEN start_date > CURRENT_DATE THEN 1 ELSE 2 END,
-			            abs(start_date - CURRENT_DATE) LIMIT 1)
+			SELECT t.id, cl.name, t.name
 			FROM teams t JOIN clubs cl ON cl.id=t.club_id
 			WHERE t.active=TRUE
 			ORDER BY cl.name, t.name
@@ -46,7 +44,7 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 			defer trows.Close()
 			for trows.Next() {
 				var to teamOpt
-				if trows.Scan(&to.ID, &to.Club, &to.Team, &to.SeasonID, &to.WeekID) == nil {
+				if trows.Scan(&to.ID, &to.Club, &to.Team) == nil {
 					teams = append(teams, to)
 				}
 			}
@@ -88,32 +86,25 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 
 		// Load team/captain details
 		var clubName, teamName, captainName, captainEmail string
-		var seasonID, weekID int32
-		err := s.DB.QueryRow(ctx, `
-			SELECT cl.name, t.name, COALESCE(c.full_name,'(no captain)'), COALESCE(c.email,''),
-			       (SELECT id FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1),
-			       (SELECT id FROM weeks WHERE season_id=(SELECT id FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1)
-			        ORDER BY
-			            CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0
-			                 WHEN start_date > CURRENT_DATE THEN 1 ELSE 2 END,
-			            abs(start_date - CURRENT_DATE) LIMIT 1)
+		seasonID := previewWeek.SeasonID
+		err = s.DB.QueryRow(ctx, `
+			SELECT cl.name, t.name, COALESCE(c.full_name,'(no captain)'), COALESCE(c.email,'')
 			FROM teams t
 			JOIN clubs cl ON cl.id=t.club_id
 			LEFT JOIN captains c ON c.team_id=t.id
-			    AND c.active_from <= CURRENT_DATE
-			    AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+			    AND c.active_from <= $2::date
+			    AND (c.active_to IS NULL OR c.active_to >= $2::date)
 			WHERE t.id=$1
 			ORDER BY c.active_from DESC NULLS LAST
 			LIMIT 1
-		`, int32(teamID)).Scan(&clubName, &teamName, &captainName, &captainEmail, &seasonID, &weekID)
+		`, int32(teamID), s.londonDate()).Scan(&clubName, &teamName, &captainName, &captainEmail)
 		if err != nil {
 			http.Error(w, "team not found", http.StatusNotFound)
 			return
 		}
 
 		// Load week dates
-		var weekStart, weekEnd time.Time
-		_ = s.DB.QueryRow(ctx, `SELECT start_date, end_date FROM weeks WHERE id=$1`, weekID).Scan(&weekStart, &weekEnd)
+		weekStart, weekEnd := previewWeek.StartDate, previewWeek.EndDate
 
 		// Resolve fixture — same logic as captain form
 		now := time.Now()

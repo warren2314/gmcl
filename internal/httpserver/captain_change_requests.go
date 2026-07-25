@@ -486,9 +486,9 @@ func (s *Server) approveCaptainChangeRequest(ctx context.Context, r *http.Reques
 			DELETE FROM drafts
 			WHERE team_id = $1
 			  AND week_id IN (
-			      SELECT id FROM weeks WHERE CURRENT_DATE BETWEEN start_date AND end_date
+			      SELECT id FROM weeks WHERE $2::date BETWEEN start_date AND end_date
 			  )
-		`, req.TeamID)
+		`, req.TeamID, s.londonDate())
 		if err != nil {
 			return result, fmt.Errorf("could not delete current draft: %w", err)
 		}

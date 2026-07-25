@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.claude
+.cursor
+.worktrees
+.gocache
+.codex-go-cache
+.codex-build
+output
+app.exe
+*.log

@@ -185,20 +185,9 @@ func (s *Server) handleAdminReports() http.HandlerFunc {
 
 		// Current season for the generate form
 		var currentSeasonID int32
-		var currentSeasonName string
-		var currentWeekID int32
-		var currentWeekNum int32
-		s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number
-			FROM weeks w JOIN seasons s ON w.season_id=s.id
-			WHERE s.is_archived = FALSE
-			ORDER BY
-			    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
-			         WHEN w.start_date > CURRENT_DATE THEN 1
-			         ELSE 2 END,
-			    abs(w.start_date - CURRENT_DATE)
-			LIMIT 1
-		`).Scan(&currentSeasonID, &currentSeasonName, &currentWeekID, &currentWeekNum)
+		if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay); err == nil {
+			currentSeasonID = resolved.SeasonID
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Reports")
@@ -474,10 +463,10 @@ func (s *Server) resolveLatestAIExecutiveReportWeek(ctx context.Context, seasonI
 	err = s.DB.QueryRow(ctx, `
 		SELECT id, week_number, end_date
 		FROM weeks
-		WHERE season_id=$1 AND end_date < CURRENT_DATE
+		WHERE season_id=$1 AND end_date < $2::date
 		ORDER BY end_date DESC
 		LIMIT 1
-	`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+	`, seasonID, s.londonDate()).Scan(&wid, &weekNum, &weekEnd)
 	if err == nil {
 		return wid, weekNum, weekEnd, nil
 	}
@@ -487,12 +476,12 @@ func (s *Server) resolveLatestAIExecutiveReportWeek(ctx context.Context, seasonI
 		FROM weeks
 		WHERE season_id=$1
 		ORDER BY
-		    CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0
-		         WHEN start_date > CURRENT_DATE THEN 1
+		    CASE WHEN $2::date BETWEEN start_date AND end_date THEN 0
+		         WHEN start_date > $2::date THEN 1
 		         ELSE 2 END,
-		    abs(start_date - CURRENT_DATE)
+		    abs(start_date - $2::date)
 		LIMIT 1
-	`, seasonID).Scan(&wid, &weekNum, &weekEnd)
+	`, seasonID, s.londonDate()).Scan(&wid, &weekNum, &weekEnd)
 	if err != nil {
 		return 0, 0, time.Time{}, err
 	}

@@ -109,15 +109,8 @@ func parseSanctionsExportWeekRange(q url.Values) (int32, int32, error) {
 
 func (s *Server) defaultSanctionsExportSeasonID(ctx context.Context) int32 {
 	var seasonID int32
-	if err := s.DB.QueryRow(ctx, `
-		SELECT s.id
-		FROM weeks w
-		JOIN seasons s ON w.season_id = s.id
-		WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
-		ORDER BY w.start_date DESC
-		LIMIT 1
-	`).Scan(&seasonID); err == nil && seasonID > 0 {
-		return seasonID
+	if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
+		return resolved.SeasonID
 	}
 	_ = s.DB.QueryRow(ctx, `
 		SELECT id

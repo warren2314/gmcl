@@ -512,70 +512,31 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		defer cancel()
 
 		// ── 1. Current season/week ─────────────────────────────────────────
-		var seasonID int32
-		var seasonName string
-		var weekID int32
-		var weekNum int32
-		var complianceStartWeek int32
-		weekErr := s.DB.QueryRow(ctx, `
-			SELECT s.id, s.name, w.id, w.week_number, s.compliance_start_week
-			FROM weeks w
-			JOIN seasons s ON w.season_id = s.id
-			WHERE s.is_archived = FALSE
-			ORDER BY
-			    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
-			         WHEN w.start_date > CURRENT_DATE THEN 1
-			         ELSE 2 END,
-			    abs(w.start_date - CURRENT_DATE)
-			LIMIT 1
-		`).Scan(&seasonID, &seasonName, &weekID, &weekNum, &complianceStartWeek)
-
-		// Display week offset: if compliance tracking starts at week N,
-		// show week numbers relative to that start so week N displays as "Week 1".
-		displayWeek := weekNum
-		if complianceStartWeek > 1 {
-			displayWeek = weekNum - (complianceStartWeek - 1)
-			if displayWeek < 1 {
-				displayWeek = 1
-			}
-		}
+		currentWeek, weekErr := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		seasonID := currentWeek.SeasonID
+		seasonName := currentWeek.SeasonName
+		weekNum := currentWeek.Number
+		var progress reportProgress
+		var dashboardDataErr error
 
 		// ── 2. KPI: submissions this week / season total / avg pitch ───────
-		var weekSubs, seasonSubs, activeTeams int64
+		var seasonSubs int64
 		var avgPitch float64
 		if weekErr == nil {
-			s.DB.QueryRow(ctx, `
+			dashboardDataErr = s.DB.QueryRow(ctx, `
 				SELECT
-				  (SELECT COUNT(DISTINCT team_id) FROM submissions WHERE week_id=$1)   AS week_subs,
-				  (SELECT COUNT(DISTINCT team_id) FROM submissions WHERE season_id=$2) AS season_subs,
-				  (SELECT COUNT(*) FROM teams WHERE active=TRUE)        AS active_teams,
-				  COALESCE((SELECT AVG(pitch_rating) FROM submissions WHERE season_id=$2),0) AS avg_pitch
-			`, weekID, seasonID).Scan(&weekSubs, &seasonSubs, &activeTeams, &avgPitch)
+				  COUNT(*) AS season_submissions,
+				  COALESCE(AVG(pitch_rating), 0) AS avg_pitch
+				FROM submissions
+				WHERE season_id=$1
+			`, seasonID).Scan(&seasonSubs, &avgPitch)
+			if dashboardDataErr == nil {
+				progress, dashboardDataErr = s.loadWeekReportProgress(ctx, currentWeek)
+			}
 		}
 
 		// ── 3. KPI: compliance rate ────────────────────────────────────────
-		var weeksElapsed int64
-		var complianceRate float64
-		if weekErr == nil {
-			s.DB.QueryRow(ctx, `
-				SELECT COUNT(*) FROM weeks
-				WHERE season_id=$1 AND start_date <= CURRENT_DATE
-				  AND week_number >= $2
-			`, seasonID, complianceStartWeek).Scan(&weeksElapsed)
-			var trackingSubs int64
-			s.DB.QueryRow(ctx, `
-				SELECT COUNT(DISTINCT (sub.team_id, sub.week_id)) FROM submissions sub
-				JOIN weeks w ON sub.week_id = w.id
-				WHERE sub.season_id=$1 AND w.week_number >= $2
-				  AND w.start_date <= CURRENT_DATE
-			`, seasonID, complianceStartWeek).Scan(&trackingSubs)
-			if weeksElapsed > 0 && activeTeams > 0 {
-				complianceRate = float64(trackingSubs) / float64(weeksElapsed*activeTeams) * 100
-				if complianceRate > 100 {
-					complianceRate = 100
-				}
-			}
-		}
+		complianceRate := progress.completionRate()
 
 		// ── 4. KPI: open sanctions ─────────────────────────────────────────
 		var openSanctions int64
@@ -593,7 +554,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		var weekBars []weekBar
 		if weekErr == nil {
 			wrows, err := s.DB.Query(ctx, `
-				SELECT w.week_number, COUNT(DISTINCT sub.team_id)
+				SELECT w.week_number, COUNT(sub.id)
 				FROM weeks w
 				LEFT JOIN submissions sub ON sub.week_id = w.id
 				WHERE w.season_id = $1
@@ -637,12 +598,12 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		var clubBars []clubBar
 		if weekErr == nil {
 			crows, err := s.DB.Query(ctx, `
-				SELECT cl.name, COUNT(DISTINCT sub.team_id)
+				SELECT cl.name, COUNT(sub.id)
 				FROM submissions sub
 				JOIN teams t ON sub.team_id = t.id
 				JOIN clubs cl ON t.club_id = cl.id
 				WHERE sub.season_id = $1
-				GROUP BY cl.name ORDER BY COUNT(DISTINCT sub.team_id) DESC, cl.name ASC LIMIT 20
+				GROUP BY cl.name ORDER BY COUNT(sub.id) DESC, cl.name ASC LIMIT 20
 			`, seasonID)
 			if err == nil {
 				defer crows.Close()
@@ -690,6 +651,15 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		}
 
 		// ── Render ────────────────────────────────────────────────────────
+		var weeklySubmissionTotal int64
+		for _, bar := range weekBars {
+			weeklySubmissionTotal += bar.Count
+		}
+		var pitchRatingTotal int64
+		for rating := 1; rating <= 5; rating++ {
+			pitchRatingTotal += pitchDist[rating]
+		}
+
 		csrfToken := ""
 		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrfToken = c.Value
@@ -718,7 +688,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
     <h4 class="mb-0 fw-bold">Dashboard</h4>
     <p class="text-muted mb-0 small">`)
 		if weekErr == nil {
-			fmt.Fprintf(w, `%s &mdash; Week %d`, escapeHTML(seasonName), displayWeek)
+			fmt.Fprintf(w, `%s &mdash; Week %d`, escapeHTML(seasonName), weekNum)
 		} else {
 			fmt.Fprint(w, `No active week`)
 		}
@@ -731,10 +701,10 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		// ── KPI cards ────────────────────────────────────────────────────
 		fmt.Fprint(w, `<div class="row g-3 mb-4">`)
 
-		kpiCard := func(accentClass, number, label, sublabel, icon string) {
+		kpiCard := func(accentClass, number, label, sublabel, href string) {
 			fmt.Fprintf(w, `
 <div class="col-6 col-md-4 col-xl-2">
-  <div class="card card-kpi %s h-100">
+  <a class="card card-kpi kpi-link %s h-100" href="%s">
     <div class="card-body p-3">
       <div class="d-flex justify-content-between align-items-start">
         <div>
@@ -742,75 +712,173 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
           <div class="kpi-label mt-1">%s</div>
           %s
         </div>
-        <div class="kpi-icon">%s</div>
       </div>
     </div>
-  </div>
-</div>`, accentClass, number, label, sublabel, icon)
+  </a>
+</div>`, accentClass, escapeHTML(href), number, label, sublabel)
 		}
 
 		if weekErr != nil {
 			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-warning mb-0">No active week — check seed data.</div></div>`)
+		} else if dashboardDataErr != nil {
+			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-danger mb-0" role="alert">Dashboard metrics could not be loaded. Try again or open Compliance for the source records.</div></div>`)
 		} else {
 			compStr := fmt.Sprintf("%.1f%%", complianceRate)
 			pitchStr := fmt.Sprintf(`<span style="color:%s">%.1f</span>`, pitchColour, avgPitch)
 			sanctStr := fmt.Sprintf(`<span class="%s">%d</span>`, sanctionClass, openSanctions)
+			reportContext := fmt.Sprintf(
+				`<div class="text-muted kpi-context">of %d required &middot; %d this season</div>`,
+				progress.Expected,
+				seasonSubs,
+			)
+			missingContext := `<div class="text-muted kpi-context">Open Compliance for details</div>`
+			if progress.Exempt > 0 {
+				exemptionLabel := "exemptions"
+				if progress.Exempt == 1 {
+					exemptionLabel = "exemption"
+				}
+				missingContext = fmt.Sprintf(
+					`<div class="text-muted kpi-context">%d approved %s</div>`,
+					progress.Exempt,
+					exemptionLabel,
+				)
+			}
 
-			kpiCard("kpi-red", fmt.Sprintf("%d", displayWeek),
-				"Current Week", fmt.Sprintf(`<div class="text-muted" style="font-size:.75rem">%s</div>`, escapeHTML(seasonName)), "📅")
-			kpiCard("kpi-blue", fmt.Sprintf("%d", weekSubs),
-				"This Week", fmt.Sprintf(`<div class="text-muted" style="font-size:.75rem">of %d teams</div>`, activeTeams), "📋")
-			kpiCard("kpi-teal", fmt.Sprintf("%d", seasonSubs),
-				"Season Total", ``, "📊")
+			kpiCard("kpi-red", fmt.Sprintf("%d", weekNum),
+				competitionWeekStatusLabel(currentWeek.Status), fmt.Sprintf(`<div class="text-muted kpi-context">%s</div>`, escapeHTML(seasonName)), fmt.Sprintf("/admin/weeks/%d", weekNum))
+			kpiCard("kpi-blue", fmt.Sprintf("%d", progress.Submitted),
+				"Reports received", reportContext, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
+			kpiCard("kpi-red", fmt.Sprintf("%d", progress.Missing),
+				"Reports missing", missingContext, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
 			kpiCard("kpi-green", compStr,
-				"Compliance", ``, "✅")
+				"Week completion", `<div class="text-muted kpi-context">Received or exempt</div>`, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
 			kpiCard("kpi-amber", pitchStr,
-				"Avg Pitch", `<div class="text-muted" style="font-size:.75rem">1–5 scale</div>`, "🏏")
+				"Season avg pitch", `<div class="text-muted kpi-context">1&ndash;5 scale</div>`, "/admin/rankings")
 			kpiCard("kpi-purple", sanctStr,
-				"Open Sanctions", fmt.Sprintf(`<a href="/admin/sanctions" class="text-muted" style="font-size:.75rem">view all</a>`), "🃏")
+				"Open sanctions", `<div class="text-muted kpi-context">Active this season</div>`, "/admin/sanctions")
 		}
 
 		fmt.Fprint(w, `</div>`) // end KPI row
+
+		attentionItems := ""
+		if weekErr == nil && dashboardDataErr == nil {
+			if progress.Missing > 0 {
+				missingLabel := "reports"
+				if progress.Missing == 1 {
+					missingLabel = "report"
+				}
+				attentionItems += fmt.Sprintf(
+					`<a class="attention-item attention-danger" href="/admin/compliance?week_id=%d"><span><strong>%d required %s missing</strong><small>Review teams, drafts and approved exemptions.</small></span><span aria-hidden="true">&rarr;</span></a>`,
+					currentWeek.ID,
+					progress.Missing,
+					missingLabel,
+				)
+			}
+			if openSanctions > 0 {
+				sanctionLabel := "sanctions"
+				if openSanctions == 1 {
+					sanctionLabel = "sanction"
+				}
+				attentionItems += fmt.Sprintf(
+					`<a class="attention-item attention-warning" href="/admin/sanctions"><span><strong>%d open %s</strong><small>Review active cases and letter status.</small></span><span aria-hidden="true">&rarr;</span></a>`,
+					openSanctions,
+					sanctionLabel,
+				)
+			}
+			if attentionItems == "" {
+				attentionItems = `<div class="attention-item attention-success"><span><strong>No urgent items</strong><small>All expected reports are satisfied and there are no open sanctions.</small></span></div>`
+			}
+		} else {
+			attentionItems = `<div class="attention-item attention-warning"><span><strong>Attention data unavailable</strong><small>Open Compliance to inspect source records directly.</small></span></div>`
+		}
+
+		fmt.Fprintf(w, `
+<div class="row g-3 mb-4">
+  <div class="col-12 col-xl-7">
+    <section class="card h-100" aria-labelledby="attention-heading">
+      <div class="card-header"><span class="fw-semibold" id="attention-heading">Needs attention</span></div>
+      <div class="card-body attention-list">%s</div>
+    </section>
+  </div>
+  <div class="col-12 col-xl-5">
+    <section class="card h-100" aria-labelledby="quick-actions-heading">
+      <div class="card-header"><span class="fw-semibold" id="quick-actions-heading">Quick actions</span></div>
+      <div class="card-body quick-actions">
+        <a href="/admin/fixtures?week_id=%d"><strong>Review fixtures</strong><span>Competition schedule and match mapping</span></a>
+        <a href="/admin/reminders/preview"><strong>Reminder centre</strong><span>Preview missing-report communications</span></a>
+        <a href="/admin/submissions"><strong>Find a submission</strong><span>Search by club and open source records</span></a>
+        <a href="/admin/reports/exec"><strong>Executive report</strong><span>Operational and season summary</span></a>
+      </div>
+    </section>
+  </div>
+</div>`, attentionItems, currentWeek.ID)
 
 		// ── Charts row ───────────────────────────────────────────────────
 		fmt.Fprint(w, `<div class="row g-3 mb-4">`)
 
 		// Chart A – submissions per week
-		fmt.Fprint(w, `
+		weeklyEmptyState := ""
+		if weeklySubmissionTotal == 0 {
+			weeklyEmptyState = `<div class="empty-state mb-3"><strong>No submissions recorded</strong><span>Reports will appear here as they are received.</span></div>`
+		}
+		fmt.Fprintf(w, `
 <div class="col-12 col-xl-8">
-  <div class="card shadow-sm h-100">
-    <div class="card-header fw-semibold">Submissions per Week</div>
+  <div class="card data-card h-100">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold">Reports by competition week</span>
+      <a href="/admin/weeks" class="card-header-link">View weekly records</a>
+    </div>
     <div class="card-body">
-      <div class="chart-container"><canvas id="chartWeeks"></canvas></div>
+      <p class="chart-description" id="chartWeeksDescription">%s, all scheduled weeks. Each value is a submitted team report.</p>
+      %s
+      <div class="chart-container"><canvas id="chartWeeks" role="img" aria-describedby="chartWeeksDescription"></canvas></div>
     </div>
   </div>
-</div>`)
+</div>`, escapeHTML(seasonName), weeklyEmptyState)
 
 		// Chart B – pitch distribution
-		fmt.Fprint(w, `
+		pitchEmptyState := ""
+		if pitchRatingTotal == 0 {
+			pitchEmptyState = `<div class="empty-state mb-3"><strong>No pitch ratings recorded</strong><span>The distribution will appear after rated reports are submitted.</span></div>`
+		}
+		fmt.Fprintf(w, `
 <div class="col-12 col-xl-4">
-  <div class="card shadow-sm h-100">
-    <div class="card-header fw-semibold">Pitch Rating Distribution</div>
+  <div class="card data-card h-100">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold">Pitch rating distribution</span>
+      <a href="/admin/rankings" class="card-header-link">View rankings</a>
+    </div>
     <div class="card-body">
-      <div class="chart-container"><canvas id="chartPitch"></canvas></div>
+      <p class="chart-description" id="chartPitchDescription">%s, %d rated reports on the 1&ndash;5 scale.</p>
+      %s
+      <div class="chart-container"><canvas id="chartPitch" role="img" aria-describedby="chartPitchDescription"></canvas></div>
     </div>
   </div>
-</div>`)
+</div>`, escapeHTML(seasonName), pitchRatingTotal, pitchEmptyState)
 
 		fmt.Fprint(w, `</div>`) // end charts row
 
 		// Chart C – club breakdown (full width)
-		fmt.Fprint(w, `
+		clubEmptyState := ""
+		if len(clubBars) == 0 {
+			clubEmptyState = `<div class="empty-state mb-3"><strong>No club reports recorded</strong><span>Club totals will appear when submissions are received.</span></div>`
+		}
+		fmt.Fprintf(w, `
 <div class="row g-3 mb-4">
 <div class="col-12">
-  <div class="card shadow-sm">
-    <div class="card-header fw-semibold">Submissions by Club</div>
+  <div class="card data-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold">Reports by club</span>
+      <a href="/admin/submissions" class="card-header-link">Find submissions</a>
+    </div>
     <div class="card-body">
-      <div class="chart-container-lg"><canvas id="chartClubs"></canvas></div>
+      <p class="chart-description" id="chartClubsDescription">%s season, top 20 clubs by submitted team reports.</p>
+      %s
+      <div class="chart-container-lg"><canvas id="chartClubs" role="img" aria-describedby="chartClubsDescription"></canvas></div>
     </div>
   </div>
 </div>
-</div>`)
+</div>`, escapeHTML(seasonName), clubEmptyState)
 
 		// ── Recent submissions table ──────────────────────────────────────
 		fmt.Fprint(w, `
@@ -820,7 +888,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
     <a href="/admin/weeks" class="btn btn-sm btn-outline-secondary">All Weeks</a>
   </div>
   <div class="table-responsive">
-    <table class="table table-hover table-sm table-gmcl mb-0">
+    <table class="table table-hover table-sm table-gmcl responsive-cards mb-0">
       <thead><tr>
         <th>ID</th><th>Season</th><th>Wk</th><th>Club</th><th>Team</th>
         <th>Captain</th><th>Match Date</th><th>Submitted</th>
@@ -829,7 +897,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 `)
 		for _, sr := range recentSubs {
 			fmt.Fprintf(w,
-				`<tr><td><a href="/admin/submissions/%d">#%d</a></td><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="text-muted">%s</td></tr>`,
+				`<tr><td data-label="Submission"><a href="/admin/submissions/%d">#%d</a></td><td data-label="Season">%s</td><td data-label="Week">%d</td><td data-label="Club">%s</td><td data-label="Team">%s</td><td data-label="Captain">%s</td><td data-label="Match date">%s</td><td data-label="Submitted" class="text-muted">%s</td></tr>`,
 				sr.ID, sr.ID, escapeHTML(sr.Season), sr.Week,
 				escapeHTML(sr.Club), escapeHTML(sr.Team), escapeHTML(sr.Captain),
 				sr.MatchDate.Format("2006-01-02"), sr.SubmittedAt.Format("02 Jan 15:04"))
@@ -962,19 +1030,22 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
+		currentWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		if err != nil {
+			http.Error(w, "No competition weeks are configured.", http.StatusServiceUnavailable)
+			return
+		}
 		rows, err := s.DB.Query(ctx, `
 			SELECT w.id, s.name, w.week_number, w.start_date, w.end_date,
-			       COUNT(DISTINCT sub.team_id) AS submissions,
-			       (CURRENT_DATE BETWEEN w.start_date AND w.end_date) AS is_current
+			       COUNT(sub.id) AS submissions,
+			       ($2::date BETWEEN w.start_date AND w.end_date) AS is_current
 			FROM weeks w
 			JOIN seasons s ON w.season_id = s.id
 			LEFT JOIN submissions sub ON sub.week_id = w.id
-			WHERE s.id = (
-			    SELECT id FROM seasons WHERE is_archived = FALSE ORDER BY id DESC LIMIT 1
-			)
+			WHERE s.id = $1
 			GROUP BY w.id, s.name, w.week_number, w.start_date, w.end_date
 			ORDER BY w.week_number
-		`)
+		`, currentWeek.SeasonID, s.londonDate())
 		if err != nil {
 			http.Error(w, "error", http.StatusInternalServerError)
 			return

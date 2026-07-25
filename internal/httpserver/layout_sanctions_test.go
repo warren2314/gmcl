@@ -27,3 +27,42 @@ func TestAdminNavigationExposesSanctionsWorkflow(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminNavigationGroupsWorkByUserWorkflow(t *testing.T) {
+	var out bytes.Buffer
+	writeAdminNav(&out, "csrf", "/admin/compliance", "super_admin")
+	html := out.String()
+
+	for _, want := range []string{
+		"Match Operations",
+		"Performance",
+		"Sanctions",
+		"Reports",
+		"Competition",
+		"System",
+		"Weekly compliance",
+		"Teams &amp; captains",
+		"Users &amp; access",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("admin navigation missing workflow label %q", want)
+		}
+	}
+}
+
+func TestStandardAdminNavigationOmitsSuperAdminTools(t *testing.T) {
+	var out bytes.Buffer
+	writeAdminNav(&out, "csrf", "/admin/dashboard", "admin")
+	html := out.String()
+
+	for _, forbidden := range []string{
+		"Competition",
+		"System",
+		"/admin/pitch-marks",
+		"/admin/reports/missing-submissions",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("standard admin navigation exposes super-admin item %q", forbidden)
+		}
+	}
+}

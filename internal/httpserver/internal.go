@@ -879,29 +879,15 @@ func (s *Server) handleInternalRefreshUmpirePrefills() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
 
-		// Find the active or next week's date range.
-		var weekID, seasonID int32
-		var weekStart, weekEnd time.Time
-		err := s.DB.QueryRow(ctx, `
-			WITH active AS (
-				SELECT w.id, w.season_id, w.start_date, w.end_date, 1 AS p
-				FROM weeks w
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
-				LIMIT 1
-			), upcoming AS (
-				SELECT w.id, w.season_id, w.start_date, w.end_date, 2 AS p
-				FROM weeks w
-				WHERE w.start_date > CURRENT_DATE
-				ORDER BY w.start_date LIMIT 1
-			)
-			SELECT id, season_id, start_date, end_date
-			FROM (SELECT * FROM active UNION ALL SELECT * FROM upcoming) x
-			ORDER BY p LIMIT 1
-		`).Scan(&weekID, &seasonID, &weekStart, &weekEnd)
+		// Find the active or next week's date range using the same competition
+		// calendar and timezone policy as the web application.
+		week, err := s.resolveCompetitionWeek(ctx, competitionWeekForPlanning)
 		if err != nil {
 			http.Error(w, "no active week found", http.StatusInternalServerError)
 			return
 		}
+		weekID, seasonID := week.ID, week.SeasonID
+		weekStart, weekEnd := week.StartDate, week.EndDate
 
 		// Collect Sat/Sun dates within the week range.
 		var matchDates []time.Time

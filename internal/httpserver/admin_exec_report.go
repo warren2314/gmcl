@@ -16,46 +16,29 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
 		// ── Season ─────────────────────────────────────────────────────────
-		var seasonID int32
-		var seasonName string
-		s.DB.QueryRow(ctx, `
-			SELECT id, name FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1
-		`).Scan(&seasonID, &seasonName)
+		currentWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		if err != nil {
+			http.Error(w, "No competition week is configured.", http.StatusServiceUnavailable)
+			return
+		}
+		seasonID := currentWeek.SeasonID
+		seasonName := currentWeek.SeasonName
 
 		// ── Current week ───────────────────────────────────────────────────
-		var currentWeekID int32
-		var currentWeekNum int32
-		var currentWeekStart, currentWeekEnd time.Time
-		s.DB.QueryRow(ctx, `
-			SELECT id, week_number, start_date, end_date
-			FROM weeks WHERE season_id=$1
-			ORDER BY abs(start_date - CURRENT_DATE) LIMIT 1
-		`, seasonID).Scan(&currentWeekID, &currentWeekNum, &currentWeekStart, &currentWeekEnd)
+		currentWeekID := currentWeek.ID
+		currentWeekNum := currentWeek.Number
+		currentWeekStart := currentWeek.StartDate
+		currentWeekEnd := currentWeek.EndDate
 
 		// ── KPI 1: season compliance ────────────────────────────────────────
-		var weeksElapsed int32
-		var subsExpected int64
-		var subsReceived int64
-		var complianceRate float64
-
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(*) FROM weeks
-			WHERE season_id=$1 AND start_date <= CURRENT_DATE
-		`, seasonID).Scan(&weeksElapsed)
-
-		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active=TRUE`).Scan(&subsExpected)
-
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(DISTINCT team_id) FROM submissions WHERE season_id=$1
-		`, seasonID).Scan(&subsReceived)
-
-		totalExpected := subsExpected * int64(weeksElapsed)
-		if totalExpected > 0 {
-			complianceRate = float64(subsReceived) / float64(totalExpected) * 100
-			if complianceRate > 100 {
-				complianceRate = 100
-			}
+		seasonProgress, err := s.loadSeasonReportProgress(ctx, seasonID, currentWeek.ComplianceStartWeek)
+		if err != nil {
+			http.Error(w, "Could not load season report progress.", http.StatusInternalServerError)
+			return
 		}
+		subsReceived := seasonProgress.Submitted
+		totalExpected := seasonProgress.Expected
+		complianceRate := seasonProgress.completionRate()
 
 		// ── KPI 2: avg pitch rating ─────────────────────────────────────────
 		var avgPitch float64
@@ -68,10 +51,13 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1`, seasonID).Scan(&sanctionsTotal)
 
 		// ── KPI 4: this week submissions ───────────────────────────────────
-		var weekSubs int64
-		s.DB.QueryRow(ctx, `
-			SELECT COUNT(DISTINCT team_id) FROM submissions WHERE week_id=$1
-		`, currentWeekID).Scan(&weekSubs)
+		weekProgress, err := s.loadWeekReportProgress(ctx, currentWeek)
+		if err != nil {
+			http.Error(w, "Could not load current-week report progress.", http.StatusInternalServerError)
+			return
+		}
+		weekSubs := weekProgress.Submitted
+		weekExpected := weekProgress.Expected
 
 		// ── Weekly compliance trend ─────────────────────────────────────────
 		type weekTrend struct {
@@ -82,13 +68,13 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 		var trend []weekTrend
 		trows, err := s.DB.Query(ctx, `
 			SELECT w.week_number, w.start_date,
-			       COUNT(DISTINCT sub.team_id)
+			       COUNT(sub.id)
 			FROM weeks w
 			LEFT JOIN submissions sub ON sub.week_id=w.id AND sub.season_id=$1
-			WHERE w.season_id=$1 AND w.start_date <= CURRENT_DATE
+			WHERE w.season_id=$1 AND w.start_date <= $2::date
 			GROUP BY w.week_number, w.start_date
 			ORDER BY w.week_number
-		`, seasonID)
+		`, seasonID, s.londonDate())
 		if err == nil {
 			defer trows.Close()
 			for trows.Next() {
@@ -129,9 +115,9 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 			SELECT w.week_number, COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0)
 			FROM weeks w
 			LEFT JOIN submissions sub ON sub.week_id=w.id AND sub.season_id=$1 AND sub.pitch_rating IS NOT NULL
-			WHERE w.season_id=$1 AND w.start_date <= CURRENT_DATE
+			WHERE w.season_id=$1 AND w.start_date <= $2::date
 			GROUP BY w.week_number ORDER BY w.week_number
-		`, seasonID)
+		`, seasonID, s.londonDate())
 		if err == nil {
 			defer ptrows.Close()
 			for ptrows.Next() {
@@ -143,32 +129,10 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 		}
 
 		// ── Club compliance table ───────────────────────────────────────────
-		type clubRow struct {
-			Club     string
-			Teams    int64
-			Subs     int64
-			AvgPitch float64
-		}
-		var clubs []clubRow
-		crowsq, err := s.DB.Query(ctx, `
-			SELECT cl.name,
-			       COUNT(DISTINCT t.id)           AS teams,
-			       COUNT(DISTINCT sub.team_id)    AS subs,
-			       COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0) AS avg_pitch
-			FROM clubs cl
-			JOIN teams t ON t.club_id=cl.id AND t.active=TRUE
-			LEFT JOIN submissions sub ON sub.team_id=t.id AND sub.season_id=$1
-			GROUP BY cl.name
-			ORDER BY cl.name ASC
-		`, seasonID)
-		if err == nil {
-			defer crowsq.Close()
-			for crowsq.Next() {
-				var cr clubRow
-				if crowsq.Scan(&cr.Club, &cr.Teams, &cr.Subs, &cr.AvgPitch) == nil {
-					clubs = append(clubs, cr)
-				}
-			}
+		clubs, err := s.loadSeasonClubReportProgress(ctx, seasonID, currentWeek.ComplianceStartWeek)
+		if err != nil {
+			http.Error(w, "Could not load club report progress.", http.StatusInternalServerError)
+			return
 		}
 
 		// ── Top 10 umpires ──────────────────────────────────────────────────
@@ -226,30 +190,82 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
 
 		// ── Missing teams this week ─────────────────────────────────────────
 		type missingTeam struct {
-			Club string
-			Team string
+			Club      string
+			Team      string
+			Opponent  string
+			MatchDate time.Time
 		}
 		var missing []missingTeam
 		mrows, err := s.DB.Query(ctx, `
-			SELECT cl.name, t.name
-			FROM teams t JOIN clubs cl ON t.club_id=cl.id
-			WHERE t.active=TRUE
-			  AND t.id NOT IN (SELECT team_id FROM submissions WHERE week_id=$1)
-			  AND (
-			    t.play_cricket_team_id IS NULL OR t.play_cricket_team_id = ''
-			    OR EXISTS (
-			        SELECT 1 FROM league_fixtures lf
-			        WHERE (lf.home_team_pc_id = t.play_cricket_team_id OR lf.away_team_pc_id = t.play_cricket_team_id)
-			          AND lf.match_date BETWEEN $2 AND $3
+			WITH expected_fixtures AS (
+			    SELECT
+			        t.id AS team_id,
+			        cl.name AS club_name,
+			        t.name AS team_name,
+			        lf.play_cricket_match_id,
+			        lf.match_date,
+			        CASE
+			            WHEN TRIM(t.play_cricket_team_id) = TRIM(lf.home_team_pc_id)
+			            THEN CONCAT_WS(' ', NULLIF(lf.away_club_name, ''), NULLIF(lf.away_team_name, ''))
+			            ELSE CONCAT_WS(' ', NULLIF(lf.home_club_name, ''), NULLIF(lf.home_team_name, ''))
+			        END AS opponent,
+			        ROW_NUMBER() OVER (
+			            PARTITION BY t.id, lf.match_date
+			            ORDER BY lf.play_cricket_match_id
+			        ) AS fixture_ordinal
+			    FROM teams t
+			    JOIN clubs cl ON cl.id = t.club_id
+			    JOIN league_fixtures lf ON (
+			        TRIM(lf.home_team_pc_id) = TRIM(t.play_cricket_team_id)
+			        OR TRIM(lf.away_team_pc_id) = TRIM(t.play_cricket_team_id)
 			    )
-			  )
-			ORDER BY cl.name, t.name
+			    WHERE t.active = TRUE
+			      AND t.play_cricket_team_id IS NOT NULL
+			      AND t.play_cricket_team_id <> ''
+			      AND lf.match_date BETWEEN $2 AND $3
+			      AND EXTRACT(DOW FROM lf.match_date) <> 5
+			      AND NOT lf.is_bye
+			),
+			legacy_submissions AS (
+			    SELECT team_id, match_date, COUNT(*) AS legacy_count
+			    FROM submissions
+			    WHERE week_id = $1
+			      AND play_cricket_match_id IS NULL
+			    GROUP BY team_id, match_date
+			)
+			SELECT ef.club_name, ef.team_name, ef.opponent, ef.match_date
+			FROM expected_fixtures ef
+			LEFT JOIN legacy_submissions ls
+			  ON ls.team_id = ef.team_id
+			 AND ls.match_date = ef.match_date
+			WHERE NOT (
+			    EXISTS (
+			        SELECT 1
+			        FROM submissions sub
+			        WHERE sub.week_id = $1
+			          AND sub.team_id = ef.team_id
+			          AND sub.play_cricket_match_id = ef.play_cricket_match_id
+			    )
+			    OR ef.fixture_ordinal <= COALESCE(ls.legacy_count, 0)
+			    OR EXISTS (
+			        SELECT 1
+			        FROM report_exemptions re
+			        WHERE re.week_id = $1
+			          AND re.team_id = ef.team_id
+			          AND re.match_date = ef.match_date
+			          AND (
+			              re.play_cricket_match_id = ef.play_cricket_match_id
+			              OR re.play_cricket_match_id IS NULL
+			          )
+			    )
+			)
+			ORDER BY ef.club_name, ef.team_name, ef.match_date, ef.play_cricket_match_id
 		`, currentWeekID, currentWeekStart, currentWeekEnd)
 		if err == nil {
 			defer mrows.Close()
 			for mrows.Next() {
 				var m missingTeam
-				if mrows.Scan(&m.Club, &m.Team) == nil {
+				if mrows.Scan(&m.Club, &m.Team, &m.Opponent, &m.MatchDate) == nil {
 					missing = append(missing, m)
 				}
 			}
@@ -283,15 +299,15 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
   <div class="col-6 col-lg-3">
     <div class="card card-kpi kpi-blue p-3 text-center h-100">
       <div class="kpi-number">%.1f%%</div>
-      <div class="kpi-label">Season Compliance</div>
-      <div class="text-muted small mt-1">%d subs / %d expected</div>
+      <div class="kpi-label">Season completion</div>
+      <div class="text-muted small mt-1">%d received + %d exempt / %d required</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="card card-kpi kpi-green p-3 text-center h-100">
       <div class="kpi-number">%d / %d</div>
-      <div class="kpi-label">This Week</div>
-      <div class="text-muted small mt-1">Week %d (%s – %s)</div>
+      <div class="kpi-label">Week completion</div>
+      <div class="text-muted small mt-1">%d received + %d exempt &middot; Week %d (%s – %s)</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
@@ -310,8 +326,8 @@ func (s *Server) handleAdminExecReport() http.HandlerFunc {
   </div>
 </div>
 `,
-			complianceRate, subsReceived, totalExpected,
-			weekSubs, subsExpected, currentWeekNum,
+			complianceRate, subsReceived, seasonProgress.Exempt, totalExpected,
+			weekProgress.Satisfied, weekExpected, weekSubs, weekProgress.Exempt, currentWeekNum,
 			currentWeekStart.Format("2 Jan"), currentWeekEnd.Format("2 Jan"),
 			avgPitch,
 			sanctionsTotal,
@@ -376,20 +392,13 @@ window.__pitchDist=[%d,%d,%d,%d,%d];
   <div class="table-responsive">
     <table class="table table-sm table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Club</th><th>Teams</th><th>Submissions</th>
-        <th>Expected</th><th>Compliance</th><th>Avg Pitch</th>
+        <th>Club</th><th>Teams</th><th>Received</th><th>Exempt</th>
+        <th>Required</th><th>Missing</th><th>Completion</th><th>Avg Pitch</th>
       </tr></thead>
       <tbody>
 `)
 		for _, c := range clubs {
-			expectedTotal := c.Teams * int64(weeksElapsed)
-			clubRate := 0.0
-			if expectedTotal > 0 {
-				clubRate = float64(c.Subs) / float64(expectedTotal) * 100
-				if clubRate > 100 {
-					clubRate = 100
-				}
-			}
+			clubRate := c.completionRate()
 			badgeClass := "bg-success"
 			if clubRate < 50 {
 				badgeClass = "bg-danger"
@@ -397,14 +406,17 @@ window.__pitchDist=[%d,%d,%d,%d,%d];
 				badgeClass = "bg-warning text-dark"
 			}
 			fmt.Fprintf(w,
-				`<tr><td>%s</td><td class="text-muted">%d</td><td>%d</td><td class="text-muted">%d</td>`+
-					`<td><span class="badge %s">%.1f%%</span></td><td>%.2f</td></tr>`,
-				escapeHTML(c.Club), c.Teams, c.Subs, expectedTotal,
+				`<tr><td data-label="Club">%s</td><td data-label="Teams" class="text-muted">%d</td>`+
+					`<td data-label="Received">%d</td><td data-label="Exempt">%d</td>`+
+					`<td data-label="Required" class="text-muted">%d</td><td data-label="Missing">%d</td>`+
+					`<td data-label="Completion"><span class="badge %s">%.1f%%</span></td>`+
+					`<td data-label="Avg Pitch">%.2f</td></tr>`,
+				escapeHTML(c.Club), c.Teams, c.Submitted, c.Exempt, c.Expected, c.Missing,
 				badgeClass, clubRate, c.AvgPitch,
 			)
 		}
 		if len(clubs) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No data yet.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No data yet.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody></table></div></div>`)
 
@@ -445,16 +457,18 @@ window.__pitchDist=[%d,%d,%d,%d,%d];
 			fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4 border-warning">
   <div class="card-header fw-semibold text-warning-emphasis bg-warning-subtle">
-    Missing Submissions — Week %d (%s) — %d team(s)
+    Missing Reports — Week %d (%s) — %d requirement(s)
   </div>
   <div class="table-responsive">
     <table class="table table-sm table-hover mb-0">
-      <thead><tr><th>Club</th><th>Team</th></tr></thead>
+      <thead><tr><th>Club</th><th>Team</th><th>Opponent</th><th>Match date</th></tr></thead>
       <tbody>
 `, currentWeekNum, currentWeekStart.Format("2 Jan"), len(missing))
 			for _, m := range missing {
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td></tr>`,
-					escapeHTML(m.Club), escapeHTML(m.Team))
+				fmt.Fprintf(w, `<tr><td data-label="Club">%s</td><td data-label="Team">%s</td>`+
+					`<td data-label="Opponent">%s</td><td data-label="Match date">%s</td></tr>`,
+					escapeHTML(m.Club), escapeHTML(m.Team), escapeHTML(m.Opponent),
+					m.MatchDate.Format("2 Jan 2006"))
 			}
 			fmt.Fprint(w, `      </tbody></table></div></div>`)
 		} else {
@@ -543,30 +557,22 @@ func (s *Server) handleAdminExecReportPrint() http.HandlerFunc {
 		defer cancel()
 		canViewUmpireFeedback := s.adminHasPermission(ctx, adminIDForRequest(r), "view_umpire_feedback")
 
-		var seasonID int32
-		var seasonName string
-		s.DB.QueryRow(ctx, `SELECT id, name FROM seasons WHERE is_archived=FALSE ORDER BY id DESC LIMIT 1`).
-			Scan(&seasonID, &seasonName)
-
-		var weeksElapsed int32
-		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM weeks WHERE season_id=$1 AND start_date <= CURRENT_DATE`, seasonID).
-			Scan(&weeksElapsed)
-
-		var subsExpected int64
-		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM teams WHERE active=TRUE`).Scan(&subsExpected)
-
-		var subsReceived int64
-		s.DB.QueryRow(ctx, `SELECT COUNT(DISTINCT team_id) FROM submissions WHERE season_id=$1`, seasonID).
-			Scan(&subsReceived)
-
-		totalExpected := subsExpected * int64(weeksElapsed)
-		complianceRate := 0.0
-		if totalExpected > 0 {
-			complianceRate = float64(subsReceived) / float64(totalExpected) * 100
-			if complianceRate > 100 {
-				complianceRate = 100
-			}
+		currentWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		if err != nil {
+			http.Error(w, "No competition week is configured.", http.StatusServiceUnavailable)
+			return
 		}
+		seasonID := currentWeek.SeasonID
+		seasonName := currentWeek.SeasonName
+
+		seasonProgress, err := s.loadSeasonReportProgress(ctx, seasonID, currentWeek.ComplianceStartWeek)
+		if err != nil {
+			http.Error(w, "Could not load season report progress.", http.StatusInternalServerError)
+			return
+		}
+		subsReceived := seasonProgress.Submitted
+		totalExpected := seasonProgress.Expected
+		complianceRate := seasonProgress.completionRate()
 
 		var avgPitch float64
 		s.DB.QueryRow(ctx, `SELECT COALESCE(AVG(pitch_rating),0) FROM submissions WHERE season_id=$1`, seasonID).
@@ -575,29 +581,10 @@ func (s *Server) handleAdminExecReportPrint() http.HandlerFunc {
 		var sanctionsTotal int64
 		s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sanctions WHERE season_id=$1`, seasonID).Scan(&sanctionsTotal)
 
-		type clubRow struct {
-			Club     string
-			Teams    int64
-			Subs     int64
-			AvgPitch float64
-		}
-		var clubs []clubRow
-		crowsq, err := s.DB.Query(ctx, `
-			SELECT cl.name, COUNT(DISTINCT t.id), COUNT(DISTINCT sub.team_id),
-			       COALESCE(ROUND(AVG(sub.pitch_rating)::numeric,2),0)
-			FROM clubs cl
-			JOIN teams t ON t.club_id=cl.id AND t.active=TRUE
-			LEFT JOIN submissions sub ON sub.team_id=t.id AND sub.season_id=$1
-			GROUP BY cl.name ORDER BY cl.name ASC
-		`, seasonID)
-		if err == nil {
-			defer crowsq.Close()
-			for crowsq.Next() {
-				var cr clubRow
-				if crowsq.Scan(&cr.Club, &cr.Teams, &cr.Subs, &cr.AvgPitch) == nil {
-					clubs = append(clubs, cr)
-				}
-			}
+		clubs, err := s.loadSeasonClubReportProgress(ctx, seasonID, currentWeek.ComplianceStartWeek)
+		if err != nil {
+			http.Error(w, "Could not load club report progress.", http.StatusInternalServerError)
+			return
 		}
 
 		type umpireRow struct {
@@ -670,35 +657,28 @@ button.print-btn { float: right; padding: 6px 14px; background: #8b0000; color: 
 <h1>GMCL Executive Report</h1>
 <p class="meta">%s &mdash; Generated %s</p>
 <div class="kpis">
-  <div class="kpi"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Season Compliance</div></div>
-  <div class="kpi"><div class="kpi-num">%d / %d</div><div class="kpi-label">Subs / Expected</div></div>
+  <div class="kpi"><div class="kpi-num">%.1f%%</div><div class="kpi-label">Season Completion</div></div>
+  <div class="kpi"><div class="kpi-num">%d + %d / %d</div><div class="kpi-label">Received + exempt / required</div></div>
   <div class="kpi"><div class="kpi-num">%.2f</div><div class="kpi-label">Avg Pitch Rating</div></div>
   <div class="kpi"><div class="kpi-num">%d</div><div class="kpi-label">Sanctions Issued</div></div>
 </div>
 `,
 			seasonName, escapeHTML(seasonName), time.Now().Format("2 Jan 2006 15:04"),
-			complianceRate, subsReceived, totalExpected, avgPitch, sanctionsTotal,
+			complianceRate, subsReceived, seasonProgress.Exempt, totalExpected, avgPitch, sanctionsTotal,
 		)
 
 		fmt.Fprint(w, `<h2>Club Compliance</h2>
-<table><tr><th>Club</th><th>Teams</th><th>Submissions</th><th>Expected</th><th>Compliance</th><th>Avg Pitch</th></tr>`)
+<table><tr><th>Club</th><th>Teams</th><th>Received</th><th>Exempt</th><th>Required</th><th>Missing</th><th>Completion</th><th>Avg Pitch</th></tr>`)
 		for _, c := range clubs {
-			exp := c.Teams * int64(weeksElapsed)
-			rate := 0.0
-			if exp > 0 {
-				rate = float64(c.Subs) / float64(exp) * 100
-				if rate > 100 {
-					rate = 100
-				}
-			}
+			rate := c.completionRate()
 			cls := "badge-ok"
 			if rate < 50 {
 				cls = "badge-bad"
 			} else if rate < 80 {
 				cls = "badge-warn"
 			}
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td class="%s">%.1f%%</td><td>%.2f</td></tr>`,
-				escapeHTML(c.Club), c.Teams, c.Subs, exp, cls, rate, c.AvgPitch)
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td class="%s">%.1f%%</td><td>%.2f</td></tr>`,
+				escapeHTML(c.Club), c.Teams, c.Submitted, c.Exempt, c.Expected, c.Missing, cls, rate, c.AvgPitch)
 		}
 		fmt.Fprint(w, `</table>`)
 

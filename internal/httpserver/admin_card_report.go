@@ -237,19 +237,17 @@ func (s *Server) resolveCardReportWeek(ctx context.Context, requestedWeekID int3
 		`, requestedWeekID).Scan(&week.ID, &week.SeasonID, &week.SeasonName, &week.Number, &week.StartDate, &week.EndDate)
 		return week, err
 	}
-	err := s.DB.QueryRow(ctx, `
-		SELECT w.id, s.id, s.name, w.week_number, w.start_date, w.end_date
-		FROM weeks w
-		JOIN seasons s ON s.id = w.season_id
-		WHERE s.is_archived = FALSE
-		ORDER BY
-		    CASE WHEN CURRENT_DATE BETWEEN w.start_date AND w.end_date THEN 0
-		         WHEN w.start_date > CURRENT_DATE THEN 1
-		         ELSE 2 END,
-		    abs(w.start_date - CURRENT_DATE)
-		LIMIT 1
-	`).Scan(&week.ID, &week.SeasonID, &week.SeasonName, &week.Number, &week.StartDate, &week.EndDate)
-	return week, err
+	resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+	if err != nil {
+		return week, err
+	}
+	week.ID = resolved.ID
+	week.SeasonID = resolved.SeasonID
+	week.SeasonName = resolved.SeasonName
+	week.Number = resolved.Number
+	week.StartDate = resolved.StartDate
+	week.EndDate = resolved.EndDate
+	return week, nil
 }
 
 func (s *Server) cardReportWeekOptions(ctx context.Context) []cardReportWeek {

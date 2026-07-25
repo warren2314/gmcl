@@ -9,6 +9,7 @@ import (
 )
 
 const rulesAssistantAssetVersion = "20260724-1"
+const brandAssetVersion = "20260725-2"
 
 const (
 	bootstrapCSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -55,18 +56,18 @@ func pageHead(w io.Writer, title string) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#C41E3A">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="GMCL Admin">
+  <meta name="apple-mobile-web-app-title" content="GMCL">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <title>%s — GMCL Admin</title>
+  <title>%s — GMCL</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
-  <link href="/static/css/brand.css" rel="stylesheet">
+  <link href="/static/css/brand.css?v=%s" rel="stylesheet">
   %s
   <script src="%s"></script>
 </head>
 <body>
-`, escapeHTML(title), bootstrapCSS, rulesAssistantStylesheet(), htmxJS)
+`, escapeHTML(title), bootstrapCSS, brandAssetVersion, rulesAssistantStylesheet(), htmxJS)
 }
 
 // pageHeadWithCharts writes the opening HTML including Chart.js for chart-heavy pages.
@@ -84,13 +85,13 @@ func pageHeadWithCharts(w io.Writer, title string) {
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link href="%s" rel="stylesheet">
-  <link href="/static/css/brand.css" rel="stylesheet">
+  <link href="/static/css/brand.css?v=%s" rel="stylesheet">
   %s
   <script src="%s"></script>
   <script src="%s"></script>
 </head>
 <body>
-`, escapeHTML(title), bootstrapCSS, rulesAssistantStylesheet(), htmxJS, chartJS)
+`, escapeHTML(title), bootstrapCSS, brandAssetVersion, rulesAssistantStylesheet(), htmxJS, chartJS)
 }
 
 // writeCaptainNav writes a simple top navbar with logo and app name.
@@ -149,9 +150,11 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 
 	missingReportItem := ""
 	starredReplacementItem := ""
+	pitchMarksItem := ""
 	if role == "super_admin" {
 		missingReportItem = `<li><a class="dropdown-item" href="/admin/reports/missing-submissions">Missing Submissions &amp; Cards</a></li>`
-		starredReplacementItem = navLink("/admin/starred-player-replacements", "Player Replacements")
+		starredReplacementItem = `<li><a class="dropdown-item" href="/admin/starred-player-replacements">Player replacements</a></li>`
+		pitchMarksItem = `<li><a class="dropdown-item" href="/admin/pitch-marks">Pitch data import</a></li>`
 	}
 
 	sanctionsMenu := fmt.Sprintf(`
@@ -172,52 +175,73 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
           </ul>
         </li>`, dropdownActive("/admin/cases", "/admin/sanctions"))
 
-	opsMenu := fmt.Sprintf(`
+	operationsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
-            Submissions
+            Match Operations
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item" href="/admin/submissions">Search by Club</a></li>
-            <li><a class="dropdown-item" href="/admin/weeks">Weeks</a></li>
-            <li><a class="dropdown-item" href="/admin/compliance">Compliance</a></li>
-            <li><a class="dropdown-item" href="/admin/reminders/preview">Reminder Preview</a></li>
-            <li><a class="dropdown-item" href="/admin/captain-preview">Captain Form Preview</a></li>
+            <li><a class="dropdown-item" href="/admin/fixtures">Fixtures</a></li>
+            <li><a class="dropdown-item" href="/admin/compliance">Weekly compliance</a></li>
+            <li><a class="dropdown-item" href="/admin/submissions">Find submissions</a></li>
+            <li><a class="dropdown-item" href="/admin/weeks">All weeks</a></li>
+            <li><a class="dropdown-item" href="/admin/reminders/preview">Reminder centre</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="/admin/teams-captains">Teams &amp; captains</a></li>
+            <li><a class="dropdown-item" href="/admin/captain-preview">Captain form preview</a></li>
           </ul>
-        </li>
+        </li>`,
+		dropdownActive("/admin/fixtures", "/admin/compliance", "/admin/submissions", "/admin/weeks", "/admin/reminders", "/admin/teams-captains", "/admin/captain-preview"),
+	)
+
+	performanceMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
-            Rankings
+            Performance
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item" href="/admin/rankings">Club Rankings</a></li>
-            <li><a class="dropdown-item" href="/admin/rankings/umpires">Umpire Rankings</a></li>
-			<li><a class="dropdown-item" href="/admin/pitch-marks">Pitch Mark CSV</a></li>
+            <li><a class="dropdown-item" href="/admin/rankings">Club rankings</a></li>
+            <li><a class="dropdown-item" href="/admin/rankings/umpires">Umpire rankings</a></li>
+            %s
           </ul>
-        </li>
+        </li>`,
+		dropdownActive("/admin/rankings", "/admin/pitch-marks"),
+		pitchMarksItem,
+	)
+
+	reportsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
             Reports
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item" href="/admin/reports/exec">Executive Report</a></li>
+            <li><a class="dropdown-item" href="/admin/reports/exec">Executive report</a></li>
             %s
-            <li><a class="dropdown-item" href="/admin/reports">Generated Reports</a></li>
+            <li><a class="dropdown-item" href="/admin/reports">Generated reports</a></li>
           </ul>
-        </li>
-		%s
-		%s
-		%s
-		%s
-		%s`,
-		dropdownActive("/admin/submissions", "/admin/weeks", "/admin/compliance", "/admin/reminders", "/admin/captain-preview"),
-		dropdownActive("/admin/rankings", "/admin/pitch-marks"),
+        </li>`,
 		dropdownActive("/admin/reports"),
 		missingReportItem,
-		sanctionsMenu,
-		navLink("/admin/rules-assistant", "Hawk AI"),
-		navLink("/admin/fixtures", "Fixtures"),
-		navLink("/admin/teams-captains", "Teams & Captains"),
+	)
+
+	opsMenu := operationsMenu + performanceMenu + sanctionsMenu + reportsMenu +
+		navLink("/admin/rules-assistant", "Hawk AI")
+
+	competitionMenu := fmt.Sprintf(`
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
+            Competition
+          </a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item" href="/admin/play-cricket">Play-Cricket sync</a></li>
+            <li><a class="dropdown-item" href="/admin/starred-players">Starred players</a></li>
+            %s
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="/admin/submissions/import">Legacy submission import</a></li>
+            <li><a class="dropdown-item" href="/admin/csv/captains">Captain data import</a></li>
+          </ul>
+        </li>`,
+		dropdownActive("/admin/play-cricket", "/admin/starred-players", "/admin/starred-player-replacements", "/admin/submissions/import", "/admin/csv"),
 		starredReplacementItem,
 	)
 
@@ -227,24 +251,20 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             System
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item" href="/admin/email-health">Email Health</a></li>
-            <li><a class="dropdown-item" href="/admin/link-diagnostics">Link Diagnostics</a></li>
-            <li><a class="dropdown-item" href="/admin/play-cricket">Play-Cricket</a></li>
-			<li><a class="dropdown-item" href="/admin/starred-players">Starred Players</a></li>
-            <li><a class="dropdown-item" href="/admin/submissions/import">Import Legacy Submissions</a></li>
-            <li><a class="dropdown-item" href="/admin/security">Security & Privacy</a></li>
+            <li><a class="dropdown-item" href="/admin/email-health">Email health</a></li>
+            <li><a class="dropdown-item" href="/admin/link-diagnostics">Link diagnostics</a></li>
+            <li><a class="dropdown-item" href="/admin/security">Security &amp; privacy</a></li>
             <li><a class="dropdown-item" href="/admin/gdpr">GDPR</a></li>
-            <li><a class="dropdown-item" href="/admin/form-settings">Form Settings</a></li>
-            <li><a class="dropdown-item" href="/admin/users">Admin Users</a></li>
-            <li><a class="dropdown-item" href="/admin/csv/captains">Captain CSV Upload</a></li>
+            <li><a class="dropdown-item" href="/admin/form-settings">Form settings</a></li>
+            <li><a class="dropdown-item" href="/admin/users">Users &amp; access</a></li>
           </ul>
         </li>`,
-		dropdownActive("/admin/email-health", "/admin/link-diagnostics", "/admin/play-cricket", "/admin/starred-players", "/admin/submissions/import", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/csv"),
+		dropdownActive("/admin/email-health", "/admin/link-diagnostics", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users"),
 	)
 
 	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
 	if role == "super_admin" {
-		menu += systemMenu
+		menu += competitionMenu + systemMenu
 	}
 	accountMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">

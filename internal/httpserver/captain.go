@@ -51,29 +51,56 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
 			return
 		}
 		csrfToken := middleware.CSRFToken(r)
+		weekContext := "Competition schedule unavailable"
+		if resolved, err := s.resolveCompetitionWeek(r.Context(), competitionWeekForDisplay); err == nil {
+			weekContext = fmt.Sprintf(
+				"%s · Week %d · %s",
+				escapeHTML(resolved.SeasonName),
+				resolved.Number,
+				competitionWeekStatusLabel(resolved.Status),
+			)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ground Feedback")
 		writeCaptainNav(w)
-		fmt.Fprint(w, `<div class="container" style="max-width:540px">
-<div class="card card-gmcl shadow-sm">
-  <div class="card-body text-center">
-    <img src="/images/logo.webp" alt="GMCL" style="max-width:280px" class="mb-3">
-    <h4 class="card-title mb-4">Request match feedback link</h4>
+		fmt.Fprintf(w, `<main class="container public-entry">
+  <div class="row g-4 g-lg-5 align-items-center">
+    <section class="col-12 col-lg-6" aria-labelledby="entry-heading">
+      <div class="eyebrow">Captain reporting</div>
+      <h1 id="entry-heading" class="display-6 fw-bold mb-3">Match feedback, securely connected to your team.</h1>
+      <p class="lead text-muted mb-4">Choose your club and team. We will send the registered captain a secure, single-use link for the correct competition week.</p>
+      <div class="competition-context mb-4">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>%s</span>
+      </div>
+      <ol class="entry-steps" aria-label="How captain reporting works">
+        <li><strong>Find your team</strong><span>Search by the club name used by GMCL.</span></li>
+        <li><strong>Confirm the captain</strong><span>We use the current registered team contact.</span></li>
+        <li><strong>Use the secure link</strong><span>The latest link replaces any older unused link.</span></li>
+      </ol>
+      <a href="/submissions" class="btn btn-outline-primary">Check submission status</a>
+    </section>
+    <section class="col-12 col-lg-6" aria-labelledby="request-link-heading">
+      <div class="card card-gmcl entry-card">
+        <div class="card-body p-4 p-md-5">
+          <div class="eyebrow">Secure access</div>
+          <h2 id="request-link-heading" class="h3 mb-2">Request your feedback link</h2>
+          <p class="text-muted mb-4">The link is sent only to the captain email held on file.</p>
     <form method="POST" action="/magic-link/request" id="entry-form">
-      <input type="hidden" name="csrf_token" value="`+csrfToken+`">
+      <input type="hidden" name="csrf_token" value="%s">
       <input type="hidden" name="club_id" id="club_id">
       <input type="hidden" name="team_id" id="team_id">
 
       <!-- Club typeahead -->
       <div class="mb-3 text-start position-relative">
-        <label class="form-label">Club</label>
-        <input type="text" class="form-control" id="club_search" placeholder="Start typing your club name..." autocomplete="off" required>
-        <div id="club-results" class="list-group position-absolute w-100" style="z-index:1050;max-height:240px;overflow-y:auto;display:none"></div>
+        <label class="form-label" for="club_search">Club</label>
+        <input type="text" class="form-control" id="club_search" placeholder="Start typing your club name..." autocomplete="off" aria-autocomplete="list" aria-controls="club-results" aria-expanded="false" required>
+        <div id="club-results" class="list-group club-results position-absolute w-100" role="listbox"></div>
       </div>
 
       <!-- Team select (hidden until club chosen) -->
       <div class="mb-3 text-start" id="team-group" style="display:none">
-        <label class="form-label">Team</label>
+        <label class="form-label" for="team_select">Team</label>
         <select class="form-select" id="team_select" required disabled>
           <option value="">Select team...</option>
         </select>
@@ -81,17 +108,22 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
 
       <!-- Captain display (hidden until team chosen) -->
       <div class="mb-3 text-start" id="captain-group" style="display:none">
-        <label class="form-label">Captain</label>
+        <label class="form-label" for="captain_display">Registered captain</label>
         <input type="text" class="form-control" id="captain_display" readonly>
       </div>
 
-      <button type="submit" class="btn btn-primary w-100" id="submit-btn" disabled>Send link</button>
+      <button type="submit" class="btn btn-primary btn-lg w-100" id="submit-btn" disabled>Send secure link</button>
+      <p class="form-text mt-3 mb-0">Your selection is used only to identify the registered captain. The captain's email address is never shown here.</p>
     </form>
+        </div>
+      </div>
+    </section>
   </div>
-</div>
-</div>
+</main>
 
 <script>
+`, weekContext, escapeHTML(csrfToken))
+		fmt.Fprint(w, `
 (function() {
   const clubInput  = document.getElementById('club_search');
   const clubIdEl   = document.getElementById('club_id');
@@ -109,17 +141,26 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
   clubInput.addEventListener('input', function() {
     clearTimeout(debounce);
     const q = this.value.trim();
-    if (q.length < 2) { results.style.display = 'none'; return; }
+    if (q.length < 2) {
+      results.style.display = 'none';
+      clubInput.setAttribute('aria-expanded', 'false');
+      return;
+    }
     debounce = setTimeout(function() {
       fetch('/api/clubs/search?q=' + encodeURIComponent(q))
         .then(function(r) { return r.json(); })
         .then(function(clubs) {
           results.innerHTML = '';
-          if (!clubs.length) { results.style.display = 'none'; return; }
+          if (!clubs.length) {
+            results.style.display = 'none';
+            clubInput.setAttribute('aria-expanded', 'false');
+            return;
+          }
           clubs.forEach(function(c) {
             const a = document.createElement('a');
             a.href = '#';
             a.className = 'list-group-item list-group-item-action';
+            a.setAttribute('role', 'option');
             a.textContent = c.name;
             a.addEventListener('click', function(e) {
               e.preventDefault();
@@ -128,6 +169,12 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
             results.appendChild(a);
           });
           results.style.display = 'block';
+          clubInput.setAttribute('aria-expanded', 'true');
+        })
+        .catch(function() {
+          results.innerHTML = '<div class="list-group-item text-danger">Club search is temporarily unavailable. Please try again.</div>';
+          results.style.display = 'block';
+          clubInput.setAttribute('aria-expanded', 'true');
         });
     }, 250);
   });
@@ -136,6 +183,7 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
   document.addEventListener('click', function(e) {
     if (!results.contains(e.target) && e.target !== clubInput) {
       results.style.display = 'none';
+      clubInput.setAttribute('aria-expanded', 'false');
     }
   });
 
@@ -143,6 +191,7 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
     clubInput.value = name;
     clubIdEl.value = id;
     results.style.display = 'none';
+    clubInput.setAttribute('aria-expanded', 'false');
     // Reset downstream
     teamSelect.innerHTML = '<option value="">Loading...</option>';
     teamSelect.disabled = true;
@@ -163,6 +212,10 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
           teamSelect.appendChild(opt);
         });
         teamSelect.disabled = false;
+      })
+      .catch(function() {
+        teamSelect.innerHTML = '<option value="">Teams are temporarily unavailable</option>';
+        teamSelect.disabled = true;
       });
   }
 
@@ -189,6 +242,10 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
           capDisplay.value = 'No captain found for this team';
           submitBtn.disabled = true;
         }
+      })
+      .catch(function() {
+        capDisplay.value = 'Captain details are temporarily unavailable';
+        submitBtn.disabled = true;
       });
   });
 
@@ -231,48 +288,14 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		// Determine effective week server-side.
-		// Priority: active week today -> most recent past week -> nearest upcoming week.
-		var weekID int32
-		var seasonID int32
-		err := s.DB.QueryRow(ctx, `
-			WITH active AS (
-				SELECT w.id, w.season_id, 1 AS p, w.start_date
-				FROM weeks w
-				WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
-				ORDER BY w.start_date
-				LIMIT 1
-			),
-			past AS (
-				SELECT w.id, w.season_id, 2 AS p, w.start_date
-				FROM weeks w
-				WHERE w.end_date < CURRENT_DATE
-				ORDER BY w.end_date DESC
-				LIMIT 1
-			),
-			upcoming AS (
-				SELECT w.id, w.season_id, 3 AS p, w.start_date
-				FROM weeks w
-				WHERE w.start_date > CURRENT_DATE
-				ORDER BY w.start_date ASC
-				LIMIT 1
-			)
-			SELECT id, season_id
-			FROM (
-				SELECT * FROM active
-				UNION ALL
-				SELECT * FROM past
-				UNION ALL
-				SELECT * FROM upcoming
-			) choices
-			ORDER BY p, start_date
-			LIMIT 1
-		`).Scan(&weekID, &seasonID)
+		resolvedWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForSubmission)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, "No match week is configured yet. Please contact an administrator.")
 			return
 		}
+		weekID := resolvedWeek.ID
+		seasonID := resolvedWeek.SeasonID
 
 		// Look up captain for team (simplified: latest active).
 		var captainID int32
@@ -285,11 +308,11 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 			WHERE c.team_id = $2
 			  AND t.club_id = $3
 			  AND t.active = TRUE
-			  AND c.active_from <= CURRENT_DATE
-			  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
+			  AND c.active_from <= $4::date
+			  AND (c.active_to IS NULL OR c.active_to >= $4::date)
 			ORDER BY c.active_from DESC, c.id DESC
 			LIMIT 1
-		`, weekID, teamID, clubID).Scan(&captainID, &seasonID, &captainEmail)
+		`, weekID, teamID, clubID, s.londonDate()).Scan(&captainID, &seasonID, &captainEmail)
 		if err != nil {
 			// Avoid enumeration: always say success.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")

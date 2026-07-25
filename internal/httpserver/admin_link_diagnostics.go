@@ -692,45 +692,23 @@ func (s *Server) loadLinkDiagnostics(ctx context.Context, data *linkDiagPageData
 }
 
 func (s *Server) sendFreshCaptainAccessLink(ctx context.Context, r *http.Request, captainID int32) (string, error) {
-	var seasonID, weekID int32
-	if err := s.DB.QueryRow(ctx, `
-		WITH active AS (
-			SELECT w.id, w.season_id, 1 AS p, w.start_date
-			FROM weeks w
-			WHERE CURRENT_DATE BETWEEN w.start_date AND w.end_date
-			ORDER BY w.start_date
-			LIMIT 1
-		),
-		past AS (
-			SELECT w.id, w.season_id, 2 AS p, w.start_date
-			FROM weeks w
-			WHERE w.end_date < CURRENT_DATE
-			ORDER BY w.end_date DESC
-			LIMIT 1
-		)
-		SELECT id, season_id
-		FROM (
-			SELECT * FROM active
-			UNION ALL
-			SELECT * FROM past
-		) choices
-		ORDER BY p, start_date DESC
-		LIMIT 1
-	`).Scan(&weekID, &seasonID); err != nil {
+	week, err := s.resolveCompetitionWeek(ctx, competitionWeekForSupportLink)
+	if err != nil {
 		return "", fmt.Errorf("could not resolve current week: %w", err)
 	}
+	seasonID, weekID := week.SeasonID, week.ID
 
 	var captainEmail, captainName string
 	if err := s.DB.QueryRow(ctx, `
 		SELECT c.full_name,
-		       COALESCE(CASE WHEN c.email_override IS NOT NULL AND c.email_override_until >= CURRENT_DATE THEN TRIM(c.email_override) END, TRIM(c.email))
+		       COALESCE(CASE WHEN c.email_override IS NOT NULL AND c.email_override_until >= $2::date THEN TRIM(c.email_override) END, TRIM(c.email))
 		FROM captains c
 		JOIN teams t ON t.id = c.team_id
 		WHERE c.id = $1
 		  AND t.active = TRUE
-		  AND c.active_from <= CURRENT_DATE
-		  AND (c.active_to IS NULL OR c.active_to >= CURRENT_DATE)
-	`, captainID).Scan(&captainName, &captainEmail); err != nil {
+		  AND c.active_from <= $2::date
+		  AND (c.active_to IS NULL OR c.active_to >= $2::date)
+	`, captainID, s.londonDate()).Scan(&captainName, &captainEmail); err != nil {
 		return "", fmt.Errorf("could not load captain: %w", err)
 	}
 

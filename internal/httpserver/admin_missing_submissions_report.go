@@ -195,10 +195,10 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		FROM weeks w
 		JOIN seasons se ON se.id = w.season_id
 		WHERE se.is_archived = FALSE
-		  AND w.start_date <= CURRENT_DATE
+		  AND w.start_date <= $1::date
 		ORDER BY w.start_date DESC, w.week_number DESC
 		LIMIT 2
-	`)
+	`, s.londonDate())
 	if err != nil {
 		return data, err
 	}
@@ -233,7 +233,7 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		    FROM weeks w
 		    JOIN seasons se ON se.id = w.season_id
 		    WHERE se.is_archived = FALSE
-		      AND w.start_date <= CURRENT_DATE
+		      AND w.start_date <= $1::date
 		    ORDER BY w.start_date DESC, w.week_number DESC
 		    LIMIT 2
 		),
@@ -355,7 +355,7 @@ func (s *Server) loadMissingSubmissionsReport(ctx context.Context) (missingSubmi
 		       case_id,reference,case_status,effect_type,points
 		FROM fixture_status
 		ORDER BY week_number DESC, match_date DESC, club_name, team_name, play_cricket_match_id
-	`)
+	`, s.londonDate())
 	if err != nil {
 		return data, err
 	}
