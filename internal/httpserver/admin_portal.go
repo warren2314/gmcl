@@ -40,6 +40,12 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 			http.Error(w, "could not load portal appointments", http.StatusInternalServerError)
 			return
 		}
+		reconciliation, err := s.PortalStore.ListClubReconciliation(ctx)
+		if err != nil {
+			slog.Error("load portal club reconciliation", "error", err)
+			http.Error(w, "could not load portal reconciliation", http.StatusInternalServerError)
+			return
+		}
 		csrf := ""
 		if cookie, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrf = cookie.Value
@@ -102,6 +108,33 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 			)
 		}
 		fmt.Fprint(w, `</tbody></table></div></div></section></div></div>
+<section class="card shadow-sm mt-4"><div class="card-header"><strong>Pilot data reconciliation</strong></div>
+<div class="card-body border-bottom"><p class="small text-muted mb-0">Review these source counts before enabling a club. “Mapped” means an active team has a non-empty Play-Cricket team identifier; it does not replace representative record sign-off.</p></div>
+<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Club</th><th>Team mapping</th><th>Captain contacts</th><th>Portal members / roles</th><th>Latest mapped fixture sync</th></tr></thead><tbody>`)
+		if len(reconciliation) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="5" class="text-muted">No club reconciliation rows are available.</td></tr>`)
+		}
+		for _, summary := range reconciliation {
+			mappingState := `<span class="badge text-bg-warning">Incomplete</span>`
+			if summary.TeamMappingsComplete() {
+				mappingState = `<span class="badge text-bg-success">Complete</span>`
+			}
+			lastSync := "Unavailable"
+			if summary.LastFixtureSyncAt != nil {
+				lastSync = portalLocalTime(*summary.LastFixtureSyncAt, s.LondonLoc)
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s <span class="small text-muted">%d/%d active teams</span></td><td>%d</td><td>%d / %d</td><td>%s</td></tr>`,
+				escapeHTML(summary.ClubName),
+				mappingState,
+				summary.MappedActiveTeams,
+				summary.ActiveTeams,
+				summary.ActiveCaptainContacts,
+				summary.ActiveMemberships,
+				summary.ActiveAssignments,
+				escapeHTML(lastSync),
+			)
+		}
+		fmt.Fprint(w, `</tbody></table></div></section>
 <section class="card shadow-sm mt-4"><div class="card-header"><strong>Recent onboarding approvals</strong></div><div class="table-responsive"><table class="table table-striped mb-0"><thead><tr><th>Club</th><th>Named account</th><th>Role</th><th>Status</th><th>Approved</th><th>Expires</th><th></th></tr></thead><tbody>`)
 		if len(invitations) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="7" class="text-muted">No invitations have been approved.</td></tr>`)

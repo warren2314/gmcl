@@ -545,6 +545,7 @@ BEGIN
         GRANT SELECT ON
             clubs,
             teams,
+            captains,
             seasons,
             weeks,
             league_fixtures,

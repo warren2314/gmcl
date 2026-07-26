@@ -220,6 +220,25 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if dashboard.LastFixtureSyncAt != nil {
 		t.Fatalf("dashboard reported fixture freshness without a source sync: %v", dashboard.LastFixtureSyncAt)
 	}
+	reconciliation, err := store.ListClubReconciliation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reconciledClub *ClubReconciliationSummary
+	for index := range reconciliation {
+		if reconciliation[index].ClubID == clubID {
+			reconciledClub = &reconciliation[index]
+			break
+		}
+	}
+	if reconciledClub == nil ||
+		reconciledClub.ActiveTeams != 1 ||
+		reconciledClub.MappedActiveTeams != 1 ||
+		reconciledClub.ActiveMemberships != 1 ||
+		reconciledClub.ActiveAssignments != 1 ||
+		!reconciledClub.TeamMappingsComplete() {
+		t.Fatalf("pilot reconciliation = %#v", reconciledClub)
+	}
 	obligations, err := store.LoadReportObligations(ctx, rotatedPrincipal, dashboard.SeasonID)
 	if err != nil {
 		t.Fatal(err)
