@@ -551,6 +551,7 @@ BEGIN
             submissions,
             report_exemptions,
             sanctions,
+            sanction_cases,
             sanction_card_ledger_entries,
             admin_users
         TO gmcl_portal_runtime;

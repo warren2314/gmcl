@@ -24,6 +24,8 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
 - Read-only action-centre totals over existing Play-Cricket fixtures, submissions, exemptions and the team-level sanctions ledger.
+- Tenant-scoped report-obligation history with fixture/match/submission source identifiers, deadlines, exemption reasons and derived due/submitted/late/missed status.
+- Tenant-scoped sanction-ledger history showing only team deltas and public case fields; the repository never selects private summaries, reporter details or internal notes.
 - Explicit unavailable/stale and unreconciled-legacy states; missing source data is not rendered as zero/compliant.
 - Sensitive onboarding email refuses the development body-logging fallback and requires SMTP.
 

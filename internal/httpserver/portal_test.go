@@ -76,3 +76,12 @@ func TestRenderPortalSignInFailedIsGeneric(t *testing.T) {
 		}
 	}
 }
+
+func TestPortalStatusBadgeHandlesUnknownStatus(t *testing.T) {
+	if badge := portalStatusBadge(""); !strings.Contains(badge, "Unknown") {
+		t.Fatalf("empty status badge = %q", badge)
+	}
+	if badge := portalStatusBadge(`<script>alert(1)</script>`); strings.Contains(badge, "<script>") {
+		t.Fatalf("status badge did not escape input: %q", badge)
+	}
+}

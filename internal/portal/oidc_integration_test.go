@@ -177,6 +177,20 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if dashboard.LastFixtureSyncAt != nil {
 		t.Fatalf("dashboard reported fixture freshness without a source sync: %v", dashboard.LastFixtureSyncAt)
 	}
+	obligations, err := store.LoadReportObligations(ctx, rotatedPrincipal, dashboard.SeasonID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obligations) != 0 {
+		t.Fatalf("unexpected synthetic report obligations: %#v", obligations)
+	}
+	ledger, err := store.LoadSanctionLedger(ctx, rotatedPrincipal, dashboard.SeasonID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger) != 0 {
+		t.Fatalf("unexpected synthetic sanction ledger: %#v", ledger)
+	}
 	if err := store.RevokeAllUserSessions(
 		ctx,
 		rotatedPrincipal,

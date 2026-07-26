@@ -34,6 +34,8 @@ func (s *Server) portalRouter() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.requirePortalSession())
 		r.Get("/", s.handlePortalHome())
+		r.Get("/reports", s.handlePortalReports())
+		r.Get("/sanctions", s.handlePortalSanctions())
 		r.Get("/contexts", s.handlePortalContexts())
 		r.Post("/contexts", s.handlePortalContextSelect())
 		r.Get("/sessions", s.handlePortalSessions())
@@ -100,6 +102,175 @@ func portalClientDetails(r *http.Request) portal.ClientDetails {
 		IPAddress: ipAddress,
 		UserAgent: r.UserAgent(),
 	}
+}
+
+func (s *Server) handlePortalReports() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := portalPrincipalForRequest(r)
+		if !ok || principal.Assignment == nil {
+			http.Redirect(w, r, "/portal/contexts", http.StatusSeeOther)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		enabled, err := s.PortalStore.FeatureEnabled(ctx, principal, portal.FeatureReadOnlyDashboard)
+		if err != nil || !enabled {
+			http.Error(w, "this portal module is not enabled for the selected club", http.StatusForbidden)
+			return
+		}
+		dashboard, err := s.PortalStore.LoadClubDashboard(ctx, principal)
+		if err != nil {
+			slog.Error("load report history dashboard context", "error", err)
+			http.Error(w, "could not load report history", http.StatusInternalServerError)
+			return
+		}
+		obligations, err := s.PortalStore.LoadReportObligations(ctx, principal, dashboard.SeasonID)
+		if err != nil {
+			if errors.Is(err, portal.ErrForbidden) {
+				http.Error(w, "the selected role cannot view report history", http.StatusForbidden)
+				return
+			}
+			slog.Error("load tenant-scoped report obligations", "error", err)
+			http.Error(w, "could not load report history", http.StatusInternalServerError)
+			return
+		}
+
+		csrf := portalCSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Report obligations")
+		writePortalNav(w, csrf, principal)
+		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Captain report obligations</h1><p class="text-muted">%s · %s. Status is derived from mapped fixtures, submissions and approved exemptions; no source record can be changed here.</p></div>`,
+			escapeHTML(dashboard.ClubName),
+			escapeHTML(dashboard.SeasonName),
+		)
+		if dashboard.LastFixtureSyncAt == nil {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Fixture source unavailable.</strong> No successful mapped fixture synchronization is visible, so an empty table must not be interpreted as full compliance.</div>`)
+		}
+		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Match</th><th>Team</th><th>Opposition / venue</th><th>Deadline</th><th>Status</th><th>Source records</th></tr></thead><tbody>`)
+		if len(obligations) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="6" class="text-muted">No mapped report obligation is available for this scope.</td></tr>`)
+		}
+		for _, obligation := range obligations {
+			source := fmt.Sprintf("Fixture %d · Play-Cricket match %d", obligation.FixtureID, obligation.MatchID)
+			if obligation.SubmissionID != nil {
+				source += fmt.Sprintf(" · Submission %d", *obligation.SubmissionID)
+			}
+			statusNote := ""
+			if obligation.SubmittedAt != nil {
+				statusNote = `<div class="small text-muted">Received ` + escapeHTML(portalLocalTime(*obligation.SubmittedAt, s.LondonLoc)) + `</div>`
+			} else if obligation.Exempt && obligation.ExemptReason != "" {
+				statusNote = `<div class="small text-muted">` + escapeHTML(obligation.ExemptReason) + `</div>`
+			}
+			opposition := obligation.Opposition
+			if obligation.Venue != "" {
+				opposition += " · " + obligation.Venue
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td><td class="small text-muted">%s</td></tr>`,
+				obligation.MatchDate.In(s.LondonLoc).Format("2 Jan 2006"),
+				escapeHTML(obligation.TeamName),
+				escapeHTML(opposition),
+				escapeHTML(portalLocalTime(obligation.DeadlineAt, s.LondonLoc)),
+				portalStatusBadge(obligation.Status),
+				statusNote,
+				escapeHTML(source),
+			)
+		}
+		fmt.Fprint(w, `</tbody></table></div></div></main>`)
+		pageFooter(w)
+	}
+}
+
+func (s *Server) handlePortalSanctions() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := portalPrincipalForRequest(r)
+		if !ok || principal.Assignment == nil {
+			http.Redirect(w, r, "/portal/contexts", http.StatusSeeOther)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		enabled, err := s.PortalStore.FeatureEnabled(ctx, principal, portal.FeatureReadOnlyDashboard)
+		if err != nil || !enabled {
+			http.Error(w, "this portal module is not enabled for the selected club", http.StatusForbidden)
+			return
+		}
+		dashboard, err := s.PortalStore.LoadClubDashboard(ctx, principal)
+		if err != nil {
+			slog.Error("load sanction history dashboard context", "error", err)
+			http.Error(w, "could not load sanction history", http.StatusInternalServerError)
+			return
+		}
+		entries, err := s.PortalStore.LoadSanctionLedger(ctx, principal, dashboard.SeasonID)
+		if err != nil {
+			if errors.Is(err, portal.ErrForbidden) {
+				http.Error(w, "the selected role cannot view sanction history", http.StatusForbidden)
+				return
+			}
+			slog.Error("load tenant-scoped sanction ledger", "error", err)
+			http.Error(w, "could not load sanction history", http.StatusInternalServerError)
+			return
+		}
+
+		csrf := portalCSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Sanction ledger")
+		writePortalNav(w, csrf, principal)
+		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Team card and points ledger</h1><p class="text-muted">%s · %s. Club totals are calculated from these immutable team-level entries. Internal GMCL notes and private case fields are never selected by this repository.</p></div>`,
+			escapeHTML(dashboard.ClubName),
+			escapeHTML(dashboard.SeasonName),
+		)
+		if dashboard.Sanctions.UnreconciledLegacy > 0 {
+			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Reconciliation required.</strong> %d unlinked legacy row(s) are excluded from this ledger.</div>`, dashboard.Sanctions.UnreconciledLegacy)
+		}
+		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Date</th><th>Team</th><th>Case</th><th>Public outcome</th><th class="text-end">Yellow</th><th class="text-end">Red</th><th class="text-end">Points</th><th>Entry</th></tr></thead><tbody>`)
+		if len(entries) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-muted">No card-ledger entry exists for this season and scope.</td></tr>`)
+		}
+		for _, entry := range entries {
+			entryDate := entry.CreatedAt.In(s.LondonLoc).Format("2 Jan 2006")
+			if entry.MatchDate != nil {
+				entryDate = entry.MatchDate.In(s.LondonLoc).Format("2 Jan 2006")
+			}
+			summary := entry.PublicSummary
+			if summary == "" {
+				summary = "No public summary recorded"
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><div>%s</div><div class="small text-muted">%s</div></td><td class="text-end">%+d</td><td class="text-end">%+d</td><td class="text-end">%+d</td><td>%s</td></tr>`,
+				escapeHTML(entryDate),
+				escapeHTML(entry.TeamName),
+				escapeHTML(entry.CaseReference),
+				escapeHTML(summary),
+				escapeHTML(entry.PublicStatus),
+				entry.YellowDelta,
+				entry.RedDelta,
+				entry.PointsDeduction,
+				escapeHTML(entry.EntryType),
+			)
+		}
+		fmt.Fprint(w, `</tbody></table></div></div></main>`)
+		pageFooter(w)
+	}
+}
+
+func portalStatusBadge(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "unknown"
+	}
+	className := "text-bg-secondary"
+	switch status {
+	case "submitted":
+		className = "text-bg-success"
+	case "late":
+		className = "text-bg-warning"
+	case "exempt":
+		className = "text-bg-info"
+	case "missed":
+		className = "text-bg-danger"
+	case "due":
+		className = "text-bg-primary"
+	}
+	return `<span class="badge ` + className + `">` + escapeHTML(strings.ToUpper(status[:1])+status[1:]) + `</span>`
 }
 
 func (s *Server) handlePortalLogin() http.HandlerFunc {
@@ -607,6 +778,9 @@ func writePortalNav(w http.ResponseWriter, csrf string, principal portal.Princip
 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#portalNav" aria-controls="portalNav" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button>
 <div class="collapse navbar-collapse" id="portalNav"><ul class="navbar-nav ms-auto align-items-lg-center">
 <li class="nav-item"><span class="navbar-text me-lg-3">%s%s</span></li>
+<li class="nav-item"><a class="nav-link" href="/portal">Action centre</a></li>
+<li class="nav-item"><a class="nav-link" href="/portal/reports">Reports</a></li>
+<li class="nav-item"><a class="nav-link" href="/portal/sanctions">Sanctions</a></li>
 <li class="nav-item"><a class="nav-link" href="/portal/contexts">Switch role</a></li>
 <li class="nav-item"><a class="nav-link" href="/portal/sessions">Sessions</a></li>
 <li class="nav-item"><form method="post" action="/portal/logout"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-link nav-link" type="submit">Sign out</button></form></li>
