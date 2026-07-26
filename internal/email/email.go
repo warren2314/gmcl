@@ -140,6 +140,16 @@ func (c *Client) Send(to, subject, body string) error {
 	return nil
 }
 
+// SendSensitive is used for onboarding and recovery messages that contain a
+// bearer secret. Unlike ordinary development mail, it refuses to print the
+// message body when SMTP is not configured.
+func (c *Client) SendSensitive(to, subject, body string) error {
+	if c.host == "" {
+		return fmt.Errorf("SMTP is required for sensitive email")
+	}
+	return c.Send(to, subject, body)
+}
+
 func (c *Client) messageHeaders(to, subject string) (string, error) {
 	headers := "From: " + c.fromHeader + "\r\n" +
 		"To: " + to + "\r\n" +

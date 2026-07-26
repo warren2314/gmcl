@@ -46,6 +46,7 @@ func SecurityHeaders() func(next http.Handler) http.Handler {
 
 func isSensitivePath(path string) bool {
 	return strings.HasPrefix(path, "/admin") ||
+		strings.HasPrefix(path, "/portal") ||
 		strings.HasPrefix(path, "/captain") ||
 		strings.HasPrefix(path, "/magic-link") ||
 		strings.HasPrefix(path, "/sanctions/case") ||

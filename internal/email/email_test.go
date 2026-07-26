@@ -32,6 +32,17 @@ func TestMessageHeadersRejectInvalidReplyTo(t *testing.T) {
 	}
 }
 
+func TestSendSensitiveRequiresSMTP(t *testing.T) {
+	client := &Client{}
+	if err := client.SendSensitive(
+		"official@example.org",
+		"Portal invitation",
+		"secret onboarding link",
+	); err == nil {
+		t.Fatal("sensitive email was allowed to fall back to development logging")
+	}
+}
+
 func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 	html := toHTML("Primary:\nBUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=abc\nBackup:\nBACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=abc\nACCESS_URL:https://gmcl.co.uk/access\nACCESS_CODE:abc")
 

@@ -2,12 +2,14 @@ package httpserver
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"cricket-ground-feedback/internal/db"
 	"cricket-ground-feedback/internal/middleware"
+	"cricket-ground-feedback/internal/portal"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -16,8 +18,11 @@ import (
 type CleanupFunc func()
 
 type Server struct {
-	DB        *db.Pool
-	LondonLoc *time.Location
+	DB            *db.Pool
+	LondonLoc     *time.Location
+	PortalStore   *portal.Store
+	PortalOIDC    *portal.OIDCClient
+	PortalEnabled bool
 }
 
 func NewServer() (http.Handler, CleanupFunc, error) {
@@ -38,7 +43,35 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 		londonLoc = time.UTC
 	}
 
-	s := &Server{DB: pool, LondonLoc: londonLoc}
+	portalSessionPolicy, err := portal.LoadSessionPolicyFromEnv()
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("load club portal session policy: %w", err)
+	}
+	portalStore, err := portal.NewStore(pool, portalSessionPolicy)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("initialise club portal store: %w", err)
+	}
+	portalEnabled := portal.EnabledFromEnv()
+	if portalEnabled {
+		securityCtx, securityCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = portalStore.InitializeSecurity(securityCtx)
+		securityCancel()
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("verify club portal database security: %w", err)
+		}
+	}
+	portalOIDC, err := portal.NewOIDCClient(portalStore, portal.LoadOIDCConfigFromEnv())
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("initialise club portal identity: %w", err)
+	}
+
+	s := &Server{
+		DB:            pool,
+		LondonLoc:     londonLoc,
+		PortalStore:   portalStore,
+		PortalOIDC:    portalOIDC,
+		PortalEnabled: portalEnabled,
+	}
 
 	r := chi.NewRouter()
 
@@ -141,6 +174,12 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 
 	// admin portal
 	r.Mount("/admin", s.adminRouter())
+
+	// Named-account club portal. Routes are absent unless the server-side
+	// programme flag is enabled; pilot clubs have a second database flag.
+	if s.PortalEnabled {
+		r.Mount("/portal", s.portalRouter())
+	}
 
 	// internal n8n endpoints (HMAC protected)
 	internalMux := chi.NewRouter()

@@ -223,6 +223,17 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/deactivate", s.handleAdminUserDeactivate())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/resend-invite", s.handleAdminUserResendInvite())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/delete", s.handleAdminUserDelete())
+
+		if s.PortalEnabled {
+			// Legacy admin authentication is retained only as the separately
+			// authenticated CLO/Super Administrator approval surface during
+			// named-account onboarding.
+			r.With(s.requireAdminRole("super_admin")).Get("/portal", s.handleAdminPortalGet())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/invitations", s.handleAdminPortalInvitationCreate())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/invitations/{id}/revoke", s.handleAdminPortalInvitationRevoke())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/assignments/{id}/revoke", s.handleAdminPortalAssignmentRevoke())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/features", s.handleAdminPortalFeatureUpdate())
+		}
 	})
 
 	r.Post("/logout", func(w http.ResponseWriter, r *http.Request) {

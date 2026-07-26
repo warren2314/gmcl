@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"cricket-ground-feedback/internal/portal"
 )
 
 const rulesAssistantAssetVersion = "20260724-1"
@@ -245,6 +247,10 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		starredReplacementItem,
 	)
 
+	portalPilotItem := ""
+	if portal.EnabledFromEnv() {
+		portalPilotItem = `<li><a class="dropdown-item" href="/admin/portal">Club portal pilot</a></li>`
+	}
 	systemMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
@@ -257,9 +263,11 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             <li><a class="dropdown-item" href="/admin/gdpr">GDPR</a></li>
             <li><a class="dropdown-item" href="/admin/form-settings">Form settings</a></li>
             <li><a class="dropdown-item" href="/admin/users">Users &amp; access</a></li>
+            %s
           </ul>
         </li>`,
-		dropdownActive("/admin/email-health", "/admin/link-diagnostics", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users"),
+		dropdownActive("/admin/email-health", "/admin/link-diagnostics", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users", "/admin/portal"),
+		portalPilotItem,
 	)
 
 	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
