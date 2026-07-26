@@ -26,6 +26,8 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Read-only action-centre totals over existing Play-Cricket fixtures, submissions, exemptions and the team-level sanctions ledger.
 - Tenant-scoped report-obligation history with fixture/match/submission source identifiers, deadlines, exemption reasons and derived due/submitted/late/missed status.
 - Tenant-scoped sanction-ledger history showing only team deltas and public case fields; the repository never selects private summaries, reporter details or internal notes.
+- Historical season and team filters that can only narrow the effective appointment; unavailable identifiers disclose no foreign metadata and create an audited denial event.
+- A selected-team handoff to the existing captain magic-link journey; the portal remains read-only and does not duplicate or replace captain submission behavior.
 - Explicit unavailable/stale and unreconciled-legacy states; missing source data is not rendered as zero/compliant.
 - Sensitive onboarding email refuses the development body-logging fallback and requires SMTP.
 
@@ -105,6 +107,7 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 - Invitation replay, expired invitation and mismatched/unverified email are rejected.
 - A Club A identity receives no Club B membership, count, name, source freshness or detail.
 - Team-scoped roles cannot access another team in the same club.
+- Season/team query filters cannot broaden an appointment; rejected scope identifiers generate a `portal.scope.denied` audit event without confirming whether the identifier exists.
 - Revoking the selected appointment denies the next request.
 - Changing acting context invalidates the previous session token.
 - Revoking one owned session does not expose any token and denies that session's next request.
@@ -113,6 +116,7 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 - Club sanction totals equal the displayed team-ledger rows.
 - Unlinked legacy sanctions trigger a warning and are not silently double-counted.
 - Missing fixture sync produces “Unavailable”; a sync older than 36 hours produces “Stale”.
+- Historical season selection retains teams that are inactive today and preserves the source calculation contract effective for the selected records.
 - Disabling `portal_access` removes all club acting contexts and switches off its module flags.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
@@ -124,7 +128,7 @@ On 26 July 2026, the implementation was validated from a clean disposable Postgr
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
-- The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, dashboard tenant reads and immediate appointment revocation.
+- The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
 - Each disposable test database, container and temporary database role was removed after validation.
 - `git diff --check` passed.

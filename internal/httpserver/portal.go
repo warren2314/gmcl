@@ -36,6 +36,7 @@ func (s *Server) portalRouter() http.Handler {
 		r.Get("/", s.handlePortalHome())
 		r.Get("/reports", s.handlePortalReports())
 		r.Get("/sanctions", s.handlePortalSanctions())
+		r.Get("/captain-handoff", s.handlePortalCaptainHandoff())
 		r.Get("/contexts", s.handlePortalContexts())
 		r.Post("/contexts", s.handlePortalContextSelect())
 		r.Get("/sessions", s.handlePortalSessions())
@@ -113,6 +114,12 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
+		selection, err := s.resolvePortalReadScope(ctx, r, principal)
+		if err != nil {
+			handlePortalReadScopeError(w, err)
+			return
+		}
+		principal = selection.Principal
 		enabled, err := s.PortalStore.FeatureEnabled(ctx, principal, portal.FeatureReadOnlyDashboard)
 		if err != nil || !enabled {
 			http.Error(w, "this portal module is not enabled for the selected club", http.StatusForbidden)
@@ -143,8 +150,19 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 			escapeHTML(dashboard.ClubName),
 			escapeHTML(dashboard.SeasonName),
 		)
+		writePortalReadFilters(w, selection, "/portal/reports")
+		if selection.SelectedTeamID != nil {
+			fmt.Fprintf(w, `<div class="alert alert-info d-flex flex-wrap justify-content-between align-items-center gap-3"><div><strong>Need to submit the current report?</strong><div class="small">Continue through the existing captain magic-link process. This portal history remains read-only.</div></div><a class="btn btn-primary" href="/portal/captain-handoff?season_id=%d&amp;team_id=%d">Open captain report flow</a></div>`,
+				selection.SelectedSeasonID,
+				*selection.SelectedTeamID,
+			)
+		}
 		if dashboard.LastFixtureSyncAt == nil {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Fixture source unavailable.</strong> No successful mapped fixture synchronization is visible, so an empty table must not be interpreted as full compliance.</div>`)
+		} else if dashboard.FixtureSourceStale {
+			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Fixture source is stale.</strong> %s. Verify Play-Cricket synchronization before relying on current obligations.</div>`, escapeHTML(portalSourceNote(dashboard, s.LondonLoc)))
+		} else {
+			fmt.Fprintf(w, `<p class="small text-muted">%s.</p>`, escapeHTML(portalSourceNote(dashboard, s.LondonLoc)))
 		}
 		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Match</th><th>Team</th><th>Opposition / venue</th><th>Deadline</th><th>Status</th><th>Source records</th></tr></thead><tbody>`)
 		if len(obligations) == 0 {
@@ -175,7 +193,8 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 				escapeHTML(source),
 			)
 		}
-		fmt.Fprint(w, `</tbody></table></div></div></main>`)
+		fmt.Fprint(w, `</tbody></table></div></div>
+<p class="small text-muted mt-3">Calculation contract: one obligation per mapped non-bye, non-Friday fixture; satisfied by the first mapped submission or an approved exemption. The deadline is the following Wednesday at 23:59:59 Europe/London. Permitted portal action is view-only; current submissions continue through the existing captain magic-link flow, and corrections continue through the official GMCL escalation route.</p></main>`)
 		pageFooter(w)
 	}
 }
@@ -189,6 +208,12 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
+		selection, err := s.resolvePortalReadScope(ctx, r, principal)
+		if err != nil {
+			handlePortalReadScopeError(w, err)
+			return
+		}
+		principal = selection.Principal
 		enabled, err := s.PortalStore.FeatureEnabled(ctx, principal, portal.FeatureReadOnlyDashboard)
 		if err != nil || !enabled {
 			http.Error(w, "this portal module is not enabled for the selected club", http.StatusForbidden)
@@ -219,6 +244,7 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 			escapeHTML(dashboard.ClubName),
 			escapeHTML(dashboard.SeasonName),
 		)
+		writePortalReadFilters(w, selection, "/portal/sanctions")
 		if dashboard.Sanctions.UnreconciledLegacy > 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Reconciliation required.</strong> %d unlinked legacy row(s) are excluded from this ledger.</div>`, dashboard.Sanctions.UnreconciledLegacy)
 		}
@@ -252,6 +278,47 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handlePortalCaptainHandoff() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := portalPrincipalForRequest(r)
+		if !ok || principal.Assignment == nil {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		selection, err := s.resolvePortalReadScope(ctx, r, principal)
+		if err != nil {
+			handlePortalReadScopeError(w, err)
+			return
+		}
+		if selection.SelectedTeamID == nil || selection.Principal.Assignment == nil {
+			handlePortalReadScopeError(w, portal.ErrNotFound)
+			return
+		}
+		assignment := *selection.Principal.Assignment
+		if !portal.Authorize(
+			assignment,
+			portal.PermissionReportsView,
+			portal.Scope{
+				ClubID:   assignment.Scope.ClubID,
+				TeamID:   selection.SelectedTeamID,
+				SeasonID: &selection.SelectedSeasonID,
+			},
+			time.Now().UTC(),
+		) {
+			http.Error(w, "the selected role cannot use the captain report handoff", http.StatusForbidden)
+			return
+		}
+		target := fmt.Sprintf(
+			"/?portal_club_id=%d&portal_team_id=%d",
+			assignment.Scope.ClubID,
+			*selection.SelectedTeamID,
+		)
+		http.Redirect(w, r, target, http.StatusSeeOther)
+	}
+}
+
 func portalStatusBadge(status string) string {
 	status = strings.TrimSpace(status)
 	if status == "" {
@@ -271,6 +338,92 @@ func portalStatusBadge(status string) string {
 		className = "text-bg-primary"
 	}
 	return `<span class="badge ` + className + `">` + escapeHTML(strings.ToUpper(status[:1])+status[1:]) + `</span>`
+}
+
+func (s *Server) resolvePortalReadScope(
+	ctx context.Context,
+	r *http.Request,
+	principal portal.Principal,
+) (portal.ReadScopeSelection, error) {
+	seasonID, err := optionalPositiveInt32Query(r, "season_id")
+	if err != nil {
+		return portal.ReadScopeSelection{}, portal.ErrNotFound
+	}
+	teamID, err := optionalPositiveInt32Query(r, "team_id")
+	if err != nil {
+		return portal.ReadScopeSelection{}, portal.ErrNotFound
+	}
+	return s.PortalStore.ResolveReadScope(ctx, principal, seasonID, teamID)
+}
+
+func optionalPositiveInt32Query(r *http.Request, key string) (*int32, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || value <= 0 {
+		return nil, fmt.Errorf("invalid %s", key)
+	}
+	result := int32(value)
+	return &result, nil
+}
+
+func handlePortalReadScopeError(w http.ResponseWriter, err error) {
+	if portal.IsUnavailableScope(err) {
+		http.Error(w, "the requested portal view is not available", http.StatusNotFound)
+		return
+	}
+	slog.Error("resolve portal read scope", "error", err)
+	http.Error(w, "could not load portal filters", http.StatusInternalServerError)
+}
+
+func writePortalReadFilters(
+	w http.ResponseWriter,
+	selection portal.ReadScopeSelection,
+	action string,
+) {
+	fmt.Fprintf(w, `<form class="card card-body shadow-sm mb-4" method="get" action="%s"><div class="row g-3 align-items-end"><div class="col-md-5"><label class="form-label" for="portal-season-filter">Season</label><select class="form-select" id="portal-season-filter" name="season_id">`, escapeHTML(action))
+	for _, season := range selection.Seasons {
+		selected := ""
+		if season.ID == selection.SelectedSeasonID {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%d"%s>%s</option>`,
+			season.ID,
+			selected,
+			escapeHTML(season.Name),
+		)
+	}
+	fmt.Fprint(w, `</select></div><div class="col-md-5"><label class="form-label" for="portal-team-filter">Team</label><select class="form-select" id="portal-team-filter" name="team_id">`)
+	if !selection.TeamSelectionLocked {
+		selected := ""
+		if selection.SelectedTeamID == nil {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value=""%s>All club teams</option>`, selected)
+	}
+	for _, team := range selection.Teams {
+		selected := ""
+		if selection.SelectedTeamID != nil && team.ID == *selection.SelectedTeamID {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%d"%s>%s</option>`,
+			team.ID,
+			selected,
+			escapeHTML(team.Name),
+		)
+	}
+	fmt.Fprint(w, `</select></div><div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Apply</button></div></div></form>`)
+}
+
+func portalReadScopeQuery(selection portal.ReadScopeSelection) string {
+	values := url.Values{}
+	values.Set("season_id", strconv.FormatInt(int64(selection.SelectedSeasonID), 10))
+	if selection.SelectedTeamID != nil {
+		values.Set("team_id", strconv.FormatInt(int64(*selection.SelectedTeamID), 10))
+	}
+	return "?" + values.Encode()
 }
 
 func (s *Server) handlePortalLogin() http.HandlerFunc {
@@ -433,6 +586,12 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		selection, err := s.resolvePortalReadScope(ctx, r, principal)
+		if err != nil {
+			handlePortalReadScopeError(w, err)
+			return
+		}
+		principal = selection.Principal
 		enabled, err := s.PortalStore.FeatureEnabled(ctx, principal, portal.FeatureReadOnlyDashboard)
 		if err != nil {
 			slog.Error("load portal dashboard feature", "error", err)
@@ -454,15 +613,16 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Club action centre")
 		writePortalNav(w, csrf, principal)
+		scopeQuery := portalReadScopeQuery(selection)
 		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
 <div><p class="text-uppercase text-muted small mb-1">Club Operations Portal</p><h1 class="h2 mb-1">Action centre</h1>
 <p class="text-muted mb-0">%s · %s · Acting as %s. Official email processes continue in parallel during the pilot.</p></div>
 <a class="btn btn-outline-primary" href="/portal/contexts">Change club or role</a></div>
 <div class="row g-3">
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Reports requiring attention</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2 mb-0">%s</p></div></div></div>
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Submitted reports</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2 mb-0">%s</p></div></div></div>
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Team-level card ledger</p><p class="display-6 mb-0">%d<span class="fs-5 text-muted"> yellow</span></p><p class="small text-muted mt-2 mb-0">%d red · %d points deduction</p></div></div></div>
+<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Reports requiring attention</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View source rows</a></div></div></div>
+<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Submitted reports</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View report history</a></div></div></div>
+<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Team-level card ledger</p><p class="display-6 mb-0">%d<span class="fs-5 text-muted"> yellow</span></p><p class="small text-muted mt-2">%d red · %d points deduction</p><a href="/portal/sanctions%s">View ledger entries</a></div></div></div>
 <div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Play-Cricket source</p><p class="h4 mb-0">%s</p><p class="small text-muted mt-2 mb-0">%s</p></div></div></div>
 </div>`,
 			escapeHTML(dashboard.ClubName),
@@ -470,14 +630,18 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 			escapeHTML(humanPortalRole(principal.Assignment.Role)),
 			portalReportAttentionValue(dashboard),
 			escapeHTML(portalReportAttentionNote(dashboard)),
+			escapeHTML(scopeQuery),
 			portalSubmittedValue(dashboard),
 			escapeHTML(portalSubmittedNote(dashboard)),
+			escapeHTML(scopeQuery),
 			dashboard.Sanctions.Yellow,
 			dashboard.Sanctions.Red,
 			dashboard.Sanctions.PointsDeduction,
+			escapeHTML(scopeQuery),
 			escapeHTML(portalSourceHeadline(dashboard)),
 			escapeHTML(portalSourceNote(dashboard, s.LondonLoc)),
 		)
+		writePortalReadFilters(w, selection, "/portal")
 		if dashboard.Sanctions.UnreconciledLegacy > 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning mt-4"><strong>Reconciliation required.</strong> %d legacy sanction row(s) are not linked to the case ledger, so they are excluded from the derived totals above rather than silently double-counted.</div>`, dashboard.Sanctions.UnreconciledLegacy)
 		}

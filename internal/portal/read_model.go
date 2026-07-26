@@ -57,7 +57,7 @@ func (store *Store) LoadClubDashboard(
 	}
 	now := store.now()
 	assignment := *principal.Assignment
-	if !Authorize(assignment, PermissionPortalView, Scope{ClubID: assignment.Scope.ClubID}, now) {
+	if !Authorize(assignment, PermissionPortalView, assignment.Scope, now) {
 		return ClubDashboard{}, ErrForbidden
 	}
 
@@ -167,7 +167,6 @@ func loadClubReportSummary(
 			  AND w.start_date <= $4::date
 			  AND t.club_id = $1
 			  AND ($3::integer IS NULL OR t.id = $3)
-			  AND t.active = TRUE
 			  AND t.play_cricket_team_id IS NOT NULL
 			  AND t.play_cricket_team_id <> ''
 			  AND EXTRACT(DOW FROM lf.match_date) <> 5

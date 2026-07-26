@@ -85,3 +85,32 @@ func TestPortalStatusBadgeHandlesUnknownStatus(t *testing.T) {
 		t.Fatalf("status badge did not escape input: %q", badge)
 	}
 }
+
+func TestOptionalPositiveInt32Query(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/portal?season_id=2026", nil)
+	value, err := optionalPositiveInt32Query(request, "season_id")
+	if err != nil || value == nil || *value != 2026 {
+		t.Fatalf("season query = %v, %v", value, err)
+	}
+	for _, target := range []string{
+		"/portal?season_id=-1",
+		"/portal?season_id=not-a-number",
+		"/portal?season_id=999999999999",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		if _, err := optionalPositiveInt32Query(request, "season_id"); err == nil {
+			t.Fatalf("invalid scope query accepted: %s", target)
+		}
+	}
+}
+
+func TestPortalReadScopeQueryEscapesSelectedScope(t *testing.T) {
+	teamID := int32(12)
+	query := portalReadScopeQuery(portal.ReadScopeSelection{
+		SelectedSeasonID: 2026,
+		SelectedTeamID:   &teamID,
+	})
+	if query != "?season_id=2026&team_id=12" {
+		t.Fatalf("scope query = %q", query)
+	}
+}

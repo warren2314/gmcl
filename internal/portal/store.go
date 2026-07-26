@@ -295,7 +295,7 @@ func (store *Store) WithTenantTx(
 		return ErrForbidden
 	}
 	assignment := *principal.Assignment
-	if !Authorize(assignment, PermissionPortalView, Scope{ClubID: assignment.Scope.ClubID}, store.now()) {
+	if !Authorize(assignment, PermissionPortalView, assignment.Scope, store.now()) {
 		return ErrForbidden
 	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -701,7 +701,7 @@ func (store *Store) SelectActingContext(
 		assignment.Scope.SeasonID = int32Ptr(seasonID)
 		assignment.Scope.CompetitionID = uuidPtr(competitionID)
 		assignment.EndsAt = timePtr(endsAt)
-		if !Authorize(assignment, PermissionPortalView, Scope{ClubID: assignment.Scope.ClubID}, now) {
+		if !Authorize(assignment, PermissionPortalView, assignment.Scope, now) {
 			return ErrForbidden
 		}
 

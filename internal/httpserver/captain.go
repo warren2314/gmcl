@@ -51,6 +51,12 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
 			return
 		}
 		csrfToken := middleware.CSRFToken(r)
+		prefillJSON := "null"
+		if prefill, ok := s.loadCaptainEntryPrefill(r); ok {
+			if encoded, err := json.Marshal(prefill); err == nil {
+				prefillJSON = string(encoded)
+			}
+		}
 		weekContext := "Competition schedule unavailable"
 		if resolved, err := s.resolveCompetitionWeek(r.Context(), competitionWeekForDisplay); err == nil {
 			weekContext = fmt.Sprintf(
@@ -123,8 +129,9 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
 
 <script>
 `, weekContext, escapeHTML(csrfToken))
-		fmt.Fprint(w, `
+		fmt.Fprintf(w, `
 (function() {
+  const portalPrefill = %s;
   const clubInput  = document.getElementById('club_search');
   const clubIdEl   = document.getElementById('club_id');
   const results    = document.getElementById('club-results');
@@ -201,7 +208,7 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
     teamIdEl.value = '';
     submitBtn.disabled = true;
 
-    fetch('/api/teams?club_id=' + id)
+    return fetch('/api/teams?club_id=' + id)
       .then(function(r) { return r.json(); })
       .then(function(teams) {
         teamSelect.innerHTML = '<option value="">Select team...</option>';
@@ -263,11 +270,54 @@ func (s *Server) handlePublicEntry() http.HandlerFunc {
       submitBtn.disabled = true;
     }
   });
+  if (portalPrefill) {
+    selectClub(portalPrefill.club_id, portalPrefill.club_name)
+      .then(function() {
+        teamSelect.value = String(portalPrefill.team_id);
+        teamSelect.dispatchEvent(new Event('change'));
+      });
+  }
 })();
 </script>
-`)
+`, prefillJSON)
 		pageFooter(w)
 	}
+}
+
+type captainEntryPrefill struct {
+	ClubID   int32  `json:"club_id"`
+	ClubName string `json:"club_name"`
+	TeamID   int32  `json:"team_id"`
+}
+
+func (s *Server) loadCaptainEntryPrefill(r *http.Request) (captainEntryPrefill, bool) {
+	clubID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("portal_club_id")), 10, 32)
+	if err != nil || clubID <= 0 {
+		return captainEntryPrefill{}, false
+	}
+	teamID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("portal_team_id")), 10, 32)
+	if err != nil || teamID <= 0 {
+		return captainEntryPrefill{}, false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	var prefill captainEntryPrefill
+	if err := s.DB.QueryRow(ctx, `
+		SELECT c.id, c.name, t.id
+		FROM teams t
+		JOIN clubs c ON c.id = t.club_id
+		WHERE c.id = $1
+		  AND t.id = $2
+		  AND t.club_id = c.id
+		  AND t.active = TRUE
+	`, clubID, teamID).Scan(
+		&prefill.ClubID,
+		&prefill.ClubName,
+		&prefill.TeamID,
+	); err != nil {
+		return captainEntryPrefill{}, false
+	}
+	return prefill, true
 }
 
 func (s *Server) handleMagicLinkRequest() http.HandlerFunc {

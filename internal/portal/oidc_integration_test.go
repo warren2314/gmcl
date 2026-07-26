@@ -44,7 +44,7 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	clubID, adminID := seedOIDCIntegrationApprovals(t, ctx, pool)
+	clubID, teamID, adminID := seedOIDCIntegrationApprovals(t, ctx, pool)
 	if err := store.SetClubFeature(
 		ctx,
 		clubID,
@@ -163,6 +163,49 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	readScope, err := store.ResolveReadScope(ctx, rotatedPrincipal, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readScope.SelectedSeasonID <= 0 || readScope.SelectedTeamID != nil {
+		t.Fatalf("unexpected default read scope: %#v", readScope)
+	}
+	rotatedPrincipal = readScope.Principal
+	foreignTeamID := int32(2147483000)
+	if _, err := store.ResolveReadScope(
+		ctx,
+		rotatedPrincipal,
+		&readScope.SelectedSeasonID,
+		&foreignTeamID,
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign team scope error = %v", err)
+	}
+	var deniedScopeEvents int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM portal_audit_events
+		WHERE actor_user_id = $1
+		  AND action = 'portal.scope.denied'
+		  AND outcome = 'denied'
+	`, rotatedPrincipal.UserID).Scan(&deniedScopeEvents); err != nil {
+		t.Fatal(err)
+	}
+	if deniedScopeEvents != 1 {
+		t.Fatalf("scope denial audit events = %d, want 1", deniedScopeEvents)
+	}
+	teamReadScope, err := store.ResolveReadScope(
+		ctx,
+		rotatedPrincipal,
+		&readScope.SelectedSeasonID,
+		&teamID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if teamReadScope.SelectedTeamID == nil || *teamReadScope.SelectedTeamID != teamID {
+		t.Fatalf("team read scope = %#v", teamReadScope)
+	}
+	rotatedPrincipal = teamReadScope.Principal
 	enabled, err := store.FeatureEnabled(ctx, rotatedPrincipal, FeatureReadOnlyDashboard)
 	if err != nil || !enabled {
 		t.Fatalf("dashboard feature = %v, %v", enabled, err)
@@ -309,7 +352,7 @@ func seedOIDCIntegrationApprovals(
 	t *testing.T,
 	ctx context.Context,
 	pool *db.Pool,
-) (int32, int32) {
+) (int32, int32, int32) {
 	t.Helper()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -329,6 +372,21 @@ func seedOIDCIntegrationApprovals(
 		INSERT INTO clubs (id, name, short_name)
 		VALUES ($1, $2, 'OIDCT')
 	`, clubID, "Portal OIDC integration "+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	var teamID int32
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(id), 0) + 3001
+		FROM teams
+	`).Scan(&teamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO teams (
+			id, club_id, name, level, active, play_cricket_team_id
+		)
+		VALUES ($1, $2, 'Portal OIDC Test XI', 1, TRUE, $3)
+	`, teamID, clubID, "OIDC-"+uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	var adminID int32
@@ -352,7 +410,7 @@ func seedOIDCIntegrationApprovals(
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return clubID, adminID
+	return clubID, teamID, adminID
 }
 
 type oidcTestProvider struct {
