@@ -32,6 +32,26 @@ func TestPortalSessionCookieSecurity(t *testing.T) {
 	}
 }
 
+func TestPortalResponsesAreNotCacheable(t *testing.T) {
+	handler := portalNoStore(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/portal", nil),
+	)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache control = %q", got)
+	}
+	if got := recorder.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("pragma = %q", got)
+	}
+}
+
 func TestClearPortalSessionCookie(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	clearPortalSessionCookie(recorder)
@@ -60,6 +80,34 @@ func TestHumanPortalRoleDoesNotElevateUnknownRole(t *testing.T) {
 	}
 	if got := humanPortalRole(portal.RoleKey("idp-admin")); got != "Unknown role" {
 		t.Fatalf("unknown role label = %q", got)
+	}
+}
+
+func TestWritePortalNavProvidesKeyboardAndCurrentPageSemantics(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writePortalNav(
+		recorder,
+		"csrf-token",
+		portal.Principal{DisplayName: `Alice <Admin>`},
+		"/portal/reports",
+	)
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`href="#main-content">Skip to main content</a>`,
+		`aria-label="Club portal"`,
+		`href="/portal/reports" aria-current="page">Reports</a>`,
+		`Alice &lt;Admin&gt;`,
+		`name="csrf_token" value="csrf-token"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("portal navigation omitted %q: %s", expected, body)
+		}
+	}
+	if strings.Count(body, `aria-current="page"`) != 1 {
+		t.Fatalf("portal navigation current-page count = %d: %s",
+			strings.Count(body, `aria-current="page"`),
+			body,
+		)
 	}
 }
 

@@ -25,6 +25,7 @@ type portalPrincipalContextKey struct{}
 
 func (s *Server) portalRouter() http.Handler {
 	r := chi.NewRouter()
+	r.Use(portalNoStore)
 	r.Use(middleware.RateLimit(60))
 	r.Use(middleware.CSRFMiddleware)
 
@@ -46,6 +47,14 @@ func (s *Server) portalRouter() http.Handler {
 		r.Post("/logout", s.handlePortalLogout())
 	})
 	return r
+}
+
+func portalNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) requirePortalSession() func(http.Handler) http.Handler {
@@ -145,8 +154,8 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 		csrf := portalCSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Report obligations")
-		writePortalNav(w, csrf, principal)
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Captain report obligations</h1><p class="text-muted">%s · %s. Status is derived from mapped fixtures, submissions and approved exemptions; no source record can be changed here.</p></div>`,
+		writePortalNav(w, csrf, principal, r.URL.Path)
+		fmt.Fprintf(w, `<main id="main-content" tabindex="-1" class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Captain report obligations</h1><p class="text-muted">%s · %s. Status is derived from mapped fixtures, submissions and approved exemptions; no source record can be changed here.</p></div>`,
 			escapeHTML(dashboard.ClubName),
 			escapeHTML(dashboard.SeasonName),
 		)
@@ -164,7 +173,7 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 		} else {
 			fmt.Fprintf(w, `<p class="small text-muted">%s.</p>`, escapeHTML(portalSourceNote(dashboard, s.LondonLoc)))
 		}
-		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Match</th><th>Team</th><th>Opposition / venue</th><th>Deadline</th><th>Status</th><th>Source records</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0" aria-describedby="report-calculation-contract"><caption class="visually-hidden">Captain report obligations for the selected club, season and team scope</caption><thead><tr><th scope="col">Match</th><th scope="col">Team</th><th scope="col">Opposition / venue</th><th scope="col">Deadline</th><th scope="col">Status</th><th scope="col">Source records</th></tr></thead><tbody>`)
 		if len(obligations) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-muted">No mapped report obligation is available for this scope.</td></tr>`)
 		}
@@ -183,7 +192,7 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 			if obligation.Venue != "" {
 				opposition += " · " + obligation.Venue
 			}
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td><td class="small text-muted">%s</td></tr>`,
+			fmt.Fprintf(w, `<tr><th scope="row">%s</th><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td><td class="small text-muted">%s</td></tr>`,
 				obligation.MatchDate.In(s.LondonLoc).Format("2 Jan 2006"),
 				escapeHTML(obligation.TeamName),
 				escapeHTML(opposition),
@@ -194,7 +203,7 @@ func (s *Server) handlePortalReports() http.HandlerFunc {
 			)
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>
-<p class="small text-muted mt-3">Calculation contract: one obligation per mapped non-bye, non-Friday fixture; satisfied by the first mapped submission or an approved exemption. The deadline is the following Wednesday at 23:59:59 Europe/London. Permitted portal action is view-only; current submissions continue through the existing captain magic-link flow, and corrections continue through the official GMCL escalation route.</p></main>`)
+<p id="report-calculation-contract" class="small text-muted mt-3">Calculation contract: one obligation per mapped non-bye, non-Friday fixture; satisfied by the first mapped submission or an approved exemption. The deadline is the following Wednesday at 23:59:59 Europe/London. Permitted portal action is view-only; current submissions continue through the existing captain magic-link flow, and corrections continue through the official GMCL escalation route.</p></main>`)
 		pageFooter(w)
 	}
 }
@@ -239,8 +248,8 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 		csrf := portalCSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanction ledger")
-		writePortalNav(w, csrf, principal)
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Team card and points ledger</h1><p class="text-muted">%s · %s. Club totals are calculated from these immutable team-level entries. Internal GMCL notes and private case fields are never selected by this repository.</p></div>`,
+		writePortalNav(w, csrf, principal, r.URL.Path)
+		fmt.Fprintf(w, `<main id="main-content" tabindex="-1" class="container-fluid px-3 px-lg-4 pb-5"><div class="mb-4"><p class="text-uppercase text-muted small mb-1">Read-only source history</p><h1 class="h2">Team card and points ledger</h1><p class="text-muted">%s · %s. Club totals are calculated from these immutable team-level entries. Internal GMCL notes and private case fields are never selected by this repository.</p></div>`,
 			escapeHTML(dashboard.ClubName),
 			escapeHTML(dashboard.SeasonName),
 		)
@@ -248,7 +257,7 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 		if dashboard.Sanctions.UnreconciledLegacy > 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Reconciliation required.</strong> %d unlinked legacy row(s) are excluded from this ledger.</div>`, dashboard.Sanctions.UnreconciledLegacy)
 		}
-		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Date</th><th>Team</th><th>Case</th><th>Public outcome</th><th class="text-end">Yellow</th><th class="text-end">Red</th><th class="text-end">Points</th><th>Entry</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<div class="card shadow-sm"><div class="table-responsive"><table class="table table-striped align-middle mb-0"><caption class="visually-hidden">Team-level sanction, card and points ledger for the selected club, season and team scope</caption><thead><tr><th scope="col">Date</th><th scope="col">Team</th><th scope="col">Case</th><th scope="col">Public outcome</th><th scope="col" class="text-end">Yellow</th><th scope="col" class="text-end">Red</th><th scope="col" class="text-end">Points</th><th scope="col">Entry</th></tr></thead><tbody>`)
 		if len(entries) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="8" class="text-muted">No card-ledger entry exists for this season and scope.</td></tr>`)
 		}
@@ -261,7 +270,7 @@ func (s *Server) handlePortalSanctions() http.HandlerFunc {
 			if summary == "" {
 				summary = "No public summary recorded"
 			}
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><div>%s</div><div class="small text-muted">%s</div></td><td class="text-end">%+d</td><td class="text-end">%+d</td><td class="text-end">%+d</td><td>%s</td></tr>`,
+			fmt.Fprintf(w, `<tr><th scope="row">%s</th><td>%s</td><td>%s</td><td><div>%s</div><div class="small text-muted">%s</div></td><td class="text-end">%+d</td><td class="text-end">%+d</td><td class="text-end">%+d</td><td>%s</td></tr>`,
 				escapeHTML(entryDate),
 				escapeHTML(entry.TeamName),
 				escapeHTML(entry.CaseReference),
@@ -383,7 +392,7 @@ func writePortalReadFilters(
 	selection portal.ReadScopeSelection,
 	action string,
 ) {
-	fmt.Fprintf(w, `<form class="card card-body shadow-sm mb-4" method="get" action="%s"><div class="row g-3 align-items-end"><div class="col-md-5"><label class="form-label" for="portal-season-filter">Season</label><select class="form-select" id="portal-season-filter" name="season_id">`, escapeHTML(action))
+	fmt.Fprintf(w, `<form class="card card-body shadow-sm mb-4" method="get" action="%s" aria-label="Filter portal records"><div class="row g-3 align-items-end"><div class="col-md-5"><label class="form-label" for="portal-season-filter">Season</label><select class="form-select" id="portal-season-filter" name="season_id">`, escapeHTML(action))
 	for _, season := range selection.Seasons {
 		selected := ""
 		if season.ID == selection.SelectedSeasonID {
@@ -501,8 +510,8 @@ func (s *Server) handlePortalContexts() http.HandlerFunc {
 		csrf := portalCSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Choose club access")
-		writePortalNav(w, csrf, principal)
-		fmt.Fprint(w, `<main class="container pb-5"><div class="row justify-content-center"><div class="col-xl-8">
+		writePortalNav(w, csrf, principal, r.URL.Path)
+		fmt.Fprint(w, `<main id="main-content" tabindex="-1" class="container pb-5"><div class="row justify-content-center"><div class="col-xl-8">
 <div class="d-flex justify-content-between align-items-start mb-4"><div><p class="text-uppercase text-muted small mb-1">Named account</p><h1 class="h2">Choose how you are acting</h1><p class="text-muted">Your club, role and season scope are checked again on every request.</p></div></div>`)
 		if len(contexts) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-info"><strong>No pilot access is active.</strong> Your identity is valid, but no approved appointment currently belongs to a club with portal access enabled. Contact the GMCL Club Liaison Officer.</div>`)
@@ -612,18 +621,18 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 		csrf := portalCSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Club action centre")
-		writePortalNav(w, csrf, principal)
+		writePortalNav(w, csrf, principal, r.URL.Path)
 		scopeQuery := portalReadScopeQuery(selection)
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
+		fmt.Fprintf(w, `<main id="main-content" tabindex="-1" class="container-fluid px-3 px-lg-4 pb-5">
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
 <div><p class="text-uppercase text-muted small mb-1">Club Operations Portal</p><h1 class="h2 mb-1">Action centre</h1>
 <p class="text-muted mb-0">%s · %s · Acting as %s. Official email processes continue in parallel during the pilot.</p></div>
 <a class="btn btn-outline-primary" href="/portal/contexts">Change club or role</a></div>
 <div class="row g-3">
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Reports requiring attention</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View source rows</a></div></div></div>
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Submitted reports</p><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View report history</a></div></div></div>
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Team-level card ledger</p><p class="display-6 mb-0">%d<span class="fs-5 text-muted"> yellow</span></p><p class="small text-muted mt-2">%d red · %d points deduction</p><a href="/portal/sanctions%s">View ledger entries</a></div></div></div>
-<div class="col-md-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><p class="text-muted small">Play-Cricket source</p><p class="h4 mb-0">%s</p><p class="small text-muted mt-2 mb-0">%s</p></div></div></div>
+<div class="col-md-6 col-xl-3"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h6 text-muted">Reports requiring attention</h2><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View source rows</a></div></section></div>
+<div class="col-md-6 col-xl-3"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h6 text-muted">Submitted reports</h2><p class="display-6 mb-0">%s</p><p class="small text-muted mt-2">%s</p><a href="/portal/reports%s">View report history</a></div></section></div>
+<div class="col-md-6 col-xl-3"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h6 text-muted">Team-level card ledger</h2><p class="display-6 mb-0">%d<span class="fs-5 text-muted"> yellow</span></p><p class="small text-muted mt-2">%d red · %d points deduction</p><a href="/portal/sanctions%s">View ledger entries</a></div></section></div>
+<div class="col-md-6 col-xl-3"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h6 text-muted">Play-Cricket source</h2><p class="h4 mb-0">%s</p><p class="small text-muted mt-2 mb-0">%s</p></div></section></div>
 </div>`,
 			escapeHTML(dashboard.ClubName),
 			escapeHTML(dashboard.SeasonName),
@@ -645,19 +654,19 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 		if dashboard.Sanctions.UnreconciledLegacy > 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning mt-4"><strong>Reconciliation required.</strong> %d legacy sanction row(s) are not linked to the case ledger, so they are excluded from the derived totals above rather than silently double-counted.</div>`, dashboard.Sanctions.UnreconciledLegacy)
 		}
-		fmt.Fprint(w, `<section class="card shadow-sm mt-4"><div class="card-header d-flex justify-content-between align-items-center"><strong>Team card and points ledger</strong><span class="small text-muted">Club total is the sum of these rows</span></div><div class="table-responsive"><table class="table table-striped mb-0"><thead><tr><th>Team</th><th class="text-end">Yellow</th><th class="text-end">Red</th><th class="text-end">Points deduction</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<section class="card shadow-sm mt-4" aria-labelledby="team-ledger-heading"><div class="card-header d-flex justify-content-between align-items-center"><strong id="team-ledger-heading">Team card and points ledger</strong><span class="small text-muted">Club total is the sum of these rows</span></div><div class="table-responsive"><table class="table table-striped mb-0"><caption class="visually-hidden">Team card and points totals used to calculate the selected club total</caption><thead><tr><th scope="col">Team</th><th scope="col" class="text-end">Yellow</th><th scope="col" class="text-end">Red</th><th scope="col" class="text-end">Points deduction</th></tr></thead><tbody>`)
 		if len(dashboard.TeamSanctions) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="4" class="text-muted">No non-zero team ledger balance exists for this season and scope.</td></tr>`)
 		}
 		for _, team := range dashboard.TeamSanctions {
-			fmt.Fprintf(w, `<tr><td>%s</td><td class="text-end">%d</td><td class="text-end">%d</td><td class="text-end">%d</td></tr>`,
+			fmt.Fprintf(w, `<tr><th scope="row">%s</th><td class="text-end">%d</td><td class="text-end">%d</td><td class="text-end">%d</td></tr>`,
 				escapeHTML(team.TeamName),
 				team.Yellow,
 				team.Red,
 				team.PointsDeduction,
 			)
 		}
-		fmt.Fprintf(w, `</tbody><tfoot><tr class="table-light"><th>Club total</th><th class="text-end">%d</th><th class="text-end">%d</th><th class="text-end">%d</th></tr></tfoot></table></div></section>
+		fmt.Fprintf(w, `</tbody><tfoot><tr class="table-light"><th scope="row">Club total</th><td class="text-end">%d</td><td class="text-end">%d</td><td class="text-end">%d</td></tr></tfoot></table></div></section>
 <p class="small text-muted mt-3">Calculated %s. Report requirements are derived from mapped Play-Cricket fixtures, existing submissions and approved exemptions. Late means received after the Wednesday 23:59 Europe/London deadline. This read-only pilot does not amend any source record.</p>
 </main>`,
 			dashboard.Sanctions.Yellow,
@@ -749,11 +758,11 @@ func (s *Server) handlePortalSessions() http.HandlerFunc {
 		csrf := portalCSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Account sessions")
-		writePortalNav(w, csrf, principal)
-		fmt.Fprint(w, `<main class="container pb-5"><div class="row justify-content-center"><div class="col-xl-9">
+		writePortalNav(w, csrf, principal, r.URL.Path)
+		fmt.Fprint(w, `<main id="main-content" tabindex="-1" class="container pb-5"><div class="row justify-content-center"><div class="col-xl-9">
 <div class="mb-4"><p class="text-uppercase text-muted small mb-1">Named account security</p><h1 class="h2">Account sessions</h1>
 <p class="text-muted">Review where your account is signed in and revoke access immediately. Session identifiers and bearer tokens are never displayed.</p></div>
-<div class="card shadow-sm"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Session</th><th>Club context</th><th>Last used</th><th>Expires</th><th></th></tr></thead><tbody>`)
+<div class="card shadow-sm"><div class="table-responsive"><table class="table align-middle mb-0"><caption class="visually-hidden">Active browser sessions for this named portal account</caption><thead><tr><th scope="col">Session</th><th scope="col">Club context</th><th scope="col">Last used</th><th scope="col">Expires</th><th scope="col" aria-label="Actions"></th></tr></thead><tbody>`)
 		if len(sessions) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-muted">No active sessions were found.</td></tr>`)
 		}
@@ -781,7 +790,7 @@ func (s *Server) handlePortalSessions() http.HandlerFunc {
 				session.ID,
 				escapeHTML(csrf),
 			)
-			fmt.Fprintf(w, `<tr><td><div>%s%s</div><div class="small text-muted">%s</div></td><td>%s</td><td>%s</td><td>%s</td><td class="text-end">%s</td></tr>`,
+			fmt.Fprintf(w, `<tr><th scope="row"><div>%s%s</div><div class="small text-muted fw-normal">%s</div></th><td>%s</td><td>%s</td><td>%s</td><td class="text-end">%s</td></tr>`,
 				escapeHTML(device),
 				currentLabel,
 				escapeHTML("Signed in "+portalLocalTime(session.AuthenticatedAt, s.LondonLoc)),
@@ -932,21 +941,42 @@ func portalCSRFToken(r *http.Request) string {
 	return ""
 }
 
-func writePortalNav(w http.ResponseWriter, csrf string, principal portal.Principal) {
+func writePortalNav(
+	w http.ResponseWriter,
+	csrf string,
+	principal portal.Principal,
+	activePath string,
+) {
 	role := ""
 	if principal.Assignment != nil {
 		role = humanPortalRole(principal.Assignment.Role)
 	}
-	fmt.Fprintf(w, `<nav class="navbar navbar-expand-lg navbar-dark bg-gmcl mb-4"><div class="container-fluid px-3 px-lg-4">
+	navLink := func(href, label string) string {
+		activeClass := ""
+		ariaCurrent := ""
+		if activePath == href {
+			activeClass = " active"
+			ariaCurrent = ` aria-current="page"`
+		}
+		return fmt.Sprintf(
+			`<li class="nav-item"><a class="nav-link%s" href="%s"%s>%s</a></li>`,
+			activeClass,
+			href,
+			ariaCurrent,
+			label,
+		)
+	}
+	fmt.Fprintf(w, `<a class="visually-hidden-focusable position-absolute top-0 start-0 bg-white text-dark p-3 m-2 rounded shadow" style="z-index:1080" href="#main-content">Skip to main content</a>
+<nav class="navbar navbar-expand-lg navbar-dark bg-gmcl mb-4" aria-label="Club portal"><div class="container-fluid px-3 px-lg-4">
 <a class="navbar-brand d-flex align-items-center" href="/portal"><img src="/images/logo.webp" alt="GMCL" height="44" class="me-2"><span>Club portal</span></a>
 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#portalNav" aria-controls="portalNav" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button>
 <div class="collapse navbar-collapse" id="portalNav"><ul class="navbar-nav ms-auto align-items-lg-center">
 <li class="nav-item"><span class="navbar-text me-lg-3">%s%s</span></li>
-<li class="nav-item"><a class="nav-link" href="/portal">Action centre</a></li>
-<li class="nav-item"><a class="nav-link" href="/portal/reports">Reports</a></li>
-<li class="nav-item"><a class="nav-link" href="/portal/sanctions">Sanctions</a></li>
-<li class="nav-item"><a class="nav-link" href="/portal/contexts">Switch role</a></li>
-<li class="nav-item"><a class="nav-link" href="/portal/sessions">Sessions</a></li>
+%s
+%s
+%s
+%s
+%s
 <li class="nav-item"><form method="post" action="/portal/logout"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-link nav-link" type="submit">Sign out</button></form></li>
 </ul></div></div></nav>`,
 		escapeHTML(principal.DisplayName),
@@ -956,6 +986,11 @@ func writePortalNav(w http.ResponseWriter, csrf string, principal portal.Princip
 			}
 			return " · " + escapeHTML(role)
 		}(),
+		navLink("/portal", "Action centre"),
+		navLink("/portal/reports", "Reports"),
+		navLink("/portal/sanctions", "Sanctions"),
+		navLink("/portal/contexts", "Switch role"),
+		navLink("/portal/sessions", "Sessions"),
 		escapeHTML(csrf),
 	)
 }
@@ -986,8 +1021,9 @@ func renderPortalUnavailable(w http.ResponseWriter, message string) {
 	w.Header().Set("Retry-After", "60")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	pageHead(w, "Club portal unavailable")
+	fmt.Fprint(w, `<a class="visually-hidden-focusable position-absolute top-0 start-0 bg-white text-dark p-3 m-2 rounded shadow" style="z-index:1080" href="#main-content">Skip to main content</a>`)
 	writeCaptainNav(w)
-	fmt.Fprintf(w, `<main class="container"><div class="row justify-content-center"><div class="col-lg-7"><div class="alert alert-warning"><h1 class="h4">Club portal unavailable</h1><p class="mb-0">%s</p></div></div></div></main>`, escapeHTML(message))
+	fmt.Fprintf(w, `<main id="main-content" tabindex="-1" class="container"><div class="row justify-content-center"><div class="col-lg-7"><div class="alert alert-warning"><h1 class="h4">Club portal unavailable</h1><p class="mb-0">%s</p></div></div></div></main>`, escapeHTML(message))
 	pageFooter(w)
 }
 
@@ -995,7 +1031,8 @@ func renderPortalSignInFailed(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	pageHead(w, "Club portal sign-in")
+	fmt.Fprint(w, `<a class="visually-hidden-focusable position-absolute top-0 start-0 bg-white text-dark p-3 m-2 rounded shadow" style="z-index:1080" href="#main-content">Skip to main content</a>`)
 	writeCaptainNav(w)
-	fmt.Fprint(w, `<main class="container"><div class="row justify-content-center"><div class="col-lg-7"><div class="alert alert-danger"><h1 class="h4">Sign-in could not be completed</h1><p>The link may have expired, already been used, or may not match an approved club appointment. Start again or contact the GMCL Club Liaison Officer.</p><a class="btn btn-primary" href="/portal/login">Start again</a></div></div></div></main>`)
+	fmt.Fprint(w, `<main id="main-content" tabindex="-1" class="container"><div class="row justify-content-center"><div class="col-lg-7"><div class="alert alert-danger"><h1 class="h4">Sign-in could not be completed</h1><p>The link may have expired, already been used, or may not match an approved club appointment. Start again or contact the GMCL Club Liaison Officer.</p><a class="btn btn-primary" href="/portal/login">Start again</a></div></div></div></main>`)
 	pageFooter(w)
 }

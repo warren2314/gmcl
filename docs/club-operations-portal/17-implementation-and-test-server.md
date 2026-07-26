@@ -137,15 +137,16 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 ## Validation recorded for this branch
 
-On 26 July 2026, the implementation was validated from a clean disposable PostgreSQL database using all migrations through `0048`:
+On 26-27 July 2026, the implementation was validated from clean disposable PostgreSQL databases using all migrations through `0048`:
 
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
+- A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
-- Each disposable test database, container and temporary database role was removed after validation.
+- Each disposable test database and application container was removed after validation. Shared PostgreSQL roles were preserved unless positively proven to be test-owned.
 - `git diff --check` passed.
 
 ## Rollback
