@@ -24,6 +24,9 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`; disabling a club's `portal_access` atomically disables its module flags and revokes every active session currently scoped to that club.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
 - Super Administrator pilot reconciliation showing active-team mapping completeness, active captain-contact counts, portal memberships/appointments and the latest mapped fixture synchronization per club.
+- Transactional account-security events are idempotently materialized into a separate notification queue for account activation and appointment revocation.
+- An HMAC-protected worker delivers allowlisted, non-sensitive security templates through configured SMTP, with a same-connection advisory lock, ten-minute claim lease, exponential retry, five-attempt dead-letter threshold and stale-worker generation checks.
+- `/admin/portal` shows unpublished, pending, retrying, sending, sent and dead-letter delivery health without displaying message bodies, tokens or recipient addresses.
 - Read-only action-centre totals over existing Play-Cricket fixtures, submissions, exemptions and the team-level sanctions ledger.
 - Tenant-scoped report-obligation history with fixture/match/submission source identifiers, deadlines, exemption reasons and derived due/submitted/late/missed status.
 - Tenant-scoped sanction-ledger history showing only team deltas and public case fields; the repository never selects private summaries, reporter details or internal notes.
@@ -86,6 +89,8 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 
 `CLUB_PORTAL_OIDC_ALLOW_INSECURE` must remain false on the test server. Configure passkeys as the provider's preferred authenticator and password plus TOTP as the accessible fallback.
 
+Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BASE_URL=https://TEST_HOST`, bind the existing internal HMAC secret through the approved n8n credential mechanism, and leave the workflow inactive until the application deployment and controlled-mailbox checks pass. The portal-notification node derives its endpoint from `GMCL_BASE_URL` and runs every five minutes. Do not retain the repository placeholder as a live credential.
+
 ## Deployment sequence
 
 1. Back up the test database.
@@ -94,13 +99,17 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 4. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 5. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
 6. Sign in as the named test Super Administrator and open `/admin/portal`.
-7. Enable `portal_access` for one synthetic/pilot club.
-8. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
-9. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
-10. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
-11. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
-12. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
-13. Exercise logout, expired session, role revocation, feature disable and provider outage paths.
+7. Confirm the account-security notification panel reports SMTP configured and no unexplained dead-letter item.
+8. Activate the test-host copy of the five-minute portal-notification n8n trigger and verify an empty cycle returns HTTP 200 without creating mail.
+9. Enable `portal_access` for one synthetic/pilot club.
+10. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
+11. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
+12. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
+13. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
+14. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
+15. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
+16. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
+17. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
 
 ## Required test evidence
 
@@ -119,6 +128,10 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 - Missing fixture sync produces “Unavailable”; a sync older than 36 hours produces “Stale”.
 - Historical season selection retains teams that are inactive today and preserves the source calculation contract effective for the selected records.
 - Disabling `portal_access` removes all club acting contexts, switches off its module flags, immediately revokes sessions currently scoped to that club and records the revocation count in the feature-change audit event.
+- Reprocessing an account activation or appointment-revocation outbox event creates no duplicate notification row.
+- SMTP absence leaves materialized notifications queued and returns fail-closed 503 without logging their body; transient delivery failure records an error and a future retry without losing the source event.
+- A stale notification claim can be recovered after ten minutes, a stale final-attempt claim becomes dead-lettered, and a poison or unsupported event stops retrying after five recorded failures.
+- Security notification rendering uses an explicit field allowlist: invitation tokens, administrative revocation reasons and arbitrary payload fields never appear in email.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
 
@@ -130,6 +143,7 @@ On 26 July 2026, the implementation was validated from a clean disposable Postgr
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
+- The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
 - Each disposable test database, container and temporary database role was removed after validation.
 - `git diff --check` passed.
@@ -140,8 +154,9 @@ The migration is additive and must not be reversed on an in-season test server m
 
 1. Set `CLUB_PORTAL_ENABLED=false` and restart the application. The `/portal` routes disappear.
 2. Alternatively disable `portal_access` for the pilot club from `/admin/portal`; this also disables every module flag and immediately revokes sessions currently scoped to that club.
-3. Preserve portal users, invitations, sessions and audit history for investigation and reconciliation.
-4. Redeploy the previous tested application commit if needed. Existing captain and administrator routes continue to use their original data and authentication.
+3. Keep the portal notification worker running until committed account-security events are drained. If SMTP is unsafe, deactivate only its n8n trigger and preserve the queue for controlled recovery; do not delete pending events or notifications.
+4. Preserve portal users, invitations, sessions, notification state and audit history for investigation and reconciliation.
+5. Redeploy the previous tested application commit if needed. Existing captain and administrator routes continue to use their original data and authentication.
 
 ## Deliberately not enabled yet
 

@@ -52,6 +52,7 @@ docker-compose.yml
 - `POST /internal/generate-weekly-report` — HMAC-signed; idempotent weekly report generation.
 - `POST /internal/sync-league-fixtures` — HMAC-signed; fetches league / Play-Cricket match details (or accepts `raw_body` JSON) and upserts `league_fixtures` for umpire prefill. See [docs/LEAGUE-API-ROADMAP.md](docs/LEAGUE-API-ROADMAP.md).
 - `POST /internal/sync-starred-players` — HMAC-signed; refreshes the published List A/List B data and imports a bounded batch of missing or changed Play-Cricket scorecards. See [docs/STARRED-PLAYER-COMPLIANCE.md](docs/STARRED-PLAYER-COMPLIANCE.md).
+- `POST /internal/process-portal-notifications` — HMAC-signed; idempotently materializes and dispatches portal account-activation and appointment-revocation security notifications with bounded retry and dead-letter handling.
 - No direct DB access from n8n; all via HTTPS to this app.
 
 ### Security

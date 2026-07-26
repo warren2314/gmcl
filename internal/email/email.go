@@ -150,6 +150,13 @@ func (c *Client) SendSensitive(to, subject, body string) error {
 	return c.Send(to, subject, body)
 }
 
+// SensitiveDeliveryConfigured reports whether sensitive messages can be
+// handed to an SMTP server instead of falling back to development logging.
+// It intentionally reveals no host, credential or recipient information.
+func (c *Client) SensitiveDeliveryConfigured() bool {
+	return strings.TrimSpace(c.host) != ""
+}
+
 func (c *Client) messageHeaders(to, subject string) (string, error) {
 	headers := "From: " + c.fromHeader + "\r\n" +
 		"To: " + to + "\r\n" +

@@ -46,6 +46,12 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 			http.Error(w, "could not load portal reconciliation", http.StatusInternalServerError)
 			return
 		}
+		notificationHealth, err := s.PortalStore.LoadNotificationDeliveryHealth(ctx)
+		if err != nil {
+			slog.Error("load portal notification delivery health", "error", err)
+			http.Error(w, "could not load portal notification health", http.StatusInternalServerError)
+			return
+		}
 		csrf := ""
 		if cookie, err := r.Cookie(middleware.CSRFCookieName); err == nil {
 			csrf = cookie.Value
@@ -65,6 +71,13 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		if s.PortalOIDC == nil || !s.PortalOIDC.Enabled() {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Managed identity is not configured.</strong> Invitations cannot be issued until the test identity provider settings are present.</div>`)
 		}
+
+		renderAdminPortalNotificationHealth(
+			w,
+			notificationHealth,
+			email.NewFromEnv().SensitiveDeliveryConfigured(),
+			s.LondonLoc,
+		)
 
 		fmt.Fprint(w, `<div class="row g-4"><div class="col-xl-5">
 <section class="card shadow-sm"><div class="card-header"><strong>Approve a named club official</strong></div><div class="card-body">
@@ -187,6 +200,56 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
 	}
+}
+
+func renderAdminPortalNotificationHealth(
+	w http.ResponseWriter,
+	health portal.NotificationDeliveryHealth,
+	smtpConfigured bool,
+	location *time.Location,
+) {
+	deliveryBadge := `<span class="badge text-bg-danger">SMTP unavailable</span>`
+	if smtpConfigured {
+		deliveryBadge = `<span class="badge text-bg-success">SMTP configured</span>`
+	}
+	queueBadge := `<span class="badge text-bg-success">Queue healthy</span>`
+	deadLetter := health.DeadLetter + health.OutboxDeadLetter
+	if deadLetter > 0 {
+		queueBadge = `<span class="badge text-bg-danger">Operator action required</span>`
+	} else if health.UnpublishedEvents > 0 || health.Pending > 0 ||
+		health.Retrying > 0 || health.Sending > 0 {
+		queueBadge = `<span class="badge text-bg-warning">Work outstanding</span>`
+	}
+	oldest := "None"
+	if health.OldestReadyAt != nil {
+		oldest = portalLocalTime(*health.OldestReadyAt, location)
+	}
+	fmt.Fprintf(w, `<section class="card shadow-sm mb-4" aria-labelledby="portal-delivery-health-heading">
+<div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2"><strong id="portal-delivery-health-heading">Account-security notification delivery</strong><div>%s %s</div></div>
+<div class="card-body"><p class="small text-muted">Account activation and appointment-revocation events are materialized idempotently and delivered by the HMAC-protected portal notification worker. Message bodies contain no invitation token, administrative reason or case content.</p>
+<div class="row g-3 text-center">
+<div class="col-6 col-lg"><div class="border rounded p-2"><div class="small text-muted">Unpublished events</div><strong>%d</strong></div></div>
+<div class="col-6 col-lg"><div class="border rounded p-2"><div class="small text-muted">Pending</div><strong>%d</strong></div></div>
+<div class="col-6 col-lg"><div class="border rounded p-2"><div class="small text-muted">Retrying</div><strong>%d</strong></div></div>
+<div class="col-6 col-lg"><div class="border rounded p-2"><div class="small text-muted">Sending</div><strong>%d</strong></div></div>
+<div class="col-6 col-lg"><div class="border rounded p-2"><div class="small text-muted">Dead letter</div><strong>%d</strong></div></div>
+</div><p class="small text-muted mt-3 mb-0">Sent: %d · oldest ready item: %s. Schedule <code>POST /internal/process-portal-notifications</code> with the existing internal HMAC controls.</p>`,
+		deliveryBadge,
+		queueBadge,
+		health.UnpublishedEvents,
+		health.Pending,
+		health.Retrying,
+		health.Sending,
+		deadLetter,
+		health.Sent,
+		escapeHTML(oldest),
+	)
+	if strings.TrimSpace(health.LatestError) != "" {
+		fmt.Fprintf(w, `<div class="alert alert-warning mt-3 mb-0"><strong>Latest delivery error:</strong> %s</div>`,
+			escapeHTML(health.LatestError),
+		)
+	}
+	fmt.Fprint(w, `</div></section>`)
 }
 
 func (s *Server) handleAdminPortalInvitationRevoke() http.HandlerFunc {

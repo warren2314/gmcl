@@ -236,6 +236,39 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [220, 960]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "*/5 * * * *" }]
+        }
+      },
+      "id": "trigger-portal-notifications",
+      "name": "Portal security notifications",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 1120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.GMCL_BASE_URL || 'https://gmcl.co.uk') + '/internal/process-portal-notifications' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer REPLACE_WITH_N8N_HMAC_SECRET" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ }"
+      },
+      "id": "http-portal-notifications",
+      "name": "POST portal notifications",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 1120]
     }
   ],
   "connections": {
@@ -245,7 +278,8 @@
     "Wednesday 10:00": { "main": [[{ "node": "POST Wednesday reminder", "type": "main", "index": 0 }]] },
     "Wednesday 23:59": { "main": [[{ "node": "POST generate-sanctions", "type": "main", "index": 0 }]] },
     "Nightly rules sync": { "main": [[{ "node": "POST sync-rules", "type": "main", "index": 0 }]] },
-    "Sanction notice outbox": { "main": [[{ "node": "POST sanction outbox", "type": "main", "index": 0 }]] }
+    "Sanction notice outbox": { "main": [[{ "node": "POST sanction outbox", "type": "main", "index": 0 }]] },
+    "Portal security notifications": { "main": [[{ "node": "POST portal notifications", "type": "main", "index": 0 }]] }
   },
   "active": false,
   "settings": { "executionOrder": "v1" },

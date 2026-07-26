@@ -409,7 +409,7 @@ func (store *Store) ListActiveAssignments(
 				a.id,
 				a.user_id,
 				u.display_name,
-				COALESCE(identity_email.email, ''),
+				COALESCE(identity_email.verified_email, ''),
 				c.name,
 				a.role_key,
 				a.starts_at
@@ -417,11 +417,11 @@ func (store *Store) ListActiveAssignments(
 			JOIN portal_users u ON u.id = a.user_id
 			JOIN clubs c ON c.id = a.club_id
 			LEFT JOIN LATERAL (
-				SELECT i.email
+				SELECT i.verified_email
 				FROM portal_identities i
 				WHERE i.user_id = a.user_id
 				  AND i.email_verified = TRUE
-				  AND i.disabled_at IS NULL
+				  AND NULLIF(BTRIM(i.verified_email), '') IS NOT NULL
 				ORDER BY i.last_authenticated_at DESC NULLS LAST, i.created_at
 				LIMIT 1
 			) identity_email ON TRUE

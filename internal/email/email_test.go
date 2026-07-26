@@ -34,12 +34,19 @@ func TestMessageHeadersRejectInvalidReplyTo(t *testing.T) {
 
 func TestSendSensitiveRequiresSMTP(t *testing.T) {
 	client := &Client{}
+	if client.SensitiveDeliveryConfigured() {
+		t.Fatal("empty SMTP client reported sensitive delivery as configured")
+	}
 	if err := client.SendSensitive(
 		"official@example.org",
 		"Portal invitation",
 		"secret onboarding link",
 	); err == nil {
 		t.Fatal("sensitive email was allowed to fall back to development logging")
+	}
+	client.host = "smtp.example.org"
+	if !client.SensitiveDeliveryConfigured() {
+		t.Fatal("SMTP client did not report sensitive delivery as configured")
 	}
 }
 

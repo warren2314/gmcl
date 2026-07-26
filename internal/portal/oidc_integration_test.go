@@ -132,6 +132,42 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 		t.Fatalf("OIDC state replay error = %v", err)
 	}
 
+	materialized, err := store.MaterializeSecurityNotifications(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if materialized.Selected != 1 || materialized.Created != 1 || materialized.Deferred != 0 {
+		t.Fatalf("account activation materialization = %#v", materialized)
+	}
+	materialized, err = store.MaterializeSecurityNotifications(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if materialized.Selected != 0 || materialized.Created != 0 {
+		t.Fatalf("account activation materialized twice: %#v", materialized)
+	}
+	accountNotification, err := store.ClaimSecurityNotification(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountNotification == nil ||
+		accountNotification.TemplateKey != NotificationTemplateAccountActivated ||
+		accountNotification.Recipient != "portal.oidc.test@example.org" ||
+		accountNotification.AttemptCount != 1 {
+		t.Fatalf("account activation notification = %#v", accountNotification)
+	}
+	if err := store.MarkSecurityNotificationFailed(
+		ctx,
+		accountNotification.ID,
+		accountNotification.AttemptCount,
+		"synthetic SMTP outage",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if notification, err := store.ClaimSecurityNotification(ctx); err != nil || notification != nil {
+		t.Fatalf("notification retry ignored backoff: %#v, %v", notification, err)
+	}
+
 	authenticated, err := store.Authenticate(ctx, completed.RawSessionToken)
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +179,15 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if len(contexts) != 1 || contexts[0].Assignment.Scope.ClubID != clubID ||
 		contexts[0].Assignment.Role != RoleClubPrimaryAdmin {
 		t.Fatalf("acting contexts = %#v", contexts)
+	}
+	activeAssignments, err := store.ListActiveAssignments(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activeAssignments) != 1 ||
+		activeAssignments[0].Email != "portal.oidc.test@example.org" ||
+		activeAssignments[0].ID != contexts[0].Assignment.ID {
+		t.Fatalf("active portal appointments = %#v", activeAssignments)
 	}
 
 	selected, rotatedToken, err := store.SelectActingContext(
@@ -430,6 +475,120 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	}
 	if len(remainingContexts) != 0 {
 		t.Fatalf("revoked role remained selectable: %#v", remainingContexts)
+	}
+	materialized, err = store.MaterializeSecurityNotifications(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if materialized.Selected != 1 || materialized.Created != 1 || materialized.Deferred != 0 {
+		t.Fatalf("role revocation materialization = %#v", materialized)
+	}
+	revocationNotification, err := store.ClaimSecurityNotification(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revocationNotification == nil ||
+		revocationNotification.TemplateKey != NotificationTemplateAccessRevoked ||
+		revocationNotification.Recipient != "portal.oidc.test@example.org" ||
+		revocationNotification.Payload["role"] != string(RoleClubPrimaryAdmin) {
+		t.Fatalf("role revocation notification = %#v", revocationNotification)
+	}
+	if err := store.MarkSecurityNotificationSent(
+		ctx,
+		revocationNotification.ID,
+		revocationNotification.AttemptCount,
+	); err != nil {
+		t.Fatal(err)
+	}
+	health, err := store.LoadNotificationDeliveryHealth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.UnpublishedEvents != 0 ||
+		health.Pending != 0 ||
+		health.Retrying != 1 ||
+		health.Sending != 0 ||
+		health.Sent != 1 ||
+		health.DeadLetter != 0 ||
+		!strings.Contains(health.LatestError, "synthetic SMTP outage") {
+		t.Fatalf("portal notification health = %#v", health)
+	}
+
+	staleNotificationID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO portal_notifications (
+			id, club_id, user_id, channel, template_key, recipient, payload,
+			status, idempotency_key, attempt_count, available_at, updated_at
+		)
+		VALUES (
+			$1, $2, $3, 'email', $4, $5, '{}'::jsonb,
+			'sending', $6, $7, $8, $8
+		)
+	`, staleNotificationID, clubID, roleSelected.UserID,
+		NotificationTemplateAccessRevoked,
+		"portal.oidc.test@example.org",
+		"stale-notification:"+staleNotificationID.String(),
+		NotificationMaxAttempts,
+		time.Now().UTC().Add(-notificationLeaseTimeout-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if notification, err := store.ClaimSecurityNotification(ctx); err != nil || notification != nil {
+		t.Fatalf("final-attempt stale lease was reclaimed: %#v, %v", notification, err)
+	}
+	var (
+		staleStatus string
+		staleError  string
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT status, last_error
+		FROM portal_notifications
+		WHERE id = $1
+	`, staleNotificationID).Scan(&staleStatus, &staleError); err != nil {
+		t.Fatal(err)
+	}
+	if staleStatus != "failed" || !strings.Contains(staleError, "lease expired") {
+		t.Fatalf("stale final notification = %q, %q", staleStatus, staleError)
+	}
+
+	unsupportedEventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO portal_outbox_events (
+			id, aggregate_type, aggregate_id, event_type, payload,
+			idempotency_key, occurred_at
+		)
+		VALUES (
+			$1, 'portal_test', $1, 'portal.unsupported.test',
+			jsonb_build_object('club_id', $2::integer, 'user_id', $3::uuid),
+			$4, now()
+		)
+	`, unsupportedEventID, clubID, roleSelected.UserID,
+		"unsupported-event:"+unsupportedEventID.String()); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= NotificationMaxAttempts; attempt++ {
+		result, err := store.MaterializeSecurityNotifications(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Selected != 1 || result.Created != 0 || result.Deferred != 1 {
+			t.Fatalf("unsupported event attempt %d = %#v", attempt, result)
+		}
+	}
+	result, err := store.MaterializeSecurityNotifications(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Selected != 0 {
+		t.Fatalf("dead-letter outbox event was retried: %#v", result)
+	}
+	health, err = store.LoadNotificationDeliveryHealth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.OutboxDeadLetter != 1 ||
+		health.DeadLetter != 1 ||
+		!strings.Contains(health.LatestError, "unsupported") {
+		t.Fatalf("dead-letter delivery health = %#v", health)
 	}
 }
 

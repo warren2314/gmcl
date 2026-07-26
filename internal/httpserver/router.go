@@ -193,6 +193,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	internalMux.Post("/preview-email", s.handleInternalPreviewEmail())
 	internalMux.Post("/sync-rules", s.handleInternalSyncRules())
 	internalMux.Post("/process-sanction-outbox", s.handleInternalSanctionOutbox())
+	internalMux.Post("/process-portal-notifications", s.handleInternalPortalNotifications())
 	r.Mount("/internal", internalMux)
 
 	stopStarredWeeklySync := s.startStarredWeeklySync(context.Background())
