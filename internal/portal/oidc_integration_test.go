@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -346,19 +347,84 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if _, err := store.Authenticate(ctx, replacementToken); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("replacement pre-rotation token remained valid: %v", err)
 	}
+	if err := store.SetClubFeature(
+		ctx,
+		clubID,
+		FeaturePortalAccess,
+		false,
+		adminID,
+		"integration test emergency disable",
+		uuid.NewString(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Authenticate(ctx, replacementSelectedToken); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("club portal disablement left selected session valid: %v", err)
+	}
+	var revokedSessions int64
+	if err := pool.QueryRow(ctx, `
+		SELECT (metadata->>'revoked_sessions')::bigint
+		FROM portal_audit_events
+		WHERE club_id = $1
+		  AND action = 'portal.feature.changed'
+		  AND target_id = $2
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT 1
+	`, clubID, fmt.Sprintf("%d:%s", clubID, FeaturePortalAccess)).Scan(&revokedSessions); err != nil {
+		t.Fatal(err)
+	}
+	if revokedSessions != 1 {
+		t.Fatalf("club portal disablement revoked %d sessions, want 1", revokedSessions)
+	}
+	if err := store.SetClubFeature(
+		ctx,
+		clubID,
+		FeaturePortalAccess,
+		true,
+		adminID,
+		"integration test re-enable",
+		uuid.NewString(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	roleSession, roleSessionToken, err := store.CreateSession(
+		ctx,
+		replacementSelected.UserID,
+		ClientDetails{IPAddress: "192.0.2.13", UserAgent: "GMCL role revocation test"},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleContexts, err := store.ListActingContexts(ctx, roleSession)
+	if err != nil || len(roleContexts) != 1 {
+		t.Fatalf("role revocation acting contexts = %#v, %v", roleContexts, err)
+	}
+	roleSelected, roleSelectedToken, err := store.SelectActingContext(
+		ctx,
+		roleSession,
+		roleContexts[0].Assignment.ID,
+		ClientDetails{IPAddress: "192.0.2.13", UserAgent: "GMCL role revocation test"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Authenticate(ctx, roleSessionToken); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("role test pre-rotation token remained valid: %v", err)
+	}
 	if err := store.RevokeRoleAssignment(
 		ctx,
-		replacementContexts[0].Assignment.ID,
+		roleContexts[0].Assignment.ID,
 		adminID,
 		"integration test appointment ended",
 		uuid.NewString(),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Authenticate(ctx, replacementSelectedToken); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := store.Authenticate(ctx, roleSelectedToken); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("role revocation left selected session valid: %v", err)
 	}
-	remainingContexts, err := store.ListActingContexts(ctx, replacementSelected)
+	remainingContexts, err := store.ListActingContexts(ctx, roleSelected)
 	if err != nil {
 		t.Fatal(err)
 	}

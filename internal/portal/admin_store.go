@@ -270,6 +270,7 @@ func (store *Store) SetClubFeature(
 		correlationID = uuid.NewString()
 	}
 	return store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		var revokedSessions int64
 		var clubExists bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS(SELECT 1 FROM clubs WHERE id = $1)
@@ -306,6 +307,22 @@ func (store *Store) SetClubFeature(
 			`, clubID, legacyAdminID, nullableString(notes), now); err != nil {
 				return fmt.Errorf("disable portal club features: %w", err)
 			}
+			sessionTag, err := tx.Exec(ctx, `
+				UPDATE portal_sessions AS session
+				SET revoked_at = $2,
+				    revoke_reason = 'club portal access disabled'
+				WHERE session.revoked_at IS NULL
+				  AND EXISTS (
+				      SELECT 1
+				      FROM portal_club_memberships AS membership
+				      WHERE membership.id = session.selected_membership_id
+				        AND membership.club_id = $1
+				  )
+			`, clubID, now)
+			if err != nil {
+				return fmt.Errorf("revoke sessions for disabled portal club: %w", err)
+			}
+			revokedSessions = sessionTag.RowsAffected()
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO portal_club_features (
@@ -346,9 +363,10 @@ func (store *Store) SetClubFeature(
 			Outcome:       "success",
 			CorrelationID: correlationID,
 			Metadata: map[string]any{
-				"feature": key,
-				"enabled": enabled,
-				"notes":   strings.TrimSpace(notes),
+				"feature":          key,
+				"enabled":          enabled,
+				"notes":            strings.TrimSpace(notes),
+				"revoked_sessions": revokedSessions,
 			},
 			OccurredAt: now,
 		})

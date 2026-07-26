@@ -21,7 +21,7 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Deny-by-default, application-owned permissions with club/team/season/competition containment.
 - A restricted `gmcl_portal_runtime` PostgreSQL role, tenant transaction context, forced RLS on portal-private tables and a startup refusal if the effective role can bypass RLS.
 - Append-only, hash-chained audit events without raw authentication or invitation secrets.
-- Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`.
+- Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`; disabling a club's `portal_access` atomically disables its module flags and revokes every active session currently scoped to that club.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
 - Super Administrator pilot reconciliation showing active-team mapping completeness, active captain-contact counts, portal memberships/appointments and the latest mapped fixture synchronization per club.
 - Read-only action-centre totals over existing Play-Cricket fixtures, submissions, exemptions and the team-level sanctions ledger.
@@ -118,7 +118,7 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 - Unlinked legacy sanctions trigger a warning and are not silently double-counted.
 - Missing fixture sync produces “Unavailable”; a sync older than 36 hours produces “Stale”.
 - Historical season selection retains teams that are inactive today and preserves the source calculation contract effective for the selected records.
-- Disabling `portal_access` removes all club acting contexts and switches off its module flags.
+- Disabling `portal_access` removes all club acting contexts, switches off its module flags, immediately revokes sessions currently scoped to that club and records the revocation count in the feature-change audit event.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
 
@@ -129,7 +129,7 @@ On 26 July 2026, the implementation was validated from a clean disposable Postgr
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
-- The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
+- The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
 - Each disposable test database, container and temporary database role was removed after validation.
 - `git diff --check` passed.
@@ -139,7 +139,7 @@ On 26 July 2026, the implementation was validated from a clean disposable Postgr
 The migration is additive and must not be reversed on an in-season test server merely to roll back application code.
 
 1. Set `CLUB_PORTAL_ENABLED=false` and restart the application. The `/portal` routes disappear.
-2. Alternatively disable `portal_access` for the pilot club from `/admin/portal`; this also disables every module flag for that club.
+2. Alternatively disable `portal_access` for the pilot club from `/admin/portal`; this also disables every module flag and immediately revokes sessions currently scoped to that club.
 3. Preserve portal users, invitations, sessions and audit history for investigation and reconciliation.
 4. Redeploy the previous tested application commit if needed. Existing captain and administrator routes continue to use their original data and authentication.
 
