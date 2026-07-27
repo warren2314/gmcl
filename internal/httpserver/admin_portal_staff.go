@@ -80,9 +80,9 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 		pageHead(w, "Portal staff assignments")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
-<div class="d-flex flex-wrap justify-content-between gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Club operations</p><h1 class="h2">Portal staff roles and scopes</h1><p class="text-muted mb-0">Assign named GMCL administrators as Club Liaison Officers or Junior Administrators. A blank scope applies to all clubs; otherwise choose one club or one competition.</p></div><div class="d-flex gap-2"><a class="btn btn-outline-primary" href="/admin/portal">Pilot controls</a><a class="btn btn-primary" href="/admin/portal/messages/new">New message</a></div></div>`)
+<div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-start gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Club operations</p><h1 class="h2">Portal staff roles and scopes</h1><p class="text-muted mb-0">Assign named GMCL administrators as Club Liaison Officers or Junior Administrators. A blank scope applies to all clubs; otherwise choose one club or one competition.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 flex-shrink-0"><a class="btn btn-outline-secondary" href="/admin/portal">&larr; Pilot controls</a><a class="btn btn-primary px-4" href="/admin/portal/messages/new">Compose club message</a></div></div>`)
 		renderAdminPortalStaffStatus(w, r.URL.Query().Get("status"))
-		fmt.Fprintf(w, `<section class="card shadow-sm mb-4"><div class="card-header"><strong>Add staff assignment</strong></div><div class="card-body"><form method="post" action="/admin/portal/staff/assignments" class="row g-3"><input type="hidden" name="csrf_token" value="%s"><div class="col-md-4"><label class="form-label">Administrator</label><select class="form-select" name="admin_user_id" required><option value="">Choose administrator</option>`, escapeHTML(csrf))
+		fmt.Fprintf(w, `<section class="card shadow-sm mb-4"><div class="card-header"><strong>Add staff assignment</strong></div><form method="post" action="/admin/portal/staff/assignments"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3"><div class="col-md-4"><label class="form-label">Administrator</label><select class="form-select" name="admin_user_id" required><option value="">Choose administrator</option>`, escapeHTML(csrf))
 		for _, admin := range admins {
 			label := admin.Name
 			if admin.Email != "" && !strings.EqualFold(admin.Name, admin.Email) {
@@ -98,8 +98,8 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 		for _, competition := range competitions {
 			fmt.Fprintf(w, `<option value="%s">%s</option>`, competition.ID, escapeHTML(competition.Name))
 		}
-		fmt.Fprint(w, `</select><div class="form-text">Choose either a club or a competition, not both.</div></div><div class="col-md-7"><label class="form-label">Reason</label><input class="form-control" name="grant_reason" maxlength="500" required placeholder="Appointment authority, season or operational responsibility"></div><div class="col-12"><button class="btn btn-primary" type="submit">Add assignment</button></div></form></div></section>
-<section class="card shadow-sm"><div class="card-header"><strong>Staff assignments</strong></div><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Administrator</th><th>Role</th><th>Scope</th><th>Status</th><th>Reason</th><th></th></tr></thead><tbody>`)
+		fmt.Fprint(w, `</select><div class="form-text">Choose either a club or a competition, not both.</div></div><div class="col-md-7"><label class="form-label">Reason</label><input class="form-control" name="grant_reason" maxlength="500" required placeholder="Appointment authority, season or operational responsibility"></div></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2"><span class="text-muted small">Access takes effect immediately and is recorded in the audit trail.</span><button class="btn btn-primary px-4" type="submit">Assign staff role</button></div></form></section>
+<section class="card shadow-sm"><div class="card-header"><strong>Staff assignments</strong></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Administrator</th><th>Role</th><th>Scope</th><th>Status</th><th>Reason</th><th class="text-end">Actions</th></tr></thead><tbody>`)
 		if len(assignments) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-muted">No portal staff assignments exist.</td></tr>`)
 		}
@@ -112,13 +112,27 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 			}
 			action := ""
 			if assignment.Status == "active" {
-				action = fmt.Sprintf(`<form method="post" action="/admin/portal/staff/assignments/%s/revoke" class="d-flex gap-2"><input type="hidden" name="csrf_token" value="%s"><input class="form-control form-control-sm" name="reason" maxlength="500" required placeholder="Revocation reason"><button class="btn btn-sm btn-outline-danger" type="submit">Revoke</button></form>`, assignment.ID, escapeHTML(csrf))
+				revokeID := "revoke-" + assignment.ID.String()
+				action = fmt.Sprintf(`<div class="text-md-end"><button class="btn btn-sm btn-outline-danger text-nowrap" type="button" data-bs-toggle="collapse" data-bs-target="#%s" aria-expanded="false" aria-controls="%s">Remove access</button></div><div class="collapse mt-2" id="%s"><form method="post" action="/admin/portal/staff/assignments/%s/revoke" class="border rounded-3 bg-body-tertiary p-2 text-start"><input type="hidden" name="csrf_token" value="%s"><label class="form-label small mb-1" for="%s-reason">Reason for removal</label><input id="%s-reason" class="form-control form-control-sm mb-2" name="reason" maxlength="500" required placeholder="Why is this access being removed?"><button class="btn btn-sm btn-danger w-100" type="submit">Confirm removal</button></form></div>`,
+					revokeID,
+					revokeID,
+					revokeID,
+					assignment.ID,
+					escapeHTML(csrf),
+					revokeID,
+					revokeID,
+				)
 			}
-			fmt.Fprintf(w, `<tr><td>%s<div class="small text-muted">%s</div></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+			statusClass := "text-bg-secondary"
+			if assignment.Status == "active" {
+				statusClass = "text-bg-success"
+			}
+			fmt.Fprintf(w, `<tr><td data-label="Administrator"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="Role">%s</td><td data-label="Scope">%s</td><td data-label="Status"><span class="badge rounded-pill %s">%s</span></td><td data-label="Reason">%s</td><td data-label="Actions" style="min-width:15rem">%s</td></tr>`,
 				escapeHTML(assignment.AdminName),
 				escapeHTML(assignment.AdminEmail),
 				escapeHTML(portal.StaffRoleLabel(assignment.Role)),
 				escapeHTML(scope),
+				statusClass,
 				escapeHTML(assignment.Status),
 				escapeHTML(assignment.GrantReason),
 				action,
