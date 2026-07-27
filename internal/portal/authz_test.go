@@ -190,7 +190,9 @@ func TestPortalOperationsPermissionMatrix(t *testing.T) {
 		want       bool
 	}{
 		{"primary admin can send messages", RoleClubPrimaryAdmin, PermissionMessagesReply, true},
+		{"secretary can manage club profile requests", RoleClubSecretary, PermissionClubProfileManage, true},
 		{"secretary can manage starred reviews", RoleClubSecretary, PermissionStarredPlayersManage, true},
+		{"secretary can manage identity reconciliation", RoleClubSecretary, PermissionPlayerIdentityManage, true},
 		{"secretary can manage registration handoff", RoleClubSecretary, PermissionRegistrationManage, true},
 		{"secretary can capture fixture constraints", RoleClubSecretary, PermissionFixturesManage, true},
 		{"junior officer can manage junior administration", RoleClubJuniorOfficer, PermissionJuniorAdminManage, true},
