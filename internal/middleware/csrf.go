@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
 	"strings"
@@ -38,13 +39,18 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		if c, err := r.Cookie(csrfCookieName); err == nil && c.Value != "" {
 			token = c.Value
 		} else {
-			token = generateCSRFToken()
+			var err error
+			token, err = generateCSRFToken()
+			if err != nil {
+				http.Error(w, "could not establish request protection", http.StatusInternalServerError)
+				return
+			}
 			http.SetCookie(w, &http.Cookie{
 				Name:     csrfCookieName,
 				Value:    token,
 				Path:     "/",
 				Secure:   true,
-				HttpOnly: false, // must be readable by forms / JS
+				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 			})
 		}
@@ -62,7 +68,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			if formToken == "" {
 				formToken = r.Header.Get("X-CSRF-Token")
 			}
-			if formToken == "" || expected == "" || formToken != expected {
+			if !csrfTokenEqual(formToken, expected) {
 				http.Error(w, "csrf validation failed", http.StatusForbidden)
 				return
 			}
@@ -72,8 +78,17 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func generateCSRFToken() string {
+func generateCSRFToken() (string, error) {
 	buf := make([]byte, 32)
-	_, _ = rand.Read(buf)
-	return base64.RawURLEncoding.EncodeToString(buf)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func csrfTokenEqual(actual, expected string) bool {
+	if actual == "" || expected == "" || len(actual) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
