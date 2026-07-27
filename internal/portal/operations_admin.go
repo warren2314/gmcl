@@ -556,7 +556,10 @@ func (store *Store) UpdateAdminCase(
 			    priority = $3,
 			    assigned_admin_user_id = $4,
 			    deadline_at = $5,
-			    closed_at = CASE WHEN $2 = 'closed' THEN $6 ELSE NULL END,
+			    closed_at = CASE
+			        WHEN $2 = 'closed' THEN $6::timestamptz
+			        ELSE NULL::timestamptz
+			    END,
 			    version = version + 1,
 			    updated_at = $6
 			WHERE id = $1
