@@ -16,6 +16,7 @@
 @media(prefers-reduced-motion:no-preference){.rules-bot-large{animation:rules-float 3.5s ease-in-out infinite}@keyframes rules-float{50%{transform:translateY(-5px)}}}
 
 /* Persistent, site-wide Rules Assistant */
+body{padding-bottom:104px}
 .rules-widget{position:fixed;right:22px;bottom:20px;z-index:1080;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--rules-ink)}
 .rules-widget-launcher{display:flex;align-items:center;gap:.75rem;min-width:258px;height:72px;padding:7px 8px 7px 18px;border:2px solid var(--rules-gold);border-radius:20px;background:var(--rules-primary);color:#fff;box-shadow:0 16px 42px rgba(77,12,23,.3);text-align:left;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,background .2s ease}
 .rules-widget-launcher:hover{transform:translateY(-2px);background:var(--rules-primary-dark);box-shadow:0 20px 48px rgba(77,12,23,.38)}

@@ -10,7 +10,7 @@ import (
 	"cricket-ground-feedback/internal/portal"
 )
 
-const rulesAssistantAssetVersion = "20260724-1"
+const rulesAssistantAssetVersion = "20260727-2"
 const brandAssetVersion = "20260727-1"
 
 const (
