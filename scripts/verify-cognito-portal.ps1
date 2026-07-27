@@ -122,11 +122,20 @@ Require-Condition (
 Require-Condition (
     $mfa.WebAuthnConfiguration.UserVerification -eq "required"
 ) "Passkeys must require user verification."
+
+$relyingPartyId = [string]$mfa.WebAuthnConfiguration.RelyingPartyId
+if ([string]::IsNullOrWhiteSpace($relyingPartyId)) {
+    # Cognito omits RelyingPartyId when the selected relying party is the
+    # user pool's prefix domain. The pool Domain value proves that the
+    # default relying party is configured and available.
+    Require-Condition (
+        -not [string]::IsNullOrWhiteSpace([string]$pool.Domain)
+    ) "Passkeys must have a Cognito prefix domain or an explicit relying-party ID."
+    $relyingPartyId = "$($pool.Domain).auth.$Region.amazoncognito.com"
+}
 Require-Condition (
-    -not [string]::IsNullOrWhiteSpace(
-        [string]$mfa.WebAuthnConfiguration.RelyingPartyId
-    )
-) "Passkeys must have an explicit Cognito relying-party ID."
+    -not [string]::IsNullOrWhiteSpace($relyingPartyId)
+) "Passkeys must have an effective Cognito relying-party ID."
 Require-Condition (
     $mfa.WebAuthnConfiguration.FactorConfiguration -eq
     "MULTI_FACTOR_WITH_USER_VERIFICATION"
