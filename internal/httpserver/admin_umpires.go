@@ -266,7 +266,14 @@ var umpireVariantToCanonical = map[string]string{
 }
 
 const premierPanelMatchPredicateSQL = `(
+	lf.play_cricket_match_id IS NOT NULL
+	AND (sub.play_cricket_match_id IS NOT NULL OR lf.candidate_count = 1)
+	AND (
 	(EXTRACT(ISODOW FROM sub.match_date) = 6 AND LOWER(COALESCE(lf.payload->>'competition_name', '')) IN (
+		'robert hinchliffe premier league',
+		'gmcl premier league 2',
+		'gmcl championship',
+		'gmcl division 1',
 		'gmcl saturday premier',
 		'gmcl saturday premier 2',
 		'gmcl saturday championship',
@@ -278,6 +285,7 @@ const premierPanelMatchPredicateSQL = `(
 		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%championship cup%'
 		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%john barrow%'
 	))
+	)
 )`
 
 // Umpire ratings include legacy CSV imports created before submissions stored a
@@ -286,7 +294,10 @@ const premierPanelMatchPredicateSQL = `(
 const umpireFixtureJoinSQL = `
 		    JOIN teams umpire_submission_team ON umpire_submission_team.id = sub.team_id
 		    LEFT JOIN LATERAL (
-		        SELECT candidate.payload
+		        SELECT
+		            candidate.play_cricket_match_id,
+		            candidate.payload,
+		            COUNT(*) OVER()::int AS candidate_count
 		        FROM league_fixtures candidate
 		        WHERE candidate.play_cricket_match_id = sub.play_cricket_match_id
 		           OR (
@@ -578,6 +589,80 @@ func (s *Server) loadUmpireRankingsForScope(ctx context.Context, whereSQL string
 	return umpires
 }
 
+type umpireCompetitionAuditRow struct {
+	Competition    string
+	Classification string
+	Resolution     string
+	Ratings        int64
+}
+
+// loadPremierUmpireCompetitionAudit accounts for every valid Premier Panel
+// rating before the ranking threshold is applied. It makes classification and
+// fixture-resolution exceptions visible instead of silently hiding them.
+func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID int32) ([]umpireCompetitionAuditRow, error) {
+	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
+		WITH deduped AS (
+		    SELECT DISTINCT ON (sub.team_id, sub.match_date)
+		        sub.play_cricket_match_id,
+		        trim(sub.form_data->>'umpire1_name') AS u1name,
+		        sub.form_data->>'umpire1_performance' AS u1perf,
+		        trim(sub.form_data->>'umpire2_name') AS u2name,
+		        sub.form_data->>'umpire2_performance' AS u2perf,
+		        COALESCE(lf.payload->>'competition_name', '') AS competition,
+		        CASE
+		            WHEN lf.play_cricket_match_id IS NULL THEN 'Unmatched'
+		            WHEN sub.play_cricket_match_id IS NULL AND lf.candidate_count > 1 THEN 'Ambiguous team/date'
+		            WHEN sub.play_cricket_match_id IS NULL THEN 'Unique team/date'
+		            ELSE 'Match ID'
+		        END AS resolution,
+		        %s AS is_premier_panel_game
+		    FROM submissions sub
+		    %s
+		    WHERE sub.season_id = $1
+		    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
+		),
+		ratings AS (
+		    SELECT lower(trim(u1name)) AS key, u1perf AS perf, competition, resolution, is_premier_panel_game
+		    FROM deduped
+		    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
+		    UNION ALL
+		    SELECT lower(trim(u2name)), u2perf, competition, resolution, is_premier_panel_game
+		    FROM deduped
+		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
+		),
+		classified AS (
+		    SELECT
+		        CASE WHEN trim(competition) = '' THEN 'Unclassified fixture' ELSE competition END AS competition,
+		        CASE
+		            WHEN resolution IN ('Unmatched', 'Ambiguous team/date') THEN 'Exception'
+		            WHEN is_premier_panel_game THEN 'M3'
+		            ELSE 'Other'
+		        END AS classification,
+		        resolution
+		    FROM ratings
+		    WHERE perf IN ('Good','Average','Poor')
+		      AND key = ANY(%s)
+		)
+		SELECT competition, classification, resolution, COUNT(*)::bigint
+		FROM classified
+		GROUP BY competition, classification, resolution
+		ORDER BY classification, competition, resolution
+	`, premierPanelMatchPredicateSQL, umpireFixtureJoinSQL, umpireNameArray(premierUmpireKeys)), seasonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var audit []umpireCompetitionAuditRow
+	for rows.Next() {
+		var row umpireCompetitionAuditRow
+		if rows.Scan(&row.Competition, &row.Classification, &row.Resolution, &row.Ratings) == nil {
+			audit = append(audit, row)
+		}
+	}
+	return audit, rows.Err()
+}
+
 // handleAdminUmpireRankings renders umpire performance rankings derived from form_data JSONB.
 func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -629,6 +714,8 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		// Load all five groups — all use name matching, no umpire_type column filtering,
 		// because captains often mark panel umpires as "club" in the form.
 		var premier, premierOther, reserves, panel, club, noNames []reportUmpire
+		var competitionAudit []umpireCompetitionAuditRow
+		var competitionAuditErr error
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
@@ -643,6 +730,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			club = s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
 				umpireExcludeSQL(allPanelUmpireKeys)+" "+excludeInvalidUmpireSQL)
 			noNames = s.loadUmpireRankings(ctx, where, args, 1, "", invalidUmpireSQL)
+			competitionAudit, competitionAuditErr = s.loadPremierUmpireCompetitionAudit(ctx, seasonID)
 		}
 
 		csrfToken := ""
@@ -729,6 +817,52 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   </div>
 </div>
 `, len(premier), len(reserves), len(panel), len(club))
+
+		var auditTotal, auditExceptions int64
+		for _, row := range competitionAudit {
+			auditTotal += row.Ratings
+			if row.Classification == "Exception" {
+				auditExceptions += row.Ratings
+			}
+		}
+		auditClass := "alert-success"
+		auditStatus := fmt.Sprintf("%d valid Premier Panel ratings accounted for; no unmatched or ambiguous fixture links.", auditTotal)
+		if competitionAuditErr != nil {
+			auditClass = "alert-danger"
+			auditStatus = "The classification audit could not be completed. Do not treat these rankings as verified."
+		} else if auditExceptions > 0 {
+			auditClass = "alert-danger"
+			auditStatus = fmt.Sprintf("%d of %d valid Premier Panel ratings have unmatched or ambiguous fixture links and require review.", auditExceptions, auditTotal)
+		}
+		fmt.Fprintf(w, `
+<div class="alert %s mb-3">
+  <strong>Classification audit:</strong> %s
+</div>
+<details class="card shadow-sm mb-4">
+  <summary class="card-header fw-semibold" style="cursor:pointer">Show rating totals by competition and fixture-link method</summary>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr><th>Classification</th><th>Competition</th><th>Fixture link</th><th class="text-end">Ratings</th></tr></thead>
+      <tbody>`, auditClass, escapeHTML(auditStatus))
+		for _, row := range competitionAudit {
+			badgeClass := "bg-light text-dark"
+			switch row.Classification {
+			case "M3":
+				badgeClass = "bg-primary"
+			case "Exception":
+				badgeClass = "bg-danger"
+			}
+			fmt.Fprintf(w, `<tr>
+  <td><span class="badge %s">%s</span></td>
+  <td>%s</td>
+  <td>%s</td>
+  <td class="text-end fw-semibold">%d</td>
+</tr>`, badgeClass, escapeHTML(row.Classification), escapeHTML(row.Competition), escapeHTML(row.Resolution), row.Ratings)
+		}
+		if len(competitionAudit) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="4" class="text-center text-muted py-3">No valid Premier Panel ratings found for this season.</td></tr>`)
+		}
+		fmt.Fprint(w, `</tbody></table></div></details>`)
 
 		// Premier chart (score + good%)
 		fmt.Fprint(w, `
@@ -969,7 +1103,9 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			        COALESCE(lf.payload->>'competition_name','') AS competition,
 			        COALESCE(sub.form_data->>'umpire_comments','') AS comment,
 			        lower(trim(sub.form_data->>'umpire1_name'))    AS u1,
+			        sub.form_data->>'umpire1_performance'          AS u1perf,
 			        lower(trim(sub.form_data->>'umpire2_name'))    AS u2,
+			        sub.form_data->>'umpire2_performance'          AS u2perf,
 			        %s AS is_premier_panel_game
 			    FROM submissions sub
 			    %s
@@ -980,7 +1116,10 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			FROM latest l
 			JOIN teams t  ON t.id  = l.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE (l.u1 = ANY($2::text[]) OR l.u2 = ANY($2::text[]))
+			WHERE (
+			    (l.u1 = ANY($2::text[]) AND l.u1perf IN ('Good','Average','Poor'))
+			    OR (l.u2 = ANY($2::text[]) AND l.u2perf IN ('Good','Average','Poor'))
+			)
 			  AND l.comment <> ''
 			  %s
 			ORDER BY l.match_date DESC
@@ -1136,7 +1275,10 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			FROM latest l
 			JOIN teams t  ON t.id  = l.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE (l.u1 = ANY($2::text[]) OR l.u2 = ANY($2::text[]))
+			WHERE (
+			    (l.u1 = ANY($2::text[]) AND l.u1perf IN ('Good','Average','Poor'))
+			    OR (l.u2 = ANY($2::text[]) AND l.u2perf IN ('Good','Average','Poor'))
+			)
 			  %s
 			ORDER BY l.match_date DESC
 		`, premierPanelMatchPredicateSQL, umpireFixtureJoinSQL,

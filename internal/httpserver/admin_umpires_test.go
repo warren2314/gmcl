@@ -62,6 +62,10 @@ func TestMergeUmpireVariantsCombinesKnownRankingRows(t *testing.T) {
 
 func TestPremierPanelMatchDefinitionContainsOfficialCompetitions(t *testing.T) {
 	for _, competition := range []string{
+		"robert hinchliffe premier league",
+		"gmcl premier league 2",
+		"gmcl championship",
+		"gmcl division 1",
 		"gmcl saturday premier",
 		"gmcl saturday premier 2",
 		"gmcl saturday championship",
@@ -112,7 +116,7 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM submissions WHERE season_id=$1`, seasonID)
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM league_fixtures WHERE play_cricket_match_id IN (-910101,-910102,-910103,-910104)`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM league_fixtures WHERE play_cricket_match_id BETWEEN -910110 AND -910101`)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM captains WHERE id=$1`, captainID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM teams WHERE id=$1`, teamID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM clubs WHERE id=$1`, clubID)
@@ -132,17 +136,29 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		{`INSERT INTO captains (id,team_id,full_name,email,active_from) VALUES ($1,$2,'Scope Test Captain','scope-test@example.test','2026-01-01')`, []any{captainID, teamID}},
 		{`INSERT INTO league_fixtures (play_cricket_match_id,season_id,match_date,home_team_pc_id,payload)
 		  VALUES
-		    (-910101,$1,'2026-04-18','-9101-test-team','{"competition_name":"GMCL Saturday Premier"}'),
-		    (-910102,$1,'2026-04-19','-9101-test-team','{"competition_name":"GMCL Sunday Derek Kay Cup"}'),
+		    (-910101,$1,'2026-04-18','-9101-test-team','{"competition_name":"Robert Hinchliffe Premier League"}'),
+		    (-910102,$1,'2026-04-19','-9101-test-team','{"competition_name":"Derek Kay 1st XI Cup"}'),
 		    (-910103,$1,'2026-04-25','-9101-test-team','{"competition_name":"GMCL Saturday Division 5"}'),
-		    (-910104,$1,'2026-05-02','-9101-test-team','{"competition_name":"GMCL Saturday Premier"}')`, []any{seasonID}},
+		    (-910104,$1,'2026-05-02','-9101-test-team','{"competition_name":"GMCL Premier League 2"}'),
+		    (-910105,$1,'2026-05-09','-9101-test-team','{"competition_name":"GMCL Championship"}'),
+		    (-910106,$1,'2026-05-16','-9101-test-team','{"competition_name":"GMCL Division 1"}'),
+		    (-910107,$1,'2026-05-17','-9101-test-team','{"competition_name":"1st XI Championship Cup"}'),
+		    (-910108,$1,'2026-05-24','-9101-test-team','{"competition_name":"John Barrow 1st XI Trophy"}'),
+		    (-910109,$1,'2026-05-31','-9101-test-team','{"competition_name":"GMCL Sunday Premier League"}'),
+		    (-910110,$1,'2026-06-07','-9101-test-team','{"competition_name":"Derek Kay 1st XI Cup - abandoned test"}')`, []any{seasonID}},
 		{`INSERT INTO submissions
 		    (season_id,week_id,team_id,captain_id,match_date,pitch_rating,outfield_rating,facilities_rating,play_cricket_match_id,umpire1_type,form_data)
 		  VALUES
 		    ($1,$2,$3,$4,'2026-04-18',3,3,3,NULL,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good","import_source":"legacy_csv"}'),
 		    ($1,$2,$3,$4,'2026-04-19',3,3,3,-910102,'club','{"umpire1_name":"David Faulkner","umpire1_performance":"Average"}'),
 		    ($1,$2,$3,$4,'2026-04-25',3,3,3,-910103,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Poor"}'),
-		    ($1,$2,$3,$4,'2026-05-02',3,3,3,-910104,'club','{"umpire1_name":"Philip Steven Royle","umpire1_performance":"Good"}')`, []any{seasonID, weekID, teamID, captainID}},
+		    ($1,$2,$3,$4,'2026-05-02',3,3,3,-910104,'club','{"umpire1_name":"Philip Steven Royle","umpire1_performance":"Good"}'),
+		    ($1,$2,$3,$4,'2026-05-09',3,3,3,-910105,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
+		    ($1,$2,$3,$4,'2026-05-16',3,3,3,-910106,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Average"}'),
+		    ($1,$2,$3,$4,'2026-05-17',3,3,3,-910107,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
+		    ($1,$2,$3,$4,'2026-05-24',3,3,3,-910108,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
+		    ($1,$2,$3,$4,'2026-05-31',3,3,3,-910109,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Poor"}'),
+		    ($1,$2,$3,$4,'2026-06-07',3,3,3,-910110,'club','{"umpire1_name":"Dave Faulkner","match_outcome":"abandoned"}')`, []any{seasonID, weekID, teamID, captainID}},
 	}
 	for _, statement := range setup {
 		if _, err := pool.Exec(ctx, statement.query, statement.args...); err != nil {
@@ -158,15 +174,41 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 	m3 := mergeUmpireVariants(server.loadUmpireRankingsForScope(
 		ctx, where, args, 1, "", keyFilter, umpireMatchScopePremierPanel,
 	))
-	if len(m3) != 1 || m3[0].Ratings != 2 || m3[0].Good != 1 || m3[0].Average != 1 {
-		t.Fatalf("M3 rankings = %#v, want Dave Faulkner with two qualifying ratings", m3)
+	if len(m3) != 1 || m3[0].Ratings != 6 || m3[0].Good != 4 || m3[0].Average != 2 {
+		t.Fatalf("M3 rankings = %#v, want Dave Faulkner with all six qualifying competition ratings", m3)
 	}
 
 	other := mergeUmpireVariants(server.loadUmpireRankingsForScope(
 		ctx, where, args, 1, "", keyFilter, umpireMatchScopeOther,
 	))
-	if len(other) != 1 || other[0].Ratings != 1 || other[0].Poor != 1 {
-		t.Fatalf("other-game rankings = %#v, want one excluded rating", other)
+	if len(other) != 1 || other[0].Ratings != 2 || other[0].Poor != 2 {
+		t.Fatalf("other-game rankings = %#v, want two excluded ratings", other)
+	}
+
+	audit, auditErr := server.loadPremierUmpireCompetitionAudit(ctx, seasonID)
+	if auditErr != nil {
+		t.Fatalf("load competition audit: %v", auditErr)
+	}
+	var m3Audit, otherAudit, exceptionAudit, teamDateAudit, directAudit int64
+	for _, row := range audit {
+		switch row.Classification {
+		case "M3":
+			m3Audit += row.Ratings
+		case "Other":
+			otherAudit += row.Ratings
+		case "Exception":
+			exceptionAudit += row.Ratings
+		}
+		switch row.Resolution {
+		case "Unique team/date":
+			teamDateAudit += row.Ratings
+		case "Match ID":
+			directAudit += row.Ratings
+		}
+	}
+	if m3Audit != 7 || otherAudit != 2 || exceptionAudit != 0 || teamDateAudit != 1 || directAudit != 8 {
+		t.Fatalf("competition audit = %#v; totals M3=%d other=%d exception=%d team/date=%d direct=%d",
+			audit, m3Audit, otherAudit, exceptionAudit, teamDateAudit, directAudit)
 	}
 
 	scorePage := func(name, scope string) string {
@@ -183,7 +225,14 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 	}
 
 	davePage := scorePage("Dave Faulkner", umpireMatchScopePremierPanel)
-	for _, want := range []string{"GMCL Saturday Premier", "GMCL Sunday Derek Kay Cup"} {
+	for _, want := range []string{
+		"Robert Hinchliffe Premier League",
+		"Derek Kay 1st XI Cup",
+		"GMCL Championship",
+		"GMCL Division 1",
+		"1st XI Championship Cup",
+		"John Barrow 1st XI Trophy",
+	} {
 		if !strings.Contains(davePage, want) {
 			t.Errorf("Dave Faulkner M3 score page is missing %q", want)
 		}
@@ -191,9 +240,12 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 	if strings.Contains(davePage, "GMCL Saturday Division 5") {
 		t.Error("Dave Faulkner M3 score page included a non-M3 game")
 	}
+	if strings.Contains(davePage, "abandoned test") {
+		t.Error("Dave Faulkner score page counted an abandoned match with no umpire rating")
+	}
 
 	philipPage := scorePage("Philip Royle", umpireMatchScopePremierPanel)
-	if !strings.Contains(philipPage, "GMCL Saturday Premier") ||
+	if !strings.Contains(philipPage, "GMCL Premier League 2") ||
 		strings.Contains(philipPage, "No ratings found for this umpire") {
 		t.Fatal("Philip Royle canonical score page did not find the Philip Steven Royle rating")
 	}
