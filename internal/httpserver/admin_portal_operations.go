@@ -286,7 +286,20 @@ func (s *Server) handleAdminPortalCaseUpdate() http.HandlerFunc {
 			Status: r.FormValue("status"), Priority: r.FormValue("priority"),
 			AssignedAdminID: assigned, DeadlineAt: deadline,
 		}, requestID(r)); err != nil {
-			http.Error(w, "could not update case", http.StatusBadRequest)
+			slog.Warn(
+				"update admin portal case failed",
+				"case_id", caseID,
+				"admin_id", adminIDForRequest(r),
+				"status", strings.TrimSpace(r.FormValue("status")),
+				"priority", strings.TrimSpace(r.FormValue("priority")),
+				"error", err,
+			)
+			http.Redirect(
+				w,
+				r,
+				"/admin/portal/cases/"+caseID.String()+"?status=case-update-failed",
+				http.StatusSeeOther,
+			)
 			return
 		}
 		http.Redirect(w, r, "/admin/portal/cases/"+caseID.String()+"?status=case-updated", http.StatusSeeOther)
@@ -347,6 +360,10 @@ func renderAdminPortalOperationStatus(w http.ResponseWriter, status string) {
 		"email-pending":    "The reply was saved, but its email copy needs an operator retry.",
 		"note-added":       "The internal GMCL note was added.",
 		"case-updated":     "The case workflow was updated.",
+	}
+	if status == "case-update-failed" {
+		fmt.Fprint(w, `<div class="alert alert-danger">The workflow update was not saved. The failure has been logged for investigation; the case and its messages are unchanged.</div>`)
+		return
 	}
 	if message := messages[status]; message != "" {
 		fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(message))
