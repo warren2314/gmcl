@@ -175,3 +175,38 @@ func TestParseRoleKeyRejectsProviderClaims(t *testing.T) {
 		t.Fatal("provider group unexpectedly accepted as an application role")
 	}
 }
+
+func TestPortalOperationsPermissionMatrix(t *testing.T) {
+	now := time.Now().UTC()
+	assignment := Assignment{
+		ID: uuid.New(), MembershipID: uuid.New(), UserID: uuid.New(),
+		Scope: Scope{ClubID: 12}, Status: "active",
+		StartsAt: now.Add(-time.Hour), Version: 1,
+	}
+	tests := []struct {
+		name       string
+		role       RoleKey
+		permission Permission
+		want       bool
+	}{
+		{"primary admin can send messages", RoleClubPrimaryAdmin, PermissionMessagesReply, true},
+		{"secretary can manage starred reviews", RoleClubSecretary, PermissionStarredPlayersManage, true},
+		{"secretary can manage registration handoff", RoleClubSecretary, PermissionRegistrationManage, true},
+		{"secretary can capture fixture constraints", RoleClubSecretary, PermissionFixturesManage, true},
+		{"junior officer can manage junior administration", RoleClubJuniorOfficer, PermissionJuniorAdminManage, true},
+		{"junior officer cannot manage player identity", RoleClubJuniorOfficer, PermissionPlayerIdentityManage, false},
+		{"captain can see fixtures", RoleCaptainManager, PermissionFixturesView, true},
+		{"captain cannot alter fixture constraints", RoleCaptainManager, PermissionFixturesManage, false},
+		{"read-only user can see messages", RoleReadOnlyClubUser, PermissionMessagesView, true},
+		{"read-only user cannot send messages", RoleReadOnlyClubUser, PermissionMessagesReply, false},
+		{"ordinary club role cannot see safeguarding", RoleClubJuniorOfficer, PermissionSafeguardingView, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assignment.Role = test.role
+			if got := Authorize(assignment, test.permission, assignment.Scope, now); got != test.want {
+				t.Fatalf("Authorize(%s, %s) = %v, want %v", test.role, test.permission, got, test.want)
+			}
+		})
+	}
+}

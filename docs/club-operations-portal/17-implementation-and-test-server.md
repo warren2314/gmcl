@@ -123,7 +123,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
-3. Confirm migrations `0048_club_portal_foundation.sql` and `0049_portal_audit_hash_verification.sql` are recorded in `schema_migrations`.
+3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql` and `0050_portal_operations_workflows.sql` are recorded in `schema_migrations`.
 4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`, HTTP 200 for health/legacy/admin, HTTP 303 for the unauthenticated portal and HTTP 401 for the unsigned worker request; any non-zero exit blocks pilot enablement.
 5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
@@ -141,6 +141,68 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 18. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
 19. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
 20. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
+
+## Operations-module test journeys
+
+Enable these flags for the controlled test club from `/admin/portal`, after `portal_access` and `read_only_dashboard`:
+
+1. `secure_messaging`
+2. `club_self_service`
+3. `junior_administration`
+4. `player_identity`
+5. `registration`
+6. `fixture_optimisation`
+
+Use synthetic or explicitly approved non-sensitive content only.
+
+### Secure communication
+
+1. As the club user, open `/portal/messages`, create a normal case and confirm the sender sees one saved club-visible message.
+2. In a separate GMCL administrator session, open `/admin/portal/cases`, assign the case, set a deadline and add an internal note.
+3. Return to the club session and confirm the assignment/deadline status is visible but the internal note, its author and its timestamp are absent.
+4. Reply as GMCL, confirm the club can see and acknowledge it, and confirm the verified case creator receives the official email copy.
+5. Simulate SMTP failure, confirm the saved message is marked as needing email attention, restore SMTP and use **Retry official email copy** without creating a second portal message.
+6. Disable `secure_messaging`; confirm club case routes fail closed while existing records remain in the GMCL queue.
+
+### Club profile and corrections
+
+1. Open `/portal/club-profile` and submit a synthetic contact version with an evidence reference.
+2. From `/admin/portal/cases`, verify or reject that version. Confirm the result appears in club history without overwriting the earlier version.
+3. Submit a record-correction request. Confirm the source record is unchanged and a linked communication case exists.
+4. Record a GMCL review decision and confirm it is visible to the originating club only.
+
+### Starred-player review
+
+1. Open `/portal/starred-players` and submit a synthetic player, season and published rule/list release.
+2. Confirm the request is labelled as a potential issue requiring human review.
+3. As GMCL, record a review status, rule release and decision note.
+4. Confirm no starred list, sanction or source record changes automatically.
+
+### Junior administration
+
+1. Use only a synthetic verified-adult role; do not enter child contact, medical or safeguarding information.
+2. Submit an ordinary administration/acknowledgement request and process it through the GMCL queue.
+3. Confirm there is no child-recipient selector, player-photo field or safeguarding submission route.
+4. Confirm a role without `junior_administration.manage` cannot submit.
+
+### Player identity
+
+1. Submit a synthetic ambiguity using an external member reference where available.
+2. Confirm there is no image upload, biometric matching, roster import or automatic identity merge.
+3. Record a human reconciliation decision and confirm the external system remains unchanged.
+
+### Registration
+
+1. Submit a synthetic guided handoff with the registration route, external reference and former-club direct-email status.
+2. Confirm there is no Play-Cricket write, registration approval or webhook claim.
+3. Record a GMCL review outcome and continue the published external/manual process in parallel.
+
+### Fixture planning
+
+1. Submit club-wide and team-specific hard/soft constraints for the selected season.
+2. Attempt a team or season outside the acting scope and confirm the write is denied.
+3. Confirm the inventory is tenant-scoped and no fixture has changed.
+4. Confirm there is no solver execution or publication control; generated schedules remain outside this slice and can never publish automatically.
 
 ## Required test evidence
 
@@ -173,10 +235,15 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 - Audit-chain head digests and positions are recorded as deployment evidence; version-1 legacy events are visibly counted as link-only verification.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
+- Club-visible messages and internal GMCL notes are stored in different tables, loaded by different repository paths and never combined in a club response.
+- Every new operations write revalidates the selected assignment, active membership, `portal_access`, module feature and application permission in the transaction.
+- All seven operations tables have enabled and forced PostgreSQL row-level security; club reads are tenant-scoped and internal notes have no club read policy.
+- Operational review updates remain human decisions. Starred findings do not amend a list or sanction; registration does not write to Play-Cricket; fixture constraints do not run or publish a schedule.
+- An SMTP failure does not duplicate a portal message. Its email state is visible to GMCL and the same message can be retried after delivery is restored.
 
 ## Validation recorded for this branch
 
-On 26-27 July 2026, the implementation was validated from clean disposable PostgreSQL databases using all migrations through `0049`:
+On 26-27 July 2026, the implementation was validated from clean disposable PostgreSQL databases. The foundation record below used migrations through `0049`; the operations slice was subsequently validated through `0050`:
 
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
@@ -198,6 +265,8 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - The production image contained `/bin/portal-preflight` and migration `0049`; Bash syntax, ShellCheck and `docker compose config --quiet` passed for the staging/setup workflow. The expanded verifier passed deterministic external-response mocks and a deliberate missing-`HttpOnly` response produced the expected non-zero, fail-closed result.
 - Each disposable test database and application container was removed after validation. Shared PostgreSQL roles were preserved unless positively proven to be test-owned.
 - `git diff --check` passed.
+- Migration `0050_portal_operations_workflows.sql` applied successfully after the complete preceding migration chain in a disposable PostgreSQL 16/pgvector database. All seven new private tables reported both enabled and forced RLS, and the club-visible-message and internal-note immutability triggers were present. The disposable container was then removed.
+- Focused portal and HTTP suites passed after adding the operations repositories, routes, permission matrix, feature controls and GMCL work queue. Run the complete suites again against the final commit before deployment.
 
 ## Rollback
 
@@ -209,15 +278,14 @@ The migration is additive and must not be reversed on an in-season test server m
 4. Preserve portal users, invitations, sessions, notification state and audit history for investigation and reconciliation.
 5. Redeploy the previous tested application commit if needed. Existing captain and administrator routes continue to use their original data and authentication.
 
-## Deliberately not enabled yet
+## Deliberately not enabled or claimed
 
-- Portal-primary official communication
-- Secure cases/messages and internal notes
-- Club contact self-service and correction requests
-- Junior or safeguarding workflows
-- Player identity/photos
-- Registration writes
-- Fixture solver or publication
-- Any Hawk authority to amend, approve, sanction or publish
+- Portal-primary official communication: email remains the official record.
+- File uploads, malware scanning and evidence downloads.
+- Child-recipient messaging, child data capture or any safeguarding route.
+- Player photographs, biometric matching, bulk player imports or automatic merges.
+- Play-Cricket registration writes or webhooks.
+- Fixture solver execution or publication.
+- Any Hawk authority to amend, approve, sanction or publish.
 
-These remain subsequent roadmap slices and retain the delivery gates in [16-open-questions-and-decisions.md](16-open-questions-and-decisions.md).
+The testable workflow slices above do not close their governance, privacy, data-rights or operating-model gates. Those gates remain authoritative in [16-open-questions-and-decisions.md](16-open-questions-and-decisions.md).

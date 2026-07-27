@@ -25,20 +25,27 @@ const (
 type Permission string
 
 const (
-	PermissionPortalView         Permission = "portal.view"
-	PermissionReportsView        Permission = "reports.view"
-	PermissionSanctionsView      Permission = "sanctions.view"
-	PermissionStarredPlayersView Permission = "starred_players.view"
-	PermissionClubProfileView    Permission = "club_profile.view"
-	PermissionClubProfileManage  Permission = "club_profile.manage"
-	PermissionMessagesView       Permission = "messages.view"
-	PermissionMessagesReply      Permission = "messages.reply"
-	PermissionMembershipsView    Permission = "memberships.view"
-	PermissionMembershipsManage  Permission = "memberships.manage"
-	PermissionJuniorAdminView    Permission = "junior_admin.view"
-	PermissionJuniorAdminManage  Permission = "junior_admin.manage"
-	PermissionSafeguardingView   Permission = "safeguarding.view"
-	PermissionSafeguardingManage Permission = "safeguarding.manage"
+	PermissionPortalView           Permission = "portal.view"
+	PermissionReportsView          Permission = "reports.view"
+	PermissionSanctionsView        Permission = "sanctions.view"
+	PermissionStarredPlayersView   Permission = "starred_players.view"
+	PermissionStarredPlayersManage Permission = "starred_players.manage"
+	PermissionClubProfileView      Permission = "club_profile.view"
+	PermissionClubProfileManage    Permission = "club_profile.manage"
+	PermissionMessagesView         Permission = "messages.view"
+	PermissionMessagesReply        Permission = "messages.reply"
+	PermissionMembershipsView      Permission = "memberships.view"
+	PermissionMembershipsManage    Permission = "memberships.manage"
+	PermissionPlayerIdentityView   Permission = "player_identity.view"
+	PermissionPlayerIdentityManage Permission = "player_identity.manage"
+	PermissionRegistrationView     Permission = "registration.view"
+	PermissionRegistrationManage   Permission = "registration.manage"
+	PermissionFixturesView         Permission = "fixtures.view"
+	PermissionFixturesManage       Permission = "fixtures.manage"
+	PermissionJuniorAdminView      Permission = "junior_admin.view"
+	PermissionJuniorAdminManage    Permission = "junior_admin.manage"
+	PermissionSafeguardingView     Permission = "safeguarding.view"
+	PermissionSafeguardingManage   Permission = "safeguarding.manage"
 )
 
 var rolePermissions = map[RoleKey]map[Permission]struct{}{
@@ -47,38 +54,59 @@ var rolePermissions = map[RoleKey]map[Permission]struct{}{
 		PermissionReportsView,
 		PermissionSanctionsView,
 		PermissionStarredPlayersView,
+		PermissionStarredPlayersManage,
 		PermissionClubProfileView,
 		PermissionClubProfileManage,
 		PermissionMessagesView,
 		PermissionMessagesReply,
 		PermissionMembershipsView,
 		PermissionMembershipsManage,
+		PermissionPlayerIdentityView,
+		PermissionPlayerIdentityManage,
+		PermissionRegistrationView,
+		PermissionRegistrationManage,
+		PermissionFixturesView,
+		PermissionFixturesManage,
 	),
 	RoleClubAdmin: permissionSet(
 		PermissionPortalView,
 		PermissionReportsView,
 		PermissionSanctionsView,
 		PermissionStarredPlayersView,
+		PermissionStarredPlayersManage,
 		PermissionClubProfileView,
 		PermissionClubProfileManage,
 		PermissionMessagesView,
 		PermissionMessagesReply,
 		PermissionMembershipsView,
+		PermissionPlayerIdentityView,
+		PermissionPlayerIdentityManage,
+		PermissionRegistrationView,
+		PermissionRegistrationManage,
+		PermissionFixturesView,
+		PermissionFixturesManage,
 	),
 	RoleClubSecretary: permissionSet(
 		PermissionPortalView,
 		PermissionReportsView,
 		PermissionSanctionsView,
 		PermissionStarredPlayersView,
+		PermissionStarredPlayersManage,
 		PermissionClubProfileView,
 		PermissionMessagesView,
 		PermissionMessagesReply,
+		PermissionPlayerIdentityView,
+		PermissionRegistrationView,
+		PermissionRegistrationManage,
+		PermissionFixturesView,
+		PermissionFixturesManage,
 	),
 	RoleCaptainManager: permissionSet(
 		PermissionPortalView,
 		PermissionReportsView,
 		PermissionSanctionsView,
 		PermissionClubProfileView,
+		PermissionFixturesView,
 	),
 	RoleReadOnlyClubUser: permissionSet(
 		PermissionPortalView,
@@ -87,6 +115,9 @@ var rolePermissions = map[RoleKey]map[Permission]struct{}{
 		PermissionStarredPlayersView,
 		PermissionClubProfileView,
 		PermissionMessagesView,
+		PermissionPlayerIdentityView,
+		PermissionRegistrationView,
+		PermissionFixturesView,
 	),
 	RoleClubJuniorOfficer: permissionSet(
 		PermissionPortalView,

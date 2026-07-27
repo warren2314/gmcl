@@ -63,7 +63,7 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4"><div>
 <p class="text-uppercase text-muted small mb-1">Controlled rollout</p><h1 class="h2">Club portal pilot</h1>
-<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div></div>`)
+<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div><a class="btn btn-primary" href="/admin/portal/cases">Open portal work queue</a></div>`)
 		renderAdminPortalStatus(w, r.URL.Query().Get("status"))
 		if !s.PortalEnabled {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Global portal routes are disabled.</strong> Set <code>CLUB_PORTAL_ENABLED=true</code> on the test server after migrations and OIDC configuration are verified.</div>`)
@@ -108,16 +108,29 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</select></div>
 <div class="col-md-4"><label class="form-label" for="feature-key">Feature</label><select class="form-select" id="feature-key" name="feature_key" required>
-<option value="portal_access">Portal access</option><option value="read_only_dashboard">Read-only dashboard</option></select></div>
+<option value="portal_access">Portal access</option>
+<option value="read_only_dashboard">Read-only dashboard</option>
+<option value="secure_messaging">Secure communication</option>
+<option value="club_self_service">Club self-service and starred players</option>
+<option value="junior_administration">Junior administration</option>
+<option value="player_identity">Player identity</option>
+<option value="registration">Registration handoff</option>
+<option value="fixture_optimisation">Fixture planning</option></select></div>
 <div class="col-md-3"><label class="form-label" for="feature-state">State</label><select class="form-select" id="feature-state" name="enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
 <div class="col-12"><label class="form-label" for="feature-notes">Rollout note</label><input class="form-control" id="feature-notes" name="notes" maxlength="500" placeholder="Pilot approval, support owner or rollback reason"></div>
 <div class="col-12"><button class="btn btn-primary" type="submit">Update feature</button></div></form>
-<hr><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Club</th><th>Portal</th><th>Dashboard</th></tr></thead><tbody>`)
+<hr><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Club</th><th>Portal</th><th>Dashboard</th><th>Comms</th><th>Self-service</th><th>Junior</th><th>Identity</th><th>Registration</th><th>Fixtures</th></tr></thead><tbody>`)
 		for _, club := range clubs {
-			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td></tr>`,
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 				escapeHTML(club.Name),
 				portalFeatureBadge(club.PortalAccess),
 				portalFeatureBadge(club.ReadOnlyDashboard),
+				portalFeatureBadge(club.SecureMessaging),
+				portalFeatureBadge(club.ClubSelfService),
+				portalFeatureBadge(club.JuniorAdministration),
+				portalFeatureBadge(club.PlayerIdentity),
+				portalFeatureBadge(club.Registration),
+				portalFeatureBadge(club.FixtureOptimisation),
 			)
 		}
 		fmt.Fprint(w, `</tbody></table></div></div></section></div></div>
@@ -393,7 +406,7 @@ func (s *Server) handleAdminPortalFeatureUpdate() http.HandlerFunc {
 			return
 		}
 		key, ok := portal.ParseFeatureKey(r.FormValue("feature_key"))
-		if !ok || (key != portal.FeaturePortalAccess && key != portal.FeatureReadOnlyDashboard) {
+		if !ok {
 			http.Error(w, "invalid pilot feature", http.StatusBadRequest)
 			return
 		}

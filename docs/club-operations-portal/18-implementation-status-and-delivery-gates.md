@@ -26,25 +26,25 @@ Passing tests is necessary but does not turn an unresolved policy or external de
 flowchart LR
     E1["Epic 1<br/>foundation<br/>partial, pilot-capable"] --> E2["Epic 2<br/>read-only portal<br/>pilot-capable"]
     E2 --> G["Governance and<br/>data sign-off"]
-    G --> E3["Epic 3<br/>secure communication"]
-    E3 --> E4["Epic 4<br/>self-service and starred"]
-    E3 --> E5["Epic 5<br/>junior administration"]
+    G --> E3["Epic 3<br/>testable workflow slice"]
+    E3 --> E4["Epic 4<br/>testable review slice"]
+    E3 --> E5["Epic 5<br/>adult-only admin slice"]
     X["External agreements,<br/>DPIAs and process evidence"] --> E5
-    X --> E6["Epic 6<br/>player identity"]
-    X --> E7["Epic 7<br/>registration"]
-    X --> E8["Epic 8<br/>fixture optimisation"]
+    X --> E6["Epic 6<br/>reconciliation requests only"]
+    X --> E7["Epic 7<br/>guided handoff only"]
+    X --> E8["Epic 8<br/>constraint capture only"]
 
     classDef ready fill:#d9f2e6,stroke:#166534,color:#111;
     classDef partial fill:#fff4cc,stroke:#a16207,color:#111;
     classDef gated fill:#fbe2e2,stroke:#b91c1c,color:#111;
-    class E2 ready;
+    class E2,E3,E4,E5,E6,E7,E8 ready;
     class E1 partial;
-    class E3,E4,E5,E6,E7,E8,G,X gated;
+    class G,X gated;
 ```
 
-**Verified fact:** The branch contains a secure foundation and a feature-flagged read-only club pilot. It does not contain the complete eight-epic programme.
+**Verified fact:** The branch contains a secure foundation, a feature-flagged read-only club pilot and safe, testable workflow slices for Epics 3–8. The later slices deliberately stop before attachments, safeguarding, player photos, external writes, automated approvals, solver execution or publication.
 
-**Recommendation:** Deploy only the synthetic/test-server slice described in [17-implementation-and-test-server.md](17-implementation-and-test-server.md). Do not expose live identities, approve a production pilot or describe later epics as delivered until their gates below are closed.
+**Recommendation:** Deploy only the synthetic/test-server scope described in [17-implementation-and-test-server.md](17-implementation-and-test-server.md). Do not expose restricted real data, approve a production pilot or describe the full later epics as delivered until their gates below are closed.
 
 ## Epic 1 acceptance evidence — identity and tenancy foundation
 
@@ -79,16 +79,16 @@ flowchart LR
 
 **Open question:** `I-05` still owns the final action/metric contract. The current pilot uses transparent source-derived counts and does not assert that the prioritization is the final operational design.
 
-## Epics 3–8 — safe stopping points
+## Epics 3–8 — implemented test slices and safe stopping points
 
-| Epic | Status | Existing related behavior that remains available | Evidence required before implementation can safely continue | First implementation slice after unblock |
+| Epic | Status | Implemented test-server slice | Evidence required before implementation can safely continue | Next implementation slice after unblock |
 |---|---|---|---|---|
-| 3. Secure communication | **Not implemented — gated** | Existing email/SES delivery, n8n jobs and sanctions-case functions remain unchanged. Email remains the official record under Rule 1.5. | `B-05`, `I-03`, `I-06`, `I-07`, `P-01`, `P-08`, `P-11`; approved categories/queues/owners/targets, visible/internal field matrix, retention/search policy and fallback recipients. | Separate `message_cases`, `club_visible_messages` and `internal_notes` tables/repositories/API projections, then a dedicated negative leakage suite before any UI. |
-| 4. Club self-service and starred players | **Not implemented — gated** | Existing starred imports, candidate/review tools, sanctions and Hawk rules assistant remain preserved. Hawk has no portal action authority. | `B-06`, `I-04`, `I-09`, `I-10`, `P-06`, `P-07`; activated rule-release process, correction/approval policy, reconciliation thresholds and AI processor approval. | Versioned contact/correction requests and starred-list releases in shadow mode; deterministic potential findings remain human-reviewed. |
-| 5. Junior administration | **Not implemented — gated** | No child account, child-recipient or player-photo route has been added. | `B-07`, `B-08`, `I-06`, `P-01`; safeguarding DPIA, separate restricted route, adult-recipient fallback and authoritative photo-rule interpretation. | Verified-current-adult appointment resolution and neutral notices only, with safeguarding negative tests before live data. |
-| 6. Player identity | **Not implemented — externally gated** | Existing Play-Cricket fixture/scorecard reads remain unchanged. No photo route, scrape, bulk roster or biometric feature exists. | `B-09`, `I-03`, `I-10`, `P-01`, `P-09`; written API/photo/redistribution/controller terms, DPIA and identity-reconciliation process. | External-reference reconciliation with provenance and ambiguity queue; photos remain disabled until separately approved. |
-| 7. Registration redesign | **Not implemented — gated** | Current external/manual registration process is not silently replaced. Direct former-club email remains required under Rule 3.1. | `B-10`, `I-03`, `I-04`, `I-11`, `P-01`, `P-12`; exact process/form inventory, decision table, evidence access and any published Rule 3.1 amendment. | Guided external handoff for one low-complexity route in parallel; no unsupported Play-Cricket write or webhook assumption. |
-| 8. Fixture optimisation | **Not implemented — standalone gated programme** | Existing fixture reads and operational publication route remain unchanged. | `B-11`, `I-12`, `P-10`; interviews, historical corpus, hard constraints, fairness/objective definitions and supported publication/rollback method. | Isolated OR-Tools CP-SAT prototype with immutable inputs and independent validation; generated schedules never auto-publish. |
+| 3. Secure communication | **Partially implemented; testable** | Tenant-scoped cases, club-visible messages, separate internal notes, watchers, assignment, deadlines, acknowledgements, official email copies, delivery state and operator retry. Internal notes are never loaded by the club repository. | `B-05`, `I-03`, `I-06`, `I-07`, `P-01`, `P-08`, `P-11`; approved categories/queues/owners/targets, attachment controls, retention/search policy and fallback recipients. | Transactional general-message outbox, approved recipient resolution, attachments, search/retention and service-level alerts. |
+| 4. Club self-service and starred players | **Partially implemented; testable** | Versioned contact submissions and verification, correction requests, linked cases and human-reviewed starred-player requests carrying season/rule-release references. Existing sources are never overwritten automatically. | `B-06`, `I-04`, `I-09`, `I-10`, `P-06`, `P-07`; activated rule-release process, correction/approval policy, reconciliation thresholds and AI processor approval. | Versioned published starred-list releases and deterministic shadow findings with approved false-positive thresholds. |
+| 5. Junior administration | **Partially implemented; adult-only test slice** | Neutral administration/acknowledgement requests for verified adult portal roles. The UI explicitly excludes child contact, medical and safeguarding content; no child-recipient, photo or safeguarding route exists. | `B-07`, `B-08`, `I-06`, `P-01`; safeguarding DPIA, separate restricted route, adult-recipient fallback and authoritative photo-rule interpretation. | Approved adult-recipient resolution and templates; safeguarding remains a separately authorized programme. |
+| 6. Player identity | **Partially implemented; externally blocked beyond reconciliation** | External-reference ambiguity/reconciliation requests with a human GMCL decision. No photo, scrape, bulk roster, biometric feature or automatic merge exists. | `B-09`, `I-03`, `I-10`, `P-01`, `P-09`; written API/photo/redistribution/controller terms, DPIA and identity-reconciliation process. | Provenance-rich reconciliation queue against an approved data contract; photos remain disabled until separately approved. |
+| 7. Registration redesign | **Partially implemented; guided handoff only** | Tracked external handoff requests retain Play-Cricket/manual authority and record former-club direct-email status. No write API or webhook is claimed. | `B-10`, `I-03`, `I-04`, `I-11`, `P-01`, `P-12`; exact process/form inventory, decision table, evidence access and any published Rule 3.1 amendment. | Implement one approved low-complexity journey in parallel with the authoritative external process. |
+| 8. Fixture optimisation | **Partially implemented; constraint catalogue only** | Tenant/scoped season/team constraint capture for hard and soft constraints. There is no solver endpoint and no publication action. | `B-11`, `I-12`, `P-10`; interviews, historical corpus, hard constraints, fairness/objective definitions and supported publication/rollback method. | Isolated OR-Tools CP-SAT prototype with immutable inputs and independent historical replay; generated schedules never auto-publish. |
 
 ## Decision and dependency closure map
 
@@ -119,6 +119,9 @@ The current branch can be tested safely with:
 - read-only fixture, report, exemption and sanction projections;
 - invitation, context selection, activity, appointment and session-security journeys;
 - feature disable, role revocation, provider failure, SMTP retry and audit-integrity exercises.
+- synthetic cases, club-visible replies, acknowledgements, deadlines and internal-note non-disclosure;
+- synthetic contact/correction, starred-review, adult-only junior, identity-reconciliation and registration-handoff requests;
+- synthetic fixture constraints that do not run or publish a schedule.
 
 The current branch must not be tested with:
 

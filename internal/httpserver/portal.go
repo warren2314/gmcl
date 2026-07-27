@@ -37,6 +37,43 @@ func (s *Server) portalRouter() http.Handler {
 		r.Get("/", s.handlePortalHome())
 		r.Get("/reports", s.handlePortalReports())
 		r.Get("/sanctions", s.handlePortalSanctions())
+		r.Get("/messages", s.handlePortalMessagesGet())
+		r.Post("/messages", s.handlePortalMessageCreate())
+		r.Get("/messages/{caseID}", s.handlePortalMessageCaseGet())
+		r.Post("/messages/{caseID}/reply", s.handlePortalMessageReply())
+		r.Post("/messages/{caseID}/acknowledge", s.handlePortalMessageAcknowledge())
+		r.Post("/messages/{caseID}/watch", s.handlePortalMessageWatch())
+		r.Get("/club-profile", s.handlePortalClubProfileGet())
+		r.Post("/club-profile/contacts", s.handlePortalClubContactCreate())
+		r.Post("/club-profile/corrections", s.handlePortalOperationalRequestCreate(
+			portalOperationalModuleCorrection,
+		))
+		r.Get("/starred-players", s.handlePortalOperationalModuleGet(
+			portalOperationalModuleStarred,
+		))
+		r.Post("/starred-players", s.handlePortalOperationalRequestCreate(
+			portalOperationalModuleStarred,
+		))
+		r.Get("/junior-administration", s.handlePortalOperationalModuleGet(
+			portalOperationalModuleJunior,
+		))
+		r.Post("/junior-administration", s.handlePortalOperationalRequestCreate(
+			portalOperationalModuleJunior,
+		))
+		r.Get("/player-identity", s.handlePortalOperationalModuleGet(
+			portalOperationalModuleIdentity,
+		))
+		r.Post("/player-identity", s.handlePortalOperationalRequestCreate(
+			portalOperationalModuleIdentity,
+		))
+		r.Get("/registration", s.handlePortalOperationalModuleGet(
+			portalOperationalModuleRegistration,
+		))
+		r.Post("/registration", s.handlePortalOperationalRequestCreate(
+			portalOperationalModuleRegistration,
+		))
+		r.Get("/fixture-planning", s.handlePortalFixturePlanningGet())
+		r.Post("/fixture-planning", s.handlePortalFixtureConstraintCreate())
 		r.Get("/captain-handoff", s.handlePortalCaptainHandoff())
 		r.Get("/contexts", s.handlePortalContexts())
 		r.Post("/contexts", s.handlePortalContextSelect())
@@ -718,6 +755,15 @@ func (s *Server) handlePortalHome() http.HandlerFunc {
 			escapeHTML(portalSourceNote(dashboard, s.LondonLoc)),
 		)
 		writePortalReadFilters(w, selection, "/portal")
+		fmt.Fprint(w, `<section class="card shadow-sm mt-4" aria-labelledby="operations-heading"><div class="card-header"><strong id="operations-heading">Club operations</strong></div><div class="card-body"><div class="row g-3">
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/messages"><span class="card-body"><strong>Secure communication</strong><span class="d-block small text-muted mt-1">Cases, replies, deadlines and acknowledgements with an official email copy.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/club-profile"><span class="card-body"><strong>Club profile</strong><span class="d-block small text-muted mt-1">Submit contact versions and source-record corrections for verification.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/starred-players"><span class="card-body"><strong>Starred players</strong><span class="d-block small text-muted mt-1">Raise a potential issue for a recorded human rule-release decision.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/junior-administration"><span class="card-body"><strong>Junior administration</strong><span class="d-block small text-muted mt-1">Neutral administration for verified adult club recipients only.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/player-identity"><span class="card-body"><strong>Player identity</strong><span class="d-block small text-muted mt-1">Reconciliation requests only; no photos or biometric matching.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/registration"><span class="card-body"><strong>Registration</strong><span class="d-block small text-muted mt-1">Guided external handoff; no unsupported Play-Cricket write.</span></span></a></div>
+<div class="col-md-6 col-xl-3"><a class="card h-100 text-decoration-none" href="/portal/fixture-planning"><span class="card-body"><strong>Fixture planning</strong><span class="d-block small text-muted mt-1">Capture constraints for review; schedules never publish automatically.</span></span></a></div>
+</div></div></section>`)
 		if dashboard.Sanctions.UnreconciledLegacy > 0 {
 			fmt.Fprintf(w, `<div class="alert alert-warning mt-4"><strong>Reconciliation required.</strong> %d legacy sanction row(s) are not linked to the case ledger, so they are excluded from the derived totals above rather than silently double-counted.</div>`, dashboard.Sanctions.UnreconciledLegacy)
 		}
@@ -1110,7 +1156,7 @@ func writePortalNav(
 	navLink := func(href, label string) string {
 		activeClass := ""
 		ariaCurrent := ""
-		if activePath == href {
+		if activePath == href || (href != "/portal" && strings.HasPrefix(activePath, href+"/")) {
 			activeClass = " active"
 			ariaCurrent = ` aria-current="page"`
 		}
@@ -1122,17 +1168,27 @@ func writePortalNav(
 			label,
 		)
 	}
+	links := []string{
+		navLink("/portal", "Action centre"),
+		navLink("/portal/reports", "Reports"),
+		navLink("/portal/sanctions", "Sanctions"),
+		navLink("/portal/messages", "Messages"),
+		navLink("/portal/club-profile", "Club profile"),
+		navLink("/portal/starred-players", "Starred players"),
+		navLink("/portal/junior-administration", "Junior"),
+		navLink("/portal/player-identity", "Identity"),
+		navLink("/portal/registration", "Registration"),
+		navLink("/portal/fixture-planning", "Fixtures"),
+		navLink("/portal/contexts", "Switch role"),
+		navLink("/portal/sessions", "Sessions"),
+		navLink("/portal/activity", "Activity"),
+	}
 	fmt.Fprintf(w, `<a class="visually-hidden-focusable position-absolute top-0 start-0 bg-white text-dark p-3 m-2 rounded shadow" style="z-index:1080" href="#main-content">Skip to main content</a>
 <nav class="navbar navbar-expand-lg navbar-dark bg-gmcl mb-4" aria-label="Club portal"><div class="container-fluid px-3 px-lg-4">
 <a class="navbar-brand d-flex align-items-center" href="/portal"><img src="/images/logo.webp" alt="GMCL" height="44" class="me-2"><span>Club portal</span></a>
 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#portalNav" aria-controls="portalNav" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button>
 <div class="collapse navbar-collapse" id="portalNav"><ul class="navbar-nav ms-auto align-items-lg-center">
 <li class="nav-item"><span class="navbar-text me-lg-3">%s%s</span></li>
-%s
-%s
-%s
-%s
-%s
 %s
 <li class="nav-item"><form method="post" action="/portal/logout"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-link nav-link" type="submit">Sign out</button></form></li>
 </ul></div></div></nav>`,
@@ -1143,12 +1199,7 @@ func writePortalNav(
 			}
 			return " · " + escapeHTML(role)
 		}(),
-		navLink("/portal", "Action centre"),
-		navLink("/portal/reports", "Reports"),
-		navLink("/portal/sanctions", "Sanctions"),
-		navLink("/portal/contexts", "Switch role"),
-		navLink("/portal/sessions", "Sessions"),
-		navLink("/portal/activity", "Activity"),
+		strings.Join(links, "\n"),
 		escapeHTML(csrf),
 	)
 }

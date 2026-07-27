@@ -1,10 +1,25 @@
 package portal
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseFeatureKey(t *testing.T) {
-	if key, ok := ParseFeatureKey(" READ_ONLY_DASHBOARD "); !ok || key != FeatureReadOnlyDashboard {
-		t.Fatalf("feature key = %q, %v", key, ok)
+	for _, expected := range []FeatureKey{
+		FeaturePortalAccess,
+		FeatureReadOnlyDashboard,
+		FeatureSecureMessaging,
+		FeatureClubSelfService,
+		FeatureJuniorAdministration,
+		FeaturePlayerIdentity,
+		FeatureRegistration,
+		FeatureFixtureOptimisation,
+	} {
+		key, ok := ParseFeatureKey(" " + strings.ToUpper(string(expected)) + " ")
+		if !ok || key != expected {
+			t.Fatalf("feature key = %q, %v; want %q", key, ok, expected)
+		}
 	}
 	if _, ok := ParseFeatureKey("publish_everything"); ok {
 		t.Fatal("unknown feature key accepted")

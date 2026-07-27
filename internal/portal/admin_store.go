@@ -70,10 +70,16 @@ func (store *Store) FeatureEnabled(
 }
 
 type PilotClub struct {
-	ID                int32
-	Name              string
-	PortalAccess      bool
-	ReadOnlyDashboard bool
+	ID                   int32
+	Name                 string
+	PortalAccess         bool
+	ReadOnlyDashboard    bool
+	SecureMessaging      bool
+	ClubSelfService      bool
+	JuniorAdministration bool
+	PlayerIdentity       bool
+	Registration         bool
+	FixtureOptimisation  bool
 }
 
 type ClubReconciliationSummary struct {
@@ -223,7 +229,25 @@ func (store *Store) ListPilotClubs(ctx context.Context) ([]PilotClub, error) {
 				), FALSE) AS portal_access,
 				COALESCE(bool_or(f.enabled) FILTER (
 					WHERE f.feature_key = 'read_only_dashboard'
-				), FALSE) AS read_only_dashboard
+				), FALSE) AS read_only_dashboard,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'secure_messaging'
+				), FALSE) AS secure_messaging,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'club_self_service'
+				), FALSE) AS club_self_service,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'junior_administration'
+				), FALSE) AS junior_administration,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'player_identity'
+				), FALSE) AS player_identity,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'registration'
+				), FALSE) AS registration,
+				COALESCE(bool_or(f.enabled) FILTER (
+					WHERE f.feature_key = 'fixture_optimisation'
+				), FALSE) AS fixture_optimisation
 			FROM clubs c
 			LEFT JOIN portal_club_features f ON f.club_id = c.id
 			GROUP BY c.id, c.name
@@ -240,6 +264,12 @@ func (store *Store) ListPilotClubs(ctx context.Context) ([]PilotClub, error) {
 				&club.Name,
 				&club.PortalAccess,
 				&club.ReadOnlyDashboard,
+				&club.SecureMessaging,
+				&club.ClubSelfService,
+				&club.JuniorAdministration,
+				&club.PlayerIdentity,
+				&club.Registration,
+				&club.FixtureOptimisation,
 			); err != nil {
 				return fmt.Errorf("scan portal pilot club: %w", err)
 			}

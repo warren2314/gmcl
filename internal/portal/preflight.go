@@ -17,7 +17,7 @@ const (
 	PortalPreflightModeSchema = "schema"
 	PortalPreflightModePilot  = "pilot"
 
-	requiredPortalMigration = "0049_portal_audit_hash_verification.sql"
+	requiredPortalMigration = "0050_portal_operations_workflows.sql"
 )
 
 var portalRLSTables = []string{
@@ -33,6 +33,13 @@ var portalRLSTables = []string{
 	"portal_notifications",
 	"portal_outbox_events",
 	"portal_audit_events",
+	"portal_message_cases",
+	"portal_club_visible_messages",
+	"portal_internal_notes",
+	"portal_case_watchers",
+	"portal_club_contacts",
+	"portal_module_requests",
+	"portal_fixture_constraints",
 }
 
 type PortalEnvironmentPreflight struct {
