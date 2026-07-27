@@ -113,10 +113,7 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 			action := ""
 			if assignment.Status == "active" {
 				revokeID := "revoke-" + assignment.ID.String()
-				action = fmt.Sprintf(`<div class="text-md-end"><button class="btn btn-sm btn-outline-danger text-nowrap" type="button" data-bs-toggle="collapse" data-bs-target="#%s" aria-expanded="false" aria-controls="%s">Remove access</button></div><div class="collapse mt-2" id="%s"><form method="post" action="/admin/portal/staff/assignments/%s/revoke" class="border rounded-3 bg-body-tertiary p-2 text-start"><input type="hidden" name="csrf_token" value="%s"><label class="form-label small mb-1" for="%s-reason">Reason for removal</label><input id="%s-reason" class="form-control form-control-sm mb-2" name="reason" maxlength="500" required placeholder="Why is this access being removed?"><button class="btn btn-sm btn-danger w-100" type="submit">Confirm removal</button></form></div>`,
-					revokeID,
-					revokeID,
-					revokeID,
+				action = fmt.Sprintf(`<details class="staff-revoke text-md-end"><summary class="btn btn-sm btn-outline-danger text-nowrap">Remove access</summary><form method="post" action="/admin/portal/staff/assignments/%s/revoke" class="border rounded-3 bg-body-tertiary p-2 mt-2 text-start"><input type="hidden" name="csrf_token" value="%s"><label class="form-label small mb-1" for="%s-reason">Reason for removal</label><input id="%s-reason" class="form-control form-control-sm mb-2" name="reason" maxlength="500" required placeholder="Why is this access being removed?"><button class="btn btn-sm btn-danger w-100" type="submit">Confirm removal</button></form></details>`,
 					assignment.ID,
 					escapeHTML(csrf),
 					revokeID,

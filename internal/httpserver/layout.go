@@ -11,7 +11,7 @@ import (
 )
 
 const rulesAssistantAssetVersion = "20260724-1"
-const brandAssetVersion = "20260725-2"
+const brandAssetVersion = "20260727-1"
 
 const (
 	bootstrapCSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"

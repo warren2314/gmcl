@@ -76,6 +76,15 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 650;
 }
 
+/* Keep destructive staff actions compact without depending on JavaScript. */
+.staff-revoke > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.staff-revoke > summary::-webkit-details-marker {
+  display: none;
+}
+
 /* ── Navbar ───────────────────────────────────────────────────────────────── */
 .navbar { --bs-navbar-brand-color: #fff; }
 .bg-gmcl {
