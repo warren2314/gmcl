@@ -63,7 +63,7 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4"><div>
 <p class="text-uppercase text-muted small mb-1">Controlled rollout</p><h1 class="h2">Club portal pilot</h1>
-<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div><a class="btn btn-primary" href="/admin/portal/cases">Open portal work queue</a></div>`)
+<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div><div class="d-flex flex-wrap gap-2"><a class="btn btn-outline-primary" href="/admin/portal/staff">Staff roles and scopes</a><a class="btn btn-primary" href="/admin/portal/messages/new">New club message</a><a class="btn btn-outline-primary" href="/admin/portal/cases">Open portal work queue</a></div></div>`)
 		renderAdminPortalStatus(w, r.URL.Query().Get("status"))
 		if !s.PortalEnabled {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Global portal routes are disabled.</strong> Set <code>CLUB_PORTAL_ENABLED=true</code> on the test server after migrations and OIDC configuration are verified.</div>`)

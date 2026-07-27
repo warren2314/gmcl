@@ -4,7 +4,7 @@
 
 **Implementation baseline:** 26 July 2026
 
-**Current delivery slice:** identity/tenancy foundation, feature-flagged read-only action centre, account-security activity and appointment inventory
+**Current delivery slice:** identity/tenancy foundation, feature-flagged club operations, scoped GMCL staff messaging campaigns, account-security activity and appointment inventory
 
 This runbook records implemented behaviour and the controlled route to a test-server pilot. It does not remove or replace the existing captain-report or administrator services.
 
@@ -40,6 +40,12 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - A selected-team handoff to the existing captain magic-link journey; the portal remains read-only and does not duplicate or replace captain submission behavior.
 - Explicit unavailable/stale and unreconciled-legacy states; missing source data is not rendered as zero/compliant.
 - Sensitive onboarding email refuses the development body-logging fallback and requires SMTP.
+- Super Administrators can assign active named legacy administrators as Club Liaison Officers or Junior Administrators, scoped globally, to one club or to one portal competition. Authorization revalidates the assignment on every request.
+- Authorized staff can compose one campaign to a multi-select list of in-scope clubs. The transaction creates one tenant-private case and one club-visible message per club; no club can infer another target or recipient.
+- Recipient roles are constrained by message category and resolved from effective verified club contacts or active named adult portal appointments. A disclosed fallback uses active primary administrators, administrators or secretaries when the requested verified appointment is absent.
+- Each initial campaign email has a system-only recipient snapshot, attempt count and sent/failed state. Campaign and target totals record complete, partial and failed delivery; failed deliveries can be retried without creating a second portal message.
+- The portal and official email body identify the sending administrator and effective GMCL staff role. SMTP/SES continues to use the configured verified GMCL sender rather than impersonating a personal mailbox.
+- Campaign summaries track per-club delivery, acknowledgement and club-reply counts. Existing club-originated cases and replies remain available.
 
 ## Preserved behaviour
 
@@ -123,7 +129,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
-3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql` and `0050_portal_operations_workflows.sql` are recorded in `schema_migrations`.
+3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql`, `0050_portal_operations_workflows.sql` and `0051_portal_staff_campaigns.sql` are recorded in `schema_migrations`.
 4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`, HTTP 200 for health/legacy/admin, HTTP 303 for the unauthenticated portal and HTTP 401 for the unsigned worker request; any non-zero exit blocks pilot enablement.
 5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
@@ -163,6 +169,13 @@ Use synthetic or explicitly approved non-sensitive content only.
 4. Reply as GMCL, confirm the club can see and acknowledge it, and confirm the verified case creator receives the official email copy.
 5. Simulate SMTP failure, confirm the saved message is marked as needing email attention, restore SMTP and use **Retry official email copy** without creating a second portal message.
 6. Disable `secure_messaging`; confirm club case routes fail closed while existing records remain in the GMCL queue.
+7. As Super Administrator, open `/admin/portal/staff` and assign a synthetic administrator as a CLO for one test club and as Junior Administrator for a different test club or competition.
+8. Sign in as that administrator. Confirm `/admin/portal/messages/new` lists only clubs permitted by the effective assignment and rejects a forged out-of-scope club ID server-side.
+9. Select two controlled clubs from the multi-select, choose an allowed category/recipient role and send a synthetic campaign.
+10. Confirm two separate cases are created, each club sees only its own case, and neither club can infer the other target, recipient address or delivery result.
+11. Confirm every email uses the configured verified GMCL sender and identifies the administrator's name and effective CLO/Junior Administrator role in the body.
+12. Confirm the campaign summary shows target, delivery, acknowledgement and club-reply counts. Simulate one SMTP failure and use the case retry control; verify the existing message is reused and only the failed recorded delivery is retried.
+13. Revoke the staff assignment and confirm the administrator's next portal-work-queue or compose request is denied without ending unrelated legacy-admin access.
 
 ### Club profile and corrections
 

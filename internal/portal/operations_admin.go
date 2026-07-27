@@ -17,6 +17,7 @@ type AdminMessageCaseSummary struct {
 	CreatedByEmail    string
 	AssignedAdminID   *int32
 	AssignedAdminName string
+	CompetitionID     *uuid.UUID
 }
 
 type AdminCaseUpdate struct {
@@ -210,12 +211,14 @@ func (store *Store) ListAdminMessageCases(
 					LIMIT 1
 				), ''),
 				c.assigned_admin_user_id,
-				COALESCE(assigned.username, '')
+				COALESCE(assigned.username, ''),
+				campaign.competition_id
 			FROM portal_message_cases c
 			JOIN clubs club ON club.id = c.club_id
 			LEFT JOIN portal_club_visible_messages message ON message.case_id = c.id
 			LEFT JOIN admin_users assigned ON assigned.id = c.assigned_admin_user_id
-			GROUP BY c.id, club.name, assigned.username
+			LEFT JOIN portal_message_campaigns campaign ON campaign.id = c.campaign_id
+			GROUP BY c.id, club.name, assigned.username, campaign.competition_id
 			ORDER BY
 				CASE c.priority WHEN 'urgent' THEN 0 ELSE 1 END,
 				CASE c.status
@@ -252,6 +255,7 @@ func (store *Store) ListAdminMessageCases(
 				&item.CreatedByEmail,
 				&item.AssignedAdminID,
 				&item.AssignedAdminName,
+				&item.CompetitionID,
 			); err != nil {
 				return fmt.Errorf("scan admin portal case: %w", err)
 			}
@@ -323,9 +327,11 @@ func (store *Store) LoadAdminMessageCase(
 					ORDER BY identity.last_authenticated_at DESC NULLS LAST
 					LIMIT 1
 				), ''),
-				c.assigned_admin_user_id
+				c.assigned_admin_user_id,
+				campaign.competition_id
 			FROM portal_message_cases c
 			JOIN clubs club ON club.id = c.club_id
+			LEFT JOIN portal_message_campaigns campaign ON campaign.id = c.campaign_id
 			WHERE c.id = $1
 		`, caseID).Scan(
 			&detail.ID,
@@ -342,6 +348,7 @@ func (store *Store) LoadAdminMessageCase(
 			&detail.CreatedByUserID,
 			&detail.CreatedByEmail,
 			&detail.AssignedAdminID,
+			&detail.CampaignCompetitionID,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
@@ -359,6 +366,7 @@ func (store *Store) LoadAdminMessageCase(
 					WHEN 'gmcl_admin' THEN COALESCE(admin_user.username, 'GMCL')
 					ELSE 'System'
 				END,
+				COALESCE(message.author_staff_role_key, ''),
 				message.body,
 				message.email_status,
 				message.created_at
@@ -379,6 +387,7 @@ func (store *Store) LoadAdminMessageCase(
 				&message.CaseID,
 				&message.AuthorKind,
 				&message.AuthorLabel,
+				&message.AuthorRole,
 				&message.Body,
 				&message.EmailStatus,
 				&message.CreatedAt,
@@ -433,12 +442,16 @@ func (store *Store) AddAdminCaseMessage(
 	ctx context.Context,
 	caseID uuid.UUID,
 	adminID int32,
+	staffRole StaffRoleKey,
 	body string,
 	correlationID string,
 ) (uuid.UUID, error) {
 	body = strings.TrimSpace(body)
 	if caseID == uuid.Nil || adminID <= 0 || body == "" || len(body) > 10000 {
 		return uuid.Nil, fmt.Errorf("invalid GMCL case reply")
+	}
+	if _, ok := ParseStaffRoleKey(string(staffRole)); !ok {
+		return uuid.Nil, fmt.Errorf("invalid GMCL case reply role")
 	}
 	if strings.TrimSpace(correlationID) == "" {
 		correlationID = uuid.NewString()
@@ -460,10 +473,10 @@ func (store *Store) AddAdminCaseMessage(
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO portal_club_visible_messages (
 				id, case_id, club_id, author_kind, author_admin_user_id,
-				body, email_status, created_at
+				author_staff_role_key, body, email_status, created_at
 			)
-			VALUES ($1, $2, $3, 'gmcl_admin', $4, $5, 'pending', $6)
-		`, messageID, caseID, clubID, adminID, body, now); err != nil {
+			VALUES ($1, $2, $3, 'gmcl_admin', $4, $5, $6, 'pending', $7)
+		`, messageID, caseID, clubID, adminID, staffRole, body, now); err != nil {
 			return fmt.Errorf("create GMCL case reply: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `

@@ -226,8 +226,12 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		missingReportItem,
 	)
 
+	portalMessagesItem := ""
+	if portal.EnabledFromEnv() {
+		portalMessagesItem = navLink("/admin/portal/cases", "Club messages")
+	}
 	opsMenu := operationsMenu + performanceMenu + sanctionsMenu + reportsMenu +
-		navLink("/admin/rules-assistant", "Hawk AI")
+		navLink("/admin/rules-assistant", "Hawk AI") + portalMessagesItem
 
 	competitionMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">

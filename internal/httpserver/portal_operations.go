@@ -270,9 +270,13 @@ func (s *Server) handlePortalMessageCaseGet() http.HandlerFunc {
 			if message.AuthorKind == "gmcl_admin" {
 				style = "border-start border-4 border-primary ps-3 mb-4"
 			}
+			authorLabel := message.AuthorLabel
+			if message.AuthorRole != "" {
+				authorLabel += " · " + portal.StaffRoleLabel(message.AuthorRole)
+			}
 			fmt.Fprintf(w, `<article class="%s"><div class="d-flex justify-content-between gap-3"><strong>%s</strong><time class="small text-muted">%s</time></div><div class="mt-2" style="white-space:pre-wrap">%s</div><div class="small text-muted mt-2">Email copy: %s</div></article>`,
 				style,
-				escapeHTML(message.AuthorLabel),
+				escapeHTML(authorLabel),
 				portalLocalTime(message.CreatedAt, s.LondonLoc),
 				escapeHTML(message.Body),
 				escapeHTML(message.EmailStatus),

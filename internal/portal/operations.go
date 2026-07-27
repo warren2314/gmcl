@@ -58,6 +58,7 @@ type ClubVisibleMessage struct {
 	CaseID      uuid.UUID
 	AuthorKind  string
 	AuthorLabel string
+	AuthorRole  StaffRoleKey
 	Body        string
 	EmailStatus string
 	CreatedAt   time.Time
@@ -65,7 +66,7 @@ type ClubVisibleMessage struct {
 
 type MessageCaseDetail struct {
 	MessageCaseSummary
-	CreatedByUserID uuid.UUID
+	CreatedByUserID *uuid.UUID
 	CreatedByEmail  string
 	Watching        bool
 	Messages        []ClubVisibleMessage
@@ -80,8 +81,9 @@ type InternalNote struct {
 
 type AdminMessageCaseDetail struct {
 	MessageCaseDetail
-	AssignedAdminID *int32
-	InternalNotes   []InternalNote
+	AssignedAdminID       *int32
+	CampaignCompetitionID *uuid.UUID
+	InternalNotes         []InternalNote
 }
 
 type CreateMessageCaseRequest struct {
@@ -382,6 +384,7 @@ func (store *Store) LoadMessageCase(
 					WHEN 'gmcl_admin' THEN COALESCE(admin_user.username, 'GMCL')
 					ELSE 'System'
 				END,
+				COALESCE(message.author_staff_role_key, ''),
 				message.body,
 				message.email_status,
 				message.created_at
@@ -402,6 +405,7 @@ func (store *Store) LoadMessageCase(
 				&message.CaseID,
 				&message.AuthorKind,
 				&message.AuthorLabel,
+				&message.AuthorRole,
 				&message.Body,
 				&message.EmailStatus,
 				&message.CreatedAt,
