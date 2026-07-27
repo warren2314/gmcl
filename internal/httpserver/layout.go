@@ -277,7 +277,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
         </li>`, dropdownActive("/admin/change-password"))
 	menu += accountMenu
 
-	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl mb-0 shadow-sm">
+	fmt.Fprintf(w, `<nav class="navbar navbar-expand-md navbar-dark bg-gmcl admin-navbar mb-0 shadow-sm">
   <div class="container-fluid px-3">
     <a class="navbar-brand d-flex align-items-center" href="/admin/dashboard">
       <img src="/images/logo.webp" alt="GMCL" height="40" class="me-2">

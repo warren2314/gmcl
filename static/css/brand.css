@@ -78,6 +78,11 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ── Navbar ───────────────────────────────────────────────────────────────── */
 .navbar { --bs-navbar-brand-color: #fff; }
+.admin-navbar {
+  /* Keep expanded dropdowns above page-level sticky navigation (Bootstrap 1020). */
+  position: relative;
+  z-index: 1030;
+}
 .bg-gmcl {
   background-color: #a91631 !important;
   border-bottom: 1px solid rgba(255, 255, 255, .16);

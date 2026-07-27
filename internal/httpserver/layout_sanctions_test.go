@@ -2,6 +2,8 @@ package httpserver
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,10 +23,21 @@ func TestAdminNavigationExposesSanctionsWorkflow(t *testing.T) {
 	var out bytes.Buffer
 	writeAdminNav(&out, "csrf", "/admin/cases/imports", "super_admin")
 	html := out.String()
-	for _, want := range []string{"Sanctions", "Add card, ban, fine or points decision", "Import legacy bans &amp; cards", "Follow-up tasks", "View public register", "/admin/api/rules/chat", "GMCLRulesAssistantConfig", "/static/rules-assistant.js"} {
+	for _, want := range []string{"admin-navbar", "Sanctions", "Add card, ban, fine or points decision", "Import legacy bans &amp; cards", "Follow-up tasks", "View public register", "/admin/api/rules/chat", "GMCLRulesAssistantConfig", "/static/rules-assistant.js"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin navigation missing %q", want)
 		}
+	}
+}
+
+func TestAdminNavigationLayersAboveStickyPageNavigation(t *testing.T) {
+	brandCSS, err := os.ReadFile(filepath.Join("..", "..", "static", "css", "brand.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(brandCSS)
+	if !strings.Contains(css, ".admin-navbar {") || !strings.Contains(css, "z-index: 1030;") {
+		t.Fatal("admin navigation must stay above Bootstrap sticky page navigation at z-index 1020")
 	}
 }
 
