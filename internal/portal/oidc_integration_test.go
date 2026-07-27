@@ -383,6 +383,7 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 		stepUpURL.Query().Get("code_challenge"),
 	)
 	provider.SetACR("urn:gmcl:test:strong")
+	provider.RotateSigningKey(t)
 	stepUp, err := client.CompleteLogin(
 		ctx,
 		stepUpURL.Query().Get("state"),
@@ -395,6 +396,9 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if stepUp.ReturnTo != "/portal/sessions" ||
 		stepUp.Principal.RequiresStepUp(time.Now().UTC(), DefaultSessionPolicy()) {
 		t.Fatalf("unexpected step-up result: %#v", stepUp)
+	}
+	if requests := provider.JWKSRequestCount(); requests < 2 {
+		t.Fatalf("JWKS requests after signing-key rotation = %d, want at least 2", requests)
 	}
 	sessions, err := store.ListUserSessions(ctx, stepUp.Principal)
 	if err != nil {
@@ -737,6 +741,8 @@ type oidcTestProvider struct {
 	expectedNonce     string
 	expectedChallenge string
 	acr               string
+	keyID             string
+	jwksRequests      int
 }
 
 func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
@@ -745,7 +751,10 @@ func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &oidcTestProvider{privateKey: privateKey}
+	provider := &oidcTestProvider{
+		privateKey: privateKey,
+		keyID:      "gmcl-oidc-test-key-initial",
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		provider.ServeHTTP(w, r)
 	}))
@@ -766,6 +775,24 @@ func (provider *oidcTestProvider) SetACR(acr string) {
 	provider.acr = acr
 }
 
+func (provider *oidcTestProvider) RotateSigningKey(t *testing.T) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	provider.privateKey = privateKey
+	provider.keyID = "gmcl-oidc-test-key-" + uuid.NewString()
+}
+
+func (provider *oidcTestProvider) JWKSRequestCount() int {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return provider.jwksRequests
+}
+
 func (provider *oidcTestProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/.well-known/openid-configuration":
@@ -780,10 +807,15 @@ func (provider *oidcTestProvider) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			"code_challenge_methods_supported":      []string{"S256"},
 		})
 	case "/keys":
+		provider.mu.Lock()
+		publicKey := provider.privateKey.PublicKey
+		keyID := provider.keyID
+		provider.jwksRequests++
+		provider.mu.Unlock()
 		writeJSON(w, map[string]any{
 			"keys": []jose.JSONWebKey{{
-				Key:       &provider.privateKey.PublicKey,
-				KeyID:     "gmcl-oidc-test-key",
+				Key:       &publicKey,
+				KeyID:     keyID,
 				Algorithm: string(jose.RS256),
 				Use:       "sig",
 			}},
@@ -806,6 +838,8 @@ func (provider *oidcTestProvider) handleToken(w http.ResponseWriter, r *http.Req
 	nonce := provider.expectedNonce
 	challenge := provider.expectedChallenge
 	acr := provider.acr
+	privateKey := provider.privateKey
+	keyID := provider.keyID
 	provider.mu.Unlock()
 	if nonce == "" || challenge == "" ||
 		pkceS256Challenge(r.FormValue("code_verifier")) != challenge {
@@ -813,10 +847,10 @@ func (provider *oidcTestProvider) handleToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: provider.privateKey},
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
 		(&jose.SignerOptions{}).
 			WithType("JWT").
-			WithHeader("kid", "gmcl-oidc-test-key"),
+			WithHeader("kid", keyID),
 	)
 	if err != nil {
 		http.Error(w, "signing failed", http.StatusInternalServerError)

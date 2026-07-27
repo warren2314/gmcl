@@ -121,7 +121,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 ## Required test evidence
 
-- Wrong issuer, audience, signature, nonce, state and PKCE are rejected generically.
+- Wrong issuer, audience, signature, nonce, state and PKCE are rejected generically; an unfamiliar rotated signing-key ID triggers a fresh JWKS retrieval before a valid token can be accepted.
 - Invitation replay, expired invitation and mismatched/unverified email are rejected.
 - A Club A identity receives no Club B membership, count, name, source freshness or detail.
 - Team-scoped roles cannot access another team in the same club.
@@ -158,6 +158,7 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - A clean 54-migration database reported 12/12 portal-private tables with enabled and forced RLS, a live append-only trigger and validated audit-chain constraints. Schema preflight passed with the portal disabled; a fully configured pilot preflight passed against a local synthetic OIDC discovery endpoint, while uppercase `PILOT` with missing dependencies failed closed.
 - After the race suite generated audit activity, preflight independently recomputed all 18 version-2 events across two chains and recorded both chain-head digests. A malformed chain-position insert was rejected by PostgreSQL, and a deliberate disposable-database metadata mutation was detected as a canonical hash mismatch with a non-zero preflight exit.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
+- The OIDC lifecycle passed live RSA signing-key rotation: onboarding verified with the initial key, the synthetic provider rotated to a new key and `kid`, and same-user step-up succeeded only after the cached verifier performed a second JWKS retrieval. The provider harness and complete suite remained clean under the race detector.
 - Account-activity unit and database integration tests passed limit clamping, presentation allowlists, same-actor cross-club RLS isolation, semantic table rendering and negative disclosure checks for raw action keys, identifiers, metadata, IP addresses and user agents. The lifecycle fixtures were also made independent of pre-seeded seasons and concurrent package fixtures.
 - After the account-activity race suite, schema preflight independently recomputed 21 version-2 audit events across four chains and reported ready.
 - Appointment-inventory unit and database-backed handler tests passed current-role detection, club-wide and team/season/competition scope rendering, effective start/end timestamps, escaping of club and CSRF values and suppression of the current appointment's identifier and redundant switch form. The complete Linux race suite remained green, and post-race schema preflight recomputed 21 version-2 audit events across four chains.
