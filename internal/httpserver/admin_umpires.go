@@ -301,20 +301,62 @@ const umpireFixtureJoinSQL = `
 		        SELECT
 		            candidate.play_cricket_match_id,
 		            candidate.payload,
-		            COUNT(*) OVER()::int AS candidate_count
+		            COUNT(*) OVER()::int AS candidate_count,
+		            (
+		                candidate.match_date = sub.match_date
+		                AND TRIM(COALESCE(umpire_submission_team.play_cricket_team_id, '')) <> ''
+		                AND (
+		                    TRIM(candidate.home_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                    OR TRIM(candidate.away_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                )
+		            ) AS matched_by_team,
+		            (
+		                candidate.match_date = sub.match_date
+		                AND TRIM(COALESCE(candidate.umpire_1_name, '')) <> ''
+		                AND TRIM(COALESCE(candidate.umpire_2_name, '')) <> ''
+		                AND LOWER(TRIM(candidate.umpire_1_name)) = ANY(ARRAY[
+		                    LOWER(TRIM(COALESCE(sub.form_data->>'umpire1_name', ''))),
+		                    LOWER(TRIM(COALESCE(sub.form_data->>'umpire2_name', '')))
+		                ])
+		                AND LOWER(TRIM(candidate.umpire_2_name)) = ANY(ARRAY[
+		                    LOWER(TRIM(COALESCE(sub.form_data->>'umpire1_name', ''))),
+		                    LOWER(TRIM(COALESCE(sub.form_data->>'umpire2_name', '')))
+		                ])
+		            ) AS matched_by_umpires
 		        FROM league_fixtures candidate
 		        WHERE candidate.play_cricket_match_id = sub.play_cricket_match_id
 		           OR (
 		               sub.play_cricket_match_id IS NULL
 		               AND candidate.match_date = sub.match_date
-		               AND TRIM(COALESCE(umpire_submission_team.play_cricket_team_id, '')) <> ''
 		               AND (
-		                   TRIM(candidate.home_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
-		                   OR TRIM(candidate.away_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                   (
+		                       TRIM(COALESCE(umpire_submission_team.play_cricket_team_id, '')) <> ''
+		                       AND (
+		                           TRIM(candidate.home_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                           OR TRIM(candidate.away_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                       )
+		                   )
+		                   OR (
+		                       TRIM(COALESCE(candidate.umpire_1_name, '')) <> ''
+		                       AND TRIM(COALESCE(candidate.umpire_2_name, '')) <> ''
+		                       AND LOWER(TRIM(candidate.umpire_1_name)) = ANY(ARRAY[
+		                           LOWER(TRIM(COALESCE(sub.form_data->>'umpire1_name', ''))),
+		                           LOWER(TRIM(COALESCE(sub.form_data->>'umpire2_name', '')))
+		                       ])
+		                       AND LOWER(TRIM(candidate.umpire_2_name)) = ANY(ARRAY[
+		                           LOWER(TRIM(COALESCE(sub.form_data->>'umpire1_name', ''))),
+		                           LOWER(TRIM(COALESCE(sub.form_data->>'umpire2_name', '')))
+		                       ])
+		                   )
 		               )
 		           )
 		        ORDER BY
 		            CASE WHEN candidate.play_cricket_match_id = sub.play_cricket_match_id THEN 0 ELSE 1 END,
+		            CASE
+		                WHEN TRIM(candidate.home_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                  OR TRIM(candidate.away_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                THEN 0 ELSE 1
+		            END,
 		            candidate.play_cricket_match_id
 		        LIMIT 1
 		    ) lf ON TRUE`
@@ -616,10 +658,13 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 		        sub.form_data->>'umpire2_performance' AS u2perf,
 		        COALESCE(lf.payload->>'competition_name', '') AS competition,
 		        CASE
+		            WHEN lf.play_cricket_match_id IS NULL AND EXTRACT(ISODOW FROM sub.match_date) NOT IN (6, 7) THEN 'Outside M3 days'
 		            WHEN lf.play_cricket_match_id IS NULL THEN 'Unmatched'
-		            WHEN sub.play_cricket_match_id IS NULL AND lf.candidate_count > 1 THEN 'Ambiguous team/date'
-		            WHEN sub.play_cricket_match_id IS NULL THEN 'Unique team/date'
-		            ELSE 'Match ID'
+		            WHEN sub.play_cricket_match_id IS NULL AND lf.candidate_count > 1 THEN 'Ambiguous fixture match'
+		            WHEN sub.play_cricket_match_id IS NOT NULL THEN 'Match ID'
+		            WHEN lf.matched_by_team THEN 'Unique team/date'
+		            WHEN lf.matched_by_umpires THEN 'Unique date/umpires'
+		            ELSE 'Unmatched'
 		        END AS resolution,
 		        %s AS is_premier_panel_game
 		    FROM submissions sub
@@ -642,7 +687,7 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 		        display,
 		        CASE WHEN trim(competition) = '' THEN 'Unclassified fixture' ELSE competition END AS competition,
 		        CASE
-		            WHEN resolution IN ('Unmatched', 'Ambiguous team/date') THEN 'Exception'
+		            WHEN resolution IN ('Unmatched', 'Ambiguous fixture match') THEN 'Exception'
 		            WHEN is_premier_panel_game THEN 'M3'
 		            ELSE 'Other'
 		        END AS classification,
