@@ -42,6 +42,35 @@ func TestBuildStarredPlayerReviewRowsCalculatesPercentagesAndSignals(t *testing.
 	}
 }
 
+func TestBuildStarredPlayerReviewRowsCountsAutomaticallyLinkedClubScorecards(t *testing.T) {
+	cutoff := time.Date(2026, 7, 27, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{
+		{ClubName: "Flixton C&SC", ClubKey: "flixtoncandsc", ListType: "A", PlayerName: "James Lupton", PlayerKey: "jameslupton", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Swinton Moorside CC", ClubKey: "swintonmoorside", ListType: "A", PlayerName: "Alfie Harvey", PlayerKey: "alfieharvey", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	appearances := []starred.Appearance{
+		{MatchID: 1, MatchDate: cutoff, ClubName: "Flixton CC", ClubKey: "flixton", TeamLevel: 1, PlayerName: "James Lupton", PlayerKey: "jameslupton"},
+		{MatchID: 2, MatchDate: cutoff, ClubName: "Swinton Moorside CC, Salford", ClubKey: "swintonmoorsidesalford", TeamLevel: 1, PlayerName: "Alfie Harvey", PlayerKey: "alfieharvey"},
+	}
+	clubNames := activeStarredClubNames(periods, cutoff)
+	appearances = remapStarredAppearanceClubs(appearances, nil, clubNames)
+	rows := buildStarredPlayerReviewRows(periods, appearances, nil, cutoff, map[string]string{
+		"flixtoncandsc":   "Championship",
+		"swintonmoorside": "Championship",
+	}, []string{"Championship"}, "", 50, 25)
+
+	byPlayer := make(map[string]starredPlayerReviewRow)
+	for _, row := range rows {
+		byPlayer[row.PlayerName] = row
+	}
+	if byPlayer["James Lupton"].Total != 1 || byPlayer["James Lupton"].ClubKey != "flixtoncandsc" {
+		t.Fatalf("Flixton scorecard was not counted: %#v", byPlayer["James Lupton"])
+	}
+	if byPlayer["Alfie Harvey"].Total != 1 || byPlayer["Alfie Harvey"].ClubKey != "swintonmoorside" {
+		t.Fatalf("Swinton scorecard was not counted: %#v", byPlayer["Alfie Harvey"])
+	}
+}
+
 func TestStarredRetentionSignalUsesAdjustableThresholds(t *testing.T) {
 	if got := starredRetentionSignal("B", 39.9, 60, 30); got != "orange" {
 		t.Fatalf("signal=%q want orange", got)

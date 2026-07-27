@@ -522,10 +522,14 @@ func (s *Server) captainForStarredBreach(ctx context.Context, breach starred.Bre
 	if err := s.DB.QueryRow(ctx, `SELECT COALESCE(home_team_pc_id,''),COALESCE(away_team_pc_id,''),COALESCE(home_club_name,''),COALESCE(away_club_name,'') FROM league_fixtures WHERE play_cricket_match_id=$1`, breach.Appearance.MatchID).Scan(&homeID, &awayID, &homeClub, &awayClub); err != nil {
 		return starredCaptain{}
 	}
+	matchesClub := func(clubName string) bool {
+		return starred.NormalizeClub(clubName) == breach.Appearance.ClubKey ||
+			starredClubDataMatchKey(clubName) == starredClubDataMatchKey(breach.Appearance.ClubName)
+	}
 	teamPCID := homeID
-	if starred.NormalizeClub(awayClub) == breach.Appearance.ClubKey {
+	if matchesClub(awayClub) {
 		teamPCID = awayID
-	} else if starred.NormalizeClub(homeClub) != breach.Appearance.ClubKey {
+	} else if !matchesClub(homeClub) {
 		return starredCaptain{}
 	}
 	var captain starredCaptain
@@ -543,7 +547,7 @@ func (s *Server) starredScorecardEvidence(ctx context.Context, breach starred.Br
 	if mappedClubKey := s.loadStarredAppearanceClubOverrides(ctx, breach.Appearance.SeasonYear)[breach.Appearance.ClubKey]; mappedClubKey != "" {
 		appearanceClubKey = mappedClubKey
 	}
-	rows, err := s.DB.Query(ctx, `SELECT club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),captain,wicket_keeper FROM starred_appearances WHERE play_cricket_match_id=$1 AND club_key=$2 AND team_name=$3 AND team_level > 0 ORDER BY player_name`, breach.Appearance.MatchID, appearanceClubKey, breach.Appearance.TeamName)
+	rows, err := s.DB.Query(ctx, `SELECT club_key,club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),captain,wicket_keeper FROM starred_appearances WHERE play_cricket_match_id=$1 AND team_name=$2 AND team_level > 0 ORDER BY player_name`, breach.Appearance.MatchID, breach.Appearance.TeamName)
 	if err != nil {
 		return "Scorecard team sheet unavailable."
 	}
@@ -551,10 +555,13 @@ func (s *Server) starredScorecardEvidence(ctx context.Context, breach starred.Br
 	var b strings.Builder
 	currentTeam := ""
 	for rows.Next() {
-		var club, team, player string
+		var clubKey, club, team, player string
 		var playerID int64
 		var captain, keeper bool
-		if rows.Scan(&club, &team, &player, &playerID, &captain, &keeper) != nil {
+		if rows.Scan(&clubKey, &club, &team, &player, &playerID, &captain, &keeper) != nil {
+			continue
+		}
+		if clubKey != appearanceClubKey && starredClubDataMatchKey(club) != starredClubDataMatchKey(breach.Appearance.ClubName) {
 			continue
 		}
 		heading := club + " — " + team

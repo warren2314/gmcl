@@ -115,6 +115,7 @@ func (s *Server) loadStarredReplacementPlayer(ctx context.Context, r *http.Reque
 			filtered = append(filtered, app)
 		}
 	}
+	filtered = remapStarredAppearanceClubs(filtered, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
 	green, orange := starredReviewThresholds(r)
 	for _, row := range buildStarredPlayerReviewRows(periods, filtered, mappings, cutoff, nil, nil, clubKey, green, orange) {
 		if row.ClubKey == clubKey && row.PlayerKey == playerKey && row.ListType != "" {

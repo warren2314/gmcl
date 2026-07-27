@@ -153,6 +153,47 @@ func TestRemapStarredAppearanceClubsLinksImportedGamesToPublishedClub(t *testing
 	}
 }
 
+func TestRemapStarredAppearanceClubsAutomaticallyLinksEquivalentClubNames(t *testing.T) {
+	appearances := []starred.Appearance{
+		{ClubKey: "flixton", ClubName: "Flixton CC", PlayerName: "James Lupton"},
+		{ClubKey: "swintonmoorsidesalford", ClubName: "Swinton Moorside CC, Salford", PlayerName: "Alfie Harvey"},
+	}
+	publishedClubNames := map[string]string{
+		"flixtoncandsc":   "Flixton C&SC",
+		"swintonmoorside": "Swinton Moorside CC",
+	}
+
+	got := remapStarredAppearanceClubs(appearances, nil, publishedClubNames)
+	if got[0].ClubKey != "flixtoncandsc" || got[0].ClubName != "Flixton C&SC" {
+		t.Fatalf("Flixton appearance was not automatically linked: %#v", got[0])
+	}
+	if got[1].ClubKey != "swintonmoorside" || got[1].ClubName != "Swinton Moorside CC" {
+		t.Fatalf("Swinton appearance was not automatically linked: %#v", got[1])
+	}
+}
+
+func TestRemapStarredAppearanceClubsDoesNotGuessAmbiguousEquivalentName(t *testing.T) {
+	appearances := []starred.Appearance{
+		{ClubKey: "rochdale-lancs", ClubName: "Rochdale CC, Lancs"},
+		{ClubKey: "rochdale-manchester", ClubName: "Rochdale CC, Greater Manchester"},
+	}
+	got := remapStarredAppearanceClubs(appearances, nil, map[string]string{"rochdale": "Rochdale CC"})
+	if got[0].ClubKey != "rochdale-lancs" || got[1].ClubKey != "rochdale-manchester" {
+		t.Fatalf("ambiguous appearance clubs must remain unchanged: %#v", got)
+	}
+}
+
+func TestRemapStarredAppearanceClubsKeepsManualOverrideAheadOfAutomaticMatch(t *testing.T) {
+	appearances := []starred.Appearance{
+		{ClubKey: "automatic", ClubName: "Example CC"},
+		{ClubKey: "manual", ClubName: "Different Name CC"},
+	}
+	got := remapStarredAppearanceClubs(appearances, map[string]string{"published": "manual"}, map[string]string{"published": "Example C&SC"})
+	if got[0].ClubKey != "automatic" || got[1].ClubKey != "published" {
+		t.Fatalf("manual club mapping must take precedence: %#v", got)
+	}
+}
+
 func TestStarredAppearanceSearchPrefersMappedPlayerID(t *testing.T) {
 	if got := starredAppearanceSearch("Safwan Patel", 6340202); got != "6340202" {
 		t.Fatalf("search=%q want player ID", got)

@@ -866,6 +866,7 @@ func activeStarredClubNames(periods []starred.Period, cutoff time.Time) map[stri
 }
 
 func remapStarredAppearanceClubs(appearances []starred.Appearance, publishedToAppearance map[string]string, publishedClubNames map[string]string) []starred.Appearance {
+	publishedToAppearance = inferStarredAppearanceClubMappings(appearances, publishedToAppearance, publishedClubNames)
 	appearanceToPublished := make(map[string]string)
 	for publishedClubKey, appearanceClubKey := range publishedToAppearance {
 		if publishedClubKey != "" && appearanceClubKey != "" {
@@ -885,6 +886,73 @@ func remapStarredAppearanceClubs(appearances []starred.Appearance, publishedToAp
 		}
 	}
 	return out
+}
+
+func starredClubDataMatchKey(clubName string) string {
+	clubName = strings.ToLower(strings.TrimSpace(clubName))
+	if comma := strings.Index(clubName, ","); comma >= 0 {
+		clubName = clubName[:comma]
+	}
+	for _, suffix := range []string{" cricket club", " c & sc", " c&sc", " c.c.", " cc"} {
+		clubName = strings.TrimSpace(strings.TrimSuffix(clubName, suffix))
+	}
+	return starred.NormalizeName(clubName)
+}
+
+func inferStarredAppearanceClubMappings(appearances []starred.Appearance, explicit map[string]string, publishedClubNames map[string]string) map[string]string {
+	mappings := make(map[string]string, len(explicit))
+	claimedAppearanceClubs := make(map[string]struct{}, len(explicit))
+	for publishedClubKey, appearanceClubKey := range explicit {
+		if publishedClubKey == "" || appearanceClubKey == "" {
+			continue
+		}
+		mappings[publishedClubKey] = appearanceClubKey
+		claimedAppearanceClubs[appearanceClubKey] = struct{}{}
+	}
+
+	appearanceKeys := make(map[string]struct{})
+	appearanceCandidates := make(map[string]map[string]struct{})
+	for _, appearance := range appearances {
+		if appearance.ClubKey == "" {
+			continue
+		}
+		appearanceKeys[appearance.ClubKey] = struct{}{}
+		if _, claimed := claimedAppearanceClubs[appearance.ClubKey]; claimed {
+			continue
+		}
+		matchKey := starredClubDataMatchKey(appearance.ClubName)
+		if matchKey == "" {
+			continue
+		}
+		if appearanceCandidates[matchKey] == nil {
+			appearanceCandidates[matchKey] = make(map[string]struct{})
+		}
+		appearanceCandidates[matchKey][appearance.ClubKey] = struct{}{}
+	}
+
+	publishedMatchCounts := make(map[string]int)
+	for _, clubName := range publishedClubNames {
+		if matchKey := starredClubDataMatchKey(clubName); matchKey != "" {
+			publishedMatchCounts[matchKey]++
+		}
+	}
+	for publishedClubKey, clubName := range publishedClubNames {
+		if _, overridden := mappings[publishedClubKey]; overridden {
+			continue
+		}
+		if _, exact := appearanceKeys[publishedClubKey]; exact {
+			continue
+		}
+		matchKey := starredClubDataMatchKey(clubName)
+		candidates := appearanceCandidates[matchKey]
+		if matchKey == "" || publishedMatchCounts[matchKey] != 1 || len(candidates) != 1 {
+			continue
+		}
+		for appearanceClubKey := range candidates {
+			mappings[publishedClubKey] = appearanceClubKey
+		}
+	}
+	return mappings
 }
 
 func saturdayStarredClubDivisions(clubNames map[string]string, appearances []starred.Appearance, overrides map[string]string) []starredSaturdayDivision {
