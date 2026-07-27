@@ -27,7 +27,7 @@ Priorities:
 | 2 | Who approves a club's primary administrator? | The initial and transferred Club Primary Administrator is approved by a GMCL Club Liaison Officer or Super Administrator against verified official-contact evidence. High-risk transfer uses step-up, dual notification and separation controls. | **Locked recommendation.** GMCL Board names approver roster; **blocking** for onboarding |
 | 3 | How are administrators removed when their role ends? | Revoke or let the effective-dated assignment expire; increment security version and immediately invalidate affected sessions. Preserve audit/history and notify relevant contacts. Reappointment creates a new assignment. | **Locked recommendation.** Club governance owner defines notification/recertification cadence; **required before implementation** |
 | 4 | Can one person administer more than one club? | Yes. One User may have several ClubMemberships/RoleAssignments, but the user selects one acting context and queries intersect that scope. | **Locked recommendation.** Authorization tests are a **production gate** |
-| 5 | Which authentication method and why? | Managed OIDC Authorization Code + PKCE; passkeys preferred, password plus TOTP fallback; email links only onboarding/controlled recovery. It provides phishing resistance and specialist lifecycle capability while the app retains domain authorization. | **Locked recommendation**, subject to provider procurement/security/DPA. GMCL procurement + DPO/CISO; provider selection is **blocking** |
+| 5 | Which authentication method and why? | Amazon Cognito User Pool with OIDC Authorization Code + PKCE; passkeys preferred, password plus TOTP fallback; email links only onboarding/controlled recovery. Cognito authenticates while PostgreSQL retains domain authorization. | **Provider selected 27 July 2026.** Production remains subject to AWS procurement/security/DPA approval and a verified fail-closed User Pool configuration. GMCL procurement + DPO/Security Lead; approval is **blocking** |
 | 6 | Which actions require step-up? | Role grant/revoke/primary transfer, recovery/session reset, sensitive exports/doc/photo access, sanction approval/publication/overturn, fixture publication, activated rule/source changes, integration/AI configuration and break-glass. Recommended recent-auth window: 10 minutes. | **Locked recommendation.** Security + domain owners validate final action catalogue **before implementation** |
 | 7 | Which club data can change directly? | Club-owned contacts/preferences, unsubmitted drafts, club responses/evidence and constraint inputs within policy. Verified official contacts/external mappings may trigger review. | **Locked recommendation.** Data owners approve field matrix **before implementation** |
 | 8 | Which official data needs correction/appeal? | Submitted reports, missed findings/exemptions, cards/sanctions/deductions, approved starred lists/exemptions/findings, registration decisions and published fixtures. Preserve originals; apply version/event with requester, reason, reviewer and effective date. | **Locked recommendation.** Domain owners define appeal eligibility/deadlines **before each module** |
@@ -62,7 +62,7 @@ Priorities:
 
 | ID | Decision/question | Decision owner | Evidence required | Blocks |
 |---|---|---|---|---|
-| B-01 | Select managed OIDC provider and approve security, UK GDPR DPA, subprocessor/data-location and exit terms | GMCL procurement, Security Lead, DPO | Capability assessment against [05-authentication-adr.md](05-authentication-adr.md), contract/DPA | Foundation build/live identity |
+| B-01 | Complete Amazon Cognito security approval and approve UK GDPR DPA, subprocessor/data-location, support and exit terms | GMCL procurement, Security Lead, DPO | Passed `scripts/verify-cognito-portal.ps1`, capability assessment against [05-authentication-adr.md](05-authentication-adr.md), contract/DPA | Live identity |
 | B-02 | Name CLO/Super Admin primary-administrator approvers and official-contact verification evidence/process | GMCL Board/Operations | Authoritative contact sources, approval/appeal/support playbook | Club onboarding |
 | B-03 | Approve final role grantors, scopes, expiry, delegation and separation of duties | GMCL Board and each functional lead | Signed role/permission matrix | Authorization policies |
 | B-04 | Reconcile authoritative club/team/season/competition identifiers and resolve ambiguous mappings | Data Owner + competition leads | Source inventory, mapping exceptions, sign-off | Club read models and all later tenancy |
@@ -159,7 +159,7 @@ Priorities:
 
 The plan did not have:
 
-- the current managed identity provider because none is selected;
+- approved production Amazon Cognito tenancy, contract/DPA or final User Pool identifiers and configuration;
 - production database contents or production audit/retention statistics;
 - the GMCL–Play-Cricket/ECB API agreement, key scope, limits or data-processing terms;
 - any private player/photo/registration API specification;

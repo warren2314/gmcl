@@ -1,6 +1,6 @@
 # Rules and External Dependencies
 
-**Official-source review date:** 26 July 2026
+**Official-source review date:** 27 July 2026
 **Rule principle:** Every automated decision is linked to an immutable rule release and season. A change to the current rule set must not alter a historical decision.
 
 ## Source register
@@ -24,6 +24,11 @@
 | [Registered players](https://play-cricket.ecb.co.uk/hc/en-us/articles/360000961349-Day-To-Day-Registered-Players) | Current help centre | Admin UI status/category/DOB filters and downloads |
 | [NCSC passkeys](https://www.ncsc.gov.uk/passkeys) | Current page | Prefer passkeys over passwords |
 | [NCSC recommended MFA](https://www.ncsc.gov.uk/collection/mfa-for-your-corporate-online-services/recommended-types-of-mfa) | Version 2.0, reviewed 26 September 2024 | FIDO2 first; TOTP above message-based MFA |
+| [Amazon Cognito User Pool endpoints](https://docs.aws.amazon.com/cognito/latest/developerguide/federation-endpoints.html) | AWS documentation reviewed 27 July 2026 | OIDC discovery/issuer formats and authorization, token, user-info and revocation endpoints |
+| [Amazon Cognito passkey configuration](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_WebAuthnConfigurationType.html) | AWS API reference reviewed 27 July 2026 | User verification can be required and verified passkeys can satisfy MFA |
+| [Amazon Cognito account-creation policy](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-admin-create-user-policy.html) | AWS documentation reviewed 27 July 2026 | `AllowAdminCreateUserOnly` disables public self-registration |
+| [Amazon Cognito ID tokens](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-id-token.html) | AWS documentation reviewed 27 July 2026 | Signed ID token contains `token_use`, subject, audience and Unix `auth_time` |
+| [Amazon Cognito email with SES](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-email.html) | AWS documentation reviewed 27 July 2026 | A User Pool can use an SES identity for invitation, verification and recovery messages |
 | [ICO data sharing and children](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/data-sharing/data-sharing-a-code-of-practice/data-sharing-and-children/) | Under review following Data (Use and Access) Act | Best interests, high privacy default and DPIA |
 | [ICO storage limitation](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/data-protection-principles/a-guide-to-the-data-protection-principles/storage-limitation/) | Under review following Data (Use and Access) Act | Retain personal data no longer than necessary |
 

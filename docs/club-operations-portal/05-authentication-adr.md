@@ -1,7 +1,7 @@
 # ADR: Authentication and Session Architecture
 
-**Decision status:** Recommended; provider selection, procurement, DPA and security review are blocking
-**Decision date:** 26 July 2026
+**Decision status:** AWS Cognito selected for technical integration; procurement/DPA, security approval and production configuration remain blocking
+**Decision date:** 26 July 2026; provider decision updated 27 July 2026
 **Scope:** Named GMCL, club, captain, match-official and applicant accounts
 
 The evidence labels defined in [00-executive-summary.md](00-executive-summary.md) apply throughout this document.
@@ -27,7 +27,31 @@ Use a managed OpenID Connect provider with Authorization Code flow and PKCE, sub
 7. The application creates a revocable server-side session after validating the OIDC response.
 8. Existing captain reporting continues during migration and can later link a named identity to a captain appointment without removing the current route until adoption and fallback criteria are met.
 
-**External dependency:** No provider is selected in this pack. Required capabilities, not a brand, are the decision.
+**Decision:** Use an Amazon Cognito User Pool for the first portal pilot, preferably in `eu-west-2` alongside the existing SES arrangement. Cognito performs authentication only. Portal memberships and season-aware club/team/competition roles remain application-owned in PostgreSQL.
+
+**External dependency:** Provider selection does not constitute production approval. GMCL procurement, the DPO and the Security Lead must still approve AWS terms, UK GDPR/DPA position, subprocessors/data location, recovery, support and exit arrangements.
+
+## Amazon Cognito implementation profile
+
+The application supports `CLUB_PORTAL_OIDC_PROVIDER_PROFILE=cognito` in addition to the original generic ACR-capable OIDC profile.
+
+- The issuer must be an exact Cognito User Pool issuer whose hostname Region matches the User Pool ID.
+- Cognito ID tokens must contain `token_use=id` and a valid `auth_time`.
+- Baseline sign-in does not grant recent step-up status, even when the authentication itself was strong.
+- Sensitive-action step-up sends `prompt=login` and `max_age=0`, binds the flow to the current named user and accepts it only when `auth_time` is no earlier than the stored step-up request, allowing two minutes of clock skew.
+- The Cognito profile does not send or accept configured `acr_values`; setting either ACR variable causes startup validation to fail.
+- The application continues to create and revalidate its own opaque, revocable server-side sessions. Cognito token revocation is complementary, not a substitute for portal session revocation.
+
+Before `CLUB_PORTAL_COGNITO_POLICY_VERIFIED=true` may be set, run `scripts/verify-cognito-portal.ps1`. The read-only verifier requires:
+
+1. self-registration disabled and User Pool deletion protection active;
+2. `PASSWORD` and `WEB_AUTHN` as the allowed first factors, with email/SMS OTP excluded;
+3. required MFA, software-token TOTP enabled, passkey user verification `required`, and passkeys configured as `MULTI_FACTOR_WITH_USER_VERIFICATION`;
+4. a confidential application client using authorization code, `openid email profile`, `ALLOW_USER_AUTH`, token revocation and user-existence-error suppression;
+5. only the named Cognito directory as the initial identity provider and exactly one approved HTTPS portal callback;
+6. the existing SES identity in the same Region, unless a controlled test explicitly permits Cognito default email.
+
+These checks reflect AWS's documented [passkey/MFA configuration](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_WebAuthnConfigurationType.html), [administrator-only account creation](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-admin-create-user-policy.html), [Cognito ID-token claims](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-id-token.html) and [SES integration](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-email.html), reviewed 27 July 2026.
 
 ## Options considered
 

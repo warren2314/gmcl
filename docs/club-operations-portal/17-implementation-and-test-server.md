@@ -19,13 +19,13 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Opaque, hashed, server-side sessions with 30-minute idle and 12-hour absolute defaults.
 - User-visible active-session inventory, immediate per-session revocation and all-device revocation through account security-version invalidation.
 - User-visible account activity at `/portal/activity`, limited to the latest 100 events for the named user in the selected club context. The repository projects only action, outcome, acting role and timestamp; the page maps these through explicit presentation allowlists and never selects or renders audit metadata, targets, record IDs, IP addresses, user agents, hashes or another club's events.
-- Provider-enforced step-up for sensitive account actions using `prompt=login`, `max_age=0` and the approved step-up ACR; the returned identity must match the initiating named user.
+- Provider-enforced step-up for sensitive account actions. The generic profile uses `prompt=login`, `max_age=0` and an approved step-up ACR. The Cognito profile uses forced login plus a signed `auth_time` no earlier than the stored step-up request; both require the returned identity to match the initiating named user.
 - State-changing forms retain double-submit CSRF protection with 256-bit cryptographic tokens, fail-closed generation, constant-time comparison and `Secure`, `HttpOnly`, `SameSite=Lax` cookies. Existing server-rendered forms and the configured asynchronous client do not require JavaScript access to the cookie.
 - Existing per-IP/per-path token-bucket limits now use a 10,000-entry bounded O(1) LRU with ten-minute idle expiry, preventing unbounded attacker-controlled memory growth while preserving every route's configured request allowance. Limited responses include a calculated `Retry-After`.
 - Deny-by-default, application-owned permissions with club/team/season/competition containment.
 - A restricted `gmcl_portal_runtime` PostgreSQL role, tenant transaction context, forced RLS on portal-private tables and a startup refusal if the effective role can bypass RLS.
 - Append-only, versioned hash-chained audit events without raw authentication or invitation secrets. Version-2 hashes use PostgreSQL-compatible timestamp precision and can be independently recomputed by the operational preflight; legacy version-1 rows are reported separately rather than overstated as fully verified.
-- A fail-closed `/bin/portal-preflight` command verifies required migrations, effective RLS, forced-RLS coverage, append-only and chain-shape constraints, every audit-chain position/link/hash (including stored IP and user-agent fields for version 2), session policy, required baseline and step-up ACRs, HTTPS callback alignment, SMTP, internal-worker authentication and read-only OIDC discovery without printing secrets or enabling a club.
+- A fail-closed `/bin/portal-preflight` command verifies required migrations, effective RLS, forced-RLS coverage, append-only and chain-shape constraints, every audit-chain position/link/hash (including stored IP and user-agent fields for version 2), session policy, generic ACR or verified Cognito assurance, HTTPS callback alignment, SMTP, internal-worker authentication and read-only OIDC discovery without printing secrets or enabling a club.
 - `scripts/verify-portal-staging.sh` combines strict pilot preflight with external HTTPS checks for health, the preserved captain entry, administrator login, unauthenticated portal redirect, no-store behavior, baseline CSP/HSTS/framing/content-type headers, hardened CSRF cookie flags and rejection of an unsigned notification-worker request.
 - Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`; disabling a club's `portal_access` atomically disables its module flags and revokes every active session currently scoped to that club.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
@@ -81,12 +81,14 @@ CLUB_PORTAL_SESSION_ABSOLUTE_HOURS=12
 CLUB_PORTAL_STEP_UP_MINUTES=15
 
 CLUB_PORTAL_OIDC_ENABLED=true
-CLUB_PORTAL_OIDC_ISSUER=https://PROVIDER_ISSUER
-CLUB_PORTAL_OIDC_CLIENT_ID=SECRET_VALUE
+CLUB_PORTAL_OIDC_PROVIDER_PROFILE=cognito
+CLUB_PORTAL_OIDC_ISSUER=https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_USER_POOL_ID
+CLUB_PORTAL_OIDC_CLIENT_ID=COGNITO_APP_CLIENT_ID
 CLUB_PORTAL_OIDC_CLIENT_SECRET=SECRET_VALUE
 CLUB_PORTAL_OIDC_REDIRECT_URL=https://TEST_HOST/portal/auth/callback
-CLUB_PORTAL_OIDC_REQUIRED_ACR=PROVIDER_APPROVED_ACR
-CLUB_PORTAL_OIDC_STEP_UP_ACR=PROVIDER_APPROVED_STEP_UP_ACR
+CLUB_PORTAL_COGNITO_POLICY_VERIFIED=true
+CLUB_PORTAL_OIDC_REQUIRED_ACR=
+CLUB_PORTAL_OIDC_STEP_UP_ACR=
 
 SMTP_HOST=CONFIGURED_TEST_SMTP
 SMTP_FROM=CONFIGURED_TEST_SENDER
@@ -95,7 +97,25 @@ EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
 N8N_HMAC_SECRET=AT_LEAST_32_RANDOM_BYTES
 ```
 
-`CLUB_PORTAL_OIDC_ALLOW_INSECURE` must remain false on the test server. Configure passkeys as the provider's preferred authenticator and password plus TOTP as the accessible fallback.
+`CLUB_PORTAL_OIDC_ALLOW_INSECURE` must remain false on the test server. The Cognito profile fails startup if either ACR value is present or the policy-verification flag is false.
+
+### Verify the Cognito User Pool
+
+Create a separate pilot User Pool and confidential app client. Use administrator-created named accounts only. Configure managed login with passkeys and password, required MFA, TOTP, passkey user verification `required`, and `FactorConfiguration=MULTI_FACTOR_WITH_USER_VERIFICATION`. Configure Cognito email delivery to use the existing SES identity in the same Region.
+
+Run the read-only verifier from an approved workstation with least-privilege AWS credentials:
+
+```powershell
+.\scripts\verify-cognito-portal.ps1 `
+  -UserPoolId eu-west-2_USER_POOL_ID `
+  -ClientId COGNITO_APP_CLIENT_ID `
+  -IssuerUrl https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_USER_POOL_ID `
+  -CallbackUrl https://TEST_HOST/portal/auth/callback `
+  -Region eu-west-2 `
+  -Profile GMCL_AWS_PROFILE
+```
+
+Only copy `CLUB_PORTAL_COGNITO_POLICY_VERIFIED=true` into the deployment after this command passes. Re-run it after any User Pool, app-client, domain, callback, factor, MFA or email configuration change. It reads configuration and does not create users or change AWS resources.
 
 Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BASE_URL=https://TEST_HOST`, bind the existing internal HMAC secret through the approved n8n credential mechanism, and leave the workflow inactive until the application deployment and controlled-mailbox checks pass. The portal-notification node derives its endpoint from `GMCL_BASE_URL` and runs every five minutes. Do not retain the repository placeholder as a live credential.
 
@@ -170,7 +190,8 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - Appointment-inventory unit and database-backed handler tests passed current-role detection, club-wide and team/season/competition scope rendering, effective start/end timestamps, escaping of club and CSRF values and suppression of the current appointment's identifier and redundant switch form. The complete Linux race suite remained green, and post-race schema preflight recomputed 21 version-2 audit events across four chains.
 - Shared CSRF tests passed token entropy/shape, request-context propagation, matching form/header submission, rejection and constant-time comparison. A production-stage `/admin/login` response emitted `Path=/; HttpOnly; Secure; SameSite=Lax`; complete host and Linux race suites remained green across administrator, captain, sanctions and portal routes.
 - Bounded rate-limiter tests passed refill timing, IP/path isolation, idle expiry, LRU eviction, backward-clock recovery, calculated retry guidance and a 100-request concurrent burst under the race detector. In the production-stage container, requests 1–60 to `/admin/login` succeeded and request 61 returned HTTP 429 with `Retry-After: 1`.
-- The pilot preflight was tightened to require an explicit provider-approved baseline ACR as well as the existing step-up ACR. The complete Windows test and vet suites passed, and the affected portal/preflight packages passed the Linux race detector from a read-only source mount.
+- The generic pilot preflight requires an explicit provider-approved baseline ACR and step-up ACR. The Cognito profile instead requires the independently verified User Pool policy and enforces signed `token_use`/`auth_time` evidence in the callback.
+- Cognito-focused tests passed for original and updated issuer shapes, confidential-client requirements, rejection of ACR configuration, omission of unsupported `acr_values`, forced-login step-up parameters, ID-token purpose, future/missing authentication times, stale step-up and fail-closed pilot preflight. The complete Go test and vet suites passed on 27 July 2026.
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.

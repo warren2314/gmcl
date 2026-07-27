@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,27 +20,44 @@ import (
 	"golang.org/x/oauth2"
 )
 
+type OIDCProviderProfile string
+
+const (
+	OIDCProviderGeneric OIDCProviderProfile = "generic"
+	OIDCProviderCognito OIDCProviderProfile = "cognito"
+
+	oidcAuthTimeClockSkew = 2 * time.Minute
+)
+
+var cognitoRegionPattern = regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z0-9-]+-[0-9]+$`)
+
 type OIDCConfig struct {
-	Enabled             bool
-	IssuerURL           string
-	ClientID            string
-	ClientSecret        string
-	RedirectURL         string
-	RequiredACR         string
-	StepUpACR           string
-	AllowInsecureIssuer bool
-	DiscoveryTimeout    time.Duration
+	Enabled               bool
+	ProviderProfile       OIDCProviderProfile
+	IssuerURL             string
+	ClientID              string
+	ClientSecret          string
+	RedirectURL           string
+	RequiredACR           string
+	StepUpACR             string
+	CognitoPolicyVerified bool
+	AllowInsecureIssuer   bool
+	DiscoveryTimeout      time.Duration
 }
 
 func LoadOIDCConfigFromEnv() OIDCConfig {
 	return OIDCConfig{
-		Enabled:      envBool("CLUB_PORTAL_OIDC_ENABLED"),
-		IssuerURL:    strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_ISSUER")),
-		ClientID:     strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_CLIENT_ID")),
-		ClientSecret: os.Getenv("CLUB_PORTAL_OIDC_CLIENT_SECRET"),
-		RedirectURL:  strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_REDIRECT_URL")),
-		RequiredACR:  strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_REQUIRED_ACR")),
-		StepUpACR:    strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_STEP_UP_ACR")),
+		Enabled: envBool("CLUB_PORTAL_OIDC_ENABLED"),
+		ProviderProfile: OIDCProviderProfile(strings.ToLower(strings.TrimSpace(
+			os.Getenv("CLUB_PORTAL_OIDC_PROVIDER_PROFILE"),
+		))),
+		IssuerURL:             strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_ISSUER")),
+		ClientID:              strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_CLIENT_ID")),
+		ClientSecret:          os.Getenv("CLUB_PORTAL_OIDC_CLIENT_SECRET"),
+		RedirectURL:           strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_REDIRECT_URL")),
+		RequiredACR:           strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_REQUIRED_ACR")),
+		StepUpACR:             strings.TrimSpace(os.Getenv("CLUB_PORTAL_OIDC_STEP_UP_ACR")),
+		CognitoPolicyVerified: envBool("CLUB_PORTAL_COGNITO_POLICY_VERIFIED"),
 		AllowInsecureIssuer: envBool("CLUB_PORTAL_OIDC_ALLOW_INSECURE") &&
 			!strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production"),
 		DiscoveryTimeout: 10 * time.Second,
@@ -53,6 +71,10 @@ func EnabledFromEnv() bool {
 func (config OIDCConfig) Validate() error {
 	if !config.Enabled {
 		return nil
+	}
+	profile := config.normalizedProviderProfile()
+	if profile != OIDCProviderGeneric && profile != OIDCProviderCognito {
+		return fmt.Errorf("portal OIDC provider profile must be generic or cognito")
 	}
 	if config.IssuerURL == "" || config.ClientID == "" || config.RedirectURL == "" {
 		return fmt.Errorf("portal OIDC issuer, client ID and redirect URL are required")
@@ -80,12 +102,72 @@ func (config OIDCConfig) Validate() error {
 	if config.DiscoveryTimeout <= 0 || config.DiscoveryTimeout > 30*time.Second {
 		return fmt.Errorf("portal OIDC discovery timeout must be between 1ns and 30s")
 	}
+	if profile == OIDCProviderCognito {
+		if config.AllowInsecureIssuer || !validCognitoIssuer(issuer) {
+			return fmt.Errorf("portal Cognito issuer URL is invalid")
+		}
+		if strings.TrimSpace(config.ClientSecret) == "" {
+			return fmt.Errorf("portal Cognito client secret is required")
+		}
+		if config.RequiredACR != "" || config.StepUpACR != "" {
+			return fmt.Errorf("portal Cognito profile does not accept ACR configuration")
+		}
+		if !config.CognitoPolicyVerified {
+			return fmt.Errorf("portal Cognito authentication policy must be verified")
+		}
+	}
 	if config.StepUpACR != "" && config.RequiredACR != "" &&
 		config.StepUpACR == config.RequiredACR {
 		// This is allowed and means every successful login is also a step-up.
 		return nil
 	}
 	return nil
+}
+
+func (config OIDCConfig) normalizedProviderProfile() OIDCProviderProfile {
+	profile := OIDCProviderProfile(strings.ToLower(strings.TrimSpace(string(config.ProviderProfile))))
+	if profile == "" {
+		return OIDCProviderGeneric
+	}
+	return profile
+}
+
+func (config OIDCConfig) stepUpConfigured() bool {
+	if config.normalizedProviderProfile() == OIDCProviderCognito {
+		return config.CognitoPolicyVerified
+	}
+	return strings.TrimSpace(config.StepUpACR) != ""
+}
+
+func validCognitoIssuer(issuer *url.URL) bool {
+	if issuer == nil || issuer.Scheme != "https" || issuer.User != nil ||
+		issuer.Port() != "" || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return false
+	}
+	hostParts := strings.Split(strings.ToLower(issuer.Hostname()), ".")
+	if len(hostParts) != 4 ||
+		(hostParts[0] != "cognito-idp" && hostParts[0] != "issuer-cognito-idp") ||
+		hostParts[2] != "amazonaws" || hostParts[3] != "com" ||
+		!cognitoRegionPattern.MatchString(hostParts[1]) {
+		return false
+	}
+	poolID := strings.TrimPrefix(issuer.EscapedPath(), "/")
+	if poolID == "" || strings.Contains(poolID, "/") ||
+		!strings.HasPrefix(poolID, hostParts[1]+"_") {
+		return false
+	}
+	suffix := strings.TrimPrefix(poolID, hostParts[1]+"_")
+	if suffix == "" {
+		return false
+	}
+	for _, character := range suffix {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 type OIDCClient struct {
@@ -184,8 +266,8 @@ func (client *OIDCClient) BeginStepUp(
 	returnTo string,
 	principal Principal,
 ) (OIDCBeginResult, error) {
-	if strings.TrimSpace(client.config.StepUpACR) == "" {
-		return OIDCBeginResult{}, fmt.Errorf("portal step-up ACR is not configured")
+	if !client.config.stepUpConfigured() {
+		return OIDCBeginResult{}, fmt.Errorf("portal step-up authentication is not configured")
 	}
 	if principal.UserID == uuid.Nil || principal.SessionID == uuid.Nil {
 		return OIDCBeginResult{}, ErrUnauthenticated
@@ -246,24 +328,39 @@ func (client *OIDCClient) beginLogin(
 		return OIDCBeginResult{}, err
 	}
 
+	options := client.config.authorizationOptions(rawNonce, pkceVerifier, stepUpRequested)
+	return OIDCBeginResult{
+		AuthorizationURL: oauthConfig.AuthCodeURL(rawState, options...),
+		ExpiresAt:        expiresAt,
+	}, nil
+}
+
+func (config OIDCConfig) authorizationOptions(
+	rawNonce string,
+	pkceVerifier string,
+	stepUpRequested bool,
+) []oauth2.AuthCodeOption {
 	options := []oauth2.AuthCodeOption{
 		oidc.Nonce(rawNonce),
 		oauth2.S256ChallengeOption(pkceVerifier),
 	}
 	if stepUpRequested {
+		if config.normalizedProviderProfile() == OIDCProviderGeneric {
+			options = append(
+				options,
+				oauth2.SetAuthURLParam("acr_values", config.StepUpACR),
+			)
+		}
 		options = append(
 			options,
-			oauth2.SetAuthURLParam("acr_values", client.config.StepUpACR),
 			oauth2.SetAuthURLParam("prompt", "login"),
 			oauth2.SetAuthURLParam("max_age", "0"),
 		)
-	} else if client.config.RequiredACR != "" {
-		options = append(options, oauth2.SetAuthURLParam("acr_values", client.config.RequiredACR))
+	} else if config.normalizedProviderProfile() == OIDCProviderGeneric &&
+		config.RequiredACR != "" {
+		options = append(options, oauth2.SetAuthURLParam("acr_values", config.RequiredACR))
 	}
-	return OIDCBeginResult{
-		AuthorizationURL: oauthConfig.AuthCodeURL(rawState, options...),
-		ExpiresAt:        expiresAt,
-	}, nil
+	return options
 }
 
 type OIDCCompleteResult struct {
@@ -280,6 +377,8 @@ type oidcIdentityClaims struct {
 	EmailVerified     bool     `json:"email_verified"`
 	ACR               string   `json:"acr"`
 	AMR               []string `json:"amr"`
+	AuthTime          int64    `json:"auth_time"`
+	TokenUse          string   `json:"token_use"`
 }
 
 func (client *OIDCClient) CompleteLogin(
@@ -324,11 +423,8 @@ func (client *OIDCClient) CompleteLogin(
 	if !verifyNonce(claims.Nonce, loginState.NonceHash) {
 		return OIDCCompleteResult{}, ErrUnauthenticated
 	}
-	if client.config.RequiredACR != "" && claims.ACR != client.config.RequiredACR &&
-		claims.ACR != client.config.StepUpACR {
-		return OIDCCompleteResult{}, ErrUnauthenticated
-	}
-	if loginState.StepUpRequested && claims.ACR != client.config.StepUpACR {
+	stepUp, err := client.assessAuthentication(loginState, claims)
+	if err != nil {
 		return OIDCCompleteResult{}, ErrUnauthenticated
 	}
 
@@ -372,7 +468,6 @@ func (client *OIDCClient) CompleteLogin(
 		return OIDCCompleteResult{}, ErrUnauthenticated
 	}
 
-	stepUp := client.config.StepUpACR != "" && claims.ACR == client.config.StepUpACR
 	principal, rawSessionToken, err := client.store.CreateSession(
 		ctx,
 		resolvedUserID,
@@ -387,6 +482,39 @@ func (client *OIDCClient) CompleteLogin(
 		RawSessionToken: rawSessionToken,
 		ReturnTo:        loginState.ReturnTo,
 	}, nil
+}
+
+func (client *OIDCClient) assessAuthentication(
+	loginState OIDCLoginState,
+	claims oidcIdentityClaims,
+) (bool, error) {
+	if client.config.normalizedProviderProfile() == OIDCProviderCognito {
+		if claims.TokenUse != "id" || claims.AuthTime <= 0 {
+			return false, ErrUnauthenticated
+		}
+		authenticatedAt := time.Unix(claims.AuthTime, 0).UTC()
+		now := client.store.now().UTC()
+		if authenticatedAt.After(now.Add(oidcAuthTimeClockSkew)) {
+			return false, ErrUnauthenticated
+		}
+		if !loginState.StepUpRequested {
+			return false, nil
+		}
+		if loginState.CreatedAt.IsZero() ||
+			authenticatedAt.Before(loginState.CreatedAt.UTC().Add(-oidcAuthTimeClockSkew)) {
+			return false, ErrUnauthenticated
+		}
+		return true, nil
+	}
+
+	if client.config.RequiredACR != "" && claims.ACR != client.config.RequiredACR &&
+		claims.ACR != client.config.StepUpACR {
+		return false, ErrUnauthenticated
+	}
+	if loginState.StepUpRequested && claims.ACR != client.config.StepUpACR {
+		return false, ErrUnauthenticated
+	}
+	return client.config.StepUpACR != "" && claims.ACR == client.config.StepUpACR, nil
 }
 
 func verifyNonce(nonce string, expected [sha256.Size]byte) bool {

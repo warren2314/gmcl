@@ -20,6 +20,7 @@ type OIDCLoginState struct {
 	InvitationTokenHash []byte
 	StepUpRequested     bool
 	ExpectedUserID      uuid.UUID
+	CreatedAt           time.Time
 }
 
 func (store *Store) SaveOIDCLoginState(
@@ -80,7 +81,8 @@ func (store *Store) ConsumeOIDCLoginState(
 			RETURNING nonce_hash, pkce_verifier, return_to,
 				COALESCE(invitation_token_hash, ''::bytea),
 				step_up_requested,
-				COALESCE(expected_user_id, '00000000-0000-0000-0000-000000000000'::uuid)
+				COALESCE(expected_user_id, '00000000-0000-0000-0000-000000000000'::uuid),
+				created_at
 		`, stateHash[:], now).Scan(
 			&nonceHash,
 			&state.PKCEVerifier,
@@ -88,6 +90,7 @@ func (store *Store) ConsumeOIDCLoginState(
 			&state.InvitationTokenHash,
 			&state.StepUpRequested,
 			&state.ExpectedUserID,
+			&state.CreatedAt,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrUnauthenticated

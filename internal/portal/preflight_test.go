@@ -53,10 +53,78 @@ func TestPilotPreflightRequiresCompleteFailClosedConfiguration(t *testing.T) {
 	}
 	if !report.PortalEnabled || !report.OIDCEnabled ||
 		!report.OIDCConfigurationValid || !report.BaselineACRConfigured ||
-		!report.StepUpConfigured ||
+		!report.BaselineAssuranceReady || !report.StepUpConfigured ||
 		!report.HTTPSPublicBaseURL || !report.OIDCCallbackMatches ||
 		!report.SMTPConfigured || !report.WorkerAuthConfigured {
 		t.Fatalf("pilot report = %#v", report)
+	}
+}
+
+func TestPilotPreflightAcceptsVerifiedCognitoAssurance(t *testing.T) {
+	t.Setenv("CLUB_PORTAL_ENABLED", "true")
+	t.Setenv("PUBLIC_BASE_URL", "https://portal-test.gmcl.example")
+	t.Setenv("SMTP_HOST", "smtp.example")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_FROM", "GMCL Portal <portal@example.test>")
+	t.Setenv("SMTP_USERNAME", "")
+	t.Setenv("SMTP_PASSWORD", "")
+	t.Setenv("SMTP_REPLY_TO", "")
+	t.Setenv("N8N_HMAC_SECRET", "01234567890123456789012345678901")
+	config := OIDCConfig{
+		Enabled:               true,
+		ProviderProfile:       OIDCProviderCognito,
+		IssuerURL:             "https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_GMCL123",
+		ClientID:              "gmcl-portal-test",
+		ClientSecret:          "secret",
+		RedirectURL:           "https://portal-test.gmcl.example/portal/auth/callback",
+		CognitoPolicyVerified: true,
+		DiscoveryTimeout:      10 * time.Second,
+	}
+	report, issues := InspectPortalEnvironment(
+		PortalPreflightModePilot,
+		DefaultSessionPolicy(),
+		config,
+	)
+	if len(issues) != 0 {
+		t.Fatalf("Cognito pilot issues = %v", issues)
+	}
+	if report.OIDCProviderProfile != "cognito" || report.BaselineACRConfigured ||
+		!report.BaselineAssuranceReady || !report.StepUpConfigured ||
+		!report.CognitoPolicyVerified {
+		t.Fatalf("Cognito pilot report = %#v", report)
+	}
+}
+
+func TestPilotPreflightRejectsUnverifiedCognitoPolicy(t *testing.T) {
+	t.Setenv("CLUB_PORTAL_ENABLED", "true")
+	t.Setenv("PUBLIC_BASE_URL", "https://portal-test.gmcl.example")
+	t.Setenv("SMTP_HOST", "smtp.example")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_FROM", "GMCL Portal <portal@example.test>")
+	t.Setenv("N8N_HMAC_SECRET", "01234567890123456789012345678901")
+	config := OIDCConfig{
+		Enabled:          true,
+		ProviderProfile:  OIDCProviderCognito,
+		IssuerURL:        "https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_GMCL123",
+		ClientID:         "gmcl-portal-test",
+		ClientSecret:     "secret",
+		RedirectURL:      "https://portal-test.gmcl.example/portal/auth/callback",
+		DiscoveryTimeout: 10 * time.Second,
+	}
+	report, issues := InspectPortalEnvironment(
+		PortalPreflightModePilot,
+		DefaultSessionPolicy(),
+		config,
+	)
+	if report.OIDCConfigurationValid || report.BaselineAssuranceReady ||
+		report.StepUpConfigured || report.CognitoPolicyVerified {
+		t.Fatalf("unsafe Cognito policy reported ready: %#v", report)
+	}
+	if !slices.Contains(
+		issues,
+		"CLUB_PORTAL_COGNITO_POLICY_VERIFIED must confirm the fail-closed Cognito policy checks",
+	) {
+		t.Fatalf("missing Cognito policy issue in %v", issues)
 	}
 }
 

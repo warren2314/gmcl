@@ -40,8 +40,11 @@ type PortalEnvironmentPreflight struct {
 	PortalEnabled          bool   `json:"portal_enabled"`
 	OIDCEnabled            bool   `json:"oidc_enabled"`
 	OIDCConfigurationValid bool   `json:"oidc_configuration_valid"`
+	OIDCProviderProfile    string `json:"oidc_provider_profile"`
 	BaselineACRConfigured  bool   `json:"baseline_acr_configured"`
+	BaselineAssuranceReady bool   `json:"baseline_assurance_ready"`
 	StepUpConfigured       bool   `json:"step_up_configured"`
+	CognitoPolicyVerified  bool   `json:"cognito_policy_verified"`
 	HTTPSPublicBaseURL     bool   `json:"https_public_base_url"`
 	OIDCCallbackMatches    bool   `json:"oidc_callback_matches_public_url"`
 	SMTPConfigured         bool   `json:"smtp_configured"`
@@ -68,12 +71,18 @@ func InspectPortalEnvironment(
 	oidcConfig OIDCConfig,
 ) (PortalEnvironmentPreflight, []string) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
+	profile := oidcConfig.normalizedProviderProfile()
+	cognitoProfile := profile == OIDCProviderCognito
 	report := PortalEnvironmentPreflight{
 		Mode:                  mode,
 		PortalEnabled:         EnabledFromEnv(),
 		OIDCEnabled:           oidcConfig.Enabled,
+		OIDCProviderProfile:   string(profile),
 		BaselineACRConfigured: strings.TrimSpace(oidcConfig.RequiredACR) != "",
-		StepUpConfigured:      strings.TrimSpace(oidcConfig.StepUpACR) != "",
+		BaselineAssuranceReady: (cognitoProfile && oidcConfig.CognitoPolicyVerified) ||
+			(!cognitoProfile && strings.TrimSpace(oidcConfig.RequiredACR) != ""),
+		StepUpConfigured:      oidcConfig.stepUpConfigured(),
+		CognitoPolicyVerified: cognitoProfile && oidcConfig.CognitoPolicyVerified,
 		SMTPConfigured:        email.NewFromEnv().ValidateSensitiveDeliveryConfig() == nil,
 		WorkerAuthConfigured:  len(strings.TrimSpace(os.Getenv("N8N_HMAC_SECRET"))) >= 32,
 		SessionIdleMinutes:    int64(policy.IdleLifetime / time.Minute),
@@ -113,7 +122,13 @@ func InspectPortalEnvironment(
 	if !report.OIDCEnabled {
 		issues = append(issues, "CLUB_PORTAL_OIDC_ENABLED must be true for a pilot")
 	}
-	if !report.BaselineACRConfigured {
+	if cognitoProfile && !report.CognitoPolicyVerified {
+		issues = append(
+			issues,
+			"CLUB_PORTAL_COGNITO_POLICY_VERIFIED must confirm the fail-closed Cognito policy checks",
+		)
+	}
+	if !cognitoProfile && !report.BaselineACRConfigured {
 		issues = append(
 			issues,
 			"CLUB_PORTAL_OIDC_REQUIRED_ACR is required for pilot authentication",
