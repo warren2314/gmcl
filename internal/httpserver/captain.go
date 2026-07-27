@@ -392,7 +392,7 @@ func (s *Server) handleMagicLinkRequest() http.HandlerFunc {
 		if os.Getenv("APP_ENV") == "dev" {
 			fmt.Printf("Magic link for captain %d (%s): %s\n", captainID, captainEmail, link)
 		}
-		mailer := email.NewFromEnv()
+		mailer := email.NewCaptainReportFromEnv()
 		body := "Open this secure link to complete the captain report:\n\n" +
 			link + "\n\n" +
 			"This link expires automatically."
@@ -890,7 +890,7 @@ func (s *Server) handleCaptainDelegateInvite() http.HandlerFunc {
 		}
 		tokenID := s.magicTokenIDForPlaintext(ctx, token)
 
-		mailer := email.NewFromEnv()
+		mailer := email.NewCaptainReportFromEnv()
 		link := magicLinkEmailBlock(r, token)
 		body := "You have been invited as a stand-in captain for this match week.\n\n" +
 			"Open this secure link to complete the captain report:\n" + link + "\n\n" +
@@ -1236,7 +1236,7 @@ func (s *Server) handleCaptainSubmit() http.HandlerFunc {
 				}
 			}
 			if strings.TrimSpace(recipientEmail) != "" {
-				mailer := email.NewFromEnv()
+				mailer := email.NewCaptainReportFromEnv()
 				umpire1Label := umpire1
 				if umpire1Type == "club" {
 					umpire1Label += " (club)"

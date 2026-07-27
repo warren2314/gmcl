@@ -32,6 +32,34 @@ func TestMessageHeadersRejectInvalidReplyTo(t *testing.T) {
 	}
 }
 
+func TestCaptainReportClientUsesReportsMailbox(t *testing.T) {
+	t.Setenv("SMTP_REPLY_TO", "joep@gtrmcrcricket.co.uk")
+	t.Setenv("CAPTAIN_REPORT_REPLY_TO", "")
+
+	headers, err := NewCaptainReportFromEnv().messageHeaders("captain@example.com", "Captain report reminder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(headers, "Reply-To: <reports@gtrmcrcricket.co.uk>\r\n") {
+		t.Fatalf("captain report reply-to missing: %s", headers)
+	}
+	if strings.Contains(headers, "joep@gtrmcrcricket.co.uk") {
+		t.Fatalf("captain report inherited the general reply-to: %s", headers)
+	}
+}
+
+func TestCaptainReportClientAllowsDedicatedReplyToOverride(t *testing.T) {
+	t.Setenv("CAPTAIN_REPORT_REPLY_TO", "GMCL Reports <captain-replies@example.com>")
+
+	headers, err := NewCaptainReportFromEnv().messageHeaders("captain@example.com", "Captain report reminder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(headers, "Reply-To: \"GMCL Reports\" <captain-replies@example.com>\r\n") {
+		t.Fatalf("dedicated captain report reply-to missing: %s", headers)
+	}
+}
+
 func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 	html := toHTML("Primary:\nBUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=abc\nBackup:\nBACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=abc\nACCESS_URL:https://gmcl.co.uk/access\nACCESS_CODE:abc")
 

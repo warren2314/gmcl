@@ -26,6 +26,8 @@ type Client struct {
 	configSet  string
 }
 
+const defaultCaptainReportReplyTo = "reports@gtrmcrcricket.co.uk"
+
 func NewFromEnv() *Client {
 	fromHeader := getEnv("SMTP_FROM", "webmaster@gmcl.co.uk")
 	fromAddr := fromHeader
@@ -49,6 +51,19 @@ func NewFromEnv() *Client {
 		heloDomain: heloDomain,
 		configSet:  strings.TrimSpace(os.Getenv("SES_CONFIGURATION_SET")),
 	}
+}
+
+// NewCaptainReportFromEnv returns the SMTP client used by captain-report
+// messages. Captain replies must go to the reports mailbox even when the
+// general transactional reply-to address is configured for another workflow.
+func NewCaptainReportFromEnv() *Client {
+	client := NewFromEnv()
+	replyTo := strings.TrimSpace(os.Getenv("CAPTAIN_REPORT_REPLY_TO"))
+	if replyTo == "" {
+		replyTo = defaultCaptainReportReplyTo
+	}
+	client.replyTo = replyTo
+	return client
 }
 
 func (c *Client) Send(to, subject, body string) error {

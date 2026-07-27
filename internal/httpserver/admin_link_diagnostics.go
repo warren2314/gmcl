@@ -734,7 +734,7 @@ func (s *Server) sendFreshCaptainAccessLink(ctx context.Context, r *http.Request
 		"Here is a fresh secure link for your GMCL captain report:\n\n" +
 		link + "\n\n" +
 		"Please use this latest email and ignore any older links. This link expires automatically."
-	if err := email.NewFromEnv().Send(captainEmail, "GMCL Captain's Report - Fresh Access Link", body); err != nil {
+	if err := email.NewCaptainReportFromEnv().Send(captainEmail, "GMCL Captain's Report - Fresh Access Link", body); err != nil {
 		return captainEmail, fmt.Errorf("could not send fresh link to %s: %w", captainEmail, err)
 	}
 	return captainEmail, nil

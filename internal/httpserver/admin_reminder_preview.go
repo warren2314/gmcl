@@ -412,7 +412,7 @@ func (s *Server) handleAdminReminderSendDate() http.HandlerFunc {
 			auditAction = "admin_send_fresh_missing_reminders"
 		}
 
-		sent, skipped, err := s.sendRemindersForDate(r, ctx, email.NewFromEnv(), matchDate, reminderType)
+		sent, skipped, err := s.sendRemindersForDate(r, ctx, email.NewCaptainReportFromEnv(), matchDate, reminderType)
 		redirect := fmt.Sprintf("/admin/reminders/preview?date=%s&sent=%d&skipped=%d", url.QueryEscape(dateStr), sent, skipped)
 		if err != nil {
 			http.Redirect(w, r, redirect+"&error="+url.QueryEscape("Some reminders failed: "+err.Error()), http.StatusSeeOther)
@@ -449,7 +449,7 @@ func (s *Server) handleAdminReminderSendTeam() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		emailAddr, err := s.sendReminderForTeamDate(r, ctx, email.NewFromEnv(), int32(teamID), matchDate, "game_day")
+		emailAddr, err := s.sendReminderForTeamDate(r, ctx, email.NewCaptainReportFromEnv(), int32(teamID), matchDate, "game_day")
 		redirect := "/admin/reminders/preview?date=" + url.QueryEscape(dateStr)
 		if err != nil {
 			http.Redirect(w, r, redirect+"&error="+url.QueryEscape(err.Error()), http.StatusSeeOther)

@@ -92,7 +92,7 @@ func (s *Server) handleInternalSendReminders() http.HandlerFunc {
 		sendCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		mailer := email.NewFromEnv()
+		mailer := email.NewCaptainReportFromEnv()
 		sat, sun := mostRecentWeekendDates(time.Now(), s.LondonLoc)
 
 		var matchDates []time.Time
@@ -1042,7 +1042,7 @@ func (s *Server) handleInternalPreviewEmail() http.HandlerFunc {
 		}
 
 		if req.SendTo != "" {
-			mailer := email.NewFromEnv()
+			mailer := email.NewCaptainReportFromEnv()
 			if err := mailer.Send(req.SendTo, subject, body); err != nil {
 				http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
 				return
