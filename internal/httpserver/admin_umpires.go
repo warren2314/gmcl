@@ -265,6 +265,76 @@ var umpireVariantToCanonical = map[string]string{
 	"abdul hak motala":        "abdul motala",
 }
 
+const premierPanelMatchPredicateSQL = `(
+	(EXTRACT(ISODOW FROM sub.match_date) = 6 AND LOWER(COALESCE(lf.payload->>'competition_name', '')) IN (
+		'gmcl saturday premier',
+		'gmcl saturday premier 2',
+		'gmcl saturday championship',
+		'gmcl saturday division 1'
+	))
+	OR
+	(EXTRACT(ISODOW FROM sub.match_date) = 7 AND (
+		LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%derek kay%'
+		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%championship cup%'
+		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%john barrow%'
+	))
+)`
+
+const (
+	umpireMatchScopeAll          = ""
+	umpireMatchScopePremierPanel = "m3"
+	umpireMatchScopeOther        = "other"
+)
+
+func normalizeUmpireMatchScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case umpireMatchScopePremierPanel:
+		return umpireMatchScopePremierPanel
+	case umpireMatchScopeOther:
+		return umpireMatchScopeOther
+	default:
+		return umpireMatchScopeAll
+	}
+}
+
+func umpireMatchScopeFilterSQL(scope, column string) string {
+	switch normalizeUmpireMatchScope(scope) {
+	case umpireMatchScopePremierPanel:
+		return "AND " + column
+	case umpireMatchScopeOther:
+		return "AND NOT " + column
+	default:
+		return ""
+	}
+}
+
+func umpireCanonicalKey(name string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if canonical, ok := umpireVariantToCanonical[key]; ok {
+		return canonical
+	}
+	return key
+}
+
+// umpireEquivalentKeys returns every known stored spelling for one umpire.
+// Ranking rows merge these variants, so click-through pages must query the same
+// set or their rating and comment counts will disagree with the ranking table.
+func umpireEquivalentKeys(name string) []string {
+	canonical := umpireCanonicalKey(name)
+	keys := map[string]struct{}{canonical: {}}
+	for variant, mapped := range umpireVariantToCanonical {
+		if mapped == canonical {
+			keys[variant] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // mergeUmpireVariants combines rows where one name is a known variant of another,
 // summing their stats and using the canonical display name.
 func mergeUmpireVariants(rows []reportUmpire) []reportUmpire {
@@ -362,6 +432,10 @@ const excludeInvalidUmpireSQL = "AND NOT (key ILIKE '%unknown%' OR key ILIKE '%u
 // keyFilterSQL is embedded verbatim in the ratings CTE WHERE clauses (both UNION parts);
 // build it with umpireIncludeSQL / umpireExcludeSQL / the invalid constants above.
 func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string, keyFilterSQL string) []reportUmpire {
+	return s.loadUmpireRankingsForScope(ctx, whereSQL, args, minRatings, umpireType, keyFilterSQL, umpireMatchScopeAll)
+}
+
+func (s *Server) loadUmpireRankingsForScope(ctx context.Context, whereSQL string, args []any, minRatings int64, umpireType string, keyFilterSQL, matchScope string) []reportUmpire {
 	if minRatings < 1 {
 		minRatings = 1
 	}
@@ -400,9 +474,11 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		        CASE WHEN sub.form_data->>'player_management_umpire2'~ '^[1-5]$' THEN (sub.form_data->>'player_management_umpire2')::int ELSE NULL END AS u2_pm,
 		        CASE WHEN sub.form_data->>'presence_image_umpire2'   ~ '^[1-5]$' THEN (sub.form_data->>'presence_image_umpire2')::int   ELSE NULL END AS u2_pi,
 		        CASE WHEN sub.form_data->>'teamwork_umpire2'          ~ '^[1-5]$' THEN (sub.form_data->>'teamwork_umpire2')::int          ELSE NULL END AS u2_tw,
-		        COALESCE(sub.form_data->>'umpire_comments','') AS comment
+		        COALESCE(sub.form_data->>'umpire_comments','') AS comment,
+		        %s AS is_premier_panel_game
 		    FROM submissions sub
 		    JOIN weeks w ON w.id=sub.week_id
+		    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
 		    WHERE %s
 		    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 		),
@@ -412,6 +488,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		           u1perf              AS perf,
 		           u1type              AS umpire_type,
 		           comment,
+		           is_premier_panel_game,
 		           CASE WHEN u1_dm IS NOT NULL AND u1_mm IS NOT NULL AND u1_pm IS NOT NULL AND u1_pi IS NOT NULL AND u1_tw IS NOT NULL
 		                THEN (u1_dm + u1_mm + u1_pm + u1_pi + u1_tw) ELSE NULL END AS total_score
 		    FROM deduped
@@ -425,6 +502,7 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		           u2perf,
 		           u2type,
 		           comment,
+		           is_premier_panel_game,
 		           CASE WHEN u2_dm IS NOT NULL AND u2_mm IS NOT NULL AND u2_pm IS NOT NULL AND u2_pi IS NOT NULL AND u2_tw IS NOT NULL
 		                THEN (u2_dm + u2_mm + u2_pm + u2_pi + u2_tw) ELSE NULL END
 		    FROM deduped
@@ -449,14 +527,15 @@ func (s *Server) loadUmpireRankings(ctx context.Context, whereSQL string, args [
 		        COUNT(*) FILTER (WHERE comment <> '')        AS comment_count,
 		        ROUND(AVG(total_score), 1)                   AS avg_score_25
 		    FROM ratings
-		    WHERE TRUE %s
+		    WHERE TRUE %s %s
 		    GROUP BY key
 		    HAVING COUNT(*) >= $%d
 		)
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count, COALESCE(avg_score_25,0)
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, whereSQL, u1TypeWhere, u2TypeWhere, keyFilterSQL, minParam), qargs...)
+	`, premierPanelMatchPredicateSQL, whereSQL, u1TypeWhere, u2TypeWhere, keyFilterSQL,
+		umpireMatchScopeFilterSQL(matchScope, "is_premier_panel_game"), minParam), qargs...)
 	if err != nil {
 		return nil
 	}
@@ -525,12 +604,15 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 
 		// Load all five groups — all use name matching, no umpire_type column filtering,
 		// because captains often mark panel umpires as "club" in the form.
-		var premier, reserves, panel, club, noNames []reportUmpire
+		var premier, premierOther, reserves, panel, club, noNames []reportUmpire
 		if seasonID > 0 {
 			where := "sub.season_id=$1"
 			args := []any{seasonID}
 			// Load each section, then merge rows that are spelling variants of the same person.
-			premier = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(premierUmpireKeys)))
+			premier = mergeUmpireVariants(s.loadUmpireRankingsForScope(ctx, where, args, 1, "",
+				umpireIncludeSQL(premierUmpireKeys), umpireMatchScopePremierPanel))
+			premierOther = mergeUmpireVariants(s.loadUmpireRankingsForScope(ctx, where, args, 1, "",
+				umpireIncludeSQL(premierUmpireKeys), umpireMatchScopeOther))
 			reserves = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, 1, "", umpireIncludeSQL(reserveUmpireKeys)))
 			panel = mergeUmpireVariants(s.loadUmpireRankings(ctx, where, args, int64(minRatings), "",
 				umpireIncludeSQL(allPanelUmpireKeys)+" "+umpireExcludeSQL(allNamedKeys)))
@@ -572,7 +654,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 <div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
   <div>
     <h4 class="mb-0 fw-bold">Umpire Rankings</h4>
-    <p class="text-muted mb-0 small">Performance ratings from captain reports &mdash; panel min %d ratings</p>
+    <p class="text-muted mb-0 small">Performance ratings from captain reports &mdash; Premier Panel rankings use M3 games only; panel min %d ratings</p>
   </div>
   <div class="d-flex gap-2 align-items-center flex-wrap">
     <input type="search" id="umpireSearch" class="form-control form-control-sm" style="min-width:220px"
@@ -600,7 +682,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   <div class="col-6 col-md-3">
     <div class="card card-kpi kpi-blue text-center p-3">
       <div class="kpi-number">%d</div>
-      <div class="kpi-label">Premier Umpires</div>
+      <div class="kpi-label">Premier Panel (M3)</div>
     </div>
   </div>
   <div class="col-6 col-md-3">
@@ -629,13 +711,13 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 <div class="row g-3 mb-4">
   <div class="col-12 col-xl-7">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Premier Umpires — Score (1.0–3.0)</div>
+      <div class="card-header fw-semibold">Premier Panel M3 Games — Score (1.0–3.0)</div>
       <div class="card-body"><div class="chart-container-lg"><canvas id="chartUmpireScore"></canvas></div></div>
     </div>
   </div>
   <div class="col-12 col-xl-5">
     <div class="card shadow-sm">
-      <div class="card-header fw-semibold">Premier Umpires — Good Rating %</div>
+      <div class="card-header fw-semibold">Premier Panel M3 Games — Good Rating %</div>
       <div class="card-body"><div class="chart-container-lg"><canvas id="chartUmpireGood"></canvas></div></div>
     </div>
   </div>
@@ -643,7 +725,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 `)
 
 		// renderUmpireRows writes table rows for a slice into the current response writer.
-		renderUmpireRows := func(umpires []reportUmpire, cat string, emptyMsg string) {
+		renderUmpireRows := func(umpires []reportUmpire, cat, matchScope, emptyMsg string) {
 			for i, u := range umpires {
 				scoreClass := "text-success"
 				if u.Score < 2.0 {
@@ -668,6 +750,11 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 				}
 				commentURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/comments?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(cat)
 				scoresURL := "/admin/umpires/" + url.PathEscape(u.Name) + "/scores?season_id=" + strconv.Itoa(int(seasonID)) + "&category=" + url.QueryEscape(cat)
+				if matchScope != "" {
+					scopeQuery := "&scope=" + url.QueryEscape(matchScope)
+					commentURL += scopeQuery
+					scoresURL += scopeQuery
+				}
 				commentBtn := fmt.Sprintf(`<a href="%s" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem">Comments</a>`, commentURL)
 				if u.CommentCount > 0 {
 					commentBtn = fmt.Sprintf(`<a href="%s" class="btn btn-warning btn-sm py-0 px-2 fw-semibold" style="font-size:.75rem">%d comment(s)</a>`, commentURL, u.CommentCount)
@@ -701,7 +788,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 		}
 
 		// renderSection writes a full card for one umpire group.
-		renderSection := func(title, bodyID, badgeClass, cat, emptyMsg string, umpires []reportUmpire, note string) {
+		renderSection := func(title, bodyID, badgeClass, cat, matchScope, emptyMsg string, umpires []reportUmpire, note string) {
 			fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header d-flex align-items-center gap-2 py-2">
@@ -720,22 +807,26 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
         <th>Score</th><th title="Average total score out of 25 per game">Avg/25</th><th>Bar</th><th></th>
       </tr></thead>
       <tbody id="%s">`, bodyID)
-			renderUmpireRows(umpires, cat, emptyMsg)
+			renderUmpireRows(umpires, cat, matchScope, emptyMsg)
 			fmt.Fprint(w, `      </tbody>
     </table>
   </div>
 </div>`)
 		}
 
-		renderSection("Premier Umpires", "premierBody", "bg-primary", "panel",
-			"No Premier Umpires rated this season.", premier, "")
-		renderSection("Reserves", "reserveBody", "bg-secondary", "panel",
+		renderSection("Premier Panel Umpires — M3 Games", "premierBody", "bg-primary", "panel", umpireMatchScopePremierPanel,
+			"No Premier Panel Umpires rated in M3 games this season.", premier,
+			"Included: Saturday Premier 1, Premier 2, Championship and Division 1; Sunday Derek Kay Cup, Championship Cup and John Barrow 1st XI Trophy.")
+		renderSection("Premier Panel Umpires — Other Games (excluded from M3 rankings)", "premierOtherBody", "bg-light text-dark", "panel", umpireMatchScopeOther,
+			"No other-game ratings recorded for Premier Panel Umpires this season.", premierOther,
+			"Shown separately for reference. These ratings do not affect the Premier Panel M3 tables or charts above.")
+		renderSection("Reserves", "reserveBody", "bg-secondary", "panel", umpireMatchScopeAll,
 			"No Reserves rated this season.", reserves, "")
-		renderSection("Panel Umpires", "panelBody", "bg-success", "panel",
+		renderSection("Panel Umpires", "panelBody", "bg-success", "panel", umpireMatchScopeAll,
 			"No other panel umpires rated this season.", panel, "")
-		renderSection("Club Umpires", "clubBody", "bg-warning text-dark", "club",
+		renderSection("Club Umpires", "clubBody", "bg-warning text-dark", "club", umpireMatchScopeAll,
 			"No club umpires rated this season.", club, "")
-		renderSection("No Names", "noNamesBody", "bg-danger", "panel",
+		renderSection("No Names", "noNamesBody", "bg-danger", "panel", umpireMatchScopeAll,
 			"No unidentified names found.", noNames,
 			"Panel submissions where no real umpire name was recorded (Unknown, Not listed, etc.)")
 
@@ -771,7 +862,7 @@ new Chart(document.getElementById('chartUmpireGood'), {
 		script += `
 function filterAllUmpires(q) {
   q = q.toLowerCase();
-  ['premierBody','reserveBody','panelBody','clubBody','noNamesBody'].forEach(function(id) {
+  ['premierBody','premierOtherBody','reserveBody','panelBody','clubBody','noNamesBody'].forEach(function(id) {
     var tbody = document.getElementById(id);
     if (!tbody) return;
     var visible = 0;
@@ -815,6 +906,14 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 		if category == "club" {
 			categoryTitle = "Club Umpire"
 		}
+		matchScope := normalizeUmpireMatchScope(r.URL.Query().Get("scope"))
+		switch matchScope {
+		case umpireMatchScopePremierPanel:
+			categoryTitle = "Premier Panel Umpire — M3 games only"
+		case umpireMatchScopeOther:
+			categoryTitle = "Premier Panel Umpire — other games (excluded from M3 rankings)"
+		}
+		umpireKeys := umpireEquivalentKeys(umpireName)
 
 		var seasonID int32
 		var seasonName string
@@ -831,39 +930,43 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 		}
 
 		type commentRow struct {
-			SubID     int64
-			MatchDate time.Time
-			Club      string
-			Comment   string
+			SubID       int64
+			MatchDate   time.Time
+			Club        string
+			Competition string
+			Comment     string
 		}
 		var comments []commentRow
 
-		crows, err := s.DB.Query(ctx, `
+		crows, err := s.DB.Query(ctx, fmt.Sprintf(`
 			WITH latest AS (
-			    SELECT DISTINCT ON (team_id, match_date)
-			        id, team_id, match_date,
-			        COALESCE(form_data->>'umpire_comments','') AS comment,
-			        lower(trim(form_data->>'umpire1_name'))    AS u1,
-			        COALESCE(NULLIF(umpire1_type, ''), NULLIF(form_data->>'umpire1_type', ''), 'panel') AS u1type,
-			        lower(trim(form_data->>'umpire2_name'))    AS u2,
-			        COALESCE(NULLIF(umpire2_type, ''), NULLIF(form_data->>'umpire2_type', ''), 'panel') AS u2type
-			    FROM submissions
-			    WHERE season_id = $1
-			    ORDER BY team_id, match_date, submitted_at DESC
+			    SELECT DISTINCT ON (sub.team_id, sub.match_date)
+			        sub.id, sub.team_id, sub.match_date,
+			        COALESCE(lf.payload->>'competition_name','') AS competition,
+			        COALESCE(sub.form_data->>'umpire_comments','') AS comment,
+			        lower(trim(sub.form_data->>'umpire1_name'))    AS u1,
+			        lower(trim(sub.form_data->>'umpire2_name'))    AS u2,
+			        %s AS is_premier_panel_game
+			    FROM submissions sub
+			    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
+			    WHERE sub.season_id = $1
+			    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 			)
-			SELECT l.id, l.match_date, cl.name, l.comment
+			SELECT l.id, l.match_date, cl.name, l.competition, l.comment
 			FROM latest l
 			JOIN teams t  ON t.id  = l.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE ((l.u1 = lower($2) AND l.u1type = $3) OR (l.u2 = lower($2) AND l.u2type = $3))
+			WHERE (l.u1 = ANY($2::text[]) OR l.u2 = ANY($2::text[]))
 			  AND l.comment <> ''
+			  %s
 			ORDER BY l.match_date DESC
-		`, seasonID, umpireName, category)
+		`, premierPanelMatchPredicateSQL, umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
+			seasonID, umpireKeys)
 		if err == nil {
 			defer crows.Close()
 			for crows.Next() {
 				var c commentRow
-				if e := crows.Scan(&c.SubID, &c.MatchDate, &c.Club, &c.Comment); e == nil {
+				if e := crows.Scan(&c.SubID, &c.MatchDate, &c.Club, &c.Competition, &c.Comment); e == nil {
 					comments = append(comments, c)
 				}
 			}
@@ -899,11 +1002,11 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
   <div class="card-body">
     <div class="d-flex justify-content-between align-items-start mb-2">
       <span class="fw-semibold">%s</span>
-      <span class="text-muted small">%s &mdash; <a href="/admin/submissions/%d">#%d</a></span>
+      <span class="text-muted small">%s &mdash; %s &mdash; <a href="/admin/submissions/%d">#%d</a></span>
     </div>
     <p class="mb-0">%s</p>
   </div>
-</div>`, escapeHTML(c.Club), c.MatchDate.Format("2 Jan 2006"), c.SubID, c.SubID, escapeHTML(c.Comment))
+</div>`, escapeHTML(c.Club), c.MatchDate.Format("2 Jan 2006"), escapeHTML(c.Competition), c.SubID, c.SubID, escapeHTML(c.Comment))
 			}
 		}
 		fmt.Fprint(w, `</div>`)
@@ -930,6 +1033,14 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 		if category == "club" {
 			categoryTitle = "Club Umpire"
 		}
+		matchScope := normalizeUmpireMatchScope(r.URL.Query().Get("scope"))
+		switch matchScope {
+		case umpireMatchScopePremierPanel:
+			categoryTitle = "Premier Panel Umpire — M3 games only"
+		case umpireMatchScopeOther:
+			categoryTitle = "Premier Panel Umpire — other games (excluded from M3 rankings)"
+		}
+		umpireKeys := umpireEquivalentKeys(umpireName)
 
 		var seasonID int32
 		var seasonName string
@@ -946,27 +1057,28 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 		}
 
 		type scoreRow struct {
-			SubID int64
-			Date  time.Time
-			Club  string
-			Perf  string
-			DM    *int32
-			MM    *int32
-			PM    *int32
-			PI    *int32
-			TW    *int32
+			SubID       int64
+			Date        time.Time
+			Club        string
+			Competition string
+			Perf        string
+			DM          *int32
+			MM          *int32
+			PM          *int32
+			PI          *int32
+			TW          *int32
 		}
 
 		var rows []scoreRow
-		dbRows, err := s.DB.Query(ctx, `
+		dbRows, err := s.DB.Query(ctx, fmt.Sprintf(`
 			WITH latest AS (
 			    SELECT DISTINCT ON (sub.team_id, sub.match_date)
 			        sub.id,
 			        sub.team_id,
 			        sub.match_date,
+			        COALESCE(lf.payload->>'competition_name','') AS competition,
 			        lower(trim(sub.form_data->>'umpire1_name')) AS u1,
 			        sub.form_data->>'umpire1_performance'       AS u1perf,
-			        COALESCE(NULLIF(sub.umpire1_type,''), NULLIF(sub.form_data->>'umpire1_type',''), 'panel') AS u1type,
 			        CASE WHEN sub.form_data->>'decision_making_umpire1'  ~ '^[1-5]$' THEN (sub.form_data->>'decision_making_umpire1')::int  END AS u1_dm,
 			        CASE WHEN sub.form_data->>'match_management_umpire1' ~ '^[1-5]$' THEN (sub.form_data->>'match_management_umpire1')::int END AS u1_mm,
 			        CASE WHEN sub.form_data->>'player_management_umpire1'~ '^[1-5]$' THEN (sub.form_data->>'player_management_umpire1')::int END AS u1_pm,
@@ -974,13 +1086,14 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			        CASE WHEN sub.form_data->>'teamwork_umpire1'          ~ '^[1-5]$' THEN (sub.form_data->>'teamwork_umpire1')::int          END AS u1_tw,
 			        lower(trim(sub.form_data->>'umpire2_name')) AS u2,
 			        sub.form_data->>'umpire2_performance'       AS u2perf,
-			        COALESCE(NULLIF(sub.umpire2_type,''), NULLIF(sub.form_data->>'umpire2_type',''), 'panel') AS u2type,
 			        CASE WHEN sub.form_data->>'decision_making_umpire2'  ~ '^[1-5]$' THEN (sub.form_data->>'decision_making_umpire2')::int  END AS u2_dm,
 			        CASE WHEN sub.form_data->>'match_management_umpire2' ~ '^[1-5]$' THEN (sub.form_data->>'match_management_umpire2')::int END AS u2_mm,
 			        CASE WHEN sub.form_data->>'player_management_umpire2'~ '^[1-5]$' THEN (sub.form_data->>'player_management_umpire2')::int END AS u2_pm,
 			        CASE WHEN sub.form_data->>'presence_image_umpire2'   ~ '^[1-5]$' THEN (sub.form_data->>'presence_image_umpire2')::int   END AS u2_pi,
-			        CASE WHEN sub.form_data->>'teamwork_umpire2'          ~ '^[1-5]$' THEN (sub.form_data->>'teamwork_umpire2')::int          END AS u2_tw
+			        CASE WHEN sub.form_data->>'teamwork_umpire2'          ~ '^[1-5]$' THEN (sub.form_data->>'teamwork_umpire2')::int          END AS u2_tw,
+			        %s AS is_premier_panel_game
 			    FROM submissions sub
+			    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
 			    WHERE sub.season_id = $1
 			    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 			)
@@ -988,23 +1101,26 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			    l.id,
 			    l.match_date,
 			    cl.name AS club,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1perf ELSE l.u2perf END AS perf,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1_dm ELSE l.u2_dm END AS dm,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1_mm ELSE l.u2_mm END AS mm,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1_pm ELSE l.u2_pm END AS pm,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1_pi ELSE l.u2_pi END AS pi,
-			    CASE WHEN l.u1 = lower($2) AND l.u1type = $3 THEN l.u1_tw ELSE l.u2_tw END AS tw
+			    l.competition,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1perf ELSE l.u2perf END AS perf,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1_dm ELSE l.u2_dm END AS dm,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1_mm ELSE l.u2_mm END AS mm,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1_pm ELSE l.u2_pm END AS pm,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1_pi ELSE l.u2_pi END AS pi,
+			    CASE WHEN l.u1 = ANY($2::text[]) THEN l.u1_tw ELSE l.u2_tw END AS tw
 			FROM latest l
 			JOIN teams t  ON t.id  = l.team_id
 			JOIN clubs cl ON cl.id = t.club_id
-			WHERE (l.u1 = lower($2) AND l.u1type = $3) OR (l.u2 = lower($2) AND l.u2type = $3)
+			WHERE (l.u1 = ANY($2::text[]) OR l.u2 = ANY($2::text[]))
+			  %s
 			ORDER BY l.match_date DESC
-		`, seasonID, umpireName, category)
+		`, premierPanelMatchPredicateSQL, umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
+			seasonID, umpireKeys)
 		if err == nil {
 			defer dbRows.Close()
 			for dbRows.Next() {
 				var row scoreRow
-				if e := dbRows.Scan(&row.SubID, &row.Date, &row.Club, &row.Perf,
+				if e := dbRows.Scan(&row.SubID, &row.Date, &row.Club, &row.Competition, &row.Perf,
 					&row.DM, &row.MM, &row.PM, &row.PI, &row.TW); e == nil {
 					rows = append(rows, row)
 				}
@@ -1113,7 +1229,7 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
   <div class="table-responsive">
     <table class="table table-hover table-gmcl mb-0">
       <thead><tr>
-        <th>Date</th><th>Club</th>
+        <th>Date</th><th>Club</th><th>Competition</th>
         <th title="Decision Making">Dec. Making</th>
         <th title="Match Management">Match Mgmt</th>
         <th title="Player Management">Player Mgmt</th>
@@ -1134,6 +1250,10 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 				perfBadge = `<span class="badge bg-warning text-dark">Average</span>`
 			case "Poor":
 				perfBadge = `<span class="badge bg-danger">Poor</span>`
+			}
+			competitionCell := `<span class="text-muted">Unclassified fixture</span>`
+			if strings.TrimSpace(row.Competition) != "" {
+				competitionCell = escapeHTML(row.Competition)
 			}
 			scoreCell := func(v *int32) string {
 				if v == nil {
@@ -1161,6 +1281,7 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			fmt.Fprintf(w, `<tr>
   <td>%s</td>
   <td>%s</td>
+  <td>%s</td>
   %s%s%s%s%s
   %s
   <td>%s</td>
@@ -1168,6 +1289,7 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 </tr>`,
 				row.Date.Format("2 Jan 2006"),
 				escapeHTML(row.Club),
+				competitionCell,
 				scoreCell(row.DM), scoreCell(row.MM), scoreCell(row.PM), scoreCell(row.PI), scoreCell(row.TW),
 				totalCell,
 				perfBadge,
@@ -1175,7 +1297,7 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 		}
 
 		if len(rows) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="10" class="text-center text-muted py-3">No ratings found for this umpire this season.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="11" class="text-center text-muted py-3">No ratings found for this umpire this season.</td></tr>`)
 		}
 
 		fmt.Fprint(w, `      </tbody>
