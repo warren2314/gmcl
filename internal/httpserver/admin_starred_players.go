@@ -893,7 +893,17 @@ func starredClubDataMatchKey(clubName string) string {
 	if comma := strings.Index(clubName, ","); comma >= 0 {
 		clubName = clubName[:comma]
 	}
-	for _, suffix := range []string{" cricket club", " c & sc", " c&sc", " c.c.", " cc"} {
+	for _, suffix := range []string{
+		" cricket & social club",
+		" cricket and social club",
+		" cricket & sports club",
+		" cricket and sports club",
+		" cricket club",
+		" c & sc",
+		" c&sc",
+		" c.c.",
+		" cc",
+	} {
 		clubName = strings.TrimSpace(strings.TrimSuffix(clubName, suffix))
 	}
 	return starred.NormalizeName(clubName)

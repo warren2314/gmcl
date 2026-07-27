@@ -46,18 +46,24 @@ func TestBuildStarredPlayerReviewRowsCountsAutomaticallyLinkedClubScorecards(t *
 	cutoff := time.Date(2026, 7, 27, 23, 59, 59, 0, time.UTC)
 	periods := []starred.Period{
 		{ClubName: "Flixton C&SC", ClubKey: "flixtoncandsc", ListType: "A", PlayerName: "James Lupton", PlayerKey: "jameslupton", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Micklehurst C&SC", ClubKey: "micklehurstcandsc", ListType: "A", PlayerName: "Tim Wood", PlayerKey: "timwood", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
 		{ClubName: "Swinton Moorside CC", ClubKey: "swintonmoorside", ListType: "A", PlayerName: "Alfie Harvey", PlayerKey: "alfieharvey", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ClubName: "Westleigh CC", ClubKey: "westleigh", ListType: "A", PlayerName: "Ethan Welch", PlayerKey: "ethanwelch", ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	appearances := []starred.Appearance{
 		{MatchID: 1, MatchDate: cutoff, ClubName: "Flixton CC", ClubKey: "flixton", TeamLevel: 1, PlayerName: "James Lupton", PlayerKey: "jameslupton"},
-		{MatchID: 2, MatchDate: cutoff, ClubName: "Swinton Moorside CC, Salford", ClubKey: "swintonmoorsidesalford", TeamLevel: 1, PlayerName: "Alfie Harvey", PlayerKey: "alfieharvey"},
+		{MatchID: 2, MatchDate: cutoff, ClubName: "Micklehurst Cricket & Social Club", ClubKey: "micklehurstcricketsocialclub", TeamLevel: 1, PlayerName: "Tim Wood", PlayerKey: "timwood"},
+		{MatchID: 3, MatchDate: cutoff, ClubName: "Swinton Moorside CC, Salford", ClubKey: "swintonmoorsidesalford", TeamLevel: 1, PlayerName: "Alfie Harvey", PlayerKey: "alfieharvey"},
+		{MatchID: 4, MatchDate: cutoff, ClubName: "Westleigh CC, Leigh", ClubKey: "westleighleigh", TeamLevel: 1, PlayerName: "Ethan Welch", PlayerKey: "ethanwelch"},
 	}
 	clubNames := activeStarredClubNames(periods, cutoff)
 	appearances = remapStarredAppearanceClubs(appearances, nil, clubNames)
 	rows := buildStarredPlayerReviewRows(periods, appearances, nil, cutoff, map[string]string{
-		"flixtoncandsc":   "Championship",
-		"swintonmoorside": "Championship",
-	}, []string{"Championship"}, "", 50, 25)
+		"flixtoncandsc":     "Championship",
+		"micklehurstcandsc": "division 5 east",
+		"swintonmoorside":   "Championship",
+		"westleigh":         "Division 1",
+	}, []string{"Championship", "division 5 east", "Division 1"}, "", 50, 25)
 
 	byPlayer := make(map[string]starredPlayerReviewRow)
 	for _, row := range rows {
@@ -66,8 +72,14 @@ func TestBuildStarredPlayerReviewRowsCountsAutomaticallyLinkedClubScorecards(t *
 	if byPlayer["James Lupton"].Total != 1 || byPlayer["James Lupton"].ClubKey != "flixtoncandsc" {
 		t.Fatalf("Flixton scorecard was not counted: %#v", byPlayer["James Lupton"])
 	}
+	if byPlayer["Tim Wood"].Total != 1 || byPlayer["Tim Wood"].ClubKey != "micklehurstcandsc" {
+		t.Fatalf("Micklehurst scorecard was not counted: %#v", byPlayer["Tim Wood"])
+	}
 	if byPlayer["Alfie Harvey"].Total != 1 || byPlayer["Alfie Harvey"].ClubKey != "swintonmoorside" {
 		t.Fatalf("Swinton scorecard was not counted: %#v", byPlayer["Alfie Harvey"])
+	}
+	if byPlayer["Ethan Welch"].Total != 1 || byPlayer["Ethan Welch"].ClubKey != "westleigh" {
+		t.Fatalf("Westleigh scorecard was not counted: %#v", byPlayer["Ethan Welch"])
 	}
 }
 

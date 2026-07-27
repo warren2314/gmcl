@@ -156,19 +156,29 @@ func TestRemapStarredAppearanceClubsLinksImportedGamesToPublishedClub(t *testing
 func TestRemapStarredAppearanceClubsAutomaticallyLinksEquivalentClubNames(t *testing.T) {
 	appearances := []starred.Appearance{
 		{ClubKey: "flixton", ClubName: "Flixton CC", PlayerName: "James Lupton"},
+		{ClubKey: "micklehurstcricketsocialclub", ClubName: "Micklehurst Cricket & Social Club", PlayerName: "Tim Wood"},
 		{ClubKey: "swintonmoorsidesalford", ClubName: "Swinton Moorside CC, Salford", PlayerName: "Alfie Harvey"},
+		{ClubKey: "westleighleigh", ClubName: "Westleigh CC, Leigh", PlayerName: "Ethan Welch"},
 	}
 	publishedClubNames := map[string]string{
-		"flixtoncandsc":   "Flixton C&SC",
-		"swintonmoorside": "Swinton Moorside CC",
+		"flixtoncandsc":     "Flixton C&SC",
+		"micklehurstcandsc": "Micklehurst C&SC",
+		"swintonmoorside":   "Swinton Moorside CC",
+		"westleigh":         "Westleigh CC",
 	}
 
 	got := remapStarredAppearanceClubs(appearances, nil, publishedClubNames)
 	if got[0].ClubKey != "flixtoncandsc" || got[0].ClubName != "Flixton C&SC" {
 		t.Fatalf("Flixton appearance was not automatically linked: %#v", got[0])
 	}
-	if got[1].ClubKey != "swintonmoorside" || got[1].ClubName != "Swinton Moorside CC" {
-		t.Fatalf("Swinton appearance was not automatically linked: %#v", got[1])
+	if got[1].ClubKey != "micklehurstcandsc" || got[1].ClubName != "Micklehurst C&SC" {
+		t.Fatalf("Micklehurst appearance was not automatically linked: %#v", got[1])
+	}
+	if got[2].ClubKey != "swintonmoorside" || got[2].ClubName != "Swinton Moorside CC" {
+		t.Fatalf("Swinton appearance was not automatically linked: %#v", got[2])
+	}
+	if got[3].ClubKey != "westleigh" || got[3].ClubName != "Westleigh CC" {
+		t.Fatalf("Westleigh appearance was not automatically linked: %#v", got[3])
 	}
 }
 
