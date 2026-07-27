@@ -110,6 +110,12 @@ func (s *Server) handleAdminPortalCaseGet() http.HandlerFunc {
 			http.Error(w, "case not found", http.StatusNotFound)
 			return
 		}
+		assignees, err := s.PortalStore.ListAdminCaseAssignees(ctx)
+		if err != nil {
+			slog.Error("list portal case assignees", "error", err)
+			http.Error(w, "could not load case assignees", http.StatusInternalServerError)
+			return
+		}
 		csrf := adminPortalCSRF(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, detail.Subject)
@@ -156,9 +162,23 @@ func (s *Server) handleAdminPortalCaseGet() http.HandlerFunc {
 		if detail.DeadlineAt != nil {
 			deadline = detail.DeadlineAt.In(s.LondonLoc).Format("2006-01-02")
 		}
-		fmt.Fprintf(w, `</select><label class="form-label">Deadline</label><input class="form-control mb-3" type="date" name="deadline" value="%s"><label class="form-label">Assign admin ID</label><input class="form-control mb-3" type="number" min="1" name="assigned_admin_id" value="%d"><button class="btn btn-outline-primary" type="submit">Update workflow</button></form></div></section>`,
-			escapeHTML(deadline), adminIDForRequest(r),
+		fmt.Fprintf(w, `</select><label class="form-label">Deadline</label><input class="form-control mb-3" type="date" name="deadline" value="%s"><label class="form-label" for="case-assignee">Assign administrator</label><select class="form-select mb-3" id="case-assignee" name="assigned_admin_id"><option value="">Unassigned</option>`,
+			escapeHTML(deadline),
 		)
+		for _, assignee := range assignees {
+			selected := ""
+			if detail.AssignedAdminID != nil && *detail.AssignedAdminID == assignee.ID {
+				selected = " selected"
+			}
+			label := assignee.Name
+			if assignee.Email != "" && !strings.EqualFold(assignee.Email, assignee.Name) {
+				label += " · " + assignee.Email
+			}
+			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`,
+				assignee.ID, selected, escapeHTML(label),
+			)
+		}
+		fmt.Fprint(w, `</select><button class="btn btn-outline-primary" type="submit">Update workflow</button></form></div></section>`)
 		fmt.Fprintf(w, `<section class="card shadow-sm border-warning"><div class="card-header"><strong>Internal GMCL notes</strong></div><div class="card-body"><div class="alert alert-warning small">Never returned by club repositories or portal responses.</div>`)
 		for _, note := range detail.InternalNotes {
 			fmt.Fprintf(w, `<article class="border rounded p-2 mb-2"><strong>%s</strong><div class="small text-muted">%s</div><div style="white-space:pre-wrap">%s</div></article>`,

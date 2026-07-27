@@ -26,6 +26,12 @@ type AdminCaseUpdate struct {
 	DeadlineAt      *time.Time
 }
 
+type AdminCaseAssignee struct {
+	ID    int32
+	Name  string
+	Email string
+}
+
 type AdminOperationalRequest struct {
 	ModuleRequest
 	ClubID   int32
@@ -254,6 +260,36 @@ func (store *Store) ListAdminMessageCases(
 		return rows.Err()
 	})
 	return cases, err
+}
+
+func (store *Store) ListAdminCaseAssignees(
+	ctx context.Context,
+) ([]AdminCaseAssignee, error) {
+	var assignees []AdminCaseAssignee
+	err := store.withSystemReadOnlyTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT
+				id,
+				COALESCE(NULLIF(btrim(username), ''), NULLIF(btrim(email), ''), 'Administrator'),
+				COALESCE(email, '')
+			FROM admin_users
+			WHERE is_active
+			ORDER BY lower(COALESCE(NULLIF(btrim(username), ''), email)), id
+		`)
+		if err != nil {
+			return fmt.Errorf("list portal case assignees: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var assignee AdminCaseAssignee
+			if err := rows.Scan(&assignee.ID, &assignee.Name, &assignee.Email); err != nil {
+				return fmt.Errorf("scan portal case assignee: %w", err)
+			}
+			assignees = append(assignees, assignee)
+		}
+		return rows.Err()
+	})
+	return assignees, err
 }
 
 func (store *Store) LoadAdminMessageCase(
@@ -549,6 +585,22 @@ func (store *Store) UpdateAdminCase(
 				return ErrNotFound
 			}
 			return err
+		}
+		if update.AssignedAdminID != nil {
+			var active bool
+			if err := tx.QueryRow(ctx, `
+				SELECT is_active
+				FROM admin_users
+				WHERE id = $1
+			`, *update.AssignedAdminID).Scan(&active); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("invalid portal case assignee")
+				}
+				return fmt.Errorf("load portal case assignee: %w", err)
+			}
+			if !active {
+				return fmt.Errorf("invalid portal case assignee")
+			}
 		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE portal_message_cases
