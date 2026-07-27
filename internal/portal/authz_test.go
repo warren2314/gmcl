@@ -195,6 +195,7 @@ func TestPortalOperationsPermissionMatrix(t *testing.T) {
 		{"secretary can manage identity reconciliation", RoleClubSecretary, PermissionPlayerIdentityManage, true},
 		{"secretary can manage registration handoff", RoleClubSecretary, PermissionRegistrationManage, true},
 		{"secretary can capture fixture constraints", RoleClubSecretary, PermissionFixturesManage, true},
+		{"secretary can manage adult-only junior administration", RoleClubSecretary, PermissionJuniorAdminManage, true},
 		{"junior officer can manage junior administration", RoleClubJuniorOfficer, PermissionJuniorAdminManage, true},
 		{"junior officer cannot manage player identity", RoleClubJuniorOfficer, PermissionPlayerIdentityManage, false},
 		{"captain can see fixtures", RoleCaptainManager, PermissionFixturesView, true},

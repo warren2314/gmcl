@@ -67,6 +67,8 @@ var rolePermissions = map[RoleKey]map[Permission]struct{}{
 		PermissionRegistrationManage,
 		PermissionFixturesView,
 		PermissionFixturesManage,
+		PermissionJuniorAdminView,
+		PermissionJuniorAdminManage,
 	),
 	RoleClubAdmin: permissionSet(
 		PermissionPortalView,
@@ -85,6 +87,8 @@ var rolePermissions = map[RoleKey]map[Permission]struct{}{
 		PermissionRegistrationManage,
 		PermissionFixturesView,
 		PermissionFixturesManage,
+		PermissionJuniorAdminView,
+		PermissionJuniorAdminManage,
 	),
 	RoleClubSecretary: permissionSet(
 		PermissionPortalView,
@@ -102,6 +106,8 @@ var rolePermissions = map[RoleKey]map[Permission]struct{}{
 		PermissionRegistrationManage,
 		PermissionFixturesView,
 		PermissionFixturesManage,
+		PermissionJuniorAdminView,
+		PermissionJuniorAdminManage,
 	),
 	RoleCaptainManager: permissionSet(
 		PermissionPortalView,
