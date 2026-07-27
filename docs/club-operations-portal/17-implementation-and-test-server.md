@@ -26,6 +26,7 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - A restricted `gmcl_portal_runtime` PostgreSQL role, tenant transaction context, forced RLS on portal-private tables and a startup refusal if the effective role can bypass RLS.
 - Append-only, versioned hash-chained audit events without raw authentication or invitation secrets. Version-2 hashes use PostgreSQL-compatible timestamp precision and can be independently recomputed by the operational preflight; legacy version-1 rows are reported separately rather than overstated as fully verified.
 - A fail-closed `/bin/portal-preflight` command verifies required migrations, effective RLS, forced-RLS coverage, append-only and chain-shape constraints, every audit-chain position/link/hash (including stored IP and user-agent fields for version 2), session policy, HTTPS callback alignment, SMTP, internal-worker authentication and read-only OIDC discovery without printing secrets or enabling a club.
+- `scripts/verify-portal-staging.sh` combines strict pilot preflight with external HTTPS checks for health, the preserved captain entry, administrator login, unauthenticated portal redirect, no-store behavior, baseline CSP/HSTS/framing/content-type headers, hardened CSRF cookie flags and rejection of an unsigned notification-worker request.
 - Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`; disabling a club's `portal_access` atomically disables its module flags and revokes every active session currently scoped to that club.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
 - Super Administrator pilot reconciliation showing active-team mapping completeness, active captain-contact counts, portal memberships/appointments and the latest mapped fixture synchronization per club.
@@ -103,7 +104,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
 3. Confirm migrations `0048_club_portal_foundation.sql` and `0049_portal_audit_hash_verification.sql` are recorded in `schema_migrations`.
-4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`; any non-zero exit blocks pilot enablement.
+4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`, HTTP 200 for health/legacy/admin, HTTP 303 for the unauthenticated portal and HTTP 401 for the unsigned worker request; any non-zero exit blocks pilot enablement.
 5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
 7. Sign in as the named test Super Administrator and open `/admin/portal`.
@@ -148,6 +149,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 - A stale notification claim can be recovered after ten minutes, a stale final-attempt claim becomes dead-lettered, and a poison or unsupported event stops retrying after five recorded failures.
 - Security notification rendering uses an explicit field allowlist: invitation tokens, administrative revocation reasons and arbitrary payload fields never appear in email.
 - The strict pilot preflight fails for missing/weak worker authentication, missing SMTP, non-HTTPS or mismatched callbacks, unavailable OIDC discovery, incomplete RLS/trigger/migration state, audit-chain gaps or any version-2 canonical hash mismatch.
+- The staging verifier fails if the portal redirect leaves the internal login flow, browser security/no-store headers regress, the administrator login is unavailable, any required CSRF cookie flag is absent or an unsigned notification-worker request is accepted.
 - Audit-chain head digests and positions are recorded as deployment evidence; version-1 legacy events are visibly counted as link-only verification.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
@@ -171,7 +173,7 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
-- The production image contained `/bin/portal-preflight` and migration `0049`; Bash syntax, ShellCheck and `docker compose config --quiet` passed for the staging/setup workflow.
+- The production image contained `/bin/portal-preflight` and migration `0049`; Bash syntax, ShellCheck and `docker compose config --quiet` passed for the staging/setup workflow. The expanded verifier passed deterministic external-response mocks and a deliberate missing-`HttpOnly` response produced the expected non-zero, fail-closed result.
 - Each disposable test database and application container was removed after validation. Shared PostgreSQL roles were preserved unless positively proven to be test-owned.
 - `git diff --check` passed.
 

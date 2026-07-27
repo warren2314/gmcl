@@ -41,20 +41,54 @@ legacy_status="$(
 )"
 [[ "${legacy_status}" == "200" ]] || fail "legacy entry page returned HTTP ${legacy_status}"
 
-headers_file="$(mktemp)"
-trap 'rm -f "${headers_file}"' EXIT
+headers_dir="$(mktemp -d)"
+portal_headers="${headers_dir}/portal.headers"
+admin_headers="${headers_dir}/admin.headers"
+trap 'rm -rf "${headers_dir}"' EXIT
 portal_status="$(
     curl --silent --show-error --output /dev/null \
-        --dump-header "${headers_file}" \
+        --dump-header "${portal_headers}" \
         --max-time "${REQUEST_TIMEOUT}" \
         --write-out '%{http_code}' \
         "${base_url}/portal"
 )"
 [[ "${portal_status}" == "303" ]] || fail "unauthenticated portal returned HTTP ${portal_status}"
-grep -qi '^Cache-Control:.*no-store' "${headers_file}" ||
+grep -qi '^Location: */portal/login?return_to=%2Fportal' "${portal_headers}" ||
+    fail "unauthenticated portal did not redirect to the internal portal login"
+grep -qi '^Cache-Control:.*no-store' "${portal_headers}" ||
     fail "portal response omitted Cache-Control: no-store"
-grep -qi '^Pragma:.*no-cache' "${headers_file}" ||
+grep -qi '^Pragma:.*no-cache' "${portal_headers}" ||
     fail "portal response omitted Pragma: no-cache"
+grep -qi '^Content-Security-Policy:.*default-src.*self' "${portal_headers}" ||
+    fail "portal response omitted the baseline Content-Security-Policy"
+grep -qi '^Content-Security-Policy:.*object-src.*none' "${portal_headers}" ||
+    fail "portal Content-Security-Policy did not deny object sources"
+grep -qi '^Content-Security-Policy:.*frame-ancestors.*none' "${portal_headers}" ||
+    fail "portal Content-Security-Policy did not deny framing"
+grep -qi '^Strict-Transport-Security:.*max-age=' "${portal_headers}" ||
+    fail "portal response omitted Strict-Transport-Security"
+grep -qi '^X-Content-Type-Options: *nosniff' "${portal_headers}" ||
+    fail "portal response omitted X-Content-Type-Options: nosniff"
+grep -qi '^X-Frame-Options: *DENY' "${portal_headers}" ||
+    fail "portal response omitted X-Frame-Options: DENY"
+
+admin_status="$(
+    curl --silent --show-error --output /dev/null \
+        --dump-header "${admin_headers}" \
+        --max-time "${REQUEST_TIMEOUT}" \
+        --write-out '%{http_code}' \
+        "${base_url}/admin/login"
+)"
+[[ "${admin_status}" == "200" ]] ||
+    fail "legacy administrator login returned HTTP ${admin_status}"
+csrf_cookie="$(grep -i '^Set-Cookie: *csrf_token=' "${admin_headers}" | head -n 1 || true)"
+[[ -n "${csrf_cookie}" ]] || fail "administrator login did not issue a CSRF cookie"
+[[ "${csrf_cookie}" == *"Path=/"* ]] || fail "CSRF cookie did not use Path=/"
+[[ "${csrf_cookie}" == *"HttpOnly"* ]] || fail "CSRF cookie omitted HttpOnly"
+[[ "${csrf_cookie}" == *"Secure"* ]] || fail "CSRF cookie omitted Secure"
+[[ "${csrf_cookie}" == *"SameSite=Lax"* ]] || fail "CSRF cookie omitted SameSite=Lax"
+grep -qi '^Cache-Control:.*no-store' "${admin_headers}" ||
+    fail "administrator login omitted Cache-Control: no-store"
 
 worker_status="$(
     curl --silent --show-error --output /dev/null \
@@ -72,4 +106,5 @@ printf 'portal_preflight=ready\n'
 printf 'health_status=%s\n' "${health_status}"
 printf 'legacy_status=%s\n' "${legacy_status}"
 printf 'portal_status=%s\n' "${portal_status}"
+printf 'admin_status=%s\n' "${admin_status}"
 printf 'worker_unauthenticated_status=%s\n' "${worker_status}"
