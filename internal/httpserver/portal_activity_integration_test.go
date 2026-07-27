@@ -45,6 +45,7 @@ func TestPortalAccountActivityRendersAllowlistedProjection(t *testing.T) {
 	userID := uuid.New()
 	membershipID := uuid.New()
 	assignmentID := uuid.New()
+	clubName := "Portal Activity " + uuid.NewString()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestPortalAccountActivityRendersAllowlistedProjection(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO clubs (id, name, short_name)
 		VALUES ($1, $2, 'ACTV')
-	`, clubID, "Portal Activity "+uuid.NewString()); err != nil {
+	`, clubID, clubName); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -128,6 +129,45 @@ func TestPortalAccountActivityRendersAllowlistedProjection(t *testing.T) {
 		LondonLoc:   time.UTC,
 		PortalStore: store,
 	}
+	contextRequest := httptest.NewRequest(http.MethodGet, "/portal/contexts", nil)
+	contextRequest = contextRequest.WithContext(context.WithValue(
+		contextRequest.Context(),
+		portalPrincipalContextKey{},
+		selected,
+	))
+	contextRecorder := httptest.NewRecorder()
+	server.handlePortalContexts().ServeHTTP(contextRecorder, contextRequest)
+	if contextRecorder.Code != http.StatusOK {
+		t.Fatalf(
+			"context status = %d, body = %s",
+			contextRecorder.Code,
+			contextRecorder.Body.String(),
+		)
+	}
+	contextBody := contextRecorder.Body.String()
+	for _, expected := range []string{
+		`<h1 class="h2">Your club appointments</h1>`,
+		clubName,
+		"Club Primary Administrator",
+		"Club-wide",
+		"Current role",
+		`<time datetime="`,
+		"This appointment is selected for the current session.",
+	} {
+		if !strings.Contains(contextBody, expected) {
+			t.Fatalf("appointment page omitted %q: %s", expected, contextBody)
+		}
+	}
+	for _, forbidden := range []string{
+		`action="/portal/contexts"`,
+		assignmentID.String(),
+		"Switch to this role",
+	} {
+		if strings.Contains(contextBody, forbidden) {
+			t.Fatalf("current appointment offered redundant selection %q: %s", forbidden, contextBody)
+		}
+	}
+
 	request := httptest.NewRequest(http.MethodGet, "/portal/activity", nil)
 	request = request.WithContext(context.WithValue(
 		request.Context(),

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"cricket-ground-feedback/internal/portal"
+
+	"github.com/google/uuid"
 )
 
 func TestPortalSessionCookieSecurity(t *testing.T) {
@@ -109,6 +111,82 @@ func TestWritePortalNavProvidesKeyboardAndCurrentPageSemantics(t *testing.T) {
 			strings.Count(body, `aria-current="page"`),
 			body,
 		)
+	}
+}
+
+func TestWritePortalAppointmentCardsShowsScopedEffectiveAccess(t *testing.T) {
+	currentID := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	otherID := uuid.MustParse("22222222-2222-4222-8222-222222222222")
+	start := time.Date(2026, time.April, 1, 9, 30, 0, 0, time.UTC)
+	end := time.Date(2026, time.September, 30, 17, 0, 0, 0, time.UTC)
+	currentAssignment := portal.Assignment{
+		ID:       currentID,
+		Role:     portal.RoleClubPrimaryAdmin,
+		StartsAt: start,
+	}
+	recorder := httptest.NewRecorder()
+	writePortalAppointmentCards(
+		recorder,
+		`csrf<&>`,
+		portal.Principal{Assignment: &currentAssignment},
+		[]portal.ActingContext{
+			{
+				Assignment: currentAssignment,
+				ClubName:   `Alpha <script>`,
+			},
+			{
+				Assignment: portal.Assignment{
+					ID:       otherID,
+					Role:     portal.RoleCaptainManager,
+					StartsAt: start,
+					EndsAt:   &end,
+				},
+				ClubName:        "Beta CC",
+				TeamName:        "Second XI",
+				SeasonName:      "2026",
+				CompetitionName: "Championship",
+			},
+		},
+		time.UTC,
+	)
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`aria-label="Active club appointments"`,
+		`Alpha &lt;script&gt;`,
+		"Club Primary Administrator",
+		"Club-wide",
+		"Current role",
+		"This appointment is selected for the current session.",
+		"Beta CC",
+		"Captain or Manager",
+		"Second XI · 2026 · Championship",
+		`datetime="2026-04-01T09:30:00Z"`,
+		`datetime="2026-09-30T17:00:00Z"`,
+		`name="csrf_token" value="csrf&lt;&amp;&gt;"`,
+		`name="assignment_id" value="22222222-2222-4222-8222-222222222222"`,
+		"Switch to this role",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("appointment cards omitted %q: %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{
+		`Alpha <script>`,
+		`name="assignment_id" value="11111111-1111-4111-8111-111111111111"`,
+		"Continue as this role",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("appointment cards included %q: %s", forbidden, body)
+		}
+	}
+	if strings.Count(body, `<form class="mt-auto"`) != 1 {
+		t.Fatalf("switch form count = %d: %s", strings.Count(body, `<form class="mt-auto"`), body)
+	}
+}
+
+func TestPortalAppointmentPeriodHandlesMissingDates(t *testing.T) {
+	if got := portalAppointmentPeriod(portal.Assignment{}, nil); got != "Currently active" {
+		t.Fatalf("missing period = %q", got)
 	}
 }
 

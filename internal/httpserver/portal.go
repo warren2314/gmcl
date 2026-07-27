@@ -513,40 +513,106 @@ func (s *Server) handlePortalContexts() http.HandlerFunc {
 		pageHead(w, "Choose club access")
 		writePortalNav(w, csrf, principal, r.URL.Path)
 		fmt.Fprint(w, `<main id="main-content" tabindex="-1" class="container pb-5"><div class="row justify-content-center"><div class="col-xl-8">
-<div class="d-flex justify-content-between align-items-start mb-4"><div><p class="text-uppercase text-muted small mb-1">Named account</p><h1 class="h2">Choose how you are acting</h1><p class="text-muted">Your club, role and season scope are checked again on every request.</p></div></div>`)
+<div class="d-flex justify-content-between align-items-start mb-4"><div><p class="text-uppercase text-muted small mb-1">Named account access</p><h1 class="h2">Your club appointments</h1><p class="text-muted">Review the role, scope and effective period granted to your named account. Your selected appointment is checked again on every request.</p></div></div>`)
 		if len(contexts) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-info"><strong>No pilot access is active.</strong> Your identity is valid, but no approved appointment currently belongs to a club with portal access enabled. Contact the GMCL Club Liaison Officer.</div>`)
 		} else {
-			fmt.Fprint(w, `<div class="row g-3">`)
-			for _, acting := range contexts {
-				scope := []string{humanPortalRole(acting.Assignment.Role)}
-				if acting.TeamName != "" {
-					scope = append(scope, acting.TeamName)
-				}
-				if acting.SeasonName != "" {
-					scope = append(scope, acting.SeasonName)
-				}
-				if acting.CompetitionName != "" {
-					scope = append(scope, acting.CompetitionName)
-				}
-				fmt.Fprintf(w, `<div class="col-md-6"><div class="card h-100 shadow-sm"><div class="card-body">
-<h2 class="h5">%s</h2><p class="text-muted">%s</p>
-<form method="post" action="/portal/contexts">
-<input type="hidden" name="csrf_token" value="%s">
-<input type="hidden" name="assignment_id" value="%s">
-<button class="btn btn-primary">Continue as this role</button>
-</form></div></div></div>`,
-					escapeHTML(acting.ClubName),
-					escapeHTML(strings.Join(scope, " · ")),
-					escapeHTML(csrf),
-					acting.Assignment.ID,
-				)
-			}
-			fmt.Fprint(w, `</div>`)
+			writePortalAppointmentCards(w, csrf, principal, contexts, s.LondonLoc)
 		}
 		fmt.Fprint(w, `</div></div></main>`)
 		pageFooter(w)
 	}
+}
+
+func writePortalAppointmentCards(
+	w http.ResponseWriter,
+	csrf string,
+	principal portal.Principal,
+	contexts []portal.ActingContext,
+	location *time.Location,
+) {
+	if location == nil {
+		location = time.UTC
+	}
+	fmt.Fprint(w, `<div class="row g-3" role="list" aria-label="Active club appointments">`)
+	for _, acting := range contexts {
+		current := principal.Assignment != nil &&
+			principal.Assignment.ID == acting.Assignment.ID
+		scope := make([]string, 0, 3)
+		if acting.TeamName != "" {
+			scope = append(scope, acting.TeamName)
+		}
+		if acting.SeasonName != "" {
+			scope = append(scope, acting.SeasonName)
+		}
+		if acting.CompetitionName != "" {
+			scope = append(scope, acting.CompetitionName)
+		}
+		if len(scope) == 0 {
+			scope = append(scope, "Club-wide")
+		}
+		cardClass := "card h-100 shadow-sm"
+		currentBadge := ""
+		if current {
+			cardClass += " border-primary"
+			currentBadge = `<span class="badge text-bg-primary">Current role</span>`
+		}
+		fmt.Fprintf(w, `<div class="col-md-6" role="listitem"><section class="%s"><div class="card-body d-flex flex-column">
+<div class="d-flex justify-content-between align-items-start gap-2"><h2 class="h5">%s</h2>%s</div>
+<dl class="row small mb-4">
+<dt class="col-4">Role</dt><dd class="col-8">%s</dd>
+<dt class="col-4">Scope</dt><dd class="col-8">%s</dd>
+<dt class="col-4">Effective</dt><dd class="col-8">%s</dd>
+</dl>`,
+			cardClass,
+			escapeHTML(acting.ClubName),
+			currentBadge,
+			escapeHTML(humanPortalRole(acting.Assignment.Role)),
+			escapeHTML(strings.Join(scope, " · ")),
+			portalAppointmentPeriod(acting.Assignment, location),
+		)
+		if current {
+			fmt.Fprint(w, `<p class="small text-primary mt-auto mb-0">This appointment is selected for the current session.</p>`)
+		} else {
+			fmt.Fprintf(w, `<form class="mt-auto" method="post" action="/portal/contexts">
+<input type="hidden" name="csrf_token" value="%s">
+<input type="hidden" name="assignment_id" value="%s">
+<button class="btn btn-primary" type="submit">Switch to this role</button>
+</form>`,
+				escapeHTML(csrf),
+				acting.Assignment.ID,
+			)
+		}
+		fmt.Fprint(w, `</div></section></div>`)
+	}
+	fmt.Fprint(w, `</div>`)
+}
+
+func portalAppointmentPeriod(
+	assignment portal.Assignment,
+	location *time.Location,
+) string {
+	if location == nil {
+		location = time.UTC
+	}
+	if assignment.StartsAt.IsZero() {
+		return "Currently active"
+	}
+	start := assignment.StartsAt.In(location)
+	startTime := fmt.Sprintf(
+		`<time datetime="%s">%s</time>`,
+		start.UTC().Format(time.RFC3339),
+		escapeHTML(start.Format("2 Jan 2006")),
+	)
+	if assignment.EndsAt == nil {
+		return startTime + " onwards"
+	}
+	end := assignment.EndsAt.In(location)
+	return startTime + " to " + fmt.Sprintf(
+		`<time datetime="%s">%s</time>`,
+		end.UTC().Format(time.RFC3339),
+		escapeHTML(end.Format("2 Jan 2006")),
+	)
 }
 
 func (s *Server) handlePortalContextSelect() http.HandlerFunc {

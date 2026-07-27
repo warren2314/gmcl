@@ -4,7 +4,7 @@
 
 **Implementation baseline:** 26 July 2026
 
-**Current delivery slice:** identity/tenancy foundation, feature-flagged read-only action centre and account-security activity
+**Current delivery slice:** identity/tenancy foundation, feature-flagged read-only action centre, account-security activity and appointment inventory
 
 This runbook records implemented behaviour and the controlled route to a test-server pilot. It does not remove or replace the existing captain-report or administrator services.
 
@@ -15,6 +15,7 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Single-use approved onboarding invitations; the verified provider email must match the approved official-contact email.
 - Separate users, external identities, club memberships and effective-dated role assignments.
 - Multi-club acting-context selection with bearer-token rotation when the context changes.
+- A named-user appointment inventory in `/portal/contexts` shows each currently effective club role, team/season/competition scope and start/end dates. The selected appointment is marked and cannot be redundantly reselected, avoiding an unnecessary token rotation and audit event.
 - Opaque, hashed, server-side sessions with 30-minute idle and 12-hour absolute defaults.
 - User-visible active-session inventory, immediate per-session revocation and all-device revocation through account security-version invalidation.
 - User-visible account activity at `/portal/activity`, limited to the latest 100 events for the named user in the selected club context. The repository projects only action, outcome, acting role and timestamp; the page maps these through explicit presentation allowlists and never selects or renders audit metadata, targets, record IDs, IP addresses, user agents, hashes or another club's events.
@@ -110,12 +111,13 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 11. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
 12. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
 13. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
-14. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
-15. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
-16. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
-17. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
-18. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
-19. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
+14. Open `/portal/contexts`; confirm the current role, club-wide or narrower scope and effective dates match the approved appointment, and confirm the current appointment has no redundant switch action.
+15. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
+16. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
+17. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
+18. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
+19. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
+20. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
 
 ## Required test evidence
 
@@ -126,6 +128,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 - Season/team query filters cannot broaden an appointment; rejected scope identifiers generate a `portal.scope.denied` audit event without confirming whether the identifier exists.
 - Revoking the selected appointment denies the next request.
 - Changing acting context invalidates the previous session token.
+- The appointment inventory lists only the named user's currently effective roles for portal-enabled clubs, renders club-wide and narrower scopes with effective dates, visibly marks the selected appointment and offers switch forms only for other appointments.
 - Revoking one owned session does not expose any token and denies that session's next request.
 - All-device revocation is denied without recent step-up, rejects an identity switch, increments the account security version and denies every prior token.
 - Account activity includes the named user's allowlisted lifecycle events for the selected club, renders unknown actions and outcomes generically, and discloses no event from another club even when that event has the same actor user ID.
@@ -157,6 +160,7 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - Account-activity unit and database integration tests passed limit clamping, presentation allowlists, same-actor cross-club RLS isolation, semantic table rendering and negative disclosure checks for raw action keys, identifiers, metadata, IP addresses and user agents. The lifecycle fixtures were also made independent of pre-seeded seasons and concurrent package fixtures.
 - After the account-activity race suite, schema preflight independently recomputed 21 version-2 audit events across four chains and reported ready.
+- Appointment-inventory unit and database-backed handler tests passed current-role detection, club-wide and team/season/competition scope rendering, effective start/end timestamps, escaping of club and CSRF values and suppression of the current appointment's identifier and redundant switch form. The complete Linux race suite remained green, and post-race schema preflight recomputed 21 version-2 audit events across four chains.
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
