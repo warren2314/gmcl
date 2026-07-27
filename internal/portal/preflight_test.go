@@ -52,7 +52,8 @@ func TestPilotPreflightRequiresCompleteFailClosedConfiguration(t *testing.T) {
 		t.Fatalf("pilot issues = %v", issues)
 	}
 	if !report.PortalEnabled || !report.OIDCEnabled ||
-		!report.OIDCConfigurationValid || !report.StepUpConfigured ||
+		!report.OIDCConfigurationValid || !report.BaselineACRConfigured ||
+		!report.StepUpConfigured ||
 		!report.HTTPSPublicBaseURL || !report.OIDCCallbackMatches ||
 		!report.SMTPConfigured || !report.WorkerAuthConfigured {
 		t.Fatalf("pilot report = %#v", report)
@@ -78,6 +79,7 @@ func TestPilotPreflightReportsEveryUnsafeConfigurationGap(t *testing.T) {
 	)
 	for _, expected := range []string{
 		"CLUB_PORTAL_ENABLED must be true for a pilot",
+		"CLUB_PORTAL_OIDC_REQUIRED_ACR is required for pilot authentication",
 		"CLUB_PORTAL_OIDC_STEP_UP_ACR is required for sensitive pilot actions",
 		"PUBLIC_BASE_URL must be an origin-only HTTPS URL",
 		"OIDC redirect URL must match PUBLIC_BASE_URL plus /portal/auth/callback",

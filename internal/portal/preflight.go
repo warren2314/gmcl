@@ -40,6 +40,7 @@ type PortalEnvironmentPreflight struct {
 	PortalEnabled          bool   `json:"portal_enabled"`
 	OIDCEnabled            bool   `json:"oidc_enabled"`
 	OIDCConfigurationValid bool   `json:"oidc_configuration_valid"`
+	BaselineACRConfigured  bool   `json:"baseline_acr_configured"`
 	StepUpConfigured       bool   `json:"step_up_configured"`
 	HTTPSPublicBaseURL     bool   `json:"https_public_base_url"`
 	OIDCCallbackMatches    bool   `json:"oidc_callback_matches_public_url"`
@@ -68,15 +69,16 @@ func InspectPortalEnvironment(
 ) (PortalEnvironmentPreflight, []string) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	report := PortalEnvironmentPreflight{
-		Mode:                 mode,
-		PortalEnabled:        EnabledFromEnv(),
-		OIDCEnabled:          oidcConfig.Enabled,
-		StepUpConfigured:     strings.TrimSpace(oidcConfig.StepUpACR) != "",
-		SMTPConfigured:       email.NewFromEnv().ValidateSensitiveDeliveryConfig() == nil,
-		WorkerAuthConfigured: len(strings.TrimSpace(os.Getenv("N8N_HMAC_SECRET"))) >= 32,
-		SessionIdleMinutes:   int64(policy.IdleLifetime / time.Minute),
-		SessionAbsoluteHours: int64(policy.AbsoluteLifetime / time.Hour),
-		StepUpMinutes:        int64(policy.StepUpLifetime / time.Minute),
+		Mode:                  mode,
+		PortalEnabled:         EnabledFromEnv(),
+		OIDCEnabled:           oidcConfig.Enabled,
+		BaselineACRConfigured: strings.TrimSpace(oidcConfig.RequiredACR) != "",
+		StepUpConfigured:      strings.TrimSpace(oidcConfig.StepUpACR) != "",
+		SMTPConfigured:        email.NewFromEnv().ValidateSensitiveDeliveryConfig() == nil,
+		WorkerAuthConfigured:  len(strings.TrimSpace(os.Getenv("N8N_HMAC_SECRET"))) >= 32,
+		SessionIdleMinutes:    int64(policy.IdleLifetime / time.Minute),
+		SessionAbsoluteHours:  int64(policy.AbsoluteLifetime / time.Hour),
+		StepUpMinutes:         int64(policy.StepUpLifetime / time.Minute),
 	}
 	var issues []string
 	if mode != PortalPreflightModeSchema && mode != PortalPreflightModePilot {
@@ -110,6 +112,12 @@ func InspectPortalEnvironment(
 	}
 	if !report.OIDCEnabled {
 		issues = append(issues, "CLUB_PORTAL_OIDC_ENABLED must be true for a pilot")
+	}
+	if !report.BaselineACRConfigured {
+		issues = append(
+			issues,
+			"CLUB_PORTAL_OIDC_REQUIRED_ACR is required for pilot authentication",
+		)
 	}
 	if !report.StepUpConfigured {
 		issues = append(issues, "CLUB_PORTAL_OIDC_STEP_UP_ACR is required for sensitive pilot actions")
