@@ -2,7 +2,9 @@ package portal
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,15 +36,16 @@ func TestStaffCampaignCreatesIsolatedClubCasesAndTracksDelivery(t *testing.T) {
 
 	suffix := uuid.NewString()
 	var (
-		adminID int32
-		clubA   int32
-		clubB   int32
-		userA   = uuid.New()
-		userB   = uuid.New()
-		memberA = uuid.New()
-		memberB = uuid.New()
-		roleA   = uuid.New()
-		roleB   = uuid.New()
+		adminID       int32
+		scopedAdminID int32
+		clubA         int32
+		clubB         int32
+		userA         = uuid.New()
+		userB         = uuid.New()
+		memberA       = uuid.New()
+		memberB       = uuid.New()
+		roleA         = uuid.New()
+		roleB         = uuid.New()
 	)
 	if err := func() error {
 		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
@@ -76,6 +79,16 @@ func TestStaffCampaignCreatesIsolatedClubCasesAndTracksDelivery(t *testing.T) {
 			RETURNING id
 		`, "campaign-admin-"+suffix, "campaign-admin-"+suffix+"@example.test").
 			Scan(&adminID); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO admin_users (
+				username, password_hash, email, is_active, role
+			)
+			VALUES ($1, decode('00', 'hex'), $2, TRUE, 'admin')
+			RETURNING id
+		`, "campaign-scoped-admin-"+suffix, "campaign-scoped-admin-"+suffix+"@example.test").
+			Scan(&scopedAdminID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -137,6 +150,48 @@ func TestStaffCampaignCreatesIsolatedClubCasesAndTracksDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := store.CreateStaffAssignment(ctx, StaffAssignmentRequest{
+		AdminUserID: scopedAdminID,
+		Role:        StaffRoleClubLiaison,
+		ClubID:      &clubA,
+		GrantReason: "integration CLO scope",
+		GrantedBy:   adminID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStaffAssignment(ctx, StaffAssignmentRequest{
+		AdminUserID: scopedAdminID,
+		Role:        StaffRoleJuniorAdministrator,
+		ClubID:      &clubB,
+		GrantReason: "integration junior scope",
+		GrantedBy:   adminID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scopedAccess, err := store.LoadStaffAccess(ctx, scopedAdminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scopedAccess.CanAccessCase(clubA, MessageCategoryGeneral, nil) {
+		t.Fatal("club-scoped CLO assignment was not effective")
+	}
+	if scopedAccess.CanAccessCase(clubB, MessageCategoryGeneral, nil) {
+		t.Fatal("Junior Administrator received non-junior access")
+	}
+	if !scopedAccess.CanAccessCase(clubB, MessageCategoryJunior, nil) {
+		t.Fatal("club-scoped Junior Administrator assignment was not effective")
+	}
+	if _, err := store.CreateStaffCampaign(ctx, scopedAdminID, StaffCampaignRequest{
+		Category:      MessageCategoryGeneral,
+		RecipientRole: RecipientPrimaryContact,
+		ClubIDs:       []int32{clubB},
+		Subject:       "Out-of-scope campaign " + suffix,
+		Body:          "This campaign must be denied.",
+		Priority:      "normal",
+	}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("out-of-scope campaign error = %v, want forbidden", err)
+	}
+
 	result, err := store.CreateStaffCampaign(ctx, adminID, StaffCampaignRequest{
 		Category:      MessageCategoryGeneral,
 		RecipientRole: RecipientPrimaryContact,
@@ -151,6 +206,10 @@ func TestStaffCampaignCreatesIsolatedClubCasesAndTracksDelivery(t *testing.T) {
 	}
 	if result.TargetCount != 2 || len(result.Deliveries) != 2 {
 		t.Fatalf("campaign targets=%d deliveries=%d", result.TargetCount, len(result.Deliveries))
+	}
+	if result.Deliveries[0].SenderRole != StaffRoleSuperAdministrator ||
+		!strings.HasPrefix(result.Deliveries[0].SenderName, "campaign-admin-") {
+		t.Fatalf("unexpected campaign sender identity: %#v", result.Deliveries[0])
 	}
 
 	if err := store.CompleteCampaignDelivery(ctx, result.Deliveries[0].ID, true, ""); err != nil {
@@ -189,6 +248,40 @@ func TestStaffCampaignCreatesIsolatedClubCasesAndTracksDelivery(t *testing.T) {
 			StartsAt:     time.Now().Add(-time.Minute),
 			Version:      1,
 		},
+	}
+	var clubACaseID uuid.UUID
+	for _, delivery := range result.Deliveries {
+		if delivery.ClubID == clubA {
+			clubACaseID = delivery.CaseID
+			break
+		}
+	}
+	if clubACaseID == uuid.Nil {
+		t.Fatal("Club A case was not returned")
+	}
+	if _, err := store.ReplyMessageCase(
+		ctx,
+		principalA,
+		clubACaseID,
+		"Club A integration reply.",
+		"integration-reply-"+suffix,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgeMessageCase(
+		ctx,
+		principalA,
+		clubACaseID,
+		"integration-ack-"+suffix,
+	); err != nil {
+		t.Fatal(err)
+	}
+	campaigns, err = store.ListStaffCampaigns(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaigns[0].AcknowledgedCount != 1 || campaigns[0].ClubReplyCount != 1 {
+		t.Fatalf("campaign response summary = %#v", campaigns[0])
 	}
 	if err := store.WithTenantTx(ctx, principalA, func(tx pgx.Tx, _ Assignment) error {
 		var ownCases int
