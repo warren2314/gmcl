@@ -127,18 +127,19 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		{`INSERT INTO seasons (id,name,start_date,end_date) VALUES ($1,'Umpire scope test season','2026-01-01','2026-12-31')`, []any{seasonID}},
 		{`INSERT INTO weeks (id,season_id,week_number,start_date,end_date) VALUES ($1,$2,1,'2026-04-13','2026-04-26')`, []any{weekID, seasonID}},
 		{`INSERT INTO clubs (id,name) VALUES ($1,'Umpire Scope Test Club')`, []any{clubID}},
-		{`INSERT INTO teams (id,club_id,name) VALUES ($1,$2,'Umpire Scope Test XI')`, []any{teamID, clubID}},
+		{`INSERT INTO teams (id,club_id,name,play_cricket_team_id)
+		  VALUES ($1,$2,'Umpire Scope Test XI','-9101-test-team')`, []any{teamID, clubID}},
 		{`INSERT INTO captains (id,team_id,full_name,email,active_from) VALUES ($1,$2,'Scope Test Captain','scope-test@example.test','2026-01-01')`, []any{captainID, teamID}},
-		{`INSERT INTO league_fixtures (play_cricket_match_id,season_id,match_date,payload)
+		{`INSERT INTO league_fixtures (play_cricket_match_id,season_id,match_date,home_team_pc_id,payload)
 		  VALUES
-		    (-910101,$1,'2026-04-18','{"competition_name":"GMCL Saturday Premier"}'),
-		    (-910102,$1,'2026-04-19','{"competition_name":"GMCL Sunday Derek Kay Cup"}'),
-		    (-910103,$1,'2026-04-25','{"competition_name":"GMCL Saturday Division 5"}'),
-		    (-910104,$1,'2026-05-02','{"competition_name":"GMCL Saturday Premier"}')`, []any{seasonID}},
+		    (-910101,$1,'2026-04-18','-9101-test-team','{"competition_name":"GMCL Saturday Premier"}'),
+		    (-910102,$1,'2026-04-19','-9101-test-team','{"competition_name":"GMCL Sunday Derek Kay Cup"}'),
+		    (-910103,$1,'2026-04-25','-9101-test-team','{"competition_name":"GMCL Saturday Division 5"}'),
+		    (-910104,$1,'2026-05-02','-9101-test-team','{"competition_name":"GMCL Saturday Premier"}')`, []any{seasonID}},
 		{`INSERT INTO submissions
 		    (season_id,week_id,team_id,captain_id,match_date,pitch_rating,outfield_rating,facilities_rating,play_cricket_match_id,umpire1_type,form_data)
 		  VALUES
-		    ($1,$2,$3,$4,'2026-04-18',3,3,3,-910101,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
+		    ($1,$2,$3,$4,'2026-04-18',3,3,3,NULL,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good","import_source":"legacy_csv"}'),
 		    ($1,$2,$3,$4,'2026-04-19',3,3,3,-910102,'club','{"umpire1_name":"David Faulkner","umpire1_performance":"Average"}'),
 		    ($1,$2,$3,$4,'2026-04-25',3,3,3,-910103,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Poor"}'),
 		    ($1,$2,$3,$4,'2026-05-02',3,3,3,-910104,'club','{"umpire1_name":"Philip Steven Royle","umpire1_performance":"Good"}')`, []any{seasonID, weekID, teamID, captainID}},

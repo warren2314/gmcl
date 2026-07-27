@@ -280,6 +280,30 @@ const premierPanelMatchPredicateSQL = `(
 	))
 )`
 
+// Umpire ratings include legacy CSV imports created before submissions stored a
+// Play-Cricket match ID. Resolve those reports through the reporting team's
+// Play-Cricket ID and match date, while always preferring a direct match ID.
+const umpireFixtureJoinSQL = `
+		    JOIN teams umpire_submission_team ON umpire_submission_team.id = sub.team_id
+		    LEFT JOIN LATERAL (
+		        SELECT candidate.payload
+		        FROM league_fixtures candidate
+		        WHERE candidate.play_cricket_match_id = sub.play_cricket_match_id
+		           OR (
+		               sub.play_cricket_match_id IS NULL
+		               AND candidate.match_date = sub.match_date
+		               AND TRIM(COALESCE(umpire_submission_team.play_cricket_team_id, '')) <> ''
+		               AND (
+		                   TRIM(candidate.home_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		                   OR TRIM(candidate.away_team_pc_id) = TRIM(umpire_submission_team.play_cricket_team_id)
+		               )
+		           )
+		        ORDER BY
+		            CASE WHEN candidate.play_cricket_match_id = sub.play_cricket_match_id THEN 0 ELSE 1 END,
+		            candidate.play_cricket_match_id
+		        LIMIT 1
+		    ) lf ON TRUE`
+
 const (
 	umpireMatchScopeAll          = ""
 	umpireMatchScopePremierPanel = "m3"
@@ -478,7 +502,7 @@ func (s *Server) loadUmpireRankingsForScope(ctx context.Context, whereSQL string
 		        %s AS is_premier_panel_game
 		    FROM submissions sub
 		    JOIN weeks w ON w.id=sub.week_id
-		    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
+		    %s
 		    WHERE %s
 		    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 		),
@@ -534,7 +558,7 @@ func (s *Server) loadUmpireRankingsForScope(ctx context.Context, whereSQL string
 		SELECT umpire_name, total, good, avg_c, poor, COALESCE(score,0), comment_count, COALESCE(avg_score_25,0)
 		FROM scored
 		ORDER BY score DESC NULLS LAST, total DESC, umpire_name
-	`, premierPanelMatchPredicateSQL, whereSQL, u1TypeWhere, u2TypeWhere, keyFilterSQL,
+	`, premierPanelMatchPredicateSQL, umpireFixtureJoinSQL, whereSQL, u1TypeWhere, u2TypeWhere, keyFilterSQL,
 		umpireMatchScopeFilterSQL(matchScope, "is_premier_panel_game"), minParam), qargs...)
 	if err != nil {
 		return nil
@@ -948,7 +972,7 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			        lower(trim(sub.form_data->>'umpire2_name'))    AS u2,
 			        %s AS is_premier_panel_game
 			    FROM submissions sub
-			    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
+			    %s
 			    WHERE sub.season_id = $1
 			    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 			)
@@ -960,7 +984,8 @@ func (s *Server) handleAdminUmpireComments() http.HandlerFunc {
 			  AND l.comment <> ''
 			  %s
 			ORDER BY l.match_date DESC
-		`, premierPanelMatchPredicateSQL, umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
+		`, premierPanelMatchPredicateSQL, umpireFixtureJoinSQL,
+			umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
 			seasonID, umpireKeys)
 		if err == nil {
 			defer crows.Close()
@@ -1093,7 +1118,7 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			        CASE WHEN sub.form_data->>'teamwork_umpire2'          ~ '^[1-5]$' THEN (sub.form_data->>'teamwork_umpire2')::int          END AS u2_tw,
 			        %s AS is_premier_panel_game
 			    FROM submissions sub
-			    LEFT JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
+			    %s
 			    WHERE sub.season_id = $1
 			    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 			)
@@ -1114,7 +1139,8 @@ func (s *Server) handleAdminUmpireScores() http.HandlerFunc {
 			WHERE (l.u1 = ANY($2::text[]) OR l.u2 = ANY($2::text[]))
 			  %s
 			ORDER BY l.match_date DESC
-		`, premierPanelMatchPredicateSQL, umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
+		`, premierPanelMatchPredicateSQL, umpireFixtureJoinSQL,
+			umpireMatchScopeFilterSQL(matchScope, "l.is_premier_panel_game")),
 			seasonID, umpireKeys)
 		if err == nil {
 			defer dbRows.Close()
