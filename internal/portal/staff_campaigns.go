@@ -1105,8 +1105,8 @@ func (store *Store) CompleteCampaignDelivery(
 			    END,
 			    completed_at = CASE
 			        WHEN summary.sent_count + summary.failed_count = summary.recipient_count
-			            THEN $2
-			        ELSE NULL
+			            THEN $2::timestamptz
+			        ELSE NULL::timestamptz
 			    END
 			FROM (
 				SELECT
@@ -1125,7 +1125,10 @@ func (store *Store) CompleteCampaignDelivery(
 		if _, err := tx.Exec(ctx, `
 			UPDATE portal_club_visible_messages message
 			SET email_status = summary.email_status,
-			    email_sent_at = CASE WHEN summary.email_status = 'sent' THEN $2 ELSE NULL END,
+			    email_sent_at = CASE
+			        WHEN summary.email_status = 'sent' THEN $2::timestamptz
+			        ELSE NULL::timestamptz
+			    END,
 			    email_last_error = CASE
 			        WHEN summary.email_status = 'failed' THEN 'one or more recipient deliveries failed'
 			        ELSE NULL
@@ -1157,8 +1160,9 @@ func (store *Store) CompleteCampaignDelivery(
 			        ELSE 'sending'
 			    END,
 			    completed_at = CASE
-			        WHEN summary.completed_targets = summary.target_count THEN $2
-			        ELSE NULL
+			        WHEN summary.completed_targets = summary.target_count
+			            THEN $2::timestamptz
+			        ELSE NULL::timestamptz
 			    END
 			FROM (
 				SELECT
