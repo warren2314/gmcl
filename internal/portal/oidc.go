@@ -119,6 +119,19 @@ func (client *OIDCClient) Enabled() bool {
 	return client != nil && client.config.Enabled
 }
 
+// CheckProvider performs read-only OIDC discovery and verifier construction.
+// It is used by the staging preflight without creating a login state or
+// exposing provider configuration.
+func (client *OIDCClient) CheckProvider(ctx context.Context) error {
+	if client == nil || !client.Enabled() {
+		return fmt.Errorf("portal OIDC is disabled")
+	}
+	if _, _, err := client.ensureProvider(ctx); err != nil {
+		return fmt.Errorf("portal OIDC discovery failed: %w", err)
+	}
+	return nil
+}
+
 func (client *OIDCClient) ensureProvider(ctx context.Context) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
 	if !client.Enabled() {
 		return nil, nil, fmt.Errorf("portal OIDC is disabled")

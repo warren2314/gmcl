@@ -131,6 +131,7 @@ DB_DSN=postgres://gmcl:CHANGE_ME_DB_PASSWORD@db:5432/gmcl?sslmode=disable
 APP_HTTP_ADDR=:8080
 APP_ENV=production
 APP_BASE_URL=https://admin.gmcl.co.uk    # Update to your real domain
+PUBLIC_BASE_URL=https://gmcl.co.uk
 
 # ── Migrations ───────────────────────────────────────────────────────────────
 MIGRATE=1
@@ -139,9 +140,27 @@ MIGRATE_DIR=/migrations
 # ── Session security ──────────────────────────────────────────────────────────
 # Generate with: openssl rand -base64 32
 ADMIN_SESSION_SECRET=CHANGE_ME_SESSION_SECRET
+SESSION_SECRET=CHANGE_ME_CAPTAIN_SESSION_SECRET
 
 # ── CSRF ─────────────────────────────────────────────────────────────────────
 CSRF_SECRET=CHANGE_ME_CSRF_SECRET
+
+# Internal worker authentication
+N8N_HMAC_SECRET=CHANGE_ME_N8N_HMAC_SECRET
+
+# Club Operations Portal (disabled until pilot preflight passes)
+CLUB_PORTAL_ENABLED=false
+CLUB_PORTAL_SESSION_IDLE_MINUTES=30
+CLUB_PORTAL_SESSION_ABSOLUTE_HOURS=12
+CLUB_PORTAL_STEP_UP_MINUTES=15
+CLUB_PORTAL_OIDC_ENABLED=false
+CLUB_PORTAL_OIDC_ISSUER=
+CLUB_PORTAL_OIDC_CLIENT_ID=
+CLUB_PORTAL_OIDC_CLIENT_SECRET=
+CLUB_PORTAL_OIDC_REDIRECT_URL=
+CLUB_PORTAL_OIDC_REQUIRED_ACR=
+CLUB_PORTAL_OIDC_STEP_UP_ACR=
+CLUB_PORTAL_OIDC_ALLOW_INSECURE=false
 
 # ── Bootstrap admin (only used when SEED=1 and no admin users exist) ─────────
 # After first login the admin is forced to change this password.

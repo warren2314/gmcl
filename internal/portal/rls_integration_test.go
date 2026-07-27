@@ -194,3 +194,82 @@ func TestPortalAuditEventsCannotBeMutated(t *testing.T) {
 		t.Fatalf("restore after expected audit error: %v", err)
 	}
 }
+
+func TestPortalAuditIntegrityVerifierRecomputesVersionTwoEvents(t *testing.T) {
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("TEST_DB_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := db.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	store, err := NewStore(pool, DefaultSessionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeSecurity(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	occurredAt := time.Date(2026, 7, 27, 12, 0, 0, 123456789, time.UTC)
+	correlationID := "integrity-" + uuid.NewString()
+	if err := store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		return store.appendAuditTx(ctx, tx, AuditEvent{
+			ActorKind:     "system",
+			Action:        "portal.audit.integrity_tested",
+			TargetType:    "portal_audit",
+			Outcome:       "success",
+			CorrelationID: correlationID,
+			Metadata:      map[string]any{"large_integer": int64(9007199254740993)},
+			IPAddress:     "2001:0db8:0000:0000:0000:0000:0000:0001",
+			UserAgent:     "  GMCL Integration Test  ",
+			OccurredAt:    occurredAt,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	preflight, err := store.InspectDatabasePreflight(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preflight.MigrationApplied ||
+		preflight.RLSEnabledTables != preflight.ExpectedRLSTables ||
+		preflight.RLSForcedTables != preflight.ExpectedRLSTables ||
+		!preflight.AppendOnlyTriggerReady ||
+		!preflight.AuditShapeConstraintsReady ||
+		preflight.Audit == nil {
+		t.Fatalf("database preflight = %#v", preflight)
+	}
+	report := *preflight.Audit
+	if report.EventsChecked == 0 ||
+		report.EventsChecked != report.LegacyHashEvents+report.FullyVerifiedEvents ||
+		report.FullyVerifiedEvents == 0 ||
+		report.ChainsChecked == 0 ||
+		len(report.Heads) != report.ChainsChecked {
+		t.Fatalf("integrity report = %#v", report)
+	}
+
+	var (
+		hashVersion int16
+		storedAt    time.Time
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT hash_version, occurred_at
+		FROM portal_audit_events
+		WHERE correlation_id = $1
+	`, correlationID).Scan(&hashVersion, &storedAt); err != nil {
+		t.Fatal(err)
+	}
+	if hashVersion != currentAuditHashVersion {
+		t.Fatalf("hash version = %d", hashVersion)
+	}
+	if storedAt.Nanosecond()%1000 != 0 {
+		t.Fatalf("stored audit timestamp is not microsecond normalized: %s", storedAt)
+	}
+}

@@ -20,7 +20,8 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Provider-enforced step-up for sensitive account actions using `prompt=login`, `max_age=0` and the approved step-up ACR; the returned identity must match the initiating named user.
 - Deny-by-default, application-owned permissions with club/team/season/competition containment.
 - A restricted `gmcl_portal_runtime` PostgreSQL role, tenant transaction context, forced RLS on portal-private tables and a startup refusal if the effective role can bypass RLS.
-- Append-only, hash-chained audit events without raw authentication or invitation secrets.
+- Append-only, versioned hash-chained audit events without raw authentication or invitation secrets. Version-2 hashes use PostgreSQL-compatible timestamp precision and can be independently recomputed by the operational preflight; legacy version-1 rows are reported separately rather than overstated as fully verified.
+- A fail-closed `/bin/portal-preflight` command verifies required migrations, effective RLS, forced-RLS coverage, append-only and chain-shape constraints, every audit-chain position/link/hash (including stored IP and user-agent fields for version 2), session policy, HTTPS callback alignment, SMTP, internal-worker authentication and read-only OIDC discovery without printing secrets or enabling a club.
 - Per-club feature flags and a Super Administrator pilot-control page at `/admin/portal`; disabling a club's `portal_access` atomically disables its module flags and revokes every active session currently scoped to that club.
 - Super Administrator controls to revoke unused invitations and effective-dated appointments; appointment revocation immediately invalidates every session using that role and emits an audited outbox event.
 - Super Administrator pilot reconciliation showing active-team mapping completeness, active captain-contact counts, portal memberships/appointments and the latest mapped fixture synchronization per club.
@@ -85,6 +86,8 @@ CLUB_PORTAL_OIDC_STEP_UP_ACR=PROVIDER_APPROVED_STEP_UP_ACR
 SMTP_HOST=CONFIGURED_TEST_SMTP
 SMTP_FROM=CONFIGURED_TEST_SENDER
 EMAIL_OVERRIDE=CONTROLLED_TEST_MAILBOX
+
+N8N_HMAC_SECRET=AT_LEAST_32_RANDOM_BYTES
 ```
 
 `CLUB_PORTAL_OIDC_ALLOW_INSECURE` must remain false on the test server. Configure passkeys as the provider's preferred authenticator and password plus TOTP as the accessible fallback.
@@ -95,21 +98,22 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
-3. Confirm migration `0048_club_portal_foundation.sql` is recorded in `schema_migrations`.
-4. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
-5. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
-6. Sign in as the named test Super Administrator and open `/admin/portal`.
-7. Confirm the account-security notification panel reports SMTP configured and no unexplained dead-letter item.
-8. Activate the test-host copy of the five-minute portal-notification n8n trigger and verify an empty cycle returns HTTP 200 without creating mail.
-9. Enable `portal_access` for one synthetic/pilot club.
-10. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
-11. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
-12. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
-13. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
-14. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
-15. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
-16. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
-17. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
+3. Confirm migrations `0048_club_portal_foundation.sql` and `0049_portal_audit_hash_verification.sql` are recorded in `schema_migrations`.
+4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`; any non-zero exit blocks pilot enablement.
+5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
+6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
+7. Sign in as the named test Super Administrator and open `/admin/portal`.
+8. Confirm the account-security notification panel reports SMTP configured and no unexplained dead-letter item.
+9. Activate the test-host copy of the five-minute portal-notification n8n trigger and verify an empty cycle returns HTTP 200 without creating mail.
+10. Enable `portal_access` for one synthetic/pilot club.
+11. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
+12. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
+13. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
+14. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
+15. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
+16. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
+17. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
+18. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
 
 ## Required test evidence
 
@@ -132,20 +136,25 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 - SMTP absence leaves materialized notifications queued and returns fail-closed 503 without logging their body; transient delivery failure records an error and a future retry without losing the source event.
 - A stale notification claim can be recovered after ten minutes, a stale final-attempt claim becomes dead-lettered, and a poison or unsupported event stops retrying after five recorded failures.
 - Security notification rendering uses an explicit field allowlist: invitation tokens, administrative revocation reasons and arbitrary payload fields never appear in email.
+- The strict pilot preflight fails for missing/weak worker authentication, missing SMTP, non-HTTPS or mismatched callbacks, unavailable OIDC discovery, incomplete RLS/trigger/migration state, audit-chain gaps or any version-2 canonical hash mismatch.
+- Audit-chain head digests and positions are recorded as deployment evidence; version-1 legacy events are visibly counted as link-only verification.
 - Legacy captain and administrator regression tests remain green with global and club flags both on and off.
 - Keyboard-only use and a 320-pixel viewport remain operable for login, context choice and the action centre.
 
 ## Validation recorded for this branch
 
-On 26-27 July 2026, the implementation was validated from clean disposable PostgreSQL databases using all migrations through `0048`:
+On 26-27 July 2026, the implementation was validated from clean disposable PostgreSQL databases using all migrations through `0049`:
 
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
+- A clean 54-migration database reported 12/12 portal-private tables with enabled and forced RLS, a live append-only trigger and validated audit-chain constraints. Schema preflight passed with the portal disabled; a fully configured pilot preflight passed against a local synthetic OIDC discovery endpoint, while uppercase `PILOT` with missing dependencies failed closed.
+- After the race suite generated audit activity, preflight independently recomputed all 18 version-2 events across two chains and recorded both chain-head digests. A malformed chain-position insert was rejected by PostgreSQL, and a deliberate disposable-database metadata mutation was detected as a canonical hash mismatch with a non-zero preflight exit.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.
+- The production image contained `/bin/portal-preflight` and migration `0049`; Bash syntax, ShellCheck and `docker compose config --quiet` passed for the staging/setup workflow.
 - Each disposable test database and application container was removed after validation. Shared PostgreSQL roles were preserved unless positively proven to be test-owned.
 - `git diff --check` passed.
 

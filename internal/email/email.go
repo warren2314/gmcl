@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,8 +40,8 @@ func NewFromEnv() *Client {
 	}
 
 	return &Client{
-		host:       os.Getenv("SMTP_HOST"),
-		port:       getEnv("SMTP_PORT", "25"),
+		host:       strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		port:       strings.TrimSpace(getEnv("SMTP_PORT", "25")),
 		fromHeader: fromHeader,
 		fromAddr:   fromAddr,
 		replyTo:    strings.TrimSpace(os.Getenv("SMTP_REPLY_TO")),
@@ -155,6 +156,31 @@ func (c *Client) SendSensitive(to, subject, body string) error {
 // It intentionally reveals no host, credential or recipient information.
 func (c *Client) SensitiveDeliveryConfigured() bool {
 	return strings.TrimSpace(c.host) != ""
+}
+
+// ValidateSensitiveDeliveryConfig checks the local SMTP shape without opening
+// a network connection or exposing credentials. A relay may intentionally use
+// no authentication, but partially configured authentication is rejected.
+func (c *Client) ValidateSensitiveDeliveryConfig() error {
+	if strings.TrimSpace(c.host) == "" {
+		return fmt.Errorf("SMTP host is required")
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(c.port))
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("SMTP port is invalid")
+	}
+	if _, err := mail.ParseAddress(c.fromHeader); err != nil {
+		return fmt.Errorf("SMTP from address is invalid")
+	}
+	if (strings.TrimSpace(c.username) == "") != (c.password == "") {
+		return fmt.Errorf("SMTP username and password must be configured together")
+	}
+	if c.replyTo != "" {
+		if _, err := mail.ParseAddress(c.replyTo); err != nil {
+			return fmt.Errorf("SMTP reply-to address is invalid")
+		}
+	}
+	return nil
 }
 
 func (c *Client) messageHeaders(to, subject string) (string, error) {

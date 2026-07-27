@@ -3,8 +3,6 @@ package portal
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -263,7 +261,26 @@ func setTenantContext(ctx context.Context, tx pgx.Tx, userID uuid.UUID, clubID i
 }
 
 func (store *Store) withSystemTx(ctx context.Context, fn func(pgx.Tx) error) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	return store.withSystemTxOptions(ctx, pgx.TxOptions{}, fn)
+}
+
+func (store *Store) withSystemReadOnlyTx(
+	ctx context.Context,
+	fn func(pgx.Tx) error,
+) error {
+	return store.withSystemTxOptions(
+		ctx,
+		pgx.TxOptions{AccessMode: pgx.ReadOnly},
+		fn,
+	)
+}
+
+func (store *Store) withSystemTxOptions(
+	ctx context.Context,
+	options pgx.TxOptions,
+	fn func(pgx.Tx) error,
+) error {
+	tx, err := store.pool.BeginTx(ctx, options)
 	if err != nil {
 		return fmt.Errorf("begin portal transaction: %w", err)
 	}
@@ -977,6 +994,9 @@ func (store *Store) appendAuditTx(ctx context.Context, tx pgx.Tx, event AuditEve
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = store.now()
 	}
+	event.OccurredAt = normalizeAuditTime(event.OccurredAt)
+	event.IPAddress = normalizeAuditIPAddress(event.IPAddress)
+	event.UserAgent = normalizeAuditUserAgent(event.UserAgent)
 	eventID := uuid.New()
 	lockClubID := int32(0)
 	if event.ClubID != nil {
@@ -1006,39 +1026,13 @@ func (store *Store) appendAuditTx(ctx context.Context, tx pgx.Tx, event AuditEve
 	}
 	position := lastPosition + 1
 
-	canonical, err := json.Marshal(struct {
-		ID            string         `json:"id"`
-		ClubID        *int32         `json:"club_id,omitempty"`
-		ActorUserID   string         `json:"actor_user_id,omitempty"`
-		ActorKind     string         `json:"actor_kind"`
-		LegacyAdminID *int32         `json:"legacy_admin_id,omitempty"`
-		ActingRoleKey string         `json:"acting_role_key,omitempty"`
-		Action        string         `json:"action"`
-		TargetType    string         `json:"target_type"`
-		TargetID      string         `json:"target_id,omitempty"`
-		Outcome       string         `json:"outcome"`
-		CorrelationID string         `json:"correlation_id"`
-		Metadata      map[string]any `json:"metadata"`
-		Position      int64          `json:"position"`
-		PreviousHash  string         `json:"previous_hash,omitempty"`
-		OccurredAt    string         `json:"occurred_at"`
-	}{
-		ID:            eventID.String(),
-		ClubID:        event.ClubID,
-		ActorUserID:   uuidString(event.ActorUserID),
-		ActorKind:     event.ActorKind,
-		LegacyAdminID: event.LegacyAdminID,
-		ActingRoleKey: event.ActingRoleKey,
-		Action:        event.Action,
-		TargetType:    event.TargetType,
-		TargetID:      event.TargetID,
-		Outcome:       event.Outcome,
-		CorrelationID: event.CorrelationID,
-		Metadata:      event.Metadata,
-		Position:      position,
-		PreviousHash:  hex.EncodeToString(lastHash),
-		OccurredAt:    event.OccurredAt.UTC().Format(time.RFC3339Nano),
-	})
+	canonical, err := canonicalAuditBytes(
+		eventID,
+		event,
+		position,
+		lastHash,
+		currentAuditHashVersion,
+	)
 	if err != nil {
 		return fmt.Errorf("encode portal audit event: %w", err)
 	}
@@ -1049,18 +1043,18 @@ func (store *Store) appendAuditTx(ctx context.Context, tx pgx.Tx, event AuditEve
 			id, club_id, actor_user_id, actor_kind, legacy_admin_user_id,
 			acting_role_key, action, target_type, target_id, outcome,
 			correlation_id, metadata, chain_position, previous_hash, event_hash,
-			ip_address, user_agent, occurred_at
+			hash_version, ip_address, user_agent, occurred_at
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10,
-			$11, $12, $13, $14, $15, $16, $17, $18
+			$11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 	`, eventID, event.ClubID, event.ActorUserID, event.ActorKind,
 		event.LegacyAdminID, nullableString(event.ActingRoleKey), event.Action,
 		event.TargetType, event.TargetID, event.Outcome, event.CorrelationID,
 		event.Metadata, position, nullableBytes(lastHash), eventHash[:],
-		nullableIPAddress(event.IPAddress), sanitizeUserAgent(event.UserAgent),
-		event.OccurredAt); err != nil {
+		currentAuditHashVersion, nullableIPAddress(event.IPAddress),
+		sanitizeUserAgent(event.UserAgent), event.OccurredAt); err != nil {
 		return fmt.Errorf("append portal audit event: %w", err)
 	}
 	return nil
@@ -1120,20 +1114,37 @@ func nullableUUID(value uuid.UUID) any {
 }
 
 func nullableIPAddress(value string) any {
-	value = strings.TrimSpace(value)
+	value = normalizeAuditIPAddress(value)
 	if value == "" {
-		return nil
-	}
-	if net.ParseIP(value) == nil {
 		return nil
 	}
 	return value
 }
 
 func sanitizeUserAgent(value string) any {
-	value = strings.TrimSpace(value)
+	value = normalizeAuditUserAgent(value)
 	if value == "" {
 		return nil
+	}
+	return value
+}
+
+func normalizeAuditIPAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed := net.ParseIP(value)
+	if parsed == nil {
+		return ""
+	}
+	return parsed.String()
+}
+
+func normalizeAuditUserAgent(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
 	}
 	const maxUserAgentBytes = 512
 	if len(value) > maxUserAgentBytes {

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -23,17 +25,17 @@ type retentionSummary struct {
 }
 
 type securityPageData struct {
-	Disable2FA         bool
-	SessionSecretSet   bool
-	AdminSecretSet     bool
-	HMACSecretSet      bool
-	SMTPConfigured     bool
-	HSTSEnabled        bool
-	MaxFailedAttempts  int
-	LockoutMinutes     int
-	Summaries          []retentionSummary
-	SuccessMsg         string
-	ErrorMsg           string
+	Disable2FA        bool
+	SessionSecretSet  bool
+	AdminSecretSet    bool
+	HMACSecretSet     bool
+	SMTPConfigured    bool
+	HSTSEnabled       bool
+	MaxFailedAttempts int
+	LockoutMinutes    int
+	Summaries         []retentionSummary
+	SuccessMsg        string
+	ErrorMsg          string
 }
 
 func (s *Server) handleAdminSecurityGet() http.HandlerFunc {
@@ -47,8 +49,8 @@ func (s *Server) handleAdminSecurityGet() http.HandlerFunc {
 				Disable2FA:        os.Getenv("DISABLE_2FA") == "1",
 				SessionSecretSet:  os.Getenv("SESSION_SECRET") != "",
 				AdminSecretSet:    os.Getenv("ADMIN_SESSION_SECRET") != "",
-				HMACSecretSet:     os.Getenv("INTERNAL_HMAC_SECRET") != "",
-				SMTPConfigured:    os.Getenv("SMTP_HOST") != "" && os.Getenv("SMTP_USERNAME") != "" && os.Getenv("SMTP_PASSWORD") != "",
+				HMACSecretSet:     internalWorkerAuthConfigured(),
+				SMTPConfigured:    smtpSecurityDeliveryConfigured(),
 				HSTSEnabled:       os.Getenv("ENABLE_HSTS") != "0",
 				MaxFailedAttempts: 5,
 				LockoutMinutes:    15,
@@ -94,8 +96,8 @@ func (s *Server) buildSecurityPageData(ctx context.Context, r *http.Request) (se
 		Disable2FA:        disable2FA,
 		SessionSecretSet:  os.Getenv("SESSION_SECRET") != "",
 		AdminSecretSet:    os.Getenv("ADMIN_SESSION_SECRET") != "",
-		HMACSecretSet:     os.Getenv("INTERNAL_HMAC_SECRET") != "",
-		SMTPConfigured:    os.Getenv("SMTP_HOST") != "" && os.Getenv("SMTP_USERNAME") != "" && os.Getenv("SMTP_PASSWORD") != "",
+		HMACSecretSet:     internalWorkerAuthConfigured(),
+		SMTPConfigured:    smtpSecurityDeliveryConfigured(),
 		HSTSEnabled:       os.Getenv("ENABLE_HSTS") != "0",
 		MaxFailedAttempts: maxAttempts,
 		LockoutMinutes:    int(lockout / time.Minute),
@@ -108,6 +110,14 @@ func (s *Server) buildSecurityPageData(ctx context.Context, r *http.Request) (se
 	}
 	data.Summaries = summaries
 	return data, nil
+}
+
+func internalWorkerAuthConfigured() bool {
+	return len(strings.TrimSpace(os.Getenv("N8N_HMAC_SECRET"))) >= 32
+}
+
+func smtpSecurityDeliveryConfigured() bool {
+	return email.NewFromEnv().ValidateSensitiveDeliveryConfig() == nil
 }
 
 func (s *Server) loadRetentionSummaries(ctx context.Context) ([]retentionSummary, error) {

@@ -86,8 +86,10 @@ Replace **every** `CHANGE_ME_*` value:
 |----------|-------------|
 | `POSTGRES_PASSWORD` | Strong random password for the Postgres container |
 | `DB_DSN` | Must use the same password as `POSTGRES_PASSWORD` |
+| `SESSION_SECRET` | Separate 32-byte random secret for captain sessions |
 | `ADMIN_SESSION_SECRET` | 32-byte random secret — run `openssl rand -base64 32` |
 | `CSRF_SECRET` | 32-byte random secret — run `openssl rand -base64 32` |
+| `N8N_HMAC_SECRET` | At least 32 random bytes for authenticated `/internal/*` workers |
 | `SEED_ADMIN_PASSWORD` | Temporary password for `webmaster@gmcl.co.uk` (forced change on first login) |
 | `SMTP_*` | Your SMTP details for sending admin invite emails |
 | `PLAY_CRICKET_API_KEY` | Your Play-Cricket API key |
@@ -101,7 +103,7 @@ Replace **every** `CHANGE_ME_*` value:
 Generate random secrets:
 
 ```bash
-openssl rand -base64 32   # run twice — once for ADMIN_SESSION_SECRET, once for CSRF_SECRET
+openssl rand -base64 32   # run four times: SESSION, ADMIN_SESSION, CSRF and N8N_HMAC secrets
 ```
 
 ---

@@ -12,7 +12,8 @@ COPY . .
 # Generate go.sum from go.mod and fetch checksums (host may not have go.sum)
 RUN go mod tidy
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/app ./cmd/app
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/app ./cmd/app \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/portal-preflight ./cmd/portal-preflight
 
 FROM alpine:3.20
 
@@ -21,6 +22,7 @@ RUN apk add --no-cache wget tzdata
 WORKDIR /
 
 COPY --from=builder /bin/app /bin/app
+COPY --from=builder /bin/portal-preflight /bin/portal-preflight
 COPY --from=builder /app/migrations /migrations
 COPY --from=builder /app/static /static
 COPY --from=builder /app/images /images

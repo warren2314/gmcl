@@ -157,7 +157,7 @@ Automated test suite / CI (if present) should be run separately; this list refle
 | `SEED_ADMIN_PASSWORD` | Admin password (default `admin123`) |
 | `APP_ENV=dev` | Log magic link URL to stdout |
 | `SMTP_*` | Real email when configured |
-| `HMAC_SECRET` (or as per `middleware/hmac`) | Internal endpoint signing |
+| `N8N_HMAC_SECRET` | Internal endpoint signing and n8n worker authentication |
 
 ---
 

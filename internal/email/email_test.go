@@ -50,6 +50,43 @@ func TestSendSensitiveRequiresSMTP(t *testing.T) {
 	}
 }
 
+func TestValidateSensitiveDeliveryConfig(t *testing.T) {
+	t.Setenv("SMTP_HOST", "smtp.example")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_FROM", "GMCL Portal <portal@example.test>")
+	t.Setenv("SMTP_USERNAME", "user")
+	t.Setenv("SMTP_PASSWORD", "password")
+	t.Setenv("SMTP_REPLY_TO", "support@example.test")
+	if err := NewFromEnv().ValidateSensitiveDeliveryConfig(); err != nil {
+		t.Fatalf("valid SMTP configuration rejected: %v", err)
+	}
+	t.Setenv("SMTP_HOST", " smtp.example ")
+	t.Setenv("SMTP_PORT", " 587 ")
+	if err := NewFromEnv().ValidateSensitiveDeliveryConfig(); err != nil {
+		t.Fatalf("trimmed SMTP configuration rejected: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"missing host", "SMTP_HOST", ""},
+		{"invalid port", "SMTP_PORT", "not-a-port"},
+		{"invalid from", "SMTP_FROM", "not-an-address"},
+		{"partial auth", "SMTP_PASSWORD", ""},
+		{"invalid reply-to", "SMTP_REPLY_TO", "not-an-address"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.key, test.value)
+			if err := NewFromEnv().ValidateSensitiveDeliveryConfig(); err == nil {
+				t.Fatal("invalid SMTP configuration unexpectedly passed")
+			}
+		})
+	}
+}
+
 func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 	html := toHTML("Primary:\nBUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=abc\nBackup:\nBACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=abc\nACCESS_URL:https://gmcl.co.uk/access\nACCESS_CODE:abc")
 
