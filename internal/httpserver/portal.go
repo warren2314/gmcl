@@ -41,6 +41,7 @@ func (s *Server) portalRouter() http.Handler {
 		r.Get("/contexts", s.handlePortalContexts())
 		r.Post("/contexts", s.handlePortalContextSelect())
 		r.Get("/sessions", s.handlePortalSessions())
+		r.Get("/activity", s.handlePortalActivity())
 		r.Post("/sessions/revoke-all", s.handlePortalRevokeAllSessions())
 		r.Post("/sessions/{sessionID}/revoke", s.handlePortalRevokeSession())
 		r.Get("/step-up", s.handlePortalStepUp())
@@ -813,6 +814,95 @@ func (s *Server) handlePortalSessions() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handlePortalActivity() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := portalPrincipalForRequest(r)
+		if !ok {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if principal.Assignment == nil {
+			http.Redirect(w, r, "/portal/contexts", http.StatusSeeOther)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		activities, err := s.PortalStore.ListUserActivity(ctx, principal, 100)
+		if err != nil {
+			if errors.Is(err, portal.ErrForbidden) {
+				http.Error(w, "the selected role cannot view account activity", http.StatusForbidden)
+				return
+			}
+			slog.Error("load portal account activity", "error", err)
+			http.Error(w, "could not load account activity", http.StatusInternalServerError)
+			return
+		}
+
+		csrf := portalCSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Account activity")
+		writePortalNav(w, csrf, principal, r.URL.Path)
+		fmt.Fprint(w, `<main id="main-content" tabindex="-1" class="container pb-5"><div class="row justify-content-center"><div class="col-xl-9">
+<div class="mb-4"><p class="text-uppercase text-muted small mb-1">Named account security</p><h1 class="h2">Account activity</h1>
+<p class="text-muted">Review the most recent security-relevant events for your account in this club context. Internal details, record identifiers, IP addresses and device data are not displayed.</p></div>
+<div class="card shadow-sm"><div class="table-responsive"><table class="table align-middle mb-0"><caption class="visually-hidden">Recent security activity for this named portal account and selected club context</caption><thead><tr><th scope="col">Activity</th><th scope="col">Outcome</th><th scope="col">Role context</th><th scope="col">When</th></tr></thead><tbody>`)
+		if len(activities) == 0 {
+			fmt.Fprint(w, `<tr><td colspan="4" class="text-muted">No account activity is available for this club context.</td></tr>`)
+		}
+		for _, activity := range activities {
+			label, description := portalActivityPresentation(activity.Action)
+			role := "No role selected"
+			if activity.ActingRole != "" {
+				role = humanPortalRole(activity.ActingRole)
+			}
+			fmt.Fprintf(w, `<tr><th scope="row"><div>%s</div><div class="small text-muted fw-normal">%s</div></th><td>%s</td><td>%s</td><td><time datetime="%s">%s</time></td></tr>`,
+				escapeHTML(label),
+				escapeHTML(description),
+				portalActivityOutcomeBadge(activity.Outcome),
+				escapeHTML(role),
+				activity.OccurredAt.UTC().Format(time.RFC3339),
+				escapeHTML(portalLocalTime(activity.OccurredAt, s.LondonLoc)),
+			)
+		}
+		fmt.Fprint(w, `</tbody></table></div></div>
+<p class="small text-muted mt-3 mb-0">Only the 100 most recent visible events are shown. Contact GMCL support if you do not recognize an event.</p>
+</div></div></main>`)
+		pageFooter(w)
+	}
+}
+
+func portalActivityPresentation(action string) (string, string) {
+	switch action {
+	case "portal.invitation.redeemed":
+		return "Account activated", "An approved club invitation was redeemed."
+	case "portal.session.created":
+		return "Signed in", "A new named-account session was created."
+	case "portal.context.selected":
+		return "Club role selected", "The acting club and role context changed."
+	case "portal.scope.denied":
+		return "Access blocked", "A request outside the selected scope was denied."
+	case "portal.session.revoked":
+		return "Session revoked", "One account session was revoked."
+	case "portal.session.revoked_all":
+		return "Signed out everywhere", "All account sessions were revoked."
+	default:
+		return "Account activity", "A security-relevant account event was recorded."
+	}
+}
+
+func portalActivityOutcomeBadge(outcome string) string {
+	switch outcome {
+	case "success":
+		return `<span class="badge text-bg-success">Completed</span>`
+	case "denied":
+		return `<span class="badge text-bg-warning">Denied</span>`
+	case "failure":
+		return `<span class="badge text-bg-danger">Failed</span>`
+	default:
+		return `<span class="badge text-bg-secondary">Recorded</span>`
+	}
+}
+
 func (s *Server) handlePortalRevokeSession() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := portalPrincipalForRequest(r)
@@ -977,6 +1067,7 @@ func writePortalNav(
 %s
 %s
 %s
+%s
 <li class="nav-item"><form method="post" action="/portal/logout"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-link nav-link" type="submit">Sign out</button></form></li>
 </ul></div></div></nav>`,
 		escapeHTML(principal.DisplayName),
@@ -991,6 +1082,7 @@ func writePortalNav(
 		navLink("/portal/sanctions", "Sanctions"),
 		navLink("/portal/contexts", "Switch role"),
 		navLink("/portal/sessions", "Sessions"),
+		navLink("/portal/activity", "Activity"),
 		escapeHTML(csrf),
 	)
 }

@@ -4,7 +4,7 @@
 
 **Implementation baseline:** 26 July 2026
 
-**Current delivery slice:** identity/tenancy foundation and feature-flagged read-only action centre
+**Current delivery slice:** identity/tenancy foundation, feature-flagged read-only action centre and account-security activity
 
 This runbook records implemented behaviour and the controlled route to a test-server pilot. It does not remove or replace the existing captain-report or administrator services.
 
@@ -17,6 +17,7 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - Multi-club acting-context selection with bearer-token rotation when the context changes.
 - Opaque, hashed, server-side sessions with 30-minute idle and 12-hour absolute defaults.
 - User-visible active-session inventory, immediate per-session revocation and all-device revocation through account security-version invalidation.
+- User-visible account activity at `/portal/activity`, limited to the latest 100 events for the named user in the selected club context. The repository projects only action, outcome, acting role and timestamp; the page maps these through explicit presentation allowlists and never selects or renders audit metadata, targets, record IDs, IP addresses, user agents, hashes or another club's events.
 - Provider-enforced step-up for sensitive account actions using `prompt=login`, `max_age=0` and the approved step-up ACR; the returned identity must match the initiating named user.
 - Deny-by-default, application-owned permissions with club/team/season/competition containment.
 - A restricted `gmcl_portal_runtime` PostgreSQL role, tenant transaction context, forced RLS on portal-private tables and a startup refusal if the effective role can bypass RLS.
@@ -112,8 +113,9 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 14. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
 15. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
 16. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
-17. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
-18. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
+17. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
+18. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
+19. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
 
 ## Required test evidence
 
@@ -126,6 +128,8 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 - Changing acting context invalidates the previous session token.
 - Revoking one owned session does not expose any token and denies that session's next request.
 - All-device revocation is denied without recent step-up, rejects an identity switch, increments the account security version and denies every prior token.
+- Account activity includes the named user's allowlisted lifecycle events for the selected club, renders unknown actions and outcomes generically, and discloses no event from another club even when that event has the same actor user ID.
+- Account activity HTML contains no raw audit action key, target or session identifier, metadata field, IP address or user-agent value; its table has a caption and scoped column headers.
 - Dashboard counts reconcile to fixtures, submissions and exemptions for the selected club/team/season.
 - Club sanction totals equal the displayed team-ledger rows.
 - Unlinked legacy sanctions trigger a warning and are not silently double-counted.
@@ -151,6 +155,8 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - A clean 54-migration database reported 12/12 portal-private tables with enabled and forced RLS, a live append-only trigger and validated audit-chain constraints. Schema preflight passed with the portal disabled; a fully configured pilot preflight passed against a local synthetic OIDC discovery endpoint, while uppercase `PILOT` with missing dependencies failed closed.
 - After the race suite generated audit activity, preflight independently recomputed all 18 version-2 events across two chains and recorded both chain-head digests. A malformed chain-position insert was rejected by PostgreSQL, and a deliberate disposable-database metadata mutation was detected as a canonical hash mismatch with a non-zero preflight exit.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
+- Account-activity unit and database integration tests passed limit clamping, presentation allowlists, same-actor cross-club RLS isolation, semantic table rendering and negative disclosure checks for raw action keys, identifiers, metadata, IP addresses and user agents. The lifecycle fixtures were also made independent of pre-seeded seasons and concurrent package fixtures.
+- After the account-activity race suite, schema preflight independently recomputed 21 version-2 audit events across four chains and reported ready.
 - The portal notification lifecycle passed idempotent event materialization, verified-identity recipient resolution, bounded retry delay, allowlisted activation/revocation templates, successful completion, queue-health aggregation, stale final-lease expiry and poison-event dead-lettering.
 - A real authenticated browser journey at a 320 CSS-pixel viewport passed for the action centre, report history, sanction ledger and session security pages. The first keyboard tab reached the skip link; activating it focused `main`; the collapsed navigation remained keyboard-operable; each page exposed one `aria-current="page"` link; tables exposed captions and header scopes; cards stacked; and wide tables scrolled inside their responsive containers without document-level horizontal overflow.
 - The production-stage image built successfully, contained no `.env`, started with the restricted runtime role, returned 200 for `/health` and the legacy entry page, and returned fail-closed 503 for `/portal/login` when OIDC was deliberately disabled.

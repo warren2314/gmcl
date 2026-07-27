@@ -96,6 +96,7 @@ func TestWritePortalNavProvidesKeyboardAndCurrentPageSemantics(t *testing.T) {
 		`href="#main-content">Skip to main content</a>`,
 		`aria-label="Club portal"`,
 		`href="/portal/reports" aria-current="page">Reports</a>`,
+		`href="/portal/activity">Activity</a>`,
 		`Alice &lt;Admin&gt;`,
 		`name="csrf_token" value="csrf-token"`,
 	} {
@@ -108,6 +109,57 @@ func TestWritePortalNavProvidesKeyboardAndCurrentPageSemantics(t *testing.T) {
 			strings.Count(body, `aria-current="page"`),
 			body,
 		)
+	}
+}
+
+func TestPortalActivityPresentationIsAllowlisted(t *testing.T) {
+	label, description := portalActivityPresentation("portal.session.created")
+	if label != "Signed in" || !strings.Contains(description, "session") {
+		t.Fatalf("known activity = %q, %q", label, description)
+	}
+	unknown := `<script>alert("internal")</script>`
+	label, description = portalActivityPresentation(unknown)
+	if label != "Account activity" ||
+		strings.Contains(label, unknown) ||
+		strings.Contains(description, unknown) {
+		t.Fatalf("unknown activity leaked internal value: %q, %q", label, description)
+	}
+}
+
+func TestPortalActivityOutcomeBadgeIsAllowlisted(t *testing.T) {
+	for outcome, expected := range map[string]string{
+		"success": "Completed",
+		"denied":  "Denied",
+		"failure": "Failed",
+		"unknown": "Recorded",
+	} {
+		badge := portalActivityOutcomeBadge(outcome)
+		if !strings.Contains(badge, expected) {
+			t.Fatalf("outcome %q badge = %q", outcome, badge)
+		}
+	}
+	if badge := portalActivityOutcomeBadge(`<script>`); strings.Contains(badge, "<script>") {
+		t.Fatalf("unknown outcome leaked input: %q", badge)
+	}
+}
+
+func TestPortalActivityNavigationMarksCurrentPage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writePortalNav(
+		recorder,
+		"csrf-token",
+		portal.Principal{DisplayName: "Alice"},
+		"/portal/activity",
+	)
+	body := recorder.Body.String()
+	if !strings.Contains(
+		body,
+		`href="/portal/activity" aria-current="page">Activity</a>`,
+	) {
+		t.Fatalf("activity navigation was not current: %s", body)
+	}
+	if strings.Count(body, `aria-current="page"`) != 1 {
+		t.Fatalf("current-page count = %d", strings.Count(body, `aria-current="page"`))
 	}
 }
 

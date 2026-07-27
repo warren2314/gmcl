@@ -184,10 +184,17 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(activeAssignments) != 1 ||
-		activeAssignments[0].Email != "portal.oidc.test@example.org" ||
-		activeAssignments[0].ID != contexts[0].Assignment.ID {
-		t.Fatalf("active portal appointments = %#v", activeAssignments)
+	var activeAssignment *ActiveAssignmentSummary
+	for index := range activeAssignments {
+		if activeAssignments[index].ID == contexts[0].Assignment.ID {
+			activeAssignment = &activeAssignments[index]
+			break
+		}
+	}
+	if activeAssignment == nil ||
+		activeAssignment.Email != "portal.oidc.test@example.org" ||
+		activeAssignment.UserID != authenticated.UserID {
+		t.Fatalf("own active portal appointment missing: %#v", activeAssignments)
 	}
 
 	selected, rotatedToken, err := store.SelectActingContext(
@@ -238,6 +245,57 @@ func TestOIDCInvitationSessionAndContextLifecycle(t *testing.T) {
 	}
 	if deniedScopeEvents != 1 {
 		t.Fatalf("scope denial audit events = %d, want 1", deniedScopeEvents)
+	}
+	var foreignActivityClubID int32
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(MAX(id), 0) + 1 FROM clubs
+	`).Scan(&foreignActivityClubID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO clubs (id, name, short_name)
+		VALUES ($1, $2, 'OIDCF')
+	`, foreignActivityClubID, "Foreign activity "+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		return store.appendAuditTx(ctx, tx, AuditEvent{
+			ClubID:        &foreignActivityClubID,
+			ActorUserID:   &rotatedPrincipal.UserID,
+			ActorKind:     "portal_user",
+			ActingRoleKey: string(rotatedPrincipal.Assignment.Role),
+			Action:        "portal.foreign.hidden",
+			TargetType:    "portal_test",
+			Outcome:       "success",
+			CorrelationID: uuid.NewString(),
+			OccurredAt:    time.Now().UTC(),
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activities, err := store.ListUserActivity(ctx, rotatedPrincipal, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activityActions := make(map[string]bool)
+	for _, activity := range activities {
+		activityActions[activity.Action] = true
+		if activity.OccurredAt.IsZero() {
+			t.Fatalf("activity omitted timestamp: %#v", activity)
+		}
+	}
+	for _, expectedAction := range []string{
+		"portal.invitation.redeemed",
+		"portal.session.created",
+		"portal.context.selected",
+		"portal.scope.denied",
+	} {
+		if !activityActions[expectedAction] {
+			t.Fatalf("account activity omitted %q: %#v", expectedAction, activities)
+		}
+	}
+	if activityActions["portal.foreign.hidden"] {
+		t.Fatalf("foreign-club activity leaked through RLS: %#v", activities)
 	}
 	teamReadScope, err := store.ResolveReadScope(
 		ctx,
@@ -604,6 +662,20 @@ func seedOIDCIntegrationApprovals(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(1804289383, 9148)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	var seasonID int32
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(id), 0) + 1001 FROM seasons
+	`).Scan(&seasonID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO seasons (id, name, start_date, end_date)
+		VALUES ($1, $2, $3, $4)
+	`, seasonID, "Portal OIDC integration "+uuid.NewString(),
+		now.AddDate(0, -1, 0), now.AddDate(0, 1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	var clubID int32
