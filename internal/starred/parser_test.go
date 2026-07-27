@@ -98,6 +98,56 @@ func TestBuildPeriodsPrefersEstablishedListForAmbiguousSameDayAmendment(t *testi
 	}
 }
 
+func TestBuildPeriodsEndsOldListWhenPlayerMovesBeforeLaterReplacement(t *testing.T) {
+	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	movedAt := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	replacedAt := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	starredClubKey := NormalizeClub("Flixton C&SC")
+	snapshot := Snapshot{
+		SeasonYear: 2026,
+		Entries: []Entry{
+			{SeasonYear: 2026, ClubName: "Flixton C&SC", ClubKey: starredClubKey, ListType: "A", PlayerName: "Aaron Offer", PlayerKey: NormalizeName("Aaron Offer")},
+			{SeasonYear: 2026, ClubName: "Flixton C&SC", ClubKey: starredClubKey, ListType: "B", PlayerName: "James Lupton", PlayerKey: NormalizeName("James Lupton")},
+		},
+		Amendments: []Amendment{
+			{SeasonYear: 2026, ClubName: "Flixton C&SC", ClubKey: starredClubKey, Sequence: 4, Date: &movedAt, Outgoing: "Aaron Offer", OutgoingKey: NormalizeName("Aaron Offer"), Incoming: "James Lupton", IncomingKey: NormalizeName("James Lupton"), RawValue: "Aaron Offer replaced by James Lupton (21/06/2026)", Status: "parsed"},
+			{SeasonYear: 2026, ClubName: "Flixton C&SC", ClubKey: starredClubKey, Sequence: 5, Date: &replacedAt, Outgoing: "James Lupton", OutgoingKey: NormalizeName("James Lupton"), Incoming: "Kamran Basharat", IncomingKey: NormalizeName("Kamran Basharat"), RawValue: "James Lupton replaced by Kamran Basharat (20/07/2026)", Status: "parsed"},
+		},
+	}
+
+	periods, issues := BuildPeriods(snapshot, start)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%#v", issues)
+	}
+
+	var jamesPeriods []Period
+	for _, period := range periods {
+		if period.PlayerKey == NormalizeName("James Lupton") {
+			jamesPeriods = append(jamesPeriods, period)
+		}
+	}
+	if len(jamesPeriods) != 2 {
+		t.Fatalf("James periods=%#v; want List B then List A", jamesPeriods)
+	}
+	if jamesPeriods[0].ListType != "B" || jamesPeriods[0].ValidFrom != start || jamesPeriods[0].ValidTo == nil || !jamesPeriods[0].ValidTo.Equal(movedAt) {
+		t.Fatalf("List B period=%#v; want %s to %s", jamesPeriods[0], start, movedAt)
+	}
+	if jamesPeriods[1].ListType != "A" || !jamesPeriods[1].ValidFrom.Equal(movedAt) || jamesPeriods[1].ValidTo == nil || !jamesPeriods[1].ValidTo.Equal(replacedAt) {
+		t.Fatalf("List A period=%#v; want %s to %s", jamesPeriods[1], movedAt, replacedAt)
+	}
+
+	evaluation := Evaluate(periods, []Appearance{
+		{MatchID: 1, SeasonYear: 2026, MatchDate: movedAt.AddDate(0, 0, 7), CompetitionType: "League", ClubName: "Flixton CC", ClubKey: "flixton", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 5301675, PlayerName: "James Lupton", PlayerKey: NormalizeName("James Lupton")},
+		{MatchID: 7240194, SeasonYear: 2026, MatchDate: time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Flixton CC", ClubKey: "flixton", TeamName: "2nd XI", TeamLevel: 2, PlayerID: 5301675, PlayerName: "James Lupton", PlayerKey: NormalizeName("James Lupton")},
+	}, []IdentityMapping{{
+		SeasonYear: 2026, ClubKey: starredClubKey, StarredPlayerKey: NormalizeName("James Lupton"),
+		PlayerID: 5301675, PlayerName: "James Lupton",
+	}}, time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC))
+	if len(evaluation.Breaches) != 1 || evaluation.Breaches[0].Appearance.MatchID != 1 {
+		t.Fatalf("breaches=%#v; want only the appearance while James was on List A", evaluation.Breaches)
+	}
+}
+
 func TestBuildPeriodsTreatsAmendmentAlreadyReflectedInCurrentListAsApplied(t *testing.T) {
 	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	amendmentDate := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)

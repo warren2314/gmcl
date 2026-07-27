@@ -48,7 +48,7 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 		return ams[i].Sequence < ams[j].Sequence
 	})
 	var issues []RosterIssue
-	for _, a := range ams {
+	for amendmentIndex, a := range ams {
 		if a.Date == nil || a.IncomingKey == "" {
 			issues = append(issues, RosterIssue{a.ClubName, a.Sequence, a.RawValue, a.Issue})
 			continue
@@ -133,9 +133,49 @@ func BuildPeriods(s Snapshot, seasonStart time.Time) ([]Period, []RosterIssue) {
 			continue
 		}
 		name, tags := parsePlayerCell(a.Incoming)
+		// A replacement can promote an existing List B player into List A (or
+		// move a List A player the other way). End that player's old membership
+		// when the move takes effect, otherwise a later replacement can close the
+		// wrong, older list period and leave the moved period active indefinitely.
+		//
+		// Keep the old membership temporarily when a later amendment on the same
+		// day replaces that player. Published sheets use that two-row sequence to
+		// express a simultaneous swap: first move B -> A, then fill the vacated B
+		// slot. The next amendment must still be able to resolve the old slot.
+		if !hasLaterSameDayOutgoing(ams[amendmentIndex+1:], a, a.IncomingKey, a.Incoming) {
+			for _, otherList := range []string{"A", "B"} {
+				if otherList == list {
+					continue
+				}
+				if incomingKey, ok := resolveActivePlayer(active[a.ClubKey][otherList], a.IncomingKey, a.Incoming); ok {
+					closePeriod(a.ClubKey, otherList, incomingKey, *a.Date)
+				}
+			}
+		}
 		add(a.ClubName, a.ClubKey, list, name, NormalizeName(name), *a.Date, tags, "amendment", a.Sequence)
 	}
 	return dedupePeriods(periods), issues
+}
+
+func hasLaterSameDayOutgoing(amendments []Amendment, current Amendment, playerKey, playerName string) bool {
+	if current.Date == nil {
+		return false
+	}
+	for _, amendment := range amendments {
+		if amendment.ClubKey != current.ClubKey {
+			break
+		}
+		if amendment.Date == nil || !amendment.Date.Equal(*current.Date) {
+			if amendment.Date != nil && amendment.Date.After(*current.Date) {
+				break
+			}
+			continue
+		}
+		if amendment.OutgoingKey == playerKey || likelyRosterNameAlias(amendment.Outgoing, playerName) {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupePeriods protects the review from duplicate rows in the published
