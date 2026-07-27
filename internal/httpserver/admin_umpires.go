@@ -281,9 +281,13 @@ const premierPanelMatchPredicateSQL = `(
 	))
 	OR
 	(EXTRACT(ISODOW FROM sub.match_date) = 7 AND (
-		LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%derek kay%'
-		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%championship cup%'
-		OR LOWER(COALESCE(lf.payload->>'competition_name', '')) LIKE '%john barrow%'
+		LOWER(COALESCE(lf.payload->>'competition_name', '')) IN (
+			'derek kay 1st xi cup',
+			'gmcl sunday derek kay cup',
+			'1st xi championship cup',
+			'gmcl sunday championship cup',
+			'john barrow 1st xi trophy'
+		)
 	))
 	)
 )`
@@ -593,6 +597,7 @@ type umpireCompetitionAuditRow struct {
 	Competition    string
 	Classification string
 	Resolution     string
+	ExceptionRefs  string
 	Ratings        int64
 }
 
@@ -603,6 +608,7 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 	rows, err := s.DB.Query(ctx, fmt.Sprintf(`
 		WITH deduped AS (
 		    SELECT DISTINCT ON (sub.team_id, sub.match_date)
+		        sub.id,
 		        sub.play_cricket_match_id,
 		        trim(sub.form_data->>'umpire1_name') AS u1name,
 		        sub.form_data->>'umpire1_performance' AS u1perf,
@@ -622,16 +628,18 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 		    ORDER BY sub.team_id, sub.match_date, sub.submitted_at DESC
 		),
 		ratings AS (
-		    SELECT lower(trim(u1name)) AS key, u1perf AS perf, competition, resolution, is_premier_panel_game
+		    SELECT id, trim(u1name) AS display, lower(trim(u1name)) AS key, u1perf AS perf, competition, resolution, is_premier_panel_game
 		    FROM deduped
 		    WHERE u1name IS NOT NULL AND trim(u1name) <> ''
 		    UNION ALL
-		    SELECT lower(trim(u2name)), u2perf, competition, resolution, is_premier_panel_game
+		    SELECT id, trim(u2name), lower(trim(u2name)), u2perf, competition, resolution, is_premier_panel_game
 		    FROM deduped
 		    WHERE u2name IS NOT NULL AND trim(u2name) <> ''
 		),
 		classified AS (
 		    SELECT
+		        id,
+		        display,
 		        CASE WHEN trim(competition) = '' THEN 'Unclassified fixture' ELSE competition END AS competition,
 		        CASE
 		            WHEN resolution IN ('Unmatched', 'Ambiguous team/date') THEN 'Exception'
@@ -643,7 +651,15 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 		    WHERE perf IN ('Good','Average','Poor')
 		      AND key = ANY(%s)
 		)
-		SELECT competition, classification, resolution, COUNT(*)::bigint
+		SELECT
+		    competition,
+		    classification,
+		    resolution,
+		    COALESCE(STRING_AGG(
+		        CASE WHEN classification = 'Exception' THEN id::text END,
+		        ',' ORDER BY id
+		    ), ''),
+		    COUNT(*)::bigint
 		FROM classified
 		GROUP BY competition, classification, resolution
 		ORDER BY classification, competition, resolution
@@ -656,7 +672,7 @@ func (s *Server) loadPremierUmpireCompetitionAudit(ctx context.Context, seasonID
 	var audit []umpireCompetitionAuditRow
 	for rows.Next() {
 		var row umpireCompetitionAuditRow
-		if rows.Scan(&row.Competition, &row.Classification, &row.Resolution, &row.Ratings) == nil {
+		if rows.Scan(&row.Competition, &row.Classification, &row.Resolution, &row.ExceptionRefs, &row.Ratings) == nil {
 			audit = append(audit, row)
 		}
 	}
@@ -842,7 +858,7 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
   <summary class="card-header fw-semibold" style="cursor:pointer">Show rating totals by competition and fixture-link method</summary>
   <div class="table-responsive">
     <table class="table table-sm table-hover mb-0">
-      <thead><tr><th>Classification</th><th>Competition</th><th>Fixture link</th><th class="text-end">Ratings</th></tr></thead>
+      <thead><tr><th>Classification</th><th>Competition</th><th>Fixture link</th><th>Exception records</th><th class="text-end">Ratings</th></tr></thead>
       <tbody>`, auditClass, escapeHTML(auditStatus))
 		for _, row := range competitionAudit {
 			badgeClass := "bg-light text-dark"
@@ -852,15 +868,28 @@ func (s *Server) handleAdminUmpireRankings() http.HandlerFunc {
 			case "Exception":
 				badgeClass = "bg-danger"
 			}
+			exceptionCell := `<span class="text-muted">—</span>`
+			if row.ExceptionRefs != "" {
+				var links []string
+				for _, rawID := range strings.Split(row.ExceptionRefs, ",") {
+					if id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64); err == nil && id > 0 {
+						links = append(links, fmt.Sprintf(`<a href="/admin/submissions/%d">#%d</a>`, id, id))
+					}
+				}
+				if len(links) > 0 {
+					exceptionCell = strings.Join(links, ", ")
+				}
+			}
 			fmt.Fprintf(w, `<tr>
   <td><span class="badge %s">%s</span></td>
   <td>%s</td>
   <td>%s</td>
+  <td>%s</td>
   <td class="text-end fw-semibold">%d</td>
-</tr>`, badgeClass, escapeHTML(row.Classification), escapeHTML(row.Competition), escapeHTML(row.Resolution), row.Ratings)
+</tr>`, badgeClass, escapeHTML(row.Classification), escapeHTML(row.Competition), escapeHTML(row.Resolution), exceptionCell, row.Ratings)
 		}
 		if len(competitionAudit) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="4" class="text-center text-muted py-3">No valid Premier Panel ratings found for this season.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No valid Premier Panel ratings found for this season.</td></tr>`)
 		}
 		fmt.Fprint(w, `</tbody></table></div></details>`)
 

@@ -116,7 +116,7 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM submissions WHERE season_id=$1`, seasonID)
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM league_fixtures WHERE play_cricket_match_id BETWEEN -910110 AND -910101`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM league_fixtures WHERE play_cricket_match_id BETWEEN -910111 AND -910101`)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM captains WHERE id=$1`, captainID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM teams WHERE id=$1`, teamID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM clubs WHERE id=$1`, clubID)
@@ -145,7 +145,8 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		    (-910107,$1,'2026-05-17','-9101-test-team','{"competition_name":"1st XI Championship Cup"}'),
 		    (-910108,$1,'2026-05-24','-9101-test-team','{"competition_name":"John Barrow 1st XI Trophy"}'),
 		    (-910109,$1,'2026-05-31','-9101-test-team','{"competition_name":"GMCL Sunday Premier League"}'),
-		    (-910110,$1,'2026-06-07','-9101-test-team','{"competition_name":"Derek Kay 1st XI Cup - abandoned test"}')`, []any{seasonID}},
+		    (-910110,$1,'2026-06-07','-9101-test-team','{"competition_name":"Derek Kay 1st XI Cup"}'),
+		    (-910111,$1,'2026-06-14','-9101-test-team','{"competition_name":"2nd XI Championship Cup"}')`, []any{seasonID}},
 		{`INSERT INTO submissions
 		    (season_id,week_id,team_id,captain_id,match_date,pitch_rating,outfield_rating,facilities_rating,play_cricket_match_id,umpire1_type,form_data)
 		  VALUES
@@ -158,7 +159,8 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 		    ($1,$2,$3,$4,'2026-05-17',3,3,3,-910107,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
 		    ($1,$2,$3,$4,'2026-05-24',3,3,3,-910108,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Good"}'),
 		    ($1,$2,$3,$4,'2026-05-31',3,3,3,-910109,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Poor"}'),
-		    ($1,$2,$3,$4,'2026-06-07',3,3,3,-910110,'club','{"umpire1_name":"Dave Faulkner","match_outcome":"abandoned"}')`, []any{seasonID, weekID, teamID, captainID}},
+		    ($1,$2,$3,$4,'2026-06-07',3,3,3,-910110,'club','{"umpire1_name":"Dave Faulkner","match_outcome":"abandoned"}'),
+		    ($1,$2,$3,$4,'2026-06-14',3,3,3,-910111,'club','{"umpire1_name":"Dave Faulkner","umpire1_performance":"Poor"}')`, []any{seasonID, weekID, teamID, captainID}},
 	}
 	for _, statement := range setup {
 		if _, err := pool.Exec(ctx, statement.query, statement.args...); err != nil {
@@ -181,8 +183,8 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 	other := mergeUmpireVariants(server.loadUmpireRankingsForScope(
 		ctx, where, args, 1, "", keyFilter, umpireMatchScopeOther,
 	))
-	if len(other) != 1 || other[0].Ratings != 2 || other[0].Poor != 2 {
-		t.Fatalf("other-game rankings = %#v, want two excluded ratings", other)
+	if len(other) != 1 || other[0].Ratings != 3 || other[0].Poor != 3 {
+		t.Fatalf("other-game rankings = %#v, want three excluded ratings", other)
 	}
 
 	audit, auditErr := server.loadPremierUmpireCompetitionAudit(ctx, seasonID)
@@ -206,7 +208,7 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 			directAudit += row.Ratings
 		}
 	}
-	if m3Audit != 7 || otherAudit != 2 || exceptionAudit != 0 || teamDateAudit != 1 || directAudit != 8 {
+	if m3Audit != 7 || otherAudit != 3 || exceptionAudit != 0 || teamDateAudit != 1 || directAudit != 9 {
 		t.Fatalf("competition audit = %#v; totals M3=%d other=%d exception=%d team/date=%d direct=%d",
 			audit, m3Audit, otherAudit, exceptionAudit, teamDateAudit, directAudit)
 	}
@@ -240,8 +242,11 @@ func TestLoadUmpireRankingsSeparatesPremierPanelGames(t *testing.T) {
 	if strings.Contains(davePage, "GMCL Saturday Division 5") {
 		t.Error("Dave Faulkner M3 score page included a non-M3 game")
 	}
-	if strings.Contains(davePage, "abandoned test") {
-		t.Error("Dave Faulkner score page counted an abandoned match with no umpire rating")
+	if strings.Contains(davePage, "2nd XI Championship Cup") {
+		t.Error("Dave Faulkner M3 score page included the 2nd XI Championship Cup")
+	}
+	if got := strings.Count(davePage, "Derek Kay 1st XI Cup"); got != 1 {
+		t.Errorf("Dave Faulkner M3 score page contains %d Derek Kay rows, want one valid rating and no abandoned report", got)
 	}
 
 	philipPage := scorePage("Philip Royle", umpireMatchScopePremierPanel)
