@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"bytes"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +125,9 @@ func TestCaptainPitchVectorConversionAndOutcome(t *testing.T) {
 	if _, ok := captainPitchVector([]byte(`{"match_outcome":"cancelled","unevenness_of_bounce":1,"seam_movement":1,"carry_bounce":1,"turn":1}`)); ok {
 		t.Fatal("cancelled match should not produce marks")
 	}
+	if legacy, ok := captainPitchVector([]byte(`{"unevenness_of_bounce":1,"seam_movement":2,"carry_bounce":3,"turn":4}`)); !ok || legacy != (pitchVector{5, 4, 3, 2}) {
+		t.Fatalf("legacy vector=%+v ok=%v", legacy, ok)
+	}
 }
 
 func TestWeightedPitchVectorRebalancesMissingSources(t *testing.T) {
@@ -169,6 +174,97 @@ func TestAverageUmpireReportsAtFixtureLevel(t *testing.T) {
 	got, ok, fixtures, reports := averagePitchSource([]pitchSourceValue{fixtureOne, fixtureTwo})
 	if !ok || fixtures != 2 || reports != 3 || got.overall() != 3 {
 		t.Fatalf("got=%+v ok=%v fixtures=%d reports=%d", got, ok, fixtures, reports)
+	}
+}
+
+func TestApplyCaptainPitchSubmissionsUsesNewestReportForEachSide(t *testing.T) {
+	fixtures := map[int64]pitchFixture{
+		100: {
+			MatchID:     100,
+			HomeTeamPC:  "home-team",
+			AwayTeamPC:  "away-team",
+			HomeClub:    "Example CC",
+			Competition: "GMCL Saturday Premier",
+		},
+	}
+	clubs := map[string]*pitchClubAggregate{
+		normalizeCaptainCSVClubKey("Example CC"): {
+			Name:      "Example CC",
+			Divisions: map[string]bool{"GMCL Saturday Premier": true},
+			Sources:   map[string][]pitchSourceValue{},
+		},
+	}
+	at := func(hour int) time.Time { return time.Date(2026, 5, 2, hour, 0, 0, 0, time.UTC) }
+	marks := func(level int, outcome string) []byte {
+		return []byte(`{"match_outcome":"` + outcome + `","unevenness_of_bounce":` + strconv.Itoa(level) + `,"seam_movement":` + strconv.Itoa(level) + `,"carry_bounce":` + strconv.Itoa(level) + `,"turn":` + strconv.Itoa(level) + `}`)
+	}
+	applyCaptainPitchSubmissions(fixtures, clubs, []captainPitchSubmission{
+		{MatchID: 100, TeamPC: "home-team", Data: marks(1, "played"), Submitted: at(10)},
+		{MatchID: 100, TeamPC: "home-team", Data: marks(3, "played"), Submitted: at(12)},
+		{MatchID: 100, TeamPC: "away-team", Data: marks(2, "played"), Submitted: at(11)},
+		{MatchID: 100, TeamPC: "unknown-team", Data: marks(1, "played"), Submitted: at(13)},
+	})
+	club := clubs[normalizeCaptainCSVClubKey("Example CC")]
+	if len(club.Sources["home"]) != 1 || club.Sources["home"][0].Vector.overall() != 3 {
+		t.Fatalf("home sources=%+v", club.Sources["home"])
+	}
+	if len(club.Sources["away"]) != 1 || club.Sources["away"][0].Vector.overall() != 4 {
+		t.Fatalf("away sources=%+v", club.Sources["away"])
+	}
+	if club.ExcludedCaptains != 1 {
+		t.Fatalf("excluded=%d want 1", club.ExcludedCaptains)
+	}
+
+	club.Sources = map[string][]pitchSourceValue{}
+	club.ExcludedCaptains = 0
+	applyCaptainPitchSubmissions(fixtures, clubs, []captainPitchSubmission{
+		{MatchID: 100, TeamPC: "home-team", Data: marks(1, "played"), Submitted: at(10)},
+		{MatchID: 100, TeamPC: "home-team", Data: marks(1, "no_play"), Submitted: at(12)},
+	})
+	if len(club.Sources["home"]) != 0 || club.ExcludedCaptains != 1 {
+		t.Fatalf("new no-play amendment should remove the old mark: sources=%+v excluded=%d", club.Sources["home"], club.ExcludedCaptains)
+	}
+}
+
+func TestBuildPitchComparisonRowsAndLiveTable(t *testing.T) {
+	clubs := map[string]*pitchClubAggregate{
+		"zulu": {
+			Name:         "Zulu CC",
+			Divisions:    map[string]bool{"GMCL Saturday Premier 2": true, "GMCL Saturday Premier": true},
+			FixtureCount: 2,
+			Sources: map[string][]pitchSourceValue{
+				"home": {
+					{Vector: pitchVector{5, 5, 5, 5}, Reports: 1},
+					{Vector: pitchVector{3, 3, 3, 3}, Reports: 1},
+				},
+				"away": {{Vector: pitchVector{2, 2, 2, 2}, Reports: 1}},
+			},
+		},
+		"alpha": {
+			Name:         "Alpha CC",
+			Divisions:    map[string]bool{"GMCL Saturday Division 1": true},
+			FixtureCount: 1,
+			Sources:      map[string][]pitchSourceValue{},
+		},
+	}
+	rows := buildPitchComparisonRows(clubs, pitchWeights{Home: 10, Away: 40, Umpire: 50})
+	if len(rows) != 2 || rows[0].Club != "Alpha CC" || rows[1].Club != "Zulu CC" {
+		t.Fatalf("rows=%+v", rows)
+	}
+	zulu := rows[1]
+	if zulu.HomeFixtures != 2 || zulu.AwayFixtures != 1 || !zulu.CombinedOK || !closeFloat(zulu.Combined.overall(), 2.4) {
+		t.Fatalf("zulu=%+v", zulu)
+	}
+	if len(zulu.Missing) != 1 || zulu.Missing[0] != "umpire" || !closeFloat(zulu.Effective["home"], 20) || !closeFloat(zulu.Effective["away"], 80) {
+		t.Fatalf("missing=%v effective=%v", zulu.Missing, zulu.Effective)
+	}
+
+	var html bytes.Buffer
+	writePitchComparisonTable(&html, rows, time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC))
+	for _, expected := range []string{"Live ground comparison", "Alpha CC", "Zulu CC", "Pending detailed import", "newest submission"} {
+		if !strings.Contains(html.String(), expected) {
+			t.Fatalf("missing %q in html", expected)
+		}
 	}
 }
 

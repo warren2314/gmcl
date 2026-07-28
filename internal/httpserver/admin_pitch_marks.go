@@ -27,6 +27,11 @@ import (
 
 const pitchPreviewCookie = "pitch_csv_preview"
 
+const (
+	pitchDefaultFrom = "2026-04-18"
+	pitchDefaultTo   = "2026-06-27"
+)
+
 var pitchCompetitionNames = []string{
 	"GMCL Saturday Premier",
 	"GMCL Saturday Premier 2",
@@ -307,29 +312,41 @@ func (s *Server) handleAdminPitchMarksGet() http.HandlerFunc {
 		var imports, reports int64
 		_ = s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM umpire_pitch_imports`).Scan(&imports)
 		_ = s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM umpire_pitch_reports`).Scan(&reports)
+		from, _ := time.Parse("2006-01-02", pitchDefaultFrom)
+		to, _ := time.Parse("2006-01-02", pitchDefaultTo)
+		weights := pitchWeights{Home: 10, Away: 40, Umpire: 50}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		comparisonRows, comparisonErr := s.loadPitchComparisonRows(ctx, from, to, weights)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Pitch Mark Comparison")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<div class="container-fluid px-4">
 <h4 class="mb-1 fw-bold">Pitch Mark Comparison</h4>
-<p class="text-muted">Import umpire pitch reports and download the club comparison CSV.</p>
+<p class="text-muted">Compare current home captain, away captain and combined captain marks by ground, then add umpire marks when they are available.</p>
 <div class="row g-3 mb-4"><div class="col-md-6"><div class="card shadow-sm h-100"><div class="card-body">
 <h5>Import umpire reports</h5><p class="small text-muted">Accepts CSV, TSV or tab-separated TXT exports. Every row is previewed and matched to a Play-Cricket fixture before import.</p>
 <form method="POST" action="/admin/pitch-marks/import/preview" enctype="multipart/form-data">
 <input type="hidden" name="csrf_token" value="%s"><input class="form-control mb-3" type="file" name="pitch_file" accept=".csv,.tsv,.txt" required>
 <button class="btn btn-primary" type="submit">Upload and preview</button></form>
-<p class="small text-muted mt-3 mb-0">%d imports · %d reports stored</p></div></div></div>
+<p class="small text-muted mt-3 mb-0">%d imports &middot; %d reports stored</p></div></div></div>
 <div class="col-md-6"><div class="card shadow-sm h-100"><div class="card-body"><h5>Download comparison CSV</h5>
 <form method="GET" action="/admin/pitch-marks/export.csv">
-<div class="row g-2"><div class="col-6"><label class="form-label">From</label><input class="form-control" type="date" name="from" value="2026-04-18" required></div>
-<div class="col-6"><label class="form-label">To</label><input class="form-control" type="date" name="to" value="2026-06-27" required></div>
+<div class="row g-2"><div class="col-6"><label class="form-label">From</label><input class="form-control" type="date" name="from" value="%s" required></div>
+<div class="col-6"><label class="form-label">To</label><input class="form-control" type="date" name="to" value="%s" required></div>
 <div class="col-4"><label class="form-label">Home %%</label><input class="form-control" type="number" name="home_weight" value="10" min="0" max="100" step="0.01" required></div>
 <div class="col-4"><label class="form-label">Away %%</label><input class="form-control" type="number" name="away_weight" value="40" min="0" max="100" step="0.01" required></div>
 <div class="col-4"><label class="form-label">Umpire %%</label><input class="form-control" type="number" name="umpire_weight" value="50" min="0" max="100" step="0.01" required></div></div>
 <p class="form-text">Weights must total 100%%. Missing sources are rebalanced automatically.</p>
 <button class="btn btn-success" type="submit">Download CSV</button></form></div></div></div></div>
-<div class="alert alert-info"><strong>Included competitions:</strong> %s. Fixture dates must be Saturdays.</div></div>`,
-			escapeHTML(csrf), imports, reports, escapeHTML(strings.Join(pitchCompetitionNames, ", ")))
+<div class="alert alert-info"><strong>Included competitions:</strong> %s. Fixture dates must be Saturdays.</div>`,
+			escapeHTML(csrf), imports, reports, pitchDefaultFrom, pitchDefaultTo, escapeHTML(strings.Join(pitchCompetitionNames, ", ")))
+		if comparisonErr != nil {
+			fmt.Fprint(w, `<div class="alert alert-danger">The live captain comparison could not be loaded. The CSV export will work once the data connection is restored.</div>`)
+		} else {
+			writePitchComparisonTable(w, comparisonRows, from, to)
+		}
+		fmt.Fprint(w, `</div>`)
 		pageFooter(w)
 	}
 }
@@ -604,7 +621,8 @@ func captainPitchVector(data []byte) (pitchVector, bool) {
 	if json.Unmarshal(data, &form) != nil {
 		return pitchVector{}, false
 	}
-	if outcome := strings.TrimSpace(fmt.Sprint(form["match_outcome"])); outcome != "" && outcome != "played" && outcome != "play_started_abandoned" {
+	outcome, _ := form["match_outcome"].(string)
+	if outcome = strings.TrimSpace(outcome); outcome != "" && outcome != "played" && outcome != "play_started_abandoned" {
 		return pitchVector{}, false
 	}
 	read := func(key string) int {
@@ -665,6 +683,160 @@ type pitchClubAggregate struct {
 	ExcludedCaptains int
 }
 
+type pitchComparisonRow struct {
+	Club                 string
+	Divisions            []string
+	EligibleFixtures     int
+	Home                 pitchVector
+	HomeOK               bool
+	HomeFixtures         int
+	Away                 pitchVector
+	AwayOK               bool
+	AwayFixtures         int
+	Combined             pitchVector
+	CombinedOK           bool
+	Umpire               pitchVector
+	UmpireOK             bool
+	UmpireFixtures       int
+	UmpireReports        int
+	Weighted             pitchVector
+	WeightedOK           bool
+	Effective            map[string]float64
+	Missing              []string
+	ExcludedCaptainMarks int
+}
+
+func (s *Server) loadPitchComparisonRows(ctx context.Context, from, to time.Time, weights pitchWeights) ([]pitchComparisonRow, error) {
+	fixtures, clubs, err := s.loadPitchExportFixtures(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.addCaptainPitchSources(ctx, from, to, fixtures, clubs); err != nil {
+		return nil, err
+	}
+	if err := s.addUmpirePitchSources(ctx, from, to, fixtures, clubs); err != nil {
+		return nil, err
+	}
+	return buildPitchComparisonRows(clubs, weights), nil
+}
+
+func buildPitchComparisonRows(clubs map[string]*pitchClubAggregate, weights pitchWeights) []pitchComparisonRow {
+	rows := make([]pitchComparisonRow, 0, len(clubs))
+	for _, club := range clubs {
+		home, homeOK, homeFixtures, _ := averagePitchSource(club.Sources["home"])
+		away, awayOK, awayFixtures, _ := averagePitchSource(club.Sources["away"])
+		umpire, umpireOK, umpireFixtures, umpireReports := averagePitchSource(club.Sources["umpire"])
+
+		captainSources := map[string]pitchVector{}
+		if homeOK {
+			captainSources["home"] = home
+		}
+		if awayOK {
+			captainSources["away"] = away
+		}
+		combined, _, _, combinedOK := weightedPitchVector(captainSources, pitchWeights{Home: weights.Home, Away: weights.Away})
+
+		allSources := map[string]pitchVector{}
+		if homeOK {
+			allSources["home"] = home
+		}
+		if awayOK {
+			allSources["away"] = away
+		}
+		if umpireOK {
+			allSources["umpire"] = umpire
+		}
+		weighted, effective, missing, weightedOK := weightedPitchVector(allSources, weights)
+
+		divisions := make([]string, 0, len(club.Divisions))
+		for division := range club.Divisions {
+			divisions = append(divisions, division)
+		}
+		sort.Strings(divisions)
+		rows = append(rows, pitchComparisonRow{
+			Club:                 club.Name,
+			Divisions:            divisions,
+			EligibleFixtures:     club.FixtureCount,
+			Home:                 home,
+			HomeOK:               homeOK,
+			HomeFixtures:         homeFixtures,
+			Away:                 away,
+			AwayOK:               awayOK,
+			AwayFixtures:         awayFixtures,
+			Combined:             combined,
+			CombinedOK:           combinedOK,
+			Umpire:               umpire,
+			UmpireOK:             umpireOK,
+			UmpireFixtures:       umpireFixtures,
+			UmpireReports:        umpireReports,
+			Weighted:             weighted,
+			WeightedOK:           weightedOK,
+			Effective:            effective,
+			Missing:              missing,
+			ExcludedCaptainMarks: club.ExcludedCaptains,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return strings.ToLower(rows[i].Club) < strings.ToLower(rows[j].Club)
+	})
+	return rows
+}
+
+func writePitchComparisonTable(w io.Writer, rows []pitchComparisonRow, from, to time.Time) {
+	eligibleFixtures, homeFixtures, awayFixtures, umpireFixtures := 0, 0, 0, 0
+	for _, row := range rows {
+		eligibleFixtures += row.EligibleFixtures
+		homeFixtures += row.HomeFixtures
+		awayFixtures += row.AwayFixtures
+		umpireFixtures += row.UmpireFixtures
+	}
+	fmt.Fprintf(w, `<div class="card shadow-sm mb-4">
+<div class="card-header d-flex flex-wrap align-items-center gap-2"><div><strong>Live ground comparison</strong><div class="small text-muted">%s to %s</div></div><span class="badge text-bg-light ms-auto">%d grounds</span></div>
+<div class="card-body border-bottom"><p class="mb-3">Captain figures are rebuilt from the current linked submissions whenever this page is opened. If a report is amended, the newest submission for that match and side is used automatically.</p>
+<div class="row g-2 text-center">
+<div class="col-6 col-md-3"><div class="border rounded p-2"><div class="h5 mb-0">%d</div><div class="small text-muted">eligible fixtures</div></div></div>
+<div class="col-6 col-md-3"><div class="border rounded p-2"><div class="h5 mb-0">%d</div><div class="small text-muted">home captain reports</div></div></div>
+<div class="col-6 col-md-3"><div class="border rounded p-2"><div class="h5 mb-0">%d</div><div class="small text-muted">away captain reports</div></div></div>
+<div class="col-6 col-md-3"><div class="border rounded p-2"><div class="h5 mb-0">%d</div><div class="small text-muted">fixtures with umpire marks</div></div></div>
+</div></div>`,
+		from.Format("2 January 2006"), to.Format("2 January 2006"), len(rows),
+		eligibleFixtures, homeFixtures, awayFixtures, umpireFixtures)
+	if len(rows) == 0 {
+		fmt.Fprint(w, `<div class="card-body"><div class="alert alert-warning mb-0">No eligible Saturday league fixtures were found for this period.</div></div></div>`)
+		return
+	}
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
+<thead><tr><th>Ground</th><th class="text-center">Fixtures</th><th>Home captain</th><th>Away captain</th><th>Combined captains</th><th>Umpires</th><th>Coverage</th></tr></thead><tbody>`)
+	for _, row := range rows {
+		coverage := fmt.Sprintf(`Home %d/%d &middot; Away %d/%d`, row.HomeFixtures, row.EligibleFixtures, row.AwayFixtures, row.EligibleFixtures)
+		if len(row.Missing) > 0 {
+			coverage += `<div class="small text-warning">Awaiting: ` + escapeHTML(strings.Join(row.Missing, ", ")) + `</div>`
+		}
+		if row.ExcludedCaptainMarks > 0 {
+			coverage += fmt.Sprintf(`<div class="small text-muted">%d unlinked or incomplete captain report(s)</div>`, row.ExcludedCaptainMarks)
+		}
+		umpireHTML := pitchVectorSummaryHTML(row.Umpire, row.UmpireOK, row.UmpireFixtures)
+		if !row.UmpireOK {
+			umpireHTML = `<span class="badge text-bg-light">Pending detailed import</span>`
+		}
+		fmt.Fprintf(w, `<tr><td><strong>%s</strong><div class="small text-muted">%s</div></td><td class="text-center">%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="small">%s</td></tr>`,
+			escapeHTML(row.Club), escapeHTML(strings.Join(row.Divisions, "; ")), row.EligibleFixtures,
+			pitchVectorSummaryHTML(row.Home, row.HomeOK, row.HomeFixtures),
+			pitchVectorSummaryHTML(row.Away, row.AwayOK, row.AwayFixtures),
+			pitchVectorSummaryHTML(row.Combined, row.CombinedOK, row.HomeFixtures+row.AwayFixtures),
+			umpireHTML, coverage)
+	}
+	fmt.Fprint(w, `</tbody></table></div></div>`)
+}
+
+func pitchVectorSummaryHTML(v pitchVector, ok bool, fixtures int) string {
+	if !ok {
+		return `<span class="text-muted">No mark</span>`
+	}
+	return fmt.Sprintf(`<strong>%.2f overall</strong><div class="small text-muted">Uneven %.2f &middot; Seam %.2f &middot; Carry %.2f &middot; Turn %.2f</div><div class="small text-muted">%d report fixture(s)</div>`,
+		v.overall(), v.Uneven, v.Seam, v.Carry, v.Turn, fixtures)
+}
+
 func (s *Server) handleAdminPitchMarksExportCSV() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		weights, err := parsePitchWeights(r)
@@ -674,10 +846,10 @@ func (s *Server) handleAdminPitchMarksExportCSV() http.HandlerFunc {
 		}
 		fromRaw, toRaw := r.URL.Query().Get("from"), r.URL.Query().Get("to")
 		if fromRaw == "" {
-			fromRaw = "2026-04-18"
+			fromRaw = pitchDefaultFrom
 		}
 		if toRaw == "" {
-			toRaw = "2026-06-27"
+			toRaw = pitchDefaultTo
 		}
 		from, err1 := time.Parse("2006-01-02", fromRaw)
 		to, err2 := time.Parse("2006-01-02", toRaw)
@@ -687,17 +859,9 @@ func (s *Server) handleAdminPitchMarksExportCSV() http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		fixtures, clubs, err := s.loadPitchExportFixtures(ctx, from, to)
+		comparisonRows, err := s.loadPitchComparisonRows(ctx, from, to, weights)
 		if err != nil {
-			http.Error(w, "could not load fixtures", http.StatusInternalServerError)
-			return
-		}
-		if err := s.addCaptainPitchSources(ctx, from, to, fixtures, clubs); err != nil {
-			http.Error(w, "could not load captain marks", http.StatusInternalServerError)
-			return
-		}
-		if err := s.addUmpirePitchSources(ctx, from, to, fixtures, clubs); err != nil {
-			http.Error(w, "could not load umpire marks", http.StatusInternalServerError)
+			http.Error(w, "could not load pitch comparison", http.StatusInternalServerError)
 			return
 		}
 
@@ -714,56 +878,23 @@ func (s *Server) handleAdminPitchMarksExportCSV() http.HandlerFunc {
 			"Configured home %", "Configured away %", "Configured umpire %", "Effective home %", "Effective away %", "Effective umpire %",
 			"Missing sources", "Excluded captain reports"}
 		_ = cw.Write(header)
-		keys := make([]string, 0, len(clubs))
-		for k := range clubs {
-			keys = append(keys, k)
-		}
-		sort.Slice(keys, func(i, j int) bool { return clubs[keys[i]].Name < clubs[keys[j]].Name })
-		for _, key := range keys {
-			club := clubs[key]
-			home, homeOK, homeFixtures, _ := averagePitchSource(club.Sources["home"])
-			away, awayOK, awayFixtures, _ := averagePitchSource(club.Sources["away"])
-			umpire, umpOK, umpFixtures, umpReports := averagePitchSource(club.Sources["umpire"])
-			captainSources := map[string]pitchVector{}
-			if homeOK {
-				captainSources["home"] = home
-			}
-			if awayOK {
-				captainSources["away"] = away
-			}
-			combined, _, _, combinedOK := weightedPitchVector(captainSources, pitchWeights{Home: weights.Home, Away: weights.Away})
-			allSources := map[string]pitchVector{}
-			if homeOK {
-				allSources["home"] = home
-			}
-			if awayOK {
-				allSources["away"] = away
-			}
-			if umpOK {
-				allSources["umpire"] = umpire
-			}
-			weighted, effective, missing, weightedOK := weightedPitchVector(allSources, weights)
-			divisions := make([]string, 0, len(club.Divisions))
-			for d := range club.Divisions {
-				divisions = append(divisions, d)
-			}
-			sort.Strings(divisions)
-			record := []string{safeCSVCell(club.Name), safeCSVCell(strings.Join(divisions, "; ")), strconv.Itoa(club.FixtureCount), strconv.Itoa(homeFixtures)}
-			record = append(record, pitchVectorCells(home, homeOK)...)
-			record = append(record, strconv.Itoa(awayFixtures))
-			record = append(record, pitchVectorCells(away, awayOK)...)
-			record = append(record, pitchVectorCells(combined, combinedOK)...)
-			record = append(record, strconv.Itoa(umpFixtures), strconv.Itoa(umpReports))
-			record = append(record, pitchVectorCells(umpire, umpOK)...)
-			record = append(record, pitchVectorCells(weighted, weightedOK)...)
-			record = append(record, format2(weights.Home), format2(weights.Away), format2(weights.Umpire), format2(effective["home"]), format2(effective["away"]), format2(effective["umpire"]), strings.Join(missing, "; "), strconv.Itoa(club.ExcludedCaptains))
+		for _, row := range comparisonRows {
+			record := []string{safeCSVCell(row.Club), safeCSVCell(strings.Join(row.Divisions, "; ")), strconv.Itoa(row.EligibleFixtures), strconv.Itoa(row.HomeFixtures)}
+			record = append(record, pitchVectorCells(row.Home, row.HomeOK)...)
+			record = append(record, strconv.Itoa(row.AwayFixtures))
+			record = append(record, pitchVectorCells(row.Away, row.AwayOK)...)
+			record = append(record, pitchVectorCells(row.Combined, row.CombinedOK)...)
+			record = append(record, strconv.Itoa(row.UmpireFixtures), strconv.Itoa(row.UmpireReports))
+			record = append(record, pitchVectorCells(row.Umpire, row.UmpireOK)...)
+			record = append(record, pitchVectorCells(row.Weighted, row.WeightedOK)...)
+			record = append(record, format2(weights.Home), format2(weights.Away), format2(weights.Umpire), format2(row.Effective["home"]), format2(row.Effective["away"]), format2(row.Effective["umpire"]), strings.Join(row.Missing, "; "), strconv.Itoa(row.ExcludedCaptainMarks))
 			_ = cw.Write(record)
 		}
 		cw.Flush()
 		if cw.Error() != nil {
 			return
 		}
-		s.audit(ctx, r, "admin", nil, "pitch_mark_comparison_export", "csv_export", nil, map[string]any{"from": fromRaw, "to": toRaw, "home_weight": weights.Home, "away_weight": weights.Away, "umpire_weight": weights.Umpire, "clubs": len(clubs)})
+		s.audit(ctx, r, "admin", nil, "pitch_mark_comparison_export", "csv_export", nil, map[string]any{"from": fromRaw, "to": toRaw, "home_weight": weights.Home, "away_weight": weights.Away, "umpire_weight": weights.Umpire, "clubs": len(comparisonRows)})
 	}
 }
 
@@ -808,39 +939,57 @@ func (s *Server) addCaptainPitchSources(ctx context.Context, from, to time.Time,
 		return err
 	}
 	defer rows.Close()
+	var submissions []captainPitchSubmission
+	for rows.Next() {
+		var submission captainPitchSubmission
+		if err := rows.Scan(&submission.MatchID, &submission.TeamPC, &submission.Data, &submission.Submitted); err != nil {
+			return err
+		}
+		submissions = append(submissions, submission)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	applyCaptainPitchSubmissions(fixtures, clubs, submissions)
+	return nil
+}
+
+type captainPitchSubmission struct {
+	MatchID   int64
+	TeamPC    string
+	Data      []byte
+	Submitted time.Time
+}
+
+func applyCaptainPitchSubmissions(fixtures map[int64]pitchFixture, clubs map[string]*pitchClubAggregate, submissions []captainPitchSubmission) {
 	type latest struct {
-		vector    pitchVector
+		data      []byte
 		submitted time.Time
 	}
 	latestBySide := map[string]latest{}
-	for rows.Next() {
-		var matchID int64
-		var teamPC string
-		var data []byte
-		var submitted time.Time
-		if err := rows.Scan(&matchID, &teamPC, &data, &submitted); err != nil {
-			return err
-		}
-		f, ok := fixtures[matchID]
+	for _, submission := range submissions {
+		f, ok := fixtures[submission.MatchID]
 		if !ok {
 			continue
 		}
+		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
+		if club == nil {
+			continue
+		}
 		side := ""
-		teamPC = strings.TrimSpace(teamPC)
+		teamPC := strings.TrimSpace(submission.TeamPC)
 		if teamPC != "" && teamPC == strings.TrimSpace(f.HomeTeamPC) {
 			side = "home"
 		} else if teamPC != "" && teamPC == strings.TrimSpace(f.AwayTeamPC) {
 			side = "away"
 		}
-		vector, valid := captainPitchVector(data)
-		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
-		if side == "" || !valid {
+		if side == "" {
 			club.ExcludedCaptains++
 			continue
 		}
-		key := fmt.Sprintf("%d|%s", matchID, side)
-		if previous, exists := latestBySide[key]; !exists || submitted.After(previous.submitted) {
-			latestBySide[key] = latest{vector, submitted}
+		key := fmt.Sprintf("%d|%s", submission.MatchID, side)
+		if previous, exists := latestBySide[key]; !exists || submission.Submitted.After(previous.submitted) {
+			latestBySide[key] = latest{submission.Data, submission.Submitted}
 		}
 	}
 	for key, value := range latestBySide {
@@ -849,9 +998,13 @@ func (s *Server) addCaptainPitchSources(ctx context.Context, from, to time.Time,
 		side := parts[1]
 		f := fixtures[matchID]
 		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
-		club.Sources[side] = append(club.Sources[side], pitchSourceValue{Vector: value.vector, Reports: 1})
+		vector, valid := captainPitchVector(value.data)
+		if !valid {
+			club.ExcludedCaptains++
+			continue
+		}
+		club.Sources[side] = append(club.Sources[side], pitchSourceValue{Vector: vector, Reports: 1})
 	}
-	return rows.Err()
 }
 
 func (s *Server) addUmpirePitchSources(ctx context.Context, from, to time.Time, fixtures map[int64]pitchFixture, clubs map[string]*pitchClubAggregate) error {
