@@ -93,6 +93,8 @@ CLUB_PORTAL_OIDC_CLIENT_ID=COGNITO_APP_CLIENT_ID
 CLUB_PORTAL_OIDC_CLIENT_SECRET=SECRET_VALUE
 CLUB_PORTAL_OIDC_REDIRECT_URL=https://TEST_HOST/portal/auth/callback
 CLUB_PORTAL_COGNITO_POLICY_VERIFIED=true
+CLUB_PORTAL_COGNITO_PROVISIONING_ENABLED=false
+CLUB_PORTAL_COGNITO_USE_DEFAULT_CREDENTIAL_CHAIN=false
 CLUB_PORTAL_OIDC_REQUIRED_ACR=
 CLUB_PORTAL_OIDC_STEP_UP_ACR=
 
@@ -123,30 +125,64 @@ Run the read-only verifier from an approved workstation with least-privilege AWS
 
 Only copy `CLUB_PORTAL_COGNITO_POLICY_VERIFIED=true` into the deployment after this command passes. Re-run it after any User Pool, app-client, domain, callback, factor, MFA or email configuration change. It reads configuration and does not create users or change AWS resources.
 
+### Guided club onboarding
+
+Open `/admin/portal/onboarding` as a Super Administrator. The wizard:
+
+1. selects the club;
+2. records the named official, individual email, portal role and official-contact evidence;
+3. selects only the portal modules that are currently available;
+4. creates or checks the Cognito identity, enables the modules, then sends a separate single-use GMCL portal link.
+
+The wizard deliberately pauses before the portal email when automatic Cognito provisioning is disabled. Create the exact named user in the AWS Cognito console, confirm that the email is verified and Cognito's welcome email was sent, then tick the wizard's manual checkpoint. This is one manual action per named official. Club activation is recorded automatically when the portal link is redeemed.
+
+For automatic provisioning, create a dedicated workload role or deployment secret with only this policy, replacing the Region, account and User Pool ID:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GMCLPortalNamedUserOnboarding",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminUpdateUserAttributes"
+      ],
+      "Resource": "arn:aws:cognito-idp:eu-west-2:AWS_ACCOUNT_ID:userpool/eu-west-2_USER_POOL_ID"
+    }
+  ]
+}
+```
+
+Then set `CLUB_PORTAL_COGNITO_PROVISIONING_ENABLED=true`. On an AWS workload, set `CLUB_PORTAL_COGNITO_USE_DEFAULT_CREDENTIAL_CHAIN=true` and attach the role. On the current DigitalOcean deployment, inject a dedicated access key and secret as `CLUB_PORTAL_COGNITO_AWS_ACCESS_KEY_ID` and `CLUB_PORTAL_COGNITO_AWS_SECRET_ACCESS_KEY` through the protected server environment; never commit them. The SMTP/SES credentials cannot be reused because SES SMTP credentials are not IAM API credentials.
+
 Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BASE_URL=https://TEST_HOST`, bind the existing internal HMAC secret through the approved n8n credential mechanism, and leave the workflow inactive until the application deployment and controlled-mailbox checks pass. The portal-notification node derives its endpoint from `GMCL_BASE_URL` and runs every five minutes. Do not retain the repository placeholder as a live credential.
 
 ## Deployment sequence
 
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
-3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql`, `0050_portal_operations_workflows.sql` and `0051_portal_staff_campaigns.sql` are recorded in `schema_migrations`.
+3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql`, `0050_portal_operations_workflows.sql`, `0051_portal_staff_campaigns.sql` and `0052_portal_onboarding_wizard.sql` are recorded in `schema_migrations`.
 4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`, HTTP 200 for health/legacy/admin, HTTP 303 for the unauthenticated portal and HTTP 401 for the unsigned worker request; any non-zero exit blocks pilot enablement.
 5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
 7. Sign in as the named test Super Administrator and open `/admin/portal`.
 8. Confirm the account-security notification panel reports SMTP configured and no unexplained dead-letter item.
 9. Activate the test-host copy of the five-minute portal-notification n8n trigger and verify an empty cycle returns HTTP 200 without creating mail.
-10. Enable `portal_access` for one synthetic/pilot club.
-11. Enable `read_only_dashboard` for that club. A module cannot be enabled until portal access is enabled.
-12. Record an official-contact evidence reference and send an invitation to a controlled synthetic/test mailbox.
-13. Redeem the invitation through the managed identity provider, choose the acting club/role and open `/portal`.
-14. Open `/portal/contexts`; confirm the current role, club-wide or narrower scope and effective dates match the approved appointment, and confirm the current appointment has no redundant switch action.
-15. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
-16. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
-17. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
-18. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
-19. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
-20. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
+10. Open `/admin/portal/onboarding` and start one synthetic/pilot club.
+11. Record a named official, controlled test email and official-contact evidence.
+12. Keep `portal_access`, `read_only_dashboard` and `secure_messaging` selected, review, then activate.
+13. Confirm the progress page shows either an automatic Cognito result or the explicit manual Cognito checkpoint; it must not show the portal email as sent before identity confirmation.
+14. Complete Cognito's temporary-password sign-in, then redeem the separate GMCL portal link, choose the acting club/role and open `/portal`.
+15. Open `/portal/contexts`; confirm the current role, club-wide or narrower scope and effective dates match the approved appointment, and confirm the current appointment has no redundant switch action.
+16. Verify exactly one account-activation security email reaches `EMAIL_OVERRIDE`, contains the test club and session-management URL, and contains no invitation token.
+17. Reconcile the action-centre report and sanction totals with direct source queries for the pilot club.
+18. Open `/portal/sessions`, revoke a second session, complete same-user strong step-up and exercise all-device revocation.
+19. Open `/portal/activity`; reconcile sign-in and context-selection rows with the audit source, then confirm raw action keys, source identifiers, IP/device details and activity from a second synthetic club are absent.
+20. Revoke a synthetic appointment and verify its sessions fail immediately and exactly one allowlisted revocation notification is sent without the administrative reason.
+21. Exercise logout, expired session, club feature disable, SMTP outage, one retry and provider outage paths.
 
 ## Operations-module test journeys
 

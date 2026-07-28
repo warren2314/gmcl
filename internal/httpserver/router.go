@@ -22,6 +22,7 @@ type Server struct {
 	LondonLoc     *time.Location
 	PortalStore   *portal.Store
 	PortalOIDC    *portal.OIDCClient
+	PortalCognito portal.CognitoUserManager
 	PortalEnabled bool
 }
 
@@ -60,9 +61,16 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 			return nil, func() {}, fmt.Errorf("verify club portal database security: %w", err)
 		}
 	}
-	portalOIDC, err := portal.NewOIDCClient(portalStore, portal.LoadOIDCConfigFromEnv())
+	oidcConfig := portal.LoadOIDCConfigFromEnv()
+	portalOIDC, err := portal.NewOIDCClient(portalStore, oidcConfig)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("initialise club portal identity: %w", err)
+	}
+	cognitoCtx, cognitoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	portalCognito, err := portal.NewCognitoUserManagerFromEnv(cognitoCtx, oidcConfig)
+	cognitoCancel()
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("initialise club portal Cognito provisioning: %w", err)
 	}
 
 	s := &Server{
@@ -70,6 +78,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 		LondonLoc:     londonLoc,
 		PortalStore:   portalStore,
 		PortalOIDC:    portalOIDC,
+		PortalCognito: portalCognito,
 		PortalEnabled: portalEnabled,
 	}
 

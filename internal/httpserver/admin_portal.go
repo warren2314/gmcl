@@ -63,7 +63,7 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4"><div>
 <p class="text-uppercase text-muted small mb-1">Controlled rollout</p><h1 class="h2">Club portal pilot</h1>
-<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div><div class="d-flex flex-wrap gap-2"><a class="btn btn-outline-primary" href="/admin/portal/staff">Staff roles and scopes</a><a class="btn btn-primary" href="/admin/portal/messages/new">New club message</a><a class="btn btn-outline-primary" href="/admin/portal/cases">Open portal work queue</a></div></div>`)
+<p class="text-muted">Approve named primary contacts, then enable individual clubs and modules. Existing captain and administrator access remains unchanged.</p></div><div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/portal/onboarding">Onboard a club</a><a class="btn btn-outline-primary" href="/admin/portal/staff">Staff roles and scopes</a><a class="btn btn-outline-primary" href="/admin/portal/messages/new">New club message</a><a class="btn btn-outline-primary" href="/admin/portal/cases">Open portal work queue</a></div></div>`)
 		renderAdminPortalStatus(w, r.URL.Query().Get("status"))
 		if !s.PortalEnabled {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Global portal routes are disabled.</strong> Set <code>CLUB_PORTAL_ENABLED=true</code> on the test server after migrations and OIDC configuration are verified.</div>`)
@@ -80,7 +80,8 @@ func (s *Server) handleAdminPortalGet() http.HandlerFunc {
 		)
 
 		fmt.Fprint(w, `<div class="row g-4"><div class="col-xl-5">
-<section class="card shadow-sm"><div class="card-header"><strong>Approve a named club official</strong></div><div class="card-body">
+<section class="card shadow-sm"><div class="card-header"><strong>Manual invitation (advanced)</strong></div><div class="card-body">
+<div class="alert alert-light border small"><strong>Use the guided wizard for normal setup.</strong> It checks Cognito before sending the portal link. This form is retained for recovery and existing operator procedures.</div>
 <p class="small text-muted">The approver must check an authoritative official-contact source. Email is used only for this single-use onboarding link; sign-in completes at the managed identity provider.</p>
 <form method="post" action="/admin/portal/invitations" class="row g-3">
 <input type="hidden" name="csrf_token" value="`+escapeHTML(csrf)+`">
@@ -360,25 +361,11 @@ func (s *Server) handleAdminPortalInvitationCreate() http.HandlerFunc {
 			return
 		}
 
-		link := publicBaseURL(r) + "/portal/login?invite=" + url.QueryEscape(invitation.RawToken)
-		body := fmt.Sprintf(`You have been approved for a named GMCL Club Operations Portal account.
-
-Role: %s
-
-Use this single-use onboarding link:
-BUTTON_URL:%s
-
-The link expires at %s. Sign in using the same verified email address this message was sent to. Do not forward the link or create a shared club login.
-
-Email remains the official GMCL communication record during the portal pilot. If you were not expecting this invitation, contact the GMCL Club Liaison Officer.`,
-			humanPortalRole(role),
-			link,
-			invitation.ExpiresAt.In(s.LondonLoc).Format("2 January 2006 at 15:04"),
-		)
-		if err := email.NewFromEnv().SendSensitive(
+		if err := s.sendPortalOnboardingEmail(
+			r,
 			strings.TrimSpace(r.FormValue("email")),
-			"Your GMCL Club Operations Portal invitation",
-			body,
+			role,
+			invitation,
 		); err != nil {
 			revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			revokeErr := s.PortalStore.RevokeInvitation(
@@ -395,6 +382,35 @@ Email remains the official GMCL communication record during the portal pilot. If
 		}
 		http.Redirect(w, r, "/admin/portal?status=invited", http.StatusSeeOther)
 	}
+}
+
+func (s *Server) sendPortalOnboardingEmail(
+	r *http.Request,
+	emailAddress string,
+	role portal.RoleKey,
+	invitation portal.Invitation,
+) error {
+	link := publicBaseURL(r) + "/portal/login?invite=" +
+		url.QueryEscape(invitation.RawToken)
+	body := fmt.Sprintf(`You have been approved for a named GMCL Club Operations Portal account.
+
+Role: %s
+
+Use this single-use onboarding link:
+BUTTON_URL:%s
+
+The link expires at %s. Sign in using the same verified email address this message was sent to. Do not forward the link or create a shared club login.
+
+Email remains the official GMCL communication record during the portal pilot. If you were not expecting this invitation, contact the GMCL Club Liaison Officer.`,
+		humanPortalRole(role),
+		link,
+		invitation.ExpiresAt.In(s.LondonLoc).Format("2 January 2006 at 15:04"),
+	)
+	return email.NewFromEnv().SendSensitive(
+		strings.TrimSpace(emailAddress),
+		"Your GMCL Club Operations Portal invitation",
+		body,
+	)
 }
 
 func (s *Server) handleAdminPortalFeatureUpdate() http.HandlerFunc {

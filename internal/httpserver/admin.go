@@ -229,6 +229,15 @@ func (s *Server) adminRouter() http.Handler {
 			// authenticated CLO/Super Administrator approval surface during
 			// named-account onboarding.
 			r.With(s.requireAdminRole("super_admin")).Get("/portal", s.handleAdminPortalGet())
+			r.With(s.requireAdminRole("super_admin")).Get("/portal/onboarding", s.handleAdminPortalOnboardingGet())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding", s.handleAdminPortalOnboardingCreate())
+			r.With(s.requireAdminRole("super_admin")).Get("/portal/onboarding/{id}", s.handleAdminPortalOnboardingRunGet())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/features", s.handleAdminPortalOnboardingFeatures())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/activate", s.handleAdminPortalOnboardingActivate())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/confirm-manual-identity", s.handleAdminPortalOnboardingConfirmManualIdentity())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/resend-cognito", s.handleAdminPortalOnboardingResendCognito())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/resend-portal", s.handleAdminPortalOnboardingResendPortal())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/onboarding/{id}/correct-email", s.handleAdminPortalOnboardingCorrectEmail())
 			r.With(s.requireAdminRole("super_admin")).Post("/portal/invitations", s.handleAdminPortalInvitationCreate())
 			r.With(s.requireAdminRole("super_admin")).Post("/portal/invitations/{id}/revoke", s.handleAdminPortalInvitationRevoke())
 			r.With(s.requireAdminRole("super_admin")).Post("/portal/assignments/{id}/revoke", s.handleAdminPortalAssignmentRevoke())

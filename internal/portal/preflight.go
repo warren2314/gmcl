@@ -17,7 +17,7 @@ const (
 	PortalPreflightModeSchema = "schema"
 	PortalPreflightModePilot  = "pilot"
 
-	requiredPortalMigration = "0051_portal_staff_campaigns.sql"
+	requiredPortalMigration = "0052_portal_onboarding_wizard.sql"
 )
 
 var portalRLSTables = []string{
@@ -28,6 +28,7 @@ var portalRLSTables = []string{
 	"portal_sessions",
 	"portal_oidc_login_states",
 	"portal_invitations",
+	"portal_onboarding_runs",
 	"portal_club_features",
 	"portal_attachments",
 	"portal_notifications",

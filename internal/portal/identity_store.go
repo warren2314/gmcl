@@ -179,6 +179,7 @@ type InvitationRequest struct {
 	TeamID                    *int32
 	SeasonID                  *int32
 	CompetitionID             *uuid.UUID
+	OnboardingRunID           *uuid.UUID
 	OfficialEvidenceReference string
 	ApprovedByAdminID         int32
 	ExpiresAt                 time.Time
@@ -222,23 +223,28 @@ func (store *Store) CreateInvitation(
 		return Invitation{}, err
 	}
 	invitation := Invitation{ID: uuid.New(), RawToken: rawToken, ExpiresAt: request.ExpiresAt}
+	onboardingRunID := ""
+	if request.OnboardingRunID != nil {
+		onboardingRunID = request.OnboardingRunID.String()
+	}
 
 	err = store.withSystemTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO portal_invitations (
 				id, club_id, email, role_key, team_id, season_id,
-				competition_id, token_hash, status,
+				competition_id, onboarding_run_id, token_hash, status,
 				official_contact_evidence_reference,
 				approved_by_admin_user_id, approved_at, expires_at
 			)
 			VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, 'approved',
-				$9, $10, $11, $12
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, 'approved',
+				$10, $11, $12, $13
 			)
 		`, invitation.ID, request.ClubID, request.Email, request.Role,
-			request.TeamID, request.SeasonID, request.CompetitionID, tokenHash[:],
-			request.OfficialEvidenceReference, request.ApprovedByAdminID, now,
-			request.ExpiresAt); err != nil {
+			request.TeamID, request.SeasonID, request.CompetitionID,
+			request.OnboardingRunID, tokenHash[:],
+			request.OfficialEvidenceReference, request.ApprovedByAdminID,
+			now, request.ExpiresAt); err != nil {
 			return fmt.Errorf("create portal invitation: %w", err)
 		}
 		clubID := request.ClubID
@@ -256,6 +262,7 @@ func (store *Store) CreateInvitation(
 				"role":               request.Role,
 				"expires_at":         request.ExpiresAt.UTC().Format(time.RFC3339),
 				"evidence_reference": request.OfficialEvidenceReference,
+				"onboarding_run_id":  onboardingRunID,
 			},
 			OccurredAt: now,
 		})
@@ -296,13 +303,15 @@ func (store *Store) RedeemInvitation(
 			teamID            *int32
 			seasonID          *int32
 			competitionID     *uuid.UUID
+			onboardingRunID   *uuid.UUID
 			approvedByAdminID *int32
 			approvedByUserID  *uuid.UUID
 		)
 		if err := tx.QueryRow(ctx, `
 			SELECT
 				id, club_id, email, role_key, team_id, season_id,
-				competition_id, approved_by_admin_user_id, approved_by_user_id
+				competition_id, onboarding_run_id,
+				approved_by_admin_user_id, approved_by_user_id
 			FROM portal_invitations
 			WHERE token_hash = $1
 			  AND status = 'approved'
@@ -312,7 +321,8 @@ func (store *Store) RedeemInvitation(
 			FOR UPDATE
 		`, invitationTokenHash, now).Scan(
 			&invitationID, &clubID, &invitedEmail, &role, &teamID, &seasonID,
-			&competitionID, &approvedByAdminID, &approvedByUserID,
+			&competitionID, &onboardingRunID,
+			&approvedByAdminID, &approvedByUserID,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrUnauthenticated
@@ -470,6 +480,24 @@ func (store *Store) RedeemInvitation(
 		if tag.RowsAffected() != 1 {
 			return ErrUnauthenticated
 		}
+		if onboardingRunID != nil {
+			tag, err := tx.Exec(ctx, `
+				UPDATE portal_onboarding_runs
+				SET status = 'activated',
+				    activated_at = $2,
+				    last_error = NULL,
+				    updated_at = $2
+				WHERE id = $1
+				  AND current_invitation_id = $3
+				  AND status = 'invitation_sent'
+			`, *onboardingRunID, now, invitationID)
+			if err != nil {
+				return fmt.Errorf("complete portal onboarding run: %w", err)
+			}
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("portal onboarding run is not ready for activation")
+			}
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO portal_outbox_events (
 				aggregate_type, aggregate_id, event_type, payload,
@@ -498,6 +526,7 @@ func (store *Store) RedeemInvitation(
 				"approved_by_admin_id": approvedByAdminID,
 				"approved_by_user_id":  approvedByUserID,
 				"role":                 role,
+				"onboarding_run_id":    onboardingRunID,
 			},
 			OccurredAt: now,
 		})
