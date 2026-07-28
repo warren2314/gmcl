@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const rulesAssistantAssetVersion = "20260724-1"
+const rulesAssistantAssetVersion = "20260728-1"
 const brandAssetVersion = "20260725-2"
 
 const (
