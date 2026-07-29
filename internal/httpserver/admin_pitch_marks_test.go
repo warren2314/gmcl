@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -10,6 +12,39 @@ import (
 )
 
 const pitchTestHeader = "Timestamp\tHome Club Full Formal Name\tIf Home Club Not Listed, enter club name here\tWhich Division was your game in?\tDate of Game\tAway Club Full Formal Name\tIf Away Club Not Listed, enter club name here\tUnevenness of bounce\tSeam movement\tCarry and / or bounce\tTurn\n"
+
+func makePitchXLSX(t *testing.T, rows [][]string) []byte {
+	t.Helper()
+	var workbook bytes.Buffer
+	archive := zip.NewWriter(&workbook)
+	sheet, err := archive.Create("xl/worksheets/sheet1.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document strings.Builder
+	document.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
+	for rowIndex, row := range rows {
+		number := strconv.Itoa(rowIndex + 1)
+		document.WriteString(`<row r="` + number + `">`)
+		for columnIndex, value := range row {
+			reference := string(rune('A'+columnIndex)) + number
+			document.WriteString(`<c r="` + reference + `" t="inlineStr"><is><t>`)
+			if err := xml.EscapeText(&document, []byte(value)); err != nil {
+				t.Fatal(err)
+			}
+			document.WriteString(`</t></is></c>`)
+		}
+		document.WriteString(`</row>`)
+	}
+	document.WriteString(`</sheetData></worksheet>`)
+	if _, err := sheet.Write([]byte(document.String())); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return workbook.Bytes()
+}
 
 func TestParseUmpirePitchFileTSV(t *testing.T) {
 	data := pitchTestHeader + "19/04/2026 12:02:00\tClifton CC\t\tGMCL Saturday Division 1\t18/04/2026\tDarcy Lever CC\t\t4\t3\t5\t2\n"
@@ -27,8 +62,62 @@ func TestParseUmpirePitchFileTSV(t *testing.T) {
 	if row.MatchDate.Format("2006-01-02") != "2026-04-18" {
 		t.Fatalf("date=%s", row.MatchDate)
 	}
-	if row.Marks != (pitchVector{4, 3, 5, 2}) || len(row.Errors) != 0 || row.Hash == "" {
+	if row.SourceKind != "panel_form" || row.Marks != (pitchVector{4, 3, 5, 2}) || len(row.Errors) != 0 || row.Hash == "" {
 		t.Fatalf("row=%+v", row)
+	}
+}
+
+func TestParsePlayCricketUmpireGroundXLSX(t *testing.T) {
+	header := []string{"Match Date", "Home Team", "Away Team", "Division / Cup", "Ground", "Question", "Response", "Explanation", "Responsible Club"}
+	report := func(date, home, away, division, question, response string) []string {
+		return []string{date, home, away, division, home, question, response, "", ""}
+	}
+	rows := [][]string{
+		header,
+		report("18/04/2026", "Clifton CC, Lancs - 1st XI", "Royton CC - 1st XI", "Robert Hinchliffe Premier League", "Unevenness of bounce", "4"),
+		report("18/04/2026", "Clifton CC, Lancs - 1st XI", "Royton CC - 1st XI", "Robert Hinchliffe Premier League", "Seam Movement", "3"),
+		report("18/04/2026", "Clifton CC, Lancs - 1st XI", "Royton CC - 1st XI", "Robert Hinchliffe Premier League", "Carry and / or bounce", "5"),
+		report("18/04/2026", "Clifton CC, Lancs - 1st XI", "Royton CC - 1st XI", "Robert Hinchliffe Premier League", "Turn", "2"),
+		report("13/06/2026", "Thornham CC, Lancs – 1st XI", "Austerlands CC — 1st XI", "GMCL Division 1", "Unevenness of bounce", "0"),
+		report("13/06/2026", "Thornham CC, Lancs – 1st XI", "Austerlands CC — 1st XI", "GMCL Division 1", "Seam Movement", "3"),
+		report("13/06/2026", "Thornham CC, Lancs – 1st XI", "Austerlands CC — 1st XI", "GMCL Division 1", "Carry and / or bounce", "0"),
+		report("13/06/2026", "Thornham CC, Lancs – 1st XI", "Austerlands CC — 1st XI", "GMCL Division 1", "Turn", "4"),
+		report("18/04/2026", "Cup Home CC - 1st XI", "Cup Away CC - 1st XI", "GMCL Cup", "Turn", "5"),
+		report("04/07/2026", "Late Home CC - 1st XI", "Late Away CC - 1st XI", "GMCL Championship", "Turn", "5"),
+		report("24/04/2026", "Friday Home CC - 1st XI", "Friday Away CC - 1st XI", "GMCL Championship", "Turn", "5"),
+	}
+	parsed, err := parseUmpirePitchUpload("Umpire_Ground_Responses_Download.xlsx", makePitchXLSX(t, rows))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("reports=%d want 2", len(parsed))
+	}
+	first := parsed[0]
+	if first.SourceKind != "play_cricket_ground" ||
+		first.Division != "GMCL Saturday Premier" ||
+		first.HomeClub != "Clifton CC, Lancs" ||
+		first.AwayClub != "Royton CC" ||
+		first.Marks != (pitchVector{4, 3, 5, 2}) ||
+		len(first.Errors) != 0 ||
+		first.Hash == "" {
+		t.Fatalf("first=%+v", first)
+	}
+	second := parsed[1]
+	if second.Division != "GMCL Saturday Division 1" ||
+		second.HomeClub != "Thornham CC, Lancs" ||
+		second.AwayClub != "Austerlands CC" ||
+		second.Marks != (pitchVector{0, 3, 0, 4}) ||
+		len(second.Errors) != 2 {
+		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestPitchXLSXColumnIndex(t *testing.T) {
+	for reference, want := range map[string]int{"A1": 0, "I7259": 8, "Z3": 25, "AA3": 26, "": -1, "12": -1} {
+		if got := pitchXLSXColumnIndex(reference); got != want {
+			t.Errorf("%q=%d want %d", reference, got, want)
+		}
 	}
 }
 

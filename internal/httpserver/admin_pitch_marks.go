@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -10,10 +11,12 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +42,17 @@ var pitchCompetitionNames = []string{
 	"GMCL Saturday Division 1",
 }
 
+var playCricketPitchCompetitionNames = map[string]string{
+	"robert hinchliffe premier league": "GMCL Saturday Premier",
+	"gmcl premier league 2":            "GMCL Saturday Premier 2",
+	"gmcl championship":                "GMCL Saturday Championship",
+	"gmcl division 1":                  "GMCL Saturday Division 1",
+	"gmcl saturday premier":            "GMCL Saturday Premier",
+	"gmcl saturday premier 2":          "GMCL Saturday Premier 2",
+	"gmcl saturday championship":       "GMCL Saturday Championship",
+	"gmcl saturday division 1":         "GMCL Saturday Division 1",
+}
+
 type pitchVector struct {
 	Uneven float64
 	Seam   float64
@@ -61,6 +75,7 @@ func (v pitchVector) overall() float64 { return (v.Uneven + v.Seam + v.Carry + v
 
 type umpirePitchParsedRow struct {
 	Index      int               `json:"index"`
+	SourceKind string            `json:"source_kind"`
 	Timestamp  time.Time         `json:"timestamp"`
 	MatchDate  time.Time         `json:"match_date"`
 	Division   string            `json:"division"`
@@ -147,7 +162,7 @@ func parseUmpirePitchFile(data []byte) ([]umpirePitchParsedRow, error) {
 		if len(record) == 0 || strings.TrimSpace(strings.Join(record, "")) == "" {
 			continue
 		}
-		row := umpirePitchParsedRow{Index: i + 1, Raw: map[string]string{}, Status: "invalid"}
+		row := umpirePitchParsedRow{Index: i + 1, SourceKind: "panel_form", Raw: map[string]string{}, Status: "invalid"}
 		for name, idx := range header {
 			if idx < len(record) {
 				row.Raw[name] = strings.TrimSpace(record[idx])
@@ -188,6 +203,334 @@ func parseUmpirePitchFile(data []byte) ([]umpirePitchParsedRow, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func parseUmpirePitchUpload(filename string, data []byte) ([]umpirePitchParsedRow, error) {
+	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	if extension == ".xlsx" || (len(data) >= 4 && bytes.Equal(data[:4], []byte{'P', 'K', 3, 4})) {
+		return parsePlayCricketUmpireGroundXLSX(data)
+	}
+	return parseUmpirePitchFile(data)
+}
+
+type pitchXLSXInlineString struct {
+	Text string `xml:"t"`
+	Runs []struct {
+		Text string `xml:"t"`
+	} `xml:"r"`
+}
+
+func (s pitchXLSXInlineString) value() string {
+	var b strings.Builder
+	b.WriteString(s.Text)
+	for _, run := range s.Runs {
+		b.WriteString(run.Text)
+	}
+	return b.String()
+}
+
+type pitchXLSXCell struct {
+	Reference string                `xml:"r,attr"`
+	Type      string                `xml:"t,attr"`
+	Value     string                `xml:"v"`
+	Inline    pitchXLSXInlineString `xml:"is"`
+}
+
+type pitchXLSXRow struct {
+	Cells []pitchXLSXCell `xml:"c"`
+}
+
+func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, error) {
+	records, err := readPitchXLSXRows(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) < 2 {
+		return nil, fmt.Errorf("workbook has no data rows")
+	}
+	header := make(map[string]int, len(records[0]))
+	for i, value := range records[0] {
+		header[normalizePitchHeader(value)] = i
+	}
+	required := []string{"match date", "home team", "away team", "division / cup", "question", "response"}
+	for _, name := range required {
+		if _, ok := header[name]; !ok {
+			return nil, fmt.Errorf("required workbook column missing: %s", name)
+		}
+	}
+	field := func(record []string, name string) string {
+		index, ok := header[name]
+		if !ok || index < 0 || index >= len(record) {
+			return ""
+		}
+		return strings.TrimSpace(record[index])
+	}
+	type pitchGroup struct {
+		date, home, away, division string
+		marks                      map[string]string
+		errors                     []string
+	}
+	groups := map[string]*pitchGroup{}
+	var groupOrder []string
+	questionNames := map[string]string{
+		"unevenness of bounce":  "unevenness",
+		"seam movement":         "seam",
+		"carry and / or bounce": "carry",
+		"turn":                  "turn",
+	}
+	loc, _ := time.LoadLocation("Europe/London")
+	if loc == nil {
+		loc = time.UTC
+	}
+	filterFrom, _ := time.ParseInLocation("2006-01-02", pitchDefaultFrom, loc)
+	filterTo, _ := time.ParseInLocation("2006-01-02", pitchDefaultTo, loc)
+	for _, record := range records[1:] {
+		division, ok := normalizePlayCricketPitchCompetition(field(record, "division / cup"))
+		if !ok {
+			continue
+		}
+		date := field(record, "match date")
+		matchDate, dateErr := time.ParseInLocation("02/01/2006", date, loc)
+		if dateErr == nil && (matchDate.Before(filterFrom) || matchDate.After(filterTo) || matchDate.Weekday() != time.Saturday) {
+			continue
+		}
+		home := pitchClubFromTeamName(field(record, "home team"))
+		away := pitchClubFromTeamName(field(record, "away team"))
+		key := strings.Join([]string{date, home, away, division}, "|")
+		group := groups[key]
+		if group == nil {
+			group = &pitchGroup{date: date, home: home, away: away, division: division, marks: map[string]string{}}
+			groups[key] = group
+			groupOrder = append(groupOrder, key)
+		}
+		markName, isPitchQuestion := questionNames[normalizePitchHeader(field(record, "question"))]
+		if !isPitchQuestion {
+			continue
+		}
+		if _, exists := group.marks[markName]; exists {
+			group.errors = append(group.errors, "duplicate "+markName+" response")
+		}
+		group.marks[markName] = field(record, "response")
+	}
+	parsed := make([]umpirePitchParsedRow, 0, len(groupOrder))
+	for _, key := range groupOrder {
+		group := groups[key]
+		row := umpirePitchParsedRow{
+			Index:      len(parsed) + 1,
+			SourceKind: "play_cricket_ground",
+			Division:   group.division,
+			HomeClub:   group.home,
+			AwayClub:   group.away,
+			Raw: map[string]string{
+				"source_format": "play_cricket_ground_xlsx",
+				"match_date":    group.date,
+				"home_team":     group.home,
+				"away_team":     group.away,
+				"division":      group.division,
+			},
+			Status: "invalid",
+			Errors: append([]string(nil), group.errors...),
+		}
+		row.MatchDate, err = time.ParseInLocation("02/01/2006", group.date, loc)
+		if err != nil {
+			row.Errors = append(row.Errors, "invalid match date")
+		}
+		if row.HomeClub == "" || row.AwayClub == "" {
+			row.Errors = append(row.Errors, "home team and away team are required")
+		}
+		mark := func(key, label string) float64 {
+			raw := strings.TrimSpace(group.marks[key])
+			row.Raw[key] = raw
+			value, parseErr := strconv.Atoi(raw)
+			if parseErr != nil || value < 1 || value > 5 {
+				row.Errors = append(row.Errors, label+" must be an integer from 1 to 5")
+				return 0
+			}
+			return float64(value)
+		}
+		row.Marks = pitchVector{
+			Uneven: mark("unevenness", "Unevenness of bounce"),
+			Seam:   mark("seam", "Seam movement"),
+			Carry:  mark("carry", "Carry and / or bounce"),
+			Turn:   mark("turn", "Turn"),
+		}
+		canonical := fmt.Sprintf("play_cricket_ground|%s|%s|%s|%s|%.0f|%.0f|%.0f|%.0f",
+			row.MatchDate.Format("2006-01-02"), normalizeCaptainCSVClubKey(row.HomeClub), normalizeCaptainCSVClubKey(row.AwayClub),
+			strings.ToLower(row.Division), row.Marks.Uneven, row.Marks.Seam, row.Marks.Carry, row.Marks.Turn)
+		hash := sha256.Sum256([]byte(canonical))
+		row.Hash = hex.EncodeToString(hash[:])
+		parsed = append(parsed, row)
+	}
+	if len(parsed) == 0 {
+		return nil, fmt.Errorf("workbook contains no supported Premier 1, Premier 2, Championship or Division 1 ground reports")
+	}
+	return parsed, nil
+}
+
+func normalizePlayCricketPitchCompetition(value string) (string, bool) {
+	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+	competition, ok := playCricketPitchCompetitionNames[normalized]
+	return competition, ok
+}
+
+func pitchClubFromTeamName(value string) string {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	for _, suffix := range []string{
+		" - 1st xi", " \u2013 1st xi", " \u2014 1st xi",
+		" - first xi", " \u2013 first xi", " \u2014 first xi",
+	} {
+		if strings.HasSuffix(lower, suffix) {
+			return strings.TrimSpace(value[:len(value)-len(suffix)])
+		}
+	}
+	return value
+}
+
+func readPitchXLSXRows(data []byte) ([][]string, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("workbook is empty")
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("open workbook: %w", err)
+	}
+	var worksheets []*zip.File
+	var sharedStringsEntry *zip.File
+	for _, file := range reader.File {
+		switch {
+		case strings.HasPrefix(file.Name, "xl/worksheets/") && strings.HasSuffix(file.Name, ".xml"):
+			worksheets = append(worksheets, file)
+		case file.Name == "xl/sharedStrings.xml":
+			sharedStringsEntry = file
+		}
+	}
+	if len(worksheets) == 0 {
+		return nil, fmt.Errorf("workbook contains no worksheets")
+	}
+	sort.Slice(worksheets, func(i, j int) bool { return worksheets[i].Name < worksheets[j].Name })
+	sharedStrings, err := readPitchXLSXSharedStrings(sharedStringsEntry)
+	if err != nil {
+		return nil, err
+	}
+	const maxWorksheetXML = 64 << 20
+	if worksheets[0].UncompressedSize64 > maxWorksheetXML {
+		return nil, fmt.Errorf("worksheet is too large")
+	}
+	stream, err := worksheets[0].Open()
+	if err != nil {
+		return nil, fmt.Errorf("open worksheet: %w", err)
+	}
+	defer stream.Close()
+	decoder := xml.NewDecoder(stream)
+	rows := make([][]string, 0, 8192)
+	for {
+		token, decodeErr := decoder.Token()
+		if decodeErr == io.EOF {
+			break
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("read worksheet: %w", decodeErr)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "row" {
+			continue
+		}
+		var sourceRow pitchXLSXRow
+		if err := decoder.DecodeElement(&sourceRow, &start); err != nil {
+			return nil, fmt.Errorf("read worksheet row: %w", err)
+		}
+		maxColumn := -1
+		for _, cell := range sourceRow.Cells {
+			if column := pitchXLSXColumnIndex(cell.Reference); column > maxColumn {
+				maxColumn = column
+			}
+		}
+		if maxColumn < 0 {
+			continue
+		}
+		if maxColumn > 1024 {
+			return nil, fmt.Errorf("worksheet has too many columns")
+		}
+		record := make([]string, maxColumn+1)
+		for _, cell := range sourceRow.Cells {
+			column := pitchXLSXColumnIndex(cell.Reference)
+			if column < 0 || column >= len(record) {
+				continue
+			}
+			record[column] = pitchXLSXCellValue(cell, sharedStrings)
+		}
+		rows = append(rows, record)
+		if len(rows) > 100000 {
+			return nil, fmt.Errorf("worksheet has too many rows")
+		}
+	}
+	return rows, nil
+}
+
+func readPitchXLSXSharedStrings(file *zip.File) ([]string, error) {
+	if file == nil {
+		return nil, nil
+	}
+	const maxSharedStringsXML = 32 << 20
+	if file.UncompressedSize64 > maxSharedStringsXML {
+		return nil, fmt.Errorf("shared strings are too large")
+	}
+	stream, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open shared strings: %w", err)
+	}
+	defer stream.Close()
+	var table struct {
+		Items []pitchXLSXInlineString `xml:"si"`
+	}
+	if err := xml.NewDecoder(stream).Decode(&table); err != nil {
+		return nil, fmt.Errorf("read shared strings: %w", err)
+	}
+	values := make([]string, len(table.Items))
+	for i, item := range table.Items {
+		values[i] = item.value()
+	}
+	return values, nil
+}
+
+func pitchXLSXCellValue(cell pitchXLSXCell, sharedStrings []string) string {
+	switch cell.Type {
+	case "inlineStr":
+		return cell.Inline.value()
+	case "s":
+		index, err := strconv.Atoi(strings.TrimSpace(cell.Value))
+		if err == nil && index >= 0 && index < len(sharedStrings) {
+			return sharedStrings[index]
+		}
+		return ""
+	default:
+		return strings.TrimSpace(cell.Value)
+	}
+}
+
+func pitchXLSXColumnIndex(reference string) int {
+	column := 0
+	letters := 0
+	for _, char := range reference {
+		switch {
+		case char >= 'A' && char <= 'Z':
+			column = column*26 + int(char-'A'+1)
+			letters++
+		case char >= 'a' && char <= 'z':
+			column = column*26 + int(char-'a'+1)
+			letters++
+		default:
+			if letters == 0 {
+				return -1
+			}
+			return column - 1
+		}
+	}
+	if letters == 0 {
+		return -1
+	}
+	return column - 1
 }
 
 func parsePitchTimestamp(value string, loc *time.Location) (time.Time, error) {
@@ -325,9 +668,9 @@ func (s *Server) handleAdminPitchMarksGet() http.HandlerFunc {
 <h4 class="mb-1 fw-bold">Pitch Mark Comparison</h4>
 <p class="text-muted">Compare current home captain, away captain and combined captain marks by ground, then add umpire marks when they are available.</p>
 <div class="row g-3 mb-4"><div class="col-md-6"><div class="card shadow-sm h-100"><div class="card-body">
-<h5>Import umpire reports</h5><p class="small text-muted">Accepts CSV, TSV or tab-separated TXT exports. Every row is previewed and matched to a Play-Cricket fixture before import.</p>
+<h5>Import umpire reports</h5><p class="small text-muted">Accepts Play-Cricket Ground Response workbooks (.xlsx), plus CSV, TSV or tab-separated TXT exports. Every report is previewed and matched to a Play-Cricket fixture before import.</p>
 <form method="POST" action="/admin/pitch-marks/import/preview" enctype="multipart/form-data">
-<input type="hidden" name="csrf_token" value="%s"><input class="form-control mb-3" type="file" name="pitch_file" accept=".csv,.tsv,.txt" required>
+<input type="hidden" name="csrf_token" value="%s"><input class="form-control mb-3" type="file" name="pitch_file" accept=".xlsx,.csv,.tsv,.txt" required>
 <button class="btn btn-primary" type="submit">Upload and preview</button></form>
 <p class="small text-muted mt-3 mb-0">%d imports &middot; %d reports stored</p></div></div></div>
 <div class="col-md-6"><div class="card shadow-sm h-100"><div class="card-body"><h5>Download comparison CSV</h5>
@@ -368,7 +711,7 @@ func (s *Server) handleAdminPitchMarksPreview() http.HandlerFunc {
 			http.Error(w, "could not read upload", http.StatusBadRequest)
 			return
 		}
-		parsed, err := parseUmpirePitchFile(data)
+		parsed, err := parseUmpirePitchUpload(fh.Filename, data)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -428,7 +771,7 @@ func (s *Server) handleAdminPitchMarksPreview() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Pitch Import Preview")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<div class="container-fluid px-4"><h4>Pitch import preview</h4><p class="text-muted">%d source rows. Suggested and ambiguous matches can be confirmed below.</p>
+		fmt.Fprintf(w, `<div class="container-fluid px-4"><h4>Pitch import preview</h4><p class="text-muted">%d fixture reports. Suggested and ambiguous matches can be confirmed below.</p>
 <form method="POST" action="/admin/pitch-marks/import/apply"><input type="hidden" name="csrf_token" value="%s">
 <div class="table-responsive"><table class="table table-sm table-bordered align-middle"><thead><tr><th>#</th><th>Date</th><th>Division</th><th>Fixture from file</th><th>Marks</th><th>Status / fixture</th><th>Import</th></tr></thead><tbody>`, len(parsed), escapeHTML(csrf))
 		for _, row := range parsed {
@@ -543,16 +886,56 @@ func (s *Server) handleAdminPitchMarksApply() http.HandlerFunc {
 			if !row.Timestamp.IsZero() {
 				timestampArg = row.Timestamp
 			}
-			cmd, execErr := tx.Exec(ctx, `
-				INSERT INTO umpire_pitch_reports(import_id,play_cricket_match_id,source_timestamp,match_date,division_label,home_club_label,away_club_label,unevenness_mark,seam_mark,carry_mark,turn_mark,source_row_hash,source_row)
-				VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-				ON CONFLICT(source_row_hash) DO NOTHING
-			`, importID, selected, timestampArg, row.MatchDate, row.Division, row.HomeClub, row.AwayClub, int(row.Marks.Uneven), int(row.Marks.Seam), int(row.Marks.Carry), int(row.Marks.Turn), row.Hash, rawJSON)
+			sourceKind := strings.TrimSpace(row.SourceKind)
+			if sourceKind == "" {
+				sourceKind = "panel_form"
+			}
+			args := []any{
+				importID, selected, timestampArg, row.MatchDate, row.Division, row.HomeClub, row.AwayClub,
+				int(row.Marks.Uneven), int(row.Marks.Seam), int(row.Marks.Carry), int(row.Marks.Turn),
+				row.Hash, rawJSON, sourceKind,
+			}
+			execReport := func(query string) (int64, error) {
+				cmd, execErr := tx.Exec(ctx, query, args...)
+				if execErr != nil {
+					return 0, execErr
+				}
+				return cmd.RowsAffected(), nil
+			}
+			var affected int64
+			var execErr error
+			if sourceKind == "play_cricket_ground" {
+				affected, execErr = execReport(`
+					INSERT INTO umpire_pitch_reports(import_id,play_cricket_match_id,source_timestamp,match_date,division_label,home_club_label,away_club_label,unevenness_mark,seam_mark,carry_mark,turn_mark,source_row_hash,source_row,source_kind)
+					VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+					ON CONFLICT (play_cricket_match_id,source_kind) WHERE source_kind='play_cricket_ground'
+					DO UPDATE SET
+						import_id=EXCLUDED.import_id,
+						source_timestamp=EXCLUDED.source_timestamp,
+						match_date=EXCLUDED.match_date,
+						division_label=EXCLUDED.division_label,
+						home_club_label=EXCLUDED.home_club_label,
+						away_club_label=EXCLUDED.away_club_label,
+						unevenness_mark=EXCLUDED.unevenness_mark,
+						seam_mark=EXCLUDED.seam_mark,
+						carry_mark=EXCLUDED.carry_mark,
+						turn_mark=EXCLUDED.turn_mark,
+						source_row_hash=EXCLUDED.source_row_hash,
+						source_row=EXCLUDED.source_row,
+						created_at=now()
+				`)
+			} else {
+				affected, execErr = execReport(`
+					INSERT INTO umpire_pitch_reports(import_id,play_cricket_match_id,source_timestamp,match_date,division_label,home_club_label,away_club_label,unevenness_mark,seam_mark,carry_mark,turn_mark,source_row_hash,source_row,source_kind)
+					VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+					ON CONFLICT(source_row_hash) DO NOTHING
+				`)
+			}
 			if execErr != nil {
 				http.Error(w, "could not import selected rows", http.StatusInternalServerError)
 				return
 			}
-			imported += int(cmd.RowsAffected())
+			imported += int(affected)
 		}
 		_, err = tx.Exec(ctx, `UPDATE umpire_pitch_imports SET imported_count=$2,skipped_count=$3 WHERE id=$1`, importID, imported, len(preview.Rows)-imported)
 		if err == nil {
@@ -1008,7 +1391,20 @@ func applyCaptainPitchSubmissions(fixtures map[int64]pitchFixture, clubs map[str
 }
 
 func (s *Server) addUmpirePitchSources(ctx context.Context, from, to time.Time, fixtures map[int64]pitchFixture, clubs map[string]*pitchClubAggregate) error {
-	rows, err := s.DB.Query(ctx, `SELECT play_cricket_match_id,unevenness_mark,seam_mark,carry_mark,turn_mark FROM umpire_pitch_reports WHERE match_date BETWEEN $1 AND $2`, from, to)
+	rows, err := s.DB.Query(ctx, `
+		SELECT report.play_cricket_match_id,report.unevenness_mark,report.seam_mark,report.carry_mark,report.turn_mark
+		FROM umpire_pitch_reports report
+		WHERE report.match_date BETWEEN $1 AND $2
+		  AND (
+			report.source_kind='play_cricket_ground'
+			OR NOT EXISTS (
+				SELECT 1
+				FROM umpire_pitch_reports ground
+				WHERE ground.play_cricket_match_id=report.play_cricket_match_id
+				  AND ground.source_kind='play_cricket_ground'
+			)
+		  )
+	`, from, to)
 	if err != nil {
 		return err
 	}
