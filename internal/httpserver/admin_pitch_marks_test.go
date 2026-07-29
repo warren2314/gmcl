@@ -70,7 +70,7 @@ func TestParseUmpirePitchFileTSV(t *testing.T) {
 func TestParsePlayCricketUmpireGroundXLSX(t *testing.T) {
 	header := []string{"Match Date", "Home Team", "Away Team", "Division / Cup", "Ground", "Question", "Response", "Explanation", "Responsible Club"}
 	report := func(date, home, away, division, question, response string) []string {
-		return []string{date, home, away, division, home, question, response, "", ""}
+		return []string{date, home, away, division, pitchClubFromTeamName(home), question, response, "", pitchClubFromTeamName(home)}
 	}
 	rows := [][]string{
 		header,
@@ -98,6 +98,7 @@ func TestParsePlayCricketUmpireGroundXLSX(t *testing.T) {
 		first.Division != "GMCL Saturday Premier" ||
 		first.HomeClub != "Clifton CC, Lancs" ||
 		first.AwayClub != "Royton CC" ||
+		first.Ground != "Clifton CC, Lancs" ||
 		first.Marks != (pitchVector{4, 3, 5, 2}) ||
 		len(first.Errors) != 0 ||
 		first.Hash == "" {
@@ -110,6 +111,21 @@ func TestParsePlayCricketUmpireGroundXLSX(t *testing.T) {
 		second.Marks != (pitchVector{0, 3, 0, 4}) ||
 		len(second.Errors) != 2 {
 		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestSyntheticPitchMatchIDIsStableAndNegative(t *testing.T) {
+	row := umpirePitchParsedRow{
+		MatchDate: time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC),
+		HomeClub:  "Clifton CC, Lancs",
+		AwayClub:  "Royton CC",
+		Division:  "GMCL Saturday Premier",
+	}
+	first := syntheticPitchMatchID(row)
+	row.HomeClub = "Clifton Cricket Club"
+	second := syntheticPitchMatchID(row)
+	if first >= 0 || first != second {
+		t.Fatalf("first=%d second=%d", first, second)
 	}
 }
 
@@ -312,6 +328,47 @@ func TestApplyCaptainPitchSubmissionsUsesNewestReportForEachSide(t *testing.T) {
 	})
 	if len(club.Sources["home"]) != 0 || club.ExcludedCaptains != 1 {
 		t.Fatalf("new no-play amendment should remove the old mark: sources=%+v excluded=%d", club.Sources["home"], club.ExcludedCaptains)
+	}
+}
+
+func TestApplyCaptainPitchSubmissionsMatchesUnlinkedFirstXIByDateAndClub(t *testing.T) {
+	date := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	fixture := pitchFixture{
+		MatchID:  -123,
+		Date:     date,
+		HomeClub: "Clifton CC, Lancs",
+		AwayClub: "Royton CC",
+		Ground:   "Clifton CC",
+	}
+	fixtures := map[int64]pitchFixture{fixture.MatchID: fixture}
+	clubs := map[string]*pitchClubAggregate{
+		pitchFixtureGroundKey(fixture): {
+			Name:      fixture.Ground,
+			Divisions: map[string]bool{"GMCL Saturday Premier": true},
+			Sources:   map[string][]pitchSourceValue{},
+		},
+	}
+	applyCaptainPitchSubmissions(fixtures, clubs, []captainPitchSubmission{
+		{
+			MatchDate: date,
+			Club:      "Royton Cricket Club",
+			Team:      "1st XI",
+			TeamLevel: 1,
+			Data:      []byte(`{"match_outcome":"played","unevenness_of_bounce":2,"seam_movement":2,"carry_bounce":2,"turn":2}`),
+			Submitted: date.Add(12 * time.Hour),
+		},
+		{
+			MatchDate: date,
+			Club:      "Royton Cricket Club",
+			Team:      "2nd XI",
+			TeamLevel: 2,
+			Data:      []byte(`{"match_outcome":"played","unevenness_of_bounce":1,"seam_movement":1,"carry_bounce":1,"turn":1}`),
+			Submitted: date.Add(13 * time.Hour),
+		},
+	})
+	club := clubs[pitchFixtureGroundKey(fixture)]
+	if len(club.Sources["away"]) != 1 || club.Sources["away"][0].Vector != (pitchVector{4, 4, 4, 4}) {
+		t.Fatalf("away sources=%+v", club.Sources["away"])
 	}
 }
 

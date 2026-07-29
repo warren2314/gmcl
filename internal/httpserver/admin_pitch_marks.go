@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -81,6 +82,7 @@ type umpirePitchParsedRow struct {
 	Division   string            `json:"division"`
 	HomeClub   string            `json:"home_club"`
 	AwayClub   string            `json:"away_club"`
+	Ground     string            `json:"ground"`
 	Marks      pitchVector       `json:"marks"`
 	Hash       string            `json:"hash"`
 	Raw        map[string]string `json:"raw"`
@@ -252,7 +254,7 @@ func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, erro
 	for i, value := range records[0] {
 		header[normalizePitchHeader(value)] = i
 	}
-	required := []string{"match date", "home team", "away team", "division / cup", "question", "response"}
+	required := []string{"match date", "home team", "away team", "division / cup", "ground", "question", "response"}
 	for _, name := range required {
 		if _, ok := header[name]; !ok {
 			return nil, fmt.Errorf("required workbook column missing: %s", name)
@@ -266,9 +268,9 @@ func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, erro
 		return strings.TrimSpace(record[index])
 	}
 	type pitchGroup struct {
-		date, home, away, division string
-		marks                      map[string]string
-		errors                     []string
+		date, home, away, homeTeam, awayTeam, division, ground, responsible string
+		marks                                                               map[string]string
+		errors                                                              []string
 	}
 	groups := map[string]*pitchGroup{}
 	var groupOrder []string
@@ -294,14 +296,25 @@ func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, erro
 		if dateErr == nil && (matchDate.Before(filterFrom) || matchDate.After(filterTo) || matchDate.Weekday() != time.Saturday) {
 			continue
 		}
-		home := pitchClubFromTeamName(field(record, "home team"))
-		away := pitchClubFromTeamName(field(record, "away team"))
+		homeTeam := field(record, "home team")
+		awayTeam := field(record, "away team")
+		home := pitchClubFromTeamName(homeTeam)
+		away := pitchClubFromTeamName(awayTeam)
+		ground := field(record, "ground")
+		responsible := field(record, "responsible club")
 		key := strings.Join([]string{date, home, away, division}, "|")
 		group := groups[key]
 		if group == nil {
-			group = &pitchGroup{date: date, home: home, away: away, division: division, marks: map[string]string{}}
+			group = &pitchGroup{
+				date: date, home: home, away: away, homeTeam: homeTeam, awayTeam: awayTeam,
+				division: division, ground: ground, responsible: responsible, marks: map[string]string{},
+			}
 			groups[key] = group
 			groupOrder = append(groupOrder, key)
+		} else if ground != "" && group.ground != "" && normalizeCaptainCSVClubKey(ground) != normalizeCaptainCSVClubKey(group.ground) {
+			group.errors = append(group.errors, "inconsistent ground name")
+		} else if group.ground == "" {
+			group.ground = ground
 		}
 		markName, isPitchQuestion := questionNames[normalizePitchHeader(field(record, "question"))]
 		if !isPitchQuestion {
@@ -321,12 +334,17 @@ func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, erro
 			Division:   group.division,
 			HomeClub:   group.home,
 			AwayClub:   group.away,
+			Ground:     group.ground,
 			Raw: map[string]string{
-				"source_format": "play_cricket_ground_xlsx",
-				"match_date":    group.date,
-				"home_team":     group.home,
-				"away_team":     group.away,
-				"division":      group.division,
+				"source_format":    "play_cricket_ground_xlsx",
+				"match_date":       group.date,
+				"home_team":        group.homeTeam,
+				"away_team":        group.awayTeam,
+				"home_club":        group.home,
+				"away_club":        group.away,
+				"division":         group.division,
+				"ground":           group.ground,
+				"responsible_club": group.responsible,
 			},
 			Status: "invalid",
 			Errors: append([]string(nil), group.errors...),
@@ -365,6 +383,24 @@ func parsePlayCricketUmpireGroundXLSX(data []byte) ([]umpirePitchParsedRow, erro
 		return nil, fmt.Errorf("workbook contains no supported Premier 1, Premier 2, Championship or Division 1 ground reports")
 	}
 	return parsed, nil
+}
+
+// syntheticPitchMatchID provides a stable negative fixture key for workbook
+// matches that are not present in the Play-Cricket fixture cache. Real
+// Play-Cricket match IDs are positive.
+func syntheticPitchMatchID(row umpirePitchParsedRow) int64 {
+	canonical := strings.Join([]string{
+		row.MatchDate.Format("2006-01-02"),
+		normalizeCaptainCSVClubKey(row.HomeClub),
+		normalizeCaptainCSVClubKey(row.AwayClub),
+		strings.ToLower(strings.TrimSpace(row.Division)),
+	}, "|")
+	hash := sha256.Sum256([]byte(canonical))
+	value := binary.BigEndian.Uint64(hash[:8]) & ((uint64(1) << 63) - 1)
+	if value == 0 {
+		value = 1
+	}
+	return -int64(value)
 }
 
 func normalizePlayCricketPitchCompetition(value string) (string, bool) {
@@ -739,6 +775,16 @@ func (s *Server) handleAdminPitchMarksPreview() http.HandlerFunc {
 		seenHashes := map[string]bool{}
 		for i := range parsed {
 			row := &parsed[i]
+			if row.SourceKind == "play_cricket_ground" {
+				row.SelectedID = syntheticPitchMatchID(*row)
+				row.Candidates = []pitchCandidate{{
+					MatchID:     row.SelectedID,
+					MatchDate:   row.MatchDate,
+					Competition: row.Division,
+					HomeClub:    row.HomeClub,
+					AwayClub:    row.AwayClub,
+				}}
+			}
 			if len(row.Errors) > 0 {
 				continue
 			}
@@ -751,6 +797,10 @@ func (s *Server) handleAdminPitchMarksPreview() http.HandlerFunc {
 			_ = s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM umpire_pitch_reports WHERE source_row_hash=$1)`, row.Hash).Scan(&duplicate)
 			if duplicate {
 				row.Status = "duplicate"
+				continue
+			}
+			if row.SourceKind == "play_cricket_ground" {
+				row.Status = "exact"
 				continue
 			}
 			row.Status, row.Candidates, row.SelectedID = matchPitchRow(*row, fixtures[row.MatchDate.Format("2006-01-02")])
@@ -797,9 +847,13 @@ func (s *Server) handleAdminPitchMarksPreview() http.HandlerFunc {
 			if canImport {
 				check = fmt.Sprintf(`<input class="form-check-input" type="checkbox" name="include" value="%d" checked>`, row.Index)
 			}
-			fmt.Fprintf(w, `<tr><td>%d</td><td>%s</td><td>%s</td><td>%s v %s</td><td>%.0f / %.0f / %.0f / %.0f</td><td><span class="badge %s">%s</span><div class="small text-danger">%s</div>%s</td><td class="text-center">%s</td></tr>`,
+			ground := strings.TrimSpace(row.Ground)
+			if ground == "" {
+				ground = row.HomeClub
+			}
+			fmt.Fprintf(w, `<tr><td>%d</td><td>%s</td><td>%s</td><td>%s v %s<div class="small text-muted">Ground: %s</div></td><td>%.0f / %.0f / %.0f / %.0f</td><td><span class="badge %s">%s</span><div class="small text-danger">%s</div>%s</td><td class="text-center">%s</td></tr>`,
 				row.Index, row.MatchDate.Format("02/01/2006"), escapeHTML(row.Division), escapeHTML(row.HomeClub), escapeHTML(row.AwayClub),
-				row.Marks.Uneven, row.Marks.Seam, row.Marks.Carry, row.Marks.Turn, badge, escapeHTML(row.Status), escapeHTML(reason), selectHTML, check)
+				escapeHTML(ground), row.Marks.Uneven, row.Marks.Seam, row.Marks.Carry, row.Marks.Turn, badge, escapeHTML(row.Status), escapeHTML(reason), selectHTML, check)
 		}
 		fmt.Fprint(w, `</tbody></table></div><button class="btn btn-success" type="submit">Import selected rows</button> <a class="btn btn-outline-secondary" href="/admin/pitch-marks">Cancel</a></form></div>`)
 		pageFooter(w)
@@ -817,6 +871,58 @@ func (s *Server) storePitchPreview(ctx context.Context, r *http.Request, checksu
 	adminID := adminIDForRequest(r)
 	_, err := s.DB.Exec(ctx, `INSERT INTO csv_preview_tokens(id,token_hash,admin_user_id,checksum,preview_json,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, uuid.New(), h[:], adminID, checksum, previewJSON, time.Now().Add(30*time.Minute))
 	return token, err
+}
+
+func upsertPitchWorkbookFixture(ctx context.Context, tx pgx.Tx, preview pitchImportPreview, row umpirePitchParsedRow) (bool, error) {
+	if row.SourceKind != "play_cricket_ground" || row.MatchDate.IsZero() || row.HomeClub == "" || row.AwayClub == "" || row.Division == "" {
+		return false, nil
+	}
+	ground := strings.TrimSpace(row.Ground)
+	if ground == "" {
+		ground = row.HomeClub
+	}
+	homeTeam := strings.TrimSpace(row.Raw["home_team"])
+	if homeTeam == "" {
+		homeTeam = row.HomeClub + " - 1st XI"
+	}
+	awayTeam := strings.TrimSpace(row.Raw["away_team"])
+	if awayTeam == "" {
+		awayTeam = row.AwayClub + " - 1st XI"
+	}
+	payload, err := json.Marshal(map[string]string{
+		"competition_name":     row.Division,
+		"pitch_fixture_source": "play_cricket_ground_xlsx",
+		"source_filename":      preview.Filename,
+		"source_checksum":      preview.Checksum,
+	})
+	if err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO league_fixtures(
+			play_cricket_match_id,season_id,match_date,league_id,competition_id,
+			home_club_name,away_club_name,home_team_name,away_team_name,ground_name,
+			payload,fetched_at,updated_at
+		)
+		VALUES(
+			$1,(SELECT id FROM seasons WHERE $2::date BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1),
+			$2,'GMCL',$3,$4,$5,$6,$7,$8,$9,now(),now()
+		)
+		ON CONFLICT(play_cricket_match_id) DO UPDATE SET
+			season_id=EXCLUDED.season_id,
+			match_date=EXCLUDED.match_date,
+			league_id=EXCLUDED.league_id,
+			competition_id=EXCLUDED.competition_id,
+			home_club_name=EXCLUDED.home_club_name,
+			away_club_name=EXCLUDED.away_club_name,
+			home_team_name=EXCLUDED.home_team_name,
+			away_team_name=EXCLUDED.away_team_name,
+			ground_name=EXCLUDED.ground_name,
+			payload=EXCLUDED.payload,
+			fetched_at=now(),
+			updated_at=now()
+	`, syntheticPitchMatchID(row), row.MatchDate, row.Division, row.HomeClub, row.AwayClub, homeTeam, awayTeam, ground, payload)
+	return err == nil, err
 }
 
 func (s *Server) handleAdminPitchMarksApply() http.HandlerFunc {
@@ -864,6 +970,17 @@ func (s *Server) handleAdminPitchMarksApply() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "could not create import", http.StatusInternalServerError)
 			return
+		}
+		fixturesUpdated := 0
+		for _, row := range preview.Rows {
+			updated, fixtureErr := upsertPitchWorkbookFixture(ctx, tx, preview, row)
+			if fixtureErr != nil {
+				http.Error(w, "could not update ground fixtures", http.StatusInternalServerError)
+				return
+			}
+			if updated {
+				fixturesUpdated++
+			}
 		}
 		imported := 0
 		for _, row := range preview.Rows {
@@ -945,7 +1062,7 @@ func (s *Server) handleAdminPitchMarksApply() http.HandlerFunc {
 			http.Error(w, "could not finish import", http.StatusInternalServerError)
 			return
 		}
-		s.audit(ctx, r, "admin", nil, "umpire_pitch_import_apply", "umpire_pitch_import", &importID, map[string]any{"imported": imported, "skipped": len(preview.Rows) - imported, "checksum": checksum})
+		s.audit(ctx, r, "admin", nil, "umpire_pitch_import_apply", "umpire_pitch_import", &importID, map[string]any{"imported": imported, "skipped": len(preview.Rows) - imported, "fixtures_updated": fixturesUpdated, "checksum": checksum})
 		http.Redirect(w, r, "/admin/pitch-marks?imported="+strconv.Itoa(imported), http.StatusSeeOther)
 	}
 }
@@ -1052,6 +1169,18 @@ type pitchFixture struct {
 	MatchID                    int64
 	Date                       time.Time
 	Competition, HomeClub      string
+	AwayClub, Ground           string
+}
+
+func pitchFixtureGroundLabel(f pitchFixture) string {
+	if ground := strings.TrimSpace(f.Ground); ground != "" {
+		return ground
+	}
+	return strings.TrimSpace(f.HomeClub)
+}
+
+func pitchFixtureGroundKey(f pitchFixture) string {
+	return normalizeCaptainCSVClubKey(pitchFixtureGroundLabel(f))
 }
 
 type pitchSourceValue struct {
@@ -1283,10 +1412,19 @@ func (s *Server) handleAdminPitchMarksExportCSV() http.HandlerFunc {
 
 func (s *Server) loadPitchExportFixtures(ctx context.Context, from, to time.Time) (map[int64]pitchFixture, map[string]*pitchClubAggregate, error) {
 	rows, err := s.DB.Query(ctx, `
-		SELECT play_cricket_match_id,match_date,COALESCE(payload->>'competition_name',''),COALESCE(home_club_name,''),COALESCE(home_team_pc_id,''),COALESCE(away_team_pc_id,'')
-		FROM league_fixtures
-		WHERE match_date BETWEEN $1 AND $2 AND EXTRACT(ISODOW FROM match_date)=6
-		  AND COALESCE(payload->>'competition_name','') IN ('GMCL Saturday Premier','GMCL Saturday Premier 2','GMCL Saturday Championship','GMCL Saturday Division 1')
+		WITH scoped AS (
+			SELECT play_cricket_match_id,match_date,COALESCE(payload->>'competition_name','') AS competition,
+			       COALESCE(home_club_name,'') AS home_club,COALESCE(away_club_name,'') AS away_club,
+			       COALESCE(home_team_pc_id,'') AS home_team_pc,COALESCE(away_team_pc_id,'') AS away_team_pc,
+			       COALESCE(ground_name,'') AS ground,COALESCE(payload->>'pitch_fixture_source','') AS pitch_source
+			FROM league_fixtures
+			WHERE match_date BETWEEN $1 AND $2 AND EXTRACT(ISODOW FROM match_date)=6
+			  AND COALESCE(payload->>'competition_name','') IN ('GMCL Saturday Premier','GMCL Saturday Premier 2','GMCL Saturday Championship','GMCL Saturday Division 1')
+		)
+		SELECT play_cricket_match_id,match_date,competition,home_club,away_club,home_team_pc,away_team_pc,ground
+		FROM scoped fixture
+		WHERE fixture.pitch_source='play_cricket_ground_xlsx'
+		   OR NOT EXISTS (SELECT 1 FROM scoped imported WHERE imported.pitch_source='play_cricket_ground_xlsx')
 	`, from, to)
 	if err != nil {
 		return nil, nil, err
@@ -1296,13 +1434,13 @@ func (s *Server) loadPitchExportFixtures(ctx context.Context, from, to time.Time
 	clubs := map[string]*pitchClubAggregate{}
 	for rows.Next() {
 		var f pitchFixture
-		if err := rows.Scan(&f.MatchID, &f.Date, &f.Competition, &f.HomeClub, &f.HomeTeamPC, &f.AwayTeamPC); err != nil {
+		if err := rows.Scan(&f.MatchID, &f.Date, &f.Competition, &f.HomeClub, &f.AwayClub, &f.HomeTeamPC, &f.AwayTeamPC, &f.Ground); err != nil {
 			return nil, nil, err
 		}
 		fixtures[f.MatchID] = f
-		key := normalizeCaptainCSVClubKey(f.HomeClub)
+		key := pitchFixtureGroundKey(f)
 		if clubs[key] == nil {
-			clubs[key] = &pitchClubAggregate{Name: f.HomeClub, Divisions: map[string]bool{}, Sources: map[string][]pitchSourceValue{}}
+			clubs[key] = &pitchClubAggregate{Name: pitchFixtureGroundLabel(f), Divisions: map[string]bool{}, Sources: map[string][]pitchSourceValue{}}
 		}
 		clubs[key].FixtureCount++
 		clubs[key].Divisions[f.Competition] = true
@@ -1312,11 +1450,12 @@ func (s *Server) loadPitchExportFixtures(ctx context.Context, from, to time.Time
 
 func (s *Server) addCaptainPitchSources(ctx context.Context, from, to time.Time, fixtures map[int64]pitchFixture, clubs map[string]*pitchClubAggregate) error {
 	rows, err := s.DB.Query(ctx, `
-		SELECT sub.play_cricket_match_id,COALESCE(t.play_cricket_team_id,''),sub.form_data,sub.submitted_at
-		FROM submissions sub JOIN teams t ON t.id=sub.team_id
-		JOIN league_fixtures lf ON lf.play_cricket_match_id=sub.play_cricket_match_id
-		WHERE lf.match_date BETWEEN $1 AND $2 AND EXTRACT(ISODOW FROM lf.match_date)=6
-		  AND COALESCE(lf.payload->>'competition_name','') IN ('GMCL Saturday Premier','GMCL Saturday Premier 2','GMCL Saturday Championship','GMCL Saturday Division 1')
+		SELECT COALESCE(sub.play_cricket_match_id,0),sub.match_date,cl.name,t.name,COALESCE(t.level,0),
+		       COALESCE(t.play_cricket_team_id,''),COALESCE(sub.form_data,'{}'::jsonb),sub.submitted_at
+		FROM submissions sub
+		JOIN teams t ON t.id=sub.team_id
+		JOIN clubs cl ON cl.id=t.club_id
+		WHERE sub.match_date BETWEEN $1 AND $2 AND EXTRACT(ISODOW FROM sub.match_date)=6
 	`, from, to)
 	if err != nil {
 		return err
@@ -1325,7 +1464,10 @@ func (s *Server) addCaptainPitchSources(ctx context.Context, from, to time.Time,
 	var submissions []captainPitchSubmission
 	for rows.Next() {
 		var submission captainPitchSubmission
-		if err := rows.Scan(&submission.MatchID, &submission.TeamPC, &submission.Data, &submission.Submitted); err != nil {
+		if err := rows.Scan(
+			&submission.MatchID, &submission.MatchDate, &submission.Club, &submission.Team, &submission.TeamLevel,
+			&submission.TeamPC, &submission.Data, &submission.Submitted,
+		); err != nil {
 			return err
 		}
 		submissions = append(submissions, submission)
@@ -1339,9 +1481,64 @@ func (s *Server) addCaptainPitchSources(ctx context.Context, from, to time.Time,
 
 type captainPitchSubmission struct {
 	MatchID   int64
+	MatchDate time.Time
+	Club      string
+	Team      string
+	TeamLevel int32
 	TeamPC    string
 	Data      []byte
 	Submitted time.Time
+}
+
+func resolveCaptainPitchSubmission(fixtures map[int64]pitchFixture, submission captainPitchSubmission) (pitchFixture, string, bool) {
+	resolveSide := func(f pitchFixture) string {
+		teamPC := strings.TrimSpace(submission.TeamPC)
+		if teamPC != "" && teamPC == strings.TrimSpace(f.HomeTeamPC) {
+			return "home"
+		}
+		if teamPC != "" && teamPC == strings.TrimSpace(f.AwayTeamPC) {
+			return "away"
+		}
+		clubKey := normalizeCaptainCSVClubKey(submission.Club)
+		if clubKey != "" && clubKey == normalizeCaptainCSVClubKey(f.HomeClub) {
+			return "home"
+		}
+		if clubKey != "" && clubKey == normalizeCaptainCSVClubKey(f.AwayClub) {
+			return "away"
+		}
+		return ""
+	}
+	if f, ok := fixtures[submission.MatchID]; ok {
+		if side := resolveSide(f); side != "" {
+			return f, side, true
+		}
+		return f, "", true
+	}
+	teamKey := normalizeCaptainCSVTeamKey(submission.Team)
+	if submission.TeamLevel != 1 && teamKey != "1xi" && teamKey != "1" && teamKey != "firstteam" {
+		return pitchFixture{}, "", false
+	}
+	type match struct {
+		fixture pitchFixture
+		side    string
+	}
+	var matches []match
+	for _, f := range fixtures {
+		if submission.MatchDate.IsZero() || !samePitchDate(f.Date, submission.MatchDate) {
+			continue
+		}
+		if side := resolveSide(f); side != "" {
+			matches = append(matches, match{fixture: f, side: side})
+		}
+	}
+	if len(matches) != 1 {
+		return pitchFixture{}, "", false
+	}
+	return matches[0].fixture, matches[0].side, true
+}
+
+func samePitchDate(a, b time.Time) bool {
+	return a.Format("2006-01-02") == b.Format("2006-01-02")
 }
 
 func applyCaptainPitchSubmissions(fixtures map[int64]pitchFixture, clubs map[string]*pitchClubAggregate, submissions []captainPitchSubmission) {
@@ -1351,26 +1548,19 @@ func applyCaptainPitchSubmissions(fixtures map[int64]pitchFixture, clubs map[str
 	}
 	latestBySide := map[string]latest{}
 	for _, submission := range submissions {
-		f, ok := fixtures[submission.MatchID]
+		f, side, ok := resolveCaptainPitchSubmission(fixtures, submission)
 		if !ok {
 			continue
 		}
-		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
+		club := clubs[pitchFixtureGroundKey(f)]
 		if club == nil {
 			continue
-		}
-		side := ""
-		teamPC := strings.TrimSpace(submission.TeamPC)
-		if teamPC != "" && teamPC == strings.TrimSpace(f.HomeTeamPC) {
-			side = "home"
-		} else if teamPC != "" && teamPC == strings.TrimSpace(f.AwayTeamPC) {
-			side = "away"
 		}
 		if side == "" {
 			club.ExcludedCaptains++
 			continue
 		}
-		key := fmt.Sprintf("%d|%s", submission.MatchID, side)
+		key := fmt.Sprintf("%d|%s", f.MatchID, side)
 		if previous, exists := latestBySide[key]; !exists || submission.Submitted.After(previous.submitted) {
 			latestBySide[key] = latest{submission.Data, submission.Submitted}
 		}
@@ -1380,7 +1570,7 @@ func applyCaptainPitchSubmissions(fixtures map[int64]pitchFixture, clubs map[str
 		matchID, _ := strconv.ParseInt(parts[0], 10, 64)
 		side := parts[1]
 		f := fixtures[matchID]
-		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
+		club := clubs[pitchFixtureGroundKey(f)]
 		vector, valid := captainPitchVector(value.data)
 		if !valid {
 			club.ExcludedCaptains++
@@ -1430,7 +1620,7 @@ func (s *Server) addUmpirePitchSources(ctx context.Context, from, to time.Time, 
 	}
 	for id, a := range byFixture {
 		f := fixtures[id]
-		club := clubs[normalizeCaptainCSVClubKey(f.HomeClub)]
+		club := clubs[pitchFixtureGroundKey(f)]
 		club.Sources["umpire"] = append(club.Sources["umpire"], pitchSourceValue{Vector: a.vector.div(float64(a.count)), Reports: a.count})
 	}
 	return rows.Err()
