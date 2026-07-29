@@ -394,10 +394,10 @@ func TestBuildPitchComparisonRowsAndLiveTable(t *testing.T) {
 		},
 	}
 	rows := buildPitchComparisonRows(clubs, pitchWeights{Home: 10, Away: 40, Umpire: 50})
-	if len(rows) != 2 || rows[0].Club != "Alpha CC" || rows[1].Club != "Zulu CC" {
+	if len(rows) != 2 || rows[0].Club != "Zulu CC" || rows[1].Club != "Alpha CC" {
 		t.Fatalf("rows=%+v", rows)
 	}
-	zulu := rows[1]
+	zulu := rows[0]
 	if zulu.HomeFixtures != 2 || zulu.AwayFixtures != 1 || !zulu.CombinedOK || !closeFloat(zulu.Combined.overall(), 2.4) {
 		t.Fatalf("zulu=%+v", zulu)
 	}
@@ -407,10 +407,39 @@ func TestBuildPitchComparisonRowsAndLiveTable(t *testing.T) {
 
 	var html bytes.Buffer
 	writePitchComparisonTable(&html, rows, time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC))
-	for _, expected := range []string{"Live ground comparison", "Alpha CC", "Zulu CC", "Pending detailed import", "newest submission"} {
+	for _, expected := range []string{"Live ground comparison", "Premier 1", "Division 1", "Alpha CC", "Zulu CC", "Pending detailed import", "newest submission"} {
 		if !strings.Contains(html.String(), expected) {
 			t.Fatalf("missing %q in html", expected)
 		}
+	}
+	if strings.Index(html.String(), "Premier 1") > strings.Index(html.String(), "Division 1") {
+		t.Fatal("division sections are out of order")
+	}
+}
+
+func TestBuildPitchComparisonRowsSortsByDivisionThenGround(t *testing.T) {
+	club := func(name, division string) *pitchClubAggregate {
+		return &pitchClubAggregate{
+			Name:         name,
+			Divisions:    map[string]bool{division: true},
+			FixtureCount: 1,
+			Sources:      map[string][]pitchSourceValue{},
+		}
+	}
+	rows := buildPitchComparisonRows(map[string]*pitchClubAggregate{
+		"division":      club("Division Ground", "GMCL Saturday Division 1"),
+		"premier-zeta":  club("Zeta Ground", "GMCL Saturday Premier"),
+		"championship":  club("Championship Ground", "GMCL Saturday Championship"),
+		"premier-two":   club("Premier Two Ground", "GMCL Saturday Premier 2"),
+		"premier-alpha": club("Alpha Ground", "GMCL Saturday Premier"),
+	}, pitchWeights{Home: 10, Away: 40, Umpire: 50})
+	got := make([]string, len(rows))
+	for index, row := range rows {
+		got[index] = row.Club
+	}
+	want := []string{"Alpha Ground", "Zeta Ground", "Premier Two Ground", "Championship Ground", "Division Ground"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got=%v want=%v", got, want)
 	}
 }
 

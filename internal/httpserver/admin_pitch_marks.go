@@ -43,6 +43,13 @@ var pitchCompetitionNames = []string{
 	"GMCL Saturday Division 1",
 }
 
+var pitchCompetitionDisplayNames = map[string]string{
+	"GMCL Saturday Premier":      "Premier 1",
+	"GMCL Saturday Premier 2":    "Premier 2",
+	"GMCL Saturday Championship": "Championship",
+	"GMCL Saturday Division 1":   "Division 1",
+}
+
 var playCricketPitchCompetitionNames = map[string]string{
 	"robert hinchliffe premier league": "GMCL Saturday Premier",
 	"gmcl premier league 2":            "GMCL Saturday Premier 2",
@@ -1289,9 +1296,47 @@ func buildPitchComparisonRows(clubs map[string]*pitchClubAggregate, weights pitc
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
+		leftDivision := primaryPitchDivision(rows[i].Divisions)
+		rightDivision := primaryPitchDivision(rows[j].Divisions)
+		leftRank := pitchDivisionRank(leftDivision)
+		rightRank := pitchDivisionRank(rightDivision)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
 		return strings.ToLower(rows[i].Club) < strings.ToLower(rows[j].Club)
 	})
 	return rows
+}
+
+func pitchDivisionRank(division string) int {
+	for index, name := range pitchCompetitionNames {
+		if division == name {
+			return index
+		}
+	}
+	return len(pitchCompetitionNames)
+}
+
+func primaryPitchDivision(divisions []string) string {
+	primary := ""
+	primaryRank := len(pitchCompetitionNames) + 1
+	for _, division := range divisions {
+		if rank := pitchDivisionRank(division); rank < primaryRank {
+			primary = division
+			primaryRank = rank
+		}
+	}
+	return primary
+}
+
+func pitchDivisionDisplayName(division string) string {
+	if display := pitchCompetitionDisplayNames[division]; display != "" {
+		return display
+	}
+	if division != "" {
+		return division
+	}
+	return "Other"
 }
 
 func writePitchComparisonTable(w io.Writer, rows []pitchComparisonRow, from, to time.Time) {
@@ -1319,7 +1364,15 @@ func writePitchComparisonTable(w io.Writer, rows []pitchComparisonRow, from, to 
 	}
 	fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
 <thead><tr><th>Ground</th><th class="text-center">Fixtures</th><th>Home captain</th><th>Away captain</th><th>Combined captains</th><th>Umpires</th><th>Coverage</th></tr></thead><tbody>`)
+	currentDivision := ""
+	firstDivision := true
 	for _, row := range rows {
+		division := primaryPitchDivision(row.Divisions)
+		if firstDivision || division != currentDivision {
+			fmt.Fprintf(w, `<tr class="table-secondary"><th colspan="7" class="py-2 fs-6">%s</th></tr>`, escapeHTML(pitchDivisionDisplayName(division)))
+			currentDivision = division
+			firstDivision = false
+		}
 		coverage := fmt.Sprintf(`Home %d/%d &middot; Away %d/%d`, row.HomeFixtures, row.EligibleFixtures, row.AwayFixtures, row.EligibleFixtures)
 		if len(row.Missing) > 0 {
 			coverage += `<div class="small text-warning">Awaiting: ` + escapeHTML(strings.Join(row.Missing, ", ")) + `</div>`
