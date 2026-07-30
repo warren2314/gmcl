@@ -80,7 +80,7 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 		pageHead(w, "Portal staff assignments")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5">
-<div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-start gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Club operations</p><h1 class="h2">Portal staff roles and scopes</h1><p class="text-muted mb-0">Assign named GMCL administrators as Club Liaison Officers or Junior Administrators. A blank scope applies to all clubs; otherwise choose one club or one competition.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 flex-shrink-0"><a class="btn btn-outline-secondary" href="/admin/portal">&larr; Pilot controls</a><a class="btn btn-primary px-4" href="/admin/portal/messages/new">Compose club message</a></div></div>`)
+<div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-start gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Club operations</p><h1 class="h2">Portal staff roles and scopes</h1><p class="text-muted mb-0">Assign named GMCL administrators as Club Liaison Officers or Junior Administrators. A blank scope applies to all clubs; otherwise choose one club or one mapped competition.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 flex-shrink-0"><a class="btn btn-outline-secondary" href="/admin/portal">&larr; Pilot controls</a><a class="btn btn-outline-primary" href="/admin/portal/competitions">Competition contexts</a><a class="btn btn-primary px-4" href="/admin/portal/messages/new">Compose club message</a></div></div>`)
 		renderAdminPortalStaffStatus(w, r.URL.Query().Get("status"))
 		fmt.Fprintf(w, `<section class="card shadow-sm mb-4"><div class="card-header"><strong>Add staff assignment</strong></div><form method="post" action="/admin/portal/staff/assignments"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3"><div class="col-md-4"><label class="form-label">Administrator</label><select class="form-select" name="admin_user_id" required><option value="">Choose administrator</option>`, escapeHTML(csrf))
 		for _, admin := range admins {
@@ -96,7 +96,12 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</select></div><div class="col-md-5"><label class="form-label">Competition scope (optional)</label><select class="form-select" name="competition_id"><option value="">No competition restriction</option>`)
 		for _, competition := range competitions {
-			fmt.Fprintf(w, `<option value="%s">%s</option>`, competition.ID, escapeHTML(competition.Name))
+			fmt.Fprintf(
+				w,
+				`<option value="%s">%s</option>`,
+				competition.ID,
+				escapeHTML(adminPortalCompetitionLabel(competition)),
+			)
 		}
 		fmt.Fprint(w, `</select><div class="form-text">Choose either a club or a competition, not both.</div></div><div class="col-md-7"><label class="form-label">Reason</label><input class="form-control" name="grant_reason" maxlength="500" required placeholder="Appointment authority, season or operational responsibility"></div></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2"><span class="text-muted small">Access takes effect immediately and is recorded in the audit trail.</span><button class="btn btn-primary px-4" type="submit">Assign staff role</button></div></form></section>
 <section class="card shadow-sm"><div class="card-header"><strong>Staff assignments</strong></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Administrator</th><th>Role</th><th>Scope</th><th>Status</th><th>Reason</th><th class="text-end">Actions</th></tr></thead><tbody>`)
@@ -109,6 +114,9 @@ func (s *Server) handleAdminPortalStaffGet() http.HandlerFunc {
 				scope = assignment.ClubName
 			} else if assignment.CompetitionID != nil {
 				scope = "Competition: " + assignment.CompetitionName
+				if !assignment.CompetitionActive {
+					scope += " (ended)"
+				}
 			}
 			action := ""
 			if assignment.Status == "active" {
@@ -236,56 +244,111 @@ func (s *Server) handleAdminPortalMessageNewGet() http.HandlerFunc {
 			return
 		}
 		csrf := adminPortalCSRF(r)
+		categories := adminPortalMessageCategories(access)
+		if len(categories) == 0 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		campaignClubs := make([]adminPortalCampaignClub, 0, len(allClubs))
+		for _, club := range allClubs {
+			if !club.PortalAccess || !club.SecureMessaging {
+				continue
+			}
+			scopeRoleKeys := adminPortalClubScopeRoleKeys(
+				access,
+				categories,
+				competitions,
+				club.ID,
+			)
+			if len(scopeRoleKeys) == 0 {
+				continue
+			}
+			campaignClubs = append(campaignClubs, adminPortalCampaignClub{
+				ID:            club.ID,
+				Name:          club.Name,
+				ScopeRoleKeys: scopeRoleKeys,
+			})
+		}
+		initialCategory := categories[0]
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "New club message")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="d-flex flex-wrap justify-content-between gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Secure communication</p><h1 class="h2">New message to clubs</h1><p class="text-muted mb-0">Each selected club receives a private case in its own inbox and an official email copy to verified adult contacts.</p></div><a class="btn btn-outline-primary" href="/admin/portal/cases">Open work queue</a></div>`)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 pb-5"><div class="d-flex flex-wrap justify-content-between gap-3 mb-4"><div><p class="text-uppercase text-muted small mb-1">Secure communication</p><h1 class="h2">New message to clubs</h1><p class="text-muted mb-0">Each selected club receives a private case in its own inbox and an official email copy to verified adult contacts.</p></div><div class="d-flex flex-wrap gap-2">`)
+		if access.SuperAdmin {
+			fmt.Fprint(w, `<a class="btn btn-outline-primary" href="/admin/portal/competitions">Competition contexts</a>`)
+		}
+		fmt.Fprint(w, `<a class="btn btn-outline-primary" href="/admin/portal/cases">Open work queue</a></div></div>`)
 		renderAdminPortalCampaignStatus(w, r.URL.Query().Get("status"), r.URL.Query().Get("message"))
-		fmt.Fprintf(w, `<section class="card shadow-sm mb-4"><div class="card-body"><form method="post" action="/admin/portal/messages" class="row g-3"><input type="hidden" name="csrf_token" value="%s"><div class="col-md-5"><label class="form-label">Category</label><select class="form-select" name="category" required>`, escapeHTML(csrf))
-		if staffCanComposeGeneral(access) {
-			for _, category := range []portal.MessageCategory{
-				portal.MessageCategoryGeneral,
-				portal.MessageCategoryCompliance,
-				portal.MessageCategoryFixtures,
-				portal.MessageCategoryRegistration,
-				portal.MessageCategoryStarred,
-				portal.MessageCategoryContact,
-				portal.MessageCategoryPlayerIdentity,
-			} {
-				fmt.Fprintf(w, `<option value="%s">%s</option>`, category, escapeHTML(humanPortalMessageCategory(category)))
+		fmt.Fprintf(w, `<section class="card shadow-sm mb-4"><div class="card-body"><form method="post" action="/admin/portal/messages" class="row g-3"><input type="hidden" name="csrf_token" value="%s"><div class="col-md-5"><label class="form-label" for="portal-message-category">Category</label><select class="form-select" id="portal-message-category" name="category" required>`, escapeHTML(csrf))
+		for _, category := range categories {
+			fmt.Fprintf(w, `<option value="%s">%s</option>`, category, escapeHTML(humanPortalMessageCategory(category)))
+		}
+		fmt.Fprint(w, `</select></div><div class="col-md-4"><label class="form-label" for="portal-recipient-role">Verified recipient role</label><select class="form-select" id="portal-recipient-role" name="recipient_role" required aria-describedby="portal-recipient-role-help">`)
+		for _, role := range adminPortalRecipientRoles() {
+			availability := ""
+			if !portal.RecipientRoleAllowedForCategory(initialCategory, role) {
+				availability = " disabled hidden"
 			}
+			fmt.Fprintf(
+				w,
+				`<option value="%s" data-allowed-categories="%s"%s>%s</option>`,
+				role,
+				escapeHTML(adminPortalAllowedCategoryValues(role)),
+				availability,
+				escapeHTML(portal.RecipientRoleLabel(role)),
+			)
 		}
-		if access.SuperAdmin || staffHasRole(access, portal.StaffRoleJuniorAdministrator) ||
-			staffHasRole(access, portal.StaffRoleClubLiaison) {
-			fmt.Fprintf(w, `<option value="%s">%s</option>`, portal.MessageCategoryJunior, escapeHTML(humanPortalMessageCategory(portal.MessageCategoryJunior)))
+		noContextCategories := adminPortalAllowedCategoriesForContext(
+			categories,
+			campaignClubs,
+			"none",
+		)
+		noContextAvailability := ""
+		if !adminPortalCategoryValueAllowed(
+			noContextCategories,
+			initialCategory,
+		) {
+			noContextAvailability = " disabled hidden"
 		}
-		fmt.Fprint(w, `</select></div><div class="col-md-4"><label class="form-label">Verified recipient role</label><select class="form-select" name="recipient_role" required>`)
-		for _, role := range []portal.RecipientRoleKey{
-			portal.RecipientPrimaryContact,
-			portal.RecipientSecretary,
-			portal.RecipientJuniorContact,
-			portal.RecipientFixturesContact,
-			portal.RecipientRegistration,
-			portal.RecipientPlayCricketAdmin,
-		} {
-			fmt.Fprintf(w, `<option value="%s">%s</option>`, role, escapeHTML(portal.RecipientRoleLabel(role)))
-		}
-		fmt.Fprint(w, `</select><div class="form-text">If that appointment has no verified address, delivery falls back to an active primary administrator or secretary.</div></div><div class="col-md-3"><label class="form-label">Priority</label><select class="form-select" name="priority"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div><div class="col-md-5"><label class="form-label">Competition context (optional)</label><select class="form-select" name="competition_id"><option value="">No competition context</option>`)
+		fmt.Fprintf(w, `</select><div class="form-text" id="portal-recipient-role-help">Only roles valid for the selected category are shown. If that appointment has no verified address, delivery falls back to an active primary administrator or secretary.</div></div><div class="col-md-3"><label class="form-label">Priority</label><select class="form-select" name="priority"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div><div class="col-md-5"><label class="form-label" for="portal-competition-context">Competition context (when applicable)</label><select class="form-select" id="portal-competition-context" name="competition_id" aria-describedby="portal-competition-context-help"><option value="" data-allowed-categories="%s"%s>No competition context</option>`,
+			escapeHTML(noContextCategories),
+			noContextAvailability,
+		)
 		for _, competition := range competitions {
-			fmt.Fprintf(w, `<option value="%s">%s</option>`, competition.ID, escapeHTML(competition.Name))
-		}
-		fmt.Fprint(w, `</select></div><div class="col-md-7"><label class="form-label">Select clubs</label><select class="form-select" name="club_id" multiple size="10" required aria-describedby="club-selection-help">`)
-		clubCount := 0
-		for _, club := range allClubs {
-			if !club.PortalAccess || !club.SecureMessaging ||
-				!staffMaySelectClub(access, club.ID) {
-				continue
+			allowedCategories := adminPortalAllowedCategoriesForContext(
+				categories,
+				campaignClubs,
+				competition.ID.String(),
+			)
+			availability := ""
+			if !adminPortalCategoryValueAllowed(
+				allowedCategories,
+				initialCategory,
+			) {
+				availability = " disabled hidden"
 			}
-			clubCount++
-			fmt.Fprintf(w, `<option value="%d">%s</option>`, club.ID, escapeHTML(club.Name))
+			fmt.Fprintf(
+				w,
+				`<option value="%s" data-allowed-categories="%s"%s>%s</option>`,
+				competition.ID,
+				escapeHTML(allowedCategories),
+				availability,
+				escapeHTML(adminPortalCompetitionLabel(competition)),
+			)
 		}
-		fmt.Fprint(w, `</select><div class="form-text" id="club-selection-help">Hold Ctrl (Windows) or Command (Mac) to select more than one club. Only clubs within your active scope are accepted.</div></div><div class="col-12"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="200" required></div><div class="col-12"><label class="form-label">Message</label><textarea class="form-control" name="body" rows="8" maxlength="10000" required></textarea></div><div class="col-12"><div class="alert alert-info small">The portal and email identify you by name and staff role. SES sends from the verified GMCL address; it does not impersonate your personal mailbox.</div><button class="btn btn-primary" type="submit">Create cases and send</button></div></form></div></section>`)
-		if clubCount == 0 {
+		fmt.Fprint(w, `</select><div class="form-text" id="portal-competition-context-help">The options are limited to your staff scope. A competition-only assignment selects its context automatically. The context records the competition and filters clubs; it does not change the recipient role.</div></div><div class="col-md-7"><label class="form-label">Select clubs</label><select class="form-select" id="portal-message-clubs" name="club_id" multiple size="10" required aria-describedby="club-selection-help">`)
+		for _, club := range campaignClubs {
+			fmt.Fprintf(
+				w,
+				`<option value="%d" data-scope-role-keys="%s">%s</option>`,
+				club.ID,
+				escapeHTML(strings.Join(club.ScopeRoleKeys, " ")),
+				escapeHTML(club.Name),
+			)
+		}
+		fmt.Fprint(w, `</select><div class="form-text" id="club-selection-help">Hold Ctrl (Windows) or Command (Mac) to select more than one club. The list narrows so the selected clubs share one active staff role within the selected competition.</div></div><div class="col-12"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="200" required></div><div class="col-12"><label class="form-label">Message</label><textarea class="form-control" name="body" rows="8" maxlength="10000" required></textarea></div><div class="col-12"><div class="alert alert-info small">The portal and email identify you by name and staff role. SES sends from the verified GMCL address; it does not impersonate your personal mailbox.</div><button class="btn btn-primary" type="submit">Create cases and send</button></div></form></div></section>`)
+		writeAdminPortalCampaignControlScript(w)
+		if len(campaignClubs) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-warning">No secure-messaging clubs are currently available within your assignment scope.</div>`)
 		}
 		fmt.Fprint(w, `<section class="card shadow-sm"><div class="card-header"><strong>Recent campaigns</strong></div><div class="table-responsive"><table class="table table-striped align-middle mb-0"><thead><tr><th>Sent</th><th>Subject</th><th>Sender</th><th>Targets</th><th>Email result</th><th>Acknowledged</th><th>Club replies</th></tr></thead><tbody>`)
@@ -293,11 +356,15 @@ func (s *Server) handleAdminPortalMessageNewGet() http.HandlerFunc {
 			fmt.Fprint(w, `<tr><td colspan="7" class="text-muted">No staff campaigns have been sent.</td></tr>`)
 		}
 		for _, campaign := range campaigns {
-			fmt.Fprintf(w, `<tr><td>%s</td><td><strong>%s</strong><div class="small text-muted">%s · %s</div></td><td>%s<div class="small text-muted">%s</div></td><td>%d</td><td>%s · %d sent · %d failed</td><td>%d/%d</td><td>%d</td></tr>`,
+			context := humanPortalMessageCategory(campaign.Category) +
+				" · " + portal.RecipientRoleLabel(campaign.RecipientRole)
+			if campaign.CompetitionName != "" {
+				context += " · " + campaign.CompetitionName
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td><strong>%s</strong><div class="small text-muted">%s</div></td><td>%s<div class="small text-muted">%s</div></td><td>%d</td><td>%s · %d sent · %d failed</td><td>%d/%d</td><td>%d</td></tr>`,
 				escapeHTML(portalLocalTime(campaign.CreatedAt, s.LondonLoc)),
 				escapeHTML(campaign.Subject),
-				escapeHTML(humanPortalMessageCategory(campaign.Category)),
-				escapeHTML(portal.RecipientRoleLabel(campaign.RecipientRole)),
+				escapeHTML(context),
 				escapeHTML(campaign.SenderName),
 				escapeHTML(portal.StaffRoleLabel(campaign.SenderRole)),
 				campaign.TargetCount,
@@ -430,6 +497,12 @@ You can reply or acknowledge in the portal. Email remains the official GMCL comm
 	}
 }
 
+type adminPortalCampaignClub struct {
+	ID            int32
+	Name          string
+	ScopeRoleKeys []string
+}
+
 func staffHasRole(access portal.StaffAccess, role portal.StaffRoleKey) bool {
 	for _, assignment := range access.Assignments {
 		if assignment.Role == role {
@@ -443,16 +516,275 @@ func staffCanComposeGeneral(access portal.StaffAccess) bool {
 	return access.SuperAdmin || staffHasRole(access, portal.StaffRoleClubLiaison)
 }
 
-func staffMaySelectClub(access portal.StaffAccess, clubID int32) bool {
+func adminPortalSenderRolesForCategory(
+	access portal.StaffAccess,
+	category portal.MessageCategory,
+) []portal.StaffRoleKey {
 	if access.SuperAdmin {
-		return true
+		return []portal.StaffRoleKey{portal.StaffRoleSuperAdministrator}
 	}
-	for _, assignment := range access.Assignments {
-		if assignment.ClubID == nil || *assignment.ClubID == clubID {
+	var roles []portal.StaffRoleKey
+	if category == portal.MessageCategoryJunior &&
+		staffHasRole(access, portal.StaffRoleJuniorAdministrator) {
+		roles = append(roles, portal.StaffRoleJuniorAdministrator)
+	}
+	if staffHasRole(access, portal.StaffRoleClubLiaison) {
+		roles = append(roles, portal.StaffRoleClubLiaison)
+	}
+	return roles
+}
+
+func adminPortalClubScopeRoleKeys(
+	access portal.StaffAccess,
+	categories []portal.MessageCategory,
+	competitions []portal.StaffCompetition,
+	clubID int32,
+) []string {
+	keys := make([]string, 0)
+	seen := make(map[string]struct{})
+	appendKey := func(
+		category portal.MessageCategory,
+		context string,
+		role portal.StaffRoleKey,
+	) {
+		key := string(category) + "|" + context + "|" + string(role)
+		if _, found := seen[key]; found {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, category := range categories {
+		for _, role := range adminPortalSenderRolesForCategory(
+			access,
+			category,
+		) {
+			if access.CanSendAs(role, clubID, category, nil) {
+				appendKey(category, "none", role)
+			}
+			for _, competition := range competitions {
+				if !competition.ContainsClub(clubID) ||
+					!access.CanSendAs(
+						role,
+						clubID,
+						category,
+						&competition.ID,
+					) {
+					continue
+				}
+				appendKey(category, competition.ID.String(), role)
+			}
+		}
+	}
+	return keys
+}
+
+func adminPortalAllowedCategoriesForContext(
+	categories []portal.MessageCategory,
+	clubs []adminPortalCampaignClub,
+	context string,
+) string {
+	allowed := make([]string, 0, len(categories))
+	for _, category := range categories {
+		prefix := string(category) + "|" + context + "|"
+		found := false
+		for _, club := range clubs {
+			for _, key := range club.ScopeRoleKeys {
+				if strings.HasPrefix(key, prefix) {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if found {
+			allowed = append(allowed, string(category))
+		}
+	}
+	return strings.Join(allowed, " ")
+}
+
+func adminPortalCategoryValueAllowed(
+	values string,
+	category portal.MessageCategory,
+) bool {
+	for _, value := range strings.Fields(values) {
+		if value == string(category) {
 			return true
 		}
 	}
 	return false
+}
+
+func adminPortalMessageCategories(
+	access portal.StaffAccess,
+) []portal.MessageCategory {
+	var categories []portal.MessageCategory
+	if staffCanComposeGeneral(access) {
+		categories = append(categories,
+			portal.MessageCategoryGeneral,
+			portal.MessageCategoryCompliance,
+			portal.MessageCategoryFixtures,
+			portal.MessageCategoryRegistration,
+			portal.MessageCategoryStarred,
+			portal.MessageCategoryContact,
+			portal.MessageCategoryPlayerIdentity,
+		)
+	}
+	if access.SuperAdmin ||
+		staffHasRole(access, portal.StaffRoleJuniorAdministrator) ||
+		staffHasRole(access, portal.StaffRoleClubLiaison) {
+		categories = append(categories, portal.MessageCategoryJunior)
+	}
+	return categories
+}
+
+func adminPortalRecipientRoles() []portal.RecipientRoleKey {
+	return []portal.RecipientRoleKey{
+		portal.RecipientPrimaryContact,
+		portal.RecipientSecretary,
+		portal.RecipientJuniorContact,
+		portal.RecipientFixturesContact,
+		portal.RecipientRegistration,
+		portal.RecipientPlayCricketAdmin,
+	}
+}
+
+func adminPortalAllowedCategoryValues(
+	role portal.RecipientRoleKey,
+) string {
+	categories := []portal.MessageCategory{
+		portal.MessageCategoryGeneral,
+		portal.MessageCategoryCompliance,
+		portal.MessageCategoryFixtures,
+		portal.MessageCategoryRegistration,
+		portal.MessageCategoryStarred,
+		portal.MessageCategoryContact,
+		portal.MessageCategoryPlayerIdentity,
+		portal.MessageCategoryJunior,
+	}
+	values := make([]string, 0, len(categories))
+	for _, category := range categories {
+		if portal.RecipientRoleAllowedForCategory(category, role) {
+			values = append(values, string(category))
+		}
+	}
+	return strings.Join(values, " ")
+}
+
+func adminPortalCompetitionLabel(
+	competition portal.StaffCompetition,
+) string {
+	if strings.TrimSpace(competition.SeasonName) == "" {
+		return competition.Name
+	}
+	return competition.Name + " · " + competition.SeasonName
+}
+
+func writeAdminPortalCampaignControlScript(w http.ResponseWriter) {
+	fmt.Fprint(w, `<script>
+(() => {
+  const category = document.getElementById("portal-message-category");
+  const recipientRole = document.getElementById("portal-recipient-role");
+  const competition = document.getElementById("portal-competition-context");
+  const clubs = document.getElementById("portal-message-clubs");
+
+  const values = (raw) => (raw || "").trim().split(/\s+/).filter(Boolean);
+
+  const syncRecipientRoles = () => {
+    let firstValid = "";
+    for (const option of recipientRole.options) {
+      const valid = values(option.dataset.allowedCategories).includes(category.value);
+      option.disabled = !valid;
+      option.hidden = !valid;
+      if (valid && firstValid === "") {
+        firstValid = option.value;
+      }
+    }
+    if (!recipientRole.selectedOptions.length || recipientRole.selectedOptions[0].disabled) {
+      recipientRole.value = firstValid;
+    }
+  };
+
+  const syncCompetitionOptions = () => {
+    let firstValidOption = null;
+    for (const option of competition.options) {
+      const valid = values(option.dataset.allowedCategories).includes(category.value);
+      option.disabled = !valid;
+      option.hidden = !valid;
+      if (valid && firstValidOption === null) {
+        firstValidOption = option;
+      }
+    }
+    if (!competition.selectedOptions.length ||
+        competition.selectedOptions[0].disabled) {
+      competition.value = firstValidOption === null ? "" : firstValidOption.value;
+    }
+  };
+
+  const optionSenderRoles = (option) => {
+    const context = competition.value === "" ? "none" : competition.value;
+    const prefix = category.value + "|" + context + "|";
+    return values(option.dataset.scopeRoleKeys)
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length));
+  };
+
+  const syncCompetitionClubs = () => {
+    const availableRoles = new Map();
+    for (const option of clubs.options) {
+      const roles = optionSenderRoles(option);
+      availableRoles.set(option, roles);
+      if (roles.length === 0) {
+        option.selected = false;
+      }
+    }
+
+    let sharedRoles = null;
+    for (const option of clubs.options) {
+      if (!option.selected) {
+        continue;
+      }
+      const roles = availableRoles.get(option);
+      if (sharedRoles === null) {
+        sharedRoles = new Set(roles);
+        continue;
+      }
+      const intersection = new Set(
+        roles.filter((role) => sharedRoles.has(role))
+      );
+      if (intersection.size === 0) {
+        option.selected = false;
+        continue;
+      }
+      sharedRoles = intersection;
+    }
+
+    for (const option of clubs.options) {
+      const roles = availableRoles.get(option);
+      const valid = roles.length > 0 &&
+        (sharedRoles === null ||
+          option.selected ||
+          roles.some((role) => sharedRoles.has(role)));
+      option.disabled = !valid;
+      option.hidden = !valid;
+    }
+  };
+
+  category.addEventListener("change", () => {
+    syncRecipientRoles();
+    syncCompetitionOptions();
+    syncCompetitionClubs();
+  });
+  competition.addEventListener("change", syncCompetitionClubs);
+  clubs.addEventListener("change", syncCompetitionClubs);
+  syncRecipientRoles();
+  syncCompetitionOptions();
+  syncCompetitionClubs();
+})();
+</script>`)
 }
 
 func renderAdminPortalStaffStatus(w http.ResponseWriter, status string) {

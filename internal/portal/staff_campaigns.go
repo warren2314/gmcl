@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"cricket-ground-feedback/internal/auth"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -42,19 +44,21 @@ var validRecipientRoles = map[RecipientRoleKey]struct{}{
 }
 
 type StaffAssignment struct {
-	ID              uuid.UUID
-	AdminUserID     int32
-	AdminName       string
-	AdminEmail      string
-	Role            StaffRoleKey
-	ClubID          *int32
-	ClubName        string
-	CompetitionID   *uuid.UUID
-	CompetitionName string
-	Status          string
-	StartsAt        time.Time
-	EndsAt          *time.Time
-	GrantReason     string
+	ID                 uuid.UUID
+	AdminUserID        int32
+	AdminName          string
+	AdminEmail         string
+	Role               StaffRoleKey
+	ClubID             *int32
+	ClubName           string
+	CompetitionID      *uuid.UUID
+	CompetitionName    string
+	CompetitionClubIDs []int32
+	CompetitionActive  bool
+	Status             string
+	StartsAt           time.Time
+	EndsAt             *time.Time
+	GrantReason        string
 }
 
 type StaffAccess struct {
@@ -112,6 +116,8 @@ type StaffCampaignSummary struct {
 	Subject           string
 	Category          MessageCategory
 	RecipientRole     RecipientRoleKey
+	CompetitionID     *uuid.UUID
+	CompetitionName   string
 	SenderName        string
 	SenderRole        StaffRoleKey
 	Status            string
@@ -124,8 +130,21 @@ type StaffCampaignSummary struct {
 }
 
 type StaffCompetition struct {
-	ID   uuid.UUID
-	Name string
+	ID             uuid.UUID
+	Name           string
+	SeasonID       *int32
+	SeasonName     string
+	ExternalSource string
+	ExternalID     string
+	StartsAt       *time.Time
+	EndsAt         *time.Time
+	EndedByAdminID *int32
+	EndReason      string
+	ClubIDs        []int32
+	ClubNames      []string
+	Active         bool
+	Manageable     bool
+	Endable        bool
 }
 
 func ParseStaffRoleKey(value string) (StaffRoleKey, bool) {
@@ -181,47 +200,63 @@ func RecipientRoleAllowedForCategory(
 	category MessageCategory,
 	role RecipientRoleKey,
 ) bool {
-	allowed := map[MessageCategory]map[RecipientRoleKey]struct{}{
-		MessageCategoryGeneral: {
-			RecipientPrimaryContact: {}, RecipientSecretary: {},
-		},
-		MessageCategoryCompliance: {
-			RecipientPrimaryContact: {}, RecipientSecretary: {},
-		},
-		MessageCategoryFixtures: {
-			RecipientFixturesContact: {}, RecipientSecretary: {},
-			RecipientPrimaryContact: {},
-		},
-		MessageCategoryRegistration: {
-			RecipientRegistration: {}, RecipientPlayCricketAdmin: {},
-			RecipientSecretary: {}, RecipientPrimaryContact: {},
-		},
-		MessageCategoryStarred: {
-			RecipientSecretary: {}, RecipientPlayCricketAdmin: {},
-			RecipientPrimaryContact: {},
-		},
-		MessageCategoryJunior: {
-			RecipientJuniorContact: {}, RecipientSecretary: {},
-			RecipientPrimaryContact: {},
-		},
-		MessageCategoryContact: {
-			RecipientPrimaryContact: {}, RecipientSecretary: {},
-		},
-		MessageCategoryPlayerIdentity: {
-			RecipientRegistration: {}, RecipientPlayCricketAdmin: {},
-			RecipientSecretary: {}, RecipientPrimaryContact: {},
-		},
+	for _, allowed := range RecipientRolesForCategory(category) {
+		if allowed == role {
+			return true
+		}
 	}
-	roles, ok := allowed[category]
-	if !ok {
-		return false
+	return false
+}
+
+func RecipientRolesForCategory(category MessageCategory) []RecipientRoleKey {
+	switch category {
+	case MessageCategoryGeneral, MessageCategoryCompliance, MessageCategoryContact:
+		return []RecipientRoleKey{
+			RecipientPrimaryContact,
+			RecipientSecretary,
+		}
+	case MessageCategoryFixtures:
+		return []RecipientRoleKey{
+			RecipientFixturesContact,
+			RecipientSecretary,
+			RecipientPrimaryContact,
+		}
+	case MessageCategoryRegistration, MessageCategoryPlayerIdentity:
+		return []RecipientRoleKey{
+			RecipientRegistration,
+			RecipientPlayCricketAdmin,
+			RecipientSecretary,
+			RecipientPrimaryContact,
+		}
+	case MessageCategoryStarred:
+		return []RecipientRoleKey{
+			RecipientPlayCricketAdmin,
+			RecipientSecretary,
+			RecipientPrimaryContact,
+		}
+	case MessageCategoryJunior:
+		return []RecipientRoleKey{
+			RecipientJuniorContact,
+			RecipientSecretary,
+			RecipientPrimaryContact,
+		}
+	default:
+		return nil
 	}
-	_, ok = roles[role]
-	return ok
 }
 
 func (access StaffAccess) HasPortalStaffAccess() bool {
-	return access.SuperAdmin || len(access.Assignments) > 0
+	if access.SuperAdmin {
+		return true
+	}
+	for _, assignment := range access.Assignments {
+		if assignment.CompetitionID == nil ||
+			(assignment.CompetitionActive &&
+				len(assignment.CompetitionClubIDs) > 0) {
+			return true
+		}
+	}
+	return false
 }
 
 func (access StaffAccess) CanAccessCase(
@@ -239,6 +274,29 @@ func (access StaffAccess) CanAccessCase(
 		if assignment.Role == StaffRoleClubLiaison ||
 			(assignment.Role == StaffRoleJuniorAdministrator &&
 				category == MessageCategoryJunior) {
+			return true
+		}
+	}
+	return false
+}
+
+func (access StaffAccess) CanSendAs(
+	role StaffRoleKey,
+	clubID int32,
+	category MessageCategory,
+	competitionID *uuid.UUID,
+) bool {
+	if access.SuperAdmin {
+		return role == StaffRoleSuperAdministrator
+	}
+	if role != StaffRoleClubLiaison &&
+		(role != StaffRoleJuniorAdministrator ||
+			category != MessageCategoryJunior) {
+		return false
+	}
+	for _, assignment := range access.Assignments {
+		if assignment.Role == role &&
+			assignmentCovers(assignment, clubID, competitionID) {
 			return true
 		}
 	}
@@ -271,15 +329,12 @@ func (access StaffAccess) senderRoleFor(
 	for _, role := range candidates {
 		allCovered := true
 		for _, clubID := range clubIDs {
-			covered := false
-			for _, assignment := range access.Assignments {
-				if assignment.Role == role &&
-					assignmentCovers(assignment, clubID, competitionID) {
-					covered = true
-					break
-				}
-			}
-			if !covered {
+			if !access.CanSendAs(
+				role,
+				clubID,
+				category,
+				competitionID,
+			) {
 				allCovered = false
 				break
 			}
@@ -302,8 +357,17 @@ func assignmentCovers(
 	if assignment.ClubID != nil {
 		return *assignment.ClubID == clubID
 	}
-	return competitionID != nil && assignment.CompetitionID != nil &&
-		*assignment.CompetitionID == *competitionID
+	if competitionID == nil || assignment.CompetitionID == nil ||
+		*assignment.CompetitionID != *competitionID ||
+		!assignment.CompetitionActive {
+		return false
+	}
+	for _, mappedClubID := range assignment.CompetitionClubIDs {
+		if mappedClubID == clubID {
+			return true
+		}
+	}
+	return false
 }
 
 func (store *Store) LoadStaffAccess(
@@ -314,7 +378,6 @@ func (store *Store) LoadStaffAccess(
 		return StaffAccess{}, ErrForbidden
 	}
 	var access StaffAccess
-	now := store.now()
 	err := store.withSystemReadOnlyTx(ctx, func(tx pgx.Tx) error {
 		var legacyRole string
 		var active bool
@@ -342,7 +405,8 @@ func (store *Store) LoadStaffAccess(
 		if !active {
 			return ErrForbidden
 		}
-		access.SuperAdmin = legacyRole == "super_admin"
+		access.SuperAdmin = legacyRole == "super_admin" ||
+			auth.IsConfiguredSuperAdmin(access.DisplayName, access.Email)
 		if access.SuperAdmin {
 			return nil
 		}
@@ -357,6 +421,24 @@ func (store *Store) LoadStaffAccess(
 				COALESCE(club.name, ''),
 				assignment.competition_id,
 				COALESCE(competition.name, ''),
+				COALESCE((
+					SELECT array_agg(mapping.club_id ORDER BY mapping.club_id)
+					FROM portal_competition_clubs mapping
+					WHERE mapping.competition_id = assignment.competition_id
+				), '{}'::integer[]),
+				COALESCE(
+					assignment.competition_id IS NOT NULL
+					AND competition.ended_by_admin_user_id IS NULL
+					AND (
+						competition.starts_at IS NULL
+						OR competition.starts_at <= clock_timestamp()
+					)
+					AND (
+						competition.ends_at IS NULL
+						OR competition.ends_at > clock_timestamp()
+					),
+					FALSE
+				),
 				assignment.status,
 				assignment.starts_at,
 				assignment.ends_at,
@@ -368,10 +450,13 @@ func (store *Store) LoadStaffAccess(
 				ON competition.id = assignment.competition_id
 			WHERE assignment.admin_user_id = $1
 			  AND assignment.status = 'active'
-			  AND assignment.starts_at <= $2
-			  AND (assignment.ends_at IS NULL OR assignment.ends_at > $2)
+			  AND assignment.starts_at <= clock_timestamp()
+			  AND (
+				assignment.ends_at IS NULL
+				OR assignment.ends_at > clock_timestamp()
+			  )
 			ORDER BY assignment.role_key, club.name, competition.name, assignment.id
-		`, adminID, now)
+		`, adminID)
 		if err != nil {
 			return fmt.Errorf("load portal staff assignments: %w", err)
 		}
@@ -388,6 +473,8 @@ func (store *Store) LoadStaffAccess(
 				&assignment.ClubName,
 				&assignment.CompetitionID,
 				&assignment.CompetitionName,
+				&assignment.CompetitionClubIDs,
+				&assignment.CompetitionActive,
 				&assignment.Status,
 				&assignment.StartsAt,
 				&assignment.EndsAt,
@@ -418,6 +505,24 @@ func (store *Store) ListStaffAssignments(
 				COALESCE(club.name, ''),
 				assignment.competition_id,
 				COALESCE(competition.name, ''),
+				COALESCE((
+					SELECT array_agg(mapping.club_id ORDER BY mapping.club_id)
+					FROM portal_competition_clubs mapping
+					WHERE mapping.competition_id = assignment.competition_id
+				), '{}'::integer[]),
+				COALESCE(
+					assignment.competition_id IS NOT NULL
+					AND competition.ended_by_admin_user_id IS NULL
+					AND (
+						competition.starts_at IS NULL
+						OR competition.starts_at <= clock_timestamp()
+					)
+					AND (
+						competition.ends_at IS NULL
+						OR competition.ends_at > clock_timestamp()
+					),
+					FALSE
+				),
 				assignment.status,
 				assignment.starts_at,
 				assignment.ends_at,
@@ -450,6 +555,8 @@ func (store *Store) ListStaffAssignments(
 				&assignment.ClubName,
 				&assignment.CompetitionID,
 				&assignment.CompetitionName,
+				&assignment.CompetitionClubIDs,
+				&assignment.CompetitionActive,
 				&assignment.Status,
 				&assignment.StartsAt,
 				&assignment.EndsAt,
@@ -481,11 +588,37 @@ func (store *Store) CreateStaffAssignment(
 	id := uuid.New()
 	now := store.now()
 	err := store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		if err := requireActiveSuperAdminTx(
+			ctx,
+			tx,
+			request.GrantedBy,
+		); err != nil {
+			return err
+		}
+		if err := lockAdminUserSharedTx(
+			ctx,
+			tx,
+			request.AdminUserID,
+		); err != nil {
+			return err
+		}
 		var active bool
 		if err := tx.QueryRow(ctx, `
-			SELECT is_active FROM admin_users WHERE id = $1
+			SELECT is_active
+			FROM admin_users
+			WHERE id = $1
 		`, request.AdminUserID).Scan(&active); err != nil || !active {
 			return fmt.Errorf("staff account is not active")
+		}
+		if request.CompetitionID != nil {
+			if err := validateActiveCompetitionContextTx(
+				ctx,
+				tx,
+				*request.CompetitionID,
+				nil,
+			); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO portal_staff_assignments (
@@ -501,9 +634,21 @@ func (store *Store) CreateStaffAssignment(
 				created_at,
 				updated_at
 			)
-			VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $6, $6)
+			VALUES (
+				$1,
+				$2,
+				$3,
+				$4,
+				$5,
+				'active',
+				clock_timestamp(),
+				$6,
+				$7,
+				clock_timestamp(),
+				clock_timestamp()
+			)
 		`, id, request.AdminUserID, request.Role, request.ClubID,
-			request.CompetitionID, now, request.GrantedBy,
+			request.CompetitionID, request.GrantedBy,
 			request.GrantReason); err != nil {
 			return fmt.Errorf("create portal staff assignment: %w", err)
 		}
@@ -538,15 +683,18 @@ func (store *Store) RevokeStaffAssignment(
 	}
 	now := store.now()
 	return store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		if err := requireActiveSuperAdminTx(ctx, tx, revokedBy); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE portal_staff_assignments
 			SET status = 'revoked',
-			    revoked_at = $2,
-			    revoked_by_admin_user_id = $3,
-			    revocation_reason = $4,
-			    updated_at = $2
+			    revoked_at = clock_timestamp(),
+			    revoked_by_admin_user_id = $2,
+			    revocation_reason = $3,
+			    updated_at = clock_timestamp()
 			WHERE id = $1 AND status IN ('active', 'suspended')
-		`, assignmentID, now, revokedBy, reason)
+		`, assignmentID, revokedBy, reason)
 		if err != nil {
 			return fmt.Errorf("revoke portal staff assignment: %w", err)
 		}
@@ -570,29 +718,7 @@ func (store *Store) RevokeStaffAssignment(
 func (store *Store) ListStaffCompetitions(
 	ctx context.Context,
 ) ([]StaffCompetition, error) {
-	var competitions []StaffCompetition
-	err := store.withSystemReadOnlyTx(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT id, name
-			FROM portal_competitions
-			WHERE (starts_at IS NULL OR starts_at <= $1)
-			  AND (ends_at IS NULL OR ends_at > $1)
-			ORDER BY name, id
-		`, store.now())
-		if err != nil {
-			return fmt.Errorf("list portal competitions: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var competition StaffCompetition
-			if err := rows.Scan(&competition.ID, &competition.Name); err != nil {
-				return fmt.Errorf("scan portal competition: %w", err)
-			}
-			competitions = append(competitions, competition)
-		}
-		return rows.Err()
-	})
-	return competitions, err
+	return store.listStaffCompetitions(ctx, true)
 }
 
 func (store *Store) CreateStaffCampaign(
@@ -647,6 +773,16 @@ func (store *Store) CreateStaffCampaign(
 	}
 	now := store.now()
 	err = store.withSystemTx(ctx, func(tx pgx.Tx) error {
+		if request.CompetitionID != nil {
+			if err := validateActiveCompetitionContextTx(
+				ctx,
+				tx,
+				*request.CompetitionID,
+				clubIDs,
+			); err != nil {
+				return err
+			}
+		}
 		if err := revalidateStaffCampaignAccess(
 			ctx,
 			tx,
@@ -655,7 +791,6 @@ func (store *Store) CreateStaffCampaign(
 			request.Category,
 			clubIDs,
 			request.CompetitionID,
-			now,
 		); err != nil {
 			return err
 		}
@@ -867,21 +1002,41 @@ func revalidateStaffCampaignAccess(
 	category MessageCategory,
 	clubIDs []int32,
 	competitionID *uuid.UUID,
-	now time.Time,
 ) error {
-	var legacyRole string
-	var active bool
+	if err := lockAdminUserSharedTx(ctx, tx, adminID); err != nil {
+		return err
+	}
+	var (
+		legacyRole string
+		username   string
+		email      string
+		active     bool
+	)
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(role, 'admin'), is_active
+		SELECT
+			COALESCE(role, 'admin'),
+			COALESCE(username, ''),
+			COALESCE(email, ''),
+			is_active
 		FROM admin_users
 		WHERE id = $1
-	`, adminID).Scan(&legacyRole, &active); err != nil || !active {
+	`, adminID).Scan(
+		&legacyRole,
+		&username,
+		&email,
+		&active,
+	); err != nil || !active {
 		return ErrForbidden
 	}
 	if role == StaffRoleSuperAdministrator {
-		if legacyRole == "super_admin" {
+		if legacyRole == "super_admin" ||
+			auth.IsConfiguredSuperAdmin(username, email) {
 			return nil
 		}
+		return ErrForbidden
+	}
+	if role != StaffRoleClubLiaison &&
+		role != StaffRoleJuniorAdministrator {
 		return ErrForbidden
 	}
 	if role == StaffRoleJuniorAdministrator &&
@@ -889,27 +1044,52 @@ func revalidateStaffCampaignAccess(
 		return ErrForbidden
 	}
 	for _, clubID := range clubIDs {
-		var authorized bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1
-				FROM portal_staff_assignments assignment
-				WHERE assignment.admin_user_id = $1
-				  AND assignment.role_key = $2
-				  AND assignment.status = 'active'
-				  AND assignment.starts_at <= $5
-				  AND (assignment.ends_at IS NULL OR assignment.ends_at > $5)
-				  AND (
-				      (assignment.club_id IS NULL AND assignment.competition_id IS NULL)
-				      OR assignment.club_id = $3
-				      OR (
-				          $4::uuid IS NOT NULL
-				          AND assignment.competition_id = $4::uuid
-				      )
+		rows, err := tx.Query(ctx, `
+			SELECT assignment.id
+			FROM portal_staff_assignments assignment
+			WHERE assignment.admin_user_id = $1
+			  AND assignment.role_key = $2
+			  AND assignment.status = 'active'
+			  AND assignment.starts_at <= clock_timestamp()
+			  AND (
+				assignment.ends_at IS NULL
+				OR assignment.ends_at > clock_timestamp()
+			  )
+			  AND (
+			      (
+					assignment.club_id IS NULL
+					AND assignment.competition_id IS NULL
 				  )
-			)
-		`, adminID, role, clubID, competitionID, now).Scan(&authorized); err != nil {
+			      OR assignment.club_id = $3
+			      OR (
+			          $4::uuid IS NOT NULL
+			          AND assignment.competition_id = $4::uuid
+			          AND EXISTS (
+			              SELECT 1
+			              FROM portal_competition_clubs mapping
+			              WHERE mapping.competition_id = assignment.competition_id
+			                AND mapping.club_id = $3
+			          )
+			      )
+			  )
+			FOR SHARE
+		`, adminID, role, clubID, competitionID)
+		if err != nil {
 			return fmt.Errorf("revalidate portal staff scope: %w", err)
+		}
+		authorized := false
+		for rows.Next() {
+			var assignmentID uuid.UUID
+			if err := rows.Scan(&assignmentID); err != nil {
+				rows.Close()
+				return fmt.Errorf("lock portal staff scope: %w", err)
+			}
+			authorized = true
+		}
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return fmt.Errorf("lock portal staff scope: %w", rowsErr)
 		}
 		if !authorized {
 			return ErrForbidden
@@ -1268,6 +1448,8 @@ func (store *Store) ListStaffCampaigns(
 				campaign.subject,
 				campaign.category,
 				campaign.recipient_role_key,
+				campaign.competition_id,
+				COALESCE(competition.name, ''),
 				admin.username,
 				campaign.sender_role_key,
 				campaign.status,
@@ -1286,11 +1468,13 @@ func (store *Store) ListStaffCampaigns(
 				campaign.created_at
 			FROM portal_message_campaigns campaign
 			JOIN admin_users admin ON admin.id = campaign.sender_admin_user_id
+			LEFT JOIN portal_competitions competition
+			  ON competition.id = campaign.competition_id
 			JOIN portal_message_campaign_targets target
 			  ON target.campaign_id = campaign.id
 			JOIN portal_message_cases message_case ON message_case.id = target.case_id
 			WHERE $1::boolean OR campaign.sender_admin_user_id = $2
-			GROUP BY campaign.id, admin.username
+			GROUP BY campaign.id, admin.username, competition.name
 			ORDER BY campaign.created_at DESC
 			LIMIT 100
 		`, access.SuperAdmin, access.AdminUserID)
@@ -1305,6 +1489,8 @@ func (store *Store) ListStaffCampaigns(
 				&campaign.Subject,
 				&campaign.Category,
 				&campaign.RecipientRole,
+				&campaign.CompetitionID,
+				&campaign.CompetitionName,
 				&campaign.SenderName,
 				&campaign.SenderRole,
 				&campaign.Status,

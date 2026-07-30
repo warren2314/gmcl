@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,10 +17,12 @@ import (
 	"unicode"
 
 	"cricket-ground-feedback/internal/auth"
+	appdb "cricket-ground-feedback/internal/db"
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 // ── requirePasswordChanged middleware ─────────────────────────────────────────
@@ -545,11 +548,12 @@ func (s *Server) handleAdminUserInvite() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
-		inviterSess, _ := getAdminSessionFromRequest(r)
-		var inviterID *int32
-		if inviterSess != nil {
-			inviterID = &inviterSess.AdminID
+		inviterSess, err := getAdminSessionFromRequest(r)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
 		}
+		inviterID := &inviterSess.AdminID
 
 		// Generate a random temporary password (16 chars)
 		tmpPassword := generateTempPassword()
@@ -560,16 +564,22 @@ func (s *Server) handleAdminUserInvite() http.HandlerFunc {
 		}
 
 		var newAdminID int32
-		err = s.DB.QueryRow(ctx, `
-			INSERT INTO admin_users
-			    (username, password_hash, email, is_active, force_password_change,
-			     invited_by_admin_id, invited_at, role)
-			VALUES ($1, $2, $3, TRUE, TRUE, $4, now(), $5)
-			ON CONFLICT (username) DO NOTHING
-			RETURNING id
-		`, username, hash, emailAddr, inviterID, role).Scan(&newAdminID)
-		if err != nil || newAdminID == 0 {
+		err = s.withAdminUserMutationTx(ctx, inviterSess.AdminID, nil, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `
+				INSERT INTO admin_users
+				    (username, password_hash, email, is_active, force_password_change,
+				     invited_by_admin_id, invited_at, role)
+				VALUES ($1, $2, $3, TRUE, TRUE, $4, now(), $5)
+				ON CONFLICT (username) DO NOTHING
+				RETURNING id
+			`, username, hash, emailAddr, inviterID, role).Scan(&newAdminID)
+		})
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && newAdminID == 0) {
 			http.Error(w, "username already exists or DB error", http.StatusConflict)
+			return
+		}
+		if err != nil {
+			writeAdminUserMutationError(w, err, "invite")
 			return
 		}
 
@@ -609,6 +619,119 @@ If you did not expect this email, please ignore it.
 
 // ── Deactivate ─────────────────────────────────────────────────────────────────
 
+func (s *Server) withAdminUserMutationTx(
+	ctx context.Context,
+	actorID int32,
+	targetID *int32,
+	mutate func(pgx.Tx) error,
+) error {
+	if actorID <= 0 {
+		return errAdminUserMutationForbidden
+	}
+
+	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := lockAdminUserMutationParticipants(ctx, tx, actorID, targetID); err != nil {
+		return err
+	}
+
+	var (
+		role     string
+		username string
+		email    string
+		active   bool
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(role, 'admin'), COALESCE(username, ''), COALESCE(email, ''), is_active
+		FROM admin_users
+		WHERE id = $1
+	`, actorID).Scan(&role, &username, &email, &active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errAdminUserMutationForbidden
+	}
+	if err != nil {
+		return err
+	}
+	if !active || (role != "super_admin" && !isConfiguredSuperAdmin(username, email)) {
+		return errAdminUserMutationForbidden
+	}
+
+	if err := mutate(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+var (
+	errAdminUserMutationForbidden   = errors.New("acting administrator is not an active super administrator")
+	errAdminUserNotFound            = errors.New("administrator not found")
+	errAdminUserPermissionRedundant = errors.New("super administrators already have this permission")
+)
+
+func lockAdminUserMutationParticipants(
+	ctx context.Context,
+	tx pgx.Tx,
+	actorID int32,
+	targetID *int32,
+) error {
+	if targetID == nil {
+		return lockAdminUserMutationParticipant(ctx, tx, actorID, false)
+	}
+	if *targetID <= 0 {
+		return errAdminUserNotFound
+	}
+	if *targetID == actorID {
+		return lockAdminUserMutationParticipant(ctx, tx, actorID, true)
+	}
+
+	// Acquire locks in administrator-ID order so two administrators changing
+	// each other cannot deadlock. The actor is read-locked; the target is
+	// write-locked against role, activation, password, and deletion changes.
+	if actorID < *targetID {
+		if err := lockAdminUserMutationParticipant(ctx, tx, actorID, false); err != nil {
+			return err
+		}
+		return lockAdminUserMutationParticipant(ctx, tx, *targetID, true)
+	}
+	if err := lockAdminUserMutationParticipant(ctx, tx, *targetID, true); err != nil {
+		return err
+	}
+	return lockAdminUserMutationParticipant(ctx, tx, actorID, false)
+}
+
+func lockAdminUserMutationParticipant(
+	ctx context.Context,
+	tx pgx.Tx,
+	adminID int32,
+	exclusive bool,
+) error {
+	query := `SELECT pg_advisory_xact_lock_shared($1, $2)`
+	if exclusive {
+		query = `SELECT pg_advisory_xact_lock($1, $2)`
+	}
+	_, err := tx.Exec(ctx, query, appdb.AdminUserAdvisoryLockNamespace, adminID)
+	return err
+}
+
+func writeAdminUserMutationError(w http.ResponseWriter, err error, action string) {
+	switch {
+	case errors.Is(err, errAdminUserMutationForbidden):
+		http.Error(w, "administrator access has changed; sign in again", http.StatusForbidden)
+	case errors.Is(err, errAdminUserNotFound):
+		http.Error(w, "user not found", http.StatusNotFound)
+	case errors.Is(err, errAdminUserPermissionRedundant):
+		http.Error(w, "super admins already have this permission", http.StatusBadRequest)
+	default:
+		http.Error(w, action+" failed", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) handleAdminUserRoleUpdate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		targetID, err := strconv.Atoi(chi.URLParam(r, "id"))
@@ -629,8 +752,18 @@ func (s *Server) handleAdminUserRoleUpdate() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		if _, err := s.DB.Exec(ctx, `UPDATE admin_users SET role=$1 WHERE id=$2`, role, targetID); err != nil {
-			http.Error(w, "update failed", http.StatusInternalServerError)
+		targetID32 := int32(targetID)
+		if err := s.withAdminUserMutationTx(ctx, sess.AdminID, &targetID32, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `UPDATE admin_users SET role=$1 WHERE id=$2`, role, targetID)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return errAdminUserNotFound
+			}
+			return nil
+		}); err != nil {
+			writeAdminUserMutationError(w, err, "update")
 			return
 		}
 		eid := int64(targetID)
@@ -657,30 +790,39 @@ func (s *Server) handleAdminUserPermissionsUpdate() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		var role string
-		if err := s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin') FROM admin_users WHERE id=$1`, targetID).Scan(&role); err != nil {
-			http.Error(w, "user not found", http.StatusNotFound)
-			return
-		}
-		if role == "super_admin" {
-			http.Error(w, "super admins already have this permission", http.StatusBadRequest)
-			return
-		}
+		targetID32 := int32(targetID)
+		err = s.withAdminUserMutationTx(ctx, sess.AdminID, &targetID32, func(tx pgx.Tx) error {
+			var role string
+			if err := tx.QueryRow(ctx, `
+				SELECT COALESCE(role, 'admin')
+				FROM admin_users
+				WHERE id = $1
+			`, targetID).Scan(&role); errors.Is(err, pgx.ErrNoRows) {
+				return errAdminUserNotFound
+			} else if err != nil {
+				return err
+			}
+			if role == "super_admin" {
+				return errAdminUserPermissionRedundant
+			}
 
-		if allowUmpireFeedback {
-			_, err = s.DB.Exec(ctx, `
-				INSERT INTO admin_user_permissions (admin_user_id, permission)
-				VALUES ($1, 'view_umpire_feedback')
-				ON CONFLICT DO NOTHING
-			`, targetID)
-		} else {
-			_, err = s.DB.Exec(ctx, `
-				DELETE FROM admin_user_permissions
-				WHERE admin_user_id=$1 AND permission='view_umpire_feedback'
-			`, targetID)
-		}
+			var permissionErr error
+			if allowUmpireFeedback {
+				_, permissionErr = tx.Exec(ctx, `
+					INSERT INTO admin_user_permissions (admin_user_id, permission)
+					VALUES ($1, 'view_umpire_feedback')
+					ON CONFLICT DO NOTHING
+				`, targetID)
+			} else {
+				_, permissionErr = tx.Exec(ctx, `
+					DELETE FROM admin_user_permissions
+					WHERE admin_user_id=$1 AND permission='view_umpire_feedback'
+				`, targetID)
+			}
+			return permissionErr
+		})
 		if err != nil {
-			http.Error(w, "update failed", http.StatusInternalServerError)
+			writeAdminUserMutationError(w, err, "update")
 			return
 		}
 
@@ -713,9 +855,18 @@ func (s *Server) handleAdminUserDeactivate() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		_, err = s.DB.Exec(ctx, `UPDATE admin_users SET is_active=FALSE WHERE id=$1`, targetID)
-		if err != nil {
-			http.Error(w, "update failed", http.StatusInternalServerError)
+		targetID32 := int32(targetID)
+		if err := s.withAdminUserMutationTx(ctx, sess.AdminID, &targetID32, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `UPDATE admin_users SET is_active=FALSE WHERE id=$1`, targetID)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return errAdminUserNotFound
+			}
+			return nil
+		}); err != nil {
+			writeAdminUserMutationError(w, err, "update")
 			return
 		}
 
@@ -736,17 +887,16 @@ func (s *Server) handleAdminUserResendInvite() http.HandlerFunc {
 			http.Error(w, "invalid id", http.StatusBadRequest)
 			return
 		}
+		sess, err := getAdminSessionFromRequest(r)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
 		var username, emailAddr string
-		if err := s.DB.QueryRow(ctx, `SELECT username, email FROM admin_users WHERE id=$1`, targetID).
-			Scan(&username, &emailAddr); err != nil {
-			http.Error(w, "user not found", http.StatusNotFound)
-			return
-		}
-
 		tmpPassword := generateTempPassword()
 		hash, err := auth.HashPassword(tmpPassword)
 		if err != nil {
@@ -754,10 +904,33 @@ func (s *Server) handleAdminUserResendInvite() http.HandlerFunc {
 			return
 		}
 
-		if _, err := s.DB.Exec(ctx, `
-			UPDATE admin_users SET password_hash=$1, force_password_change=TRUE, is_active=TRUE WHERE id=$2
-		`, hash, targetID); err != nil {
-			http.Error(w, "update failed", http.StatusInternalServerError)
+		targetID32 := int32(targetID)
+		err = s.withAdminUserMutationTx(ctx, sess.AdminID, &targetID32, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `
+				SELECT username, email
+				FROM admin_users
+				WHERE id = $1
+			`, targetID).Scan(&username, &emailAddr); errors.Is(err, pgx.ErrNoRows) {
+				return errAdminUserNotFound
+			} else if err != nil {
+				return err
+			}
+
+			tag, err := tx.Exec(ctx, `
+				UPDATE admin_users
+				SET password_hash=$1, force_password_change=TRUE, is_active=TRUE
+				WHERE id=$2
+			`, hash, targetID)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return errAdminUserNotFound
+			}
+			return nil
+		})
+		if err != nil {
+			writeAdminUserMutationError(w, err, "update")
 			return
 		}
 
@@ -786,11 +959,7 @@ If you did not expect this email, please ignore it.
 			return
 		}
 
-		inviterSess, _ := getAdminSessionFromRequest(r)
-		var inviterID *int32
-		if inviterSess != nil {
-			inviterID = &inviterSess.AdminID
-		}
+		inviterID := &sess.AdminID
 		eid := int64(targetID)
 		s.audit(ctx, r, "admin", inviterID, "admin_user_invite_resent", "admin_user", &eid,
 			map[string]any{"username": username, "email": emailAddr})
@@ -823,11 +992,46 @@ func (s *Server) handleAdminUserDelete() http.HandlerFunc {
 		defer cancel()
 
 		var username string
-		s.DB.QueryRow(ctx, `SELECT username FROM admin_users WHERE id=$1`, targetID).Scan(&username)
+		targetID32 := int32(targetID)
+		if err := s.withAdminUserMutationTx(ctx, sess.AdminID, &targetID32, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `
+				SELECT username
+				FROM admin_users
+				WHERE id = $1
+			`, targetID).Scan(&username); errors.Is(err, pgx.ErrNoRows) {
+				return errAdminUserNotFound
+			} else if err != nil {
+				return err
+			}
 
-		if _, err := s.DB.Exec(ctx, `DELETE FROM admin_users WHERE id=$1`, targetID); err != nil {
-			// FK constraint — fall back to deactivation
-			s.DB.Exec(ctx, `UPDATE admin_users SET is_active=FALSE WHERE id=$1`, targetID)
+			if _, err := tx.Exec(ctx, `SAVEPOINT admin_user_delete_attempt`); err != nil {
+				return err
+			}
+			tag, err := tx.Exec(ctx, `DELETE FROM admin_users WHERE id=$1`, targetID)
+			if err != nil {
+				if _, rollbackErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT admin_user_delete_attempt`); rollbackErr != nil {
+					return rollbackErr
+				}
+				if _, releaseErr := tx.Exec(ctx, `RELEASE SAVEPOINT admin_user_delete_attempt`); releaseErr != nil {
+					return releaseErr
+				}
+				tag, updateErr := tx.Exec(ctx, `UPDATE admin_users SET is_active=FALSE WHERE id=$1`, targetID)
+				if updateErr != nil {
+					return updateErr
+				}
+				if tag.RowsAffected() != 1 {
+					return errAdminUserNotFound
+				}
+				return nil
+			}
+			if tag.RowsAffected() != 1 {
+				return errAdminUserNotFound
+			}
+			_, err = tx.Exec(ctx, `RELEASE SAVEPOINT admin_user_delete_attempt`)
+			return err
+		}); err != nil {
+			writeAdminUserMutationError(w, err, "delete")
+			return
 		}
 
 		eid := int64(targetID)

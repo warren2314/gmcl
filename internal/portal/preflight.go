@@ -17,7 +17,7 @@ const (
 	PortalPreflightModeSchema = "schema"
 	PortalPreflightModePilot  = "pilot"
 
-	requiredPortalMigration = "0052_portal_onboarding_wizard.sql"
+	requiredPortalMigration = "0053_portal_competition_management.sql"
 )
 
 var portalRLSTables = []string{
@@ -45,6 +45,7 @@ var portalRLSTables = []string{
 	"portal_message_campaigns",
 	"portal_message_campaign_targets",
 	"portal_message_deliveries",
+	"portal_competition_clubs",
 }
 
 type PortalEnvironmentPreflight struct {

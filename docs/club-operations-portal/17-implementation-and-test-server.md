@@ -40,9 +40,13 @@ This runbook records implemented behaviour and the controlled route to a test-se
 - A selected-team handoff to the existing captain magic-link journey; the portal remains read-only and does not duplicate or replace captain submission behavior.
 - Explicit unavailable/stale and unreconciled-legacy states; missing source data is not rendered as zero/compliant.
 - Sensitive onboarding email refuses the development body-logging fallback and requires SMTP.
-- Super Administrators can assign active named legacy administrators as Club Liaison Officers or Junior Administrators, scoped globally, to one club or to one portal competition. Authorization revalidates the assignment on every request.
-- Authorized staff can compose one campaign to a multi-select list of in-scope clubs. The transaction creates one tenant-private case and one club-visible message per club; no club can infer another target or recipient.
-- Recipient roles are constrained by message category and resolved from effective verified club contacts or active named adult portal appointments. A disclosed fallback uses active primary administrators, administrators or secretaries when the requested verified appointment is absent.
+- Super Administrators can create seasonal competition contexts, map their clubs, update those mappings, and end contexts without deleting historical references.
+- A competition context is the season-specific competition record plus its mapped clubs. It constrains competition-scoped staff access and message targets, and is saved with the campaign for audit/history; it does not replace the category-controlled recipient role.
+- Existing competition records with no club mapping are labelled **Needs club mapping** so a Super Administrator can repair them. Scheduled contexts can be edited before their start date, while active contexts can also be ended.
+- Super Administrators can assign active named legacy administrators as Club Liaison Officers or Junior Administrators, scoped globally, to one club or to one active mapped competition. Authorization revalidates both the assignment and competition-to-club containment on every request.
+- Authorized staff can compose one campaign to a multi-select list of in-scope clubs. Selecting a competition filters the club selector and the server rejects any club outside that context. The transaction creates one tenant-private case and one club-visible message per club; no club can infer another target or recipient.
+- For a competition-only staff assignment, compose automatically selects the exact competition context and displays only role-compatible mapped clubs. When several assignments overlap, all selected clubs must share one valid GMCL staff role, which the system derives for the campaign.
+- Recipient roles are constrained by message category in both the form and the server, then resolved from effective verified club contacts or active named adult portal appointments. A disclosed fallback uses active primary administrators, administrators or secretaries when the requested verified appointment is absent.
 - Each initial campaign email has a system-only recipient snapshot, attempt count and sent/failed state. Campaign and target totals record complete, partial and failed delivery; failed deliveries can be retried without creating a second portal message.
 - The portal and official email body identify the sending administrator and effective GMCL staff role. SMTP/SES continues to use the configured verified GMCL sender rather than impersonating a personal mailbox.
 - Campaign summaries track per-club delivery, acknowledgement and club-reply counts. Existing club-originated cases and replies remain available.
@@ -164,7 +168,7 @@ Import the updated `n8n_workflow.json`, set the test n8n environment's `GMCL_BAS
 
 1. Back up the test database.
 2. Deploy the exact tested branch commit with `MIGRATE=1`.
-3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql`, `0050_portal_operations_workflows.sql`, `0051_portal_staff_campaigns.sql` and `0052_portal_onboarding_wizard.sql` are recorded in `schema_migrations`.
+3. Confirm migrations `0048_club_portal_foundation.sql`, `0049_portal_audit_hash_verification.sql`, `0050_portal_operations_workflows.sql`, `0051_portal_staff_campaigns.sql`, `0052_portal_onboarding_wizard.sql` and `0053_portal_competition_management.sql` are recorded in `schema_migrations`.
 4. Run `APP_DIR=/opt/gmcl scripts/verify-portal-staging.sh`. It must report `portal_preflight=ready`, HTTP 200 for health/legacy/admin, HTTP 303 for the unauthenticated portal and HTTP 401 for the unsigned worker request; any non-zero exit blocks pilot enablement.
 5. Confirm the application starts with `CLUB_PORTAL_ENABLED=true`. Startup deliberately fails if the effective portal database role can bypass RLS.
 6. Verify `/health`, legacy captain login and legacy administrator login before enabling a club.
@@ -205,13 +209,15 @@ Use synthetic or explicitly approved non-sensitive content only.
 4. Reply as GMCL, confirm the club can see and acknowledge it, and confirm the verified case creator receives the official email copy.
 5. Simulate SMTP failure, confirm the saved message is marked as needing email attention, restore SMTP and use **Retry official email copy** without creating a second portal message.
 6. Disable `secure_messaging`; confirm club case routes fail closed while existing records remain in the GMCL queue.
-7. As Super Administrator, open `/admin/portal/staff` and assign a synthetic administrator as a CLO for one test club and as Junior Administrator for a different test club or competition.
-8. Sign in as that administrator. Confirm `/admin/portal/messages/new` lists only clubs permitted by the effective assignment and rejects a forged out-of-scope club ID server-side.
-9. Select two controlled clubs from the multi-select, choose an allowed category/recipient role and send a synthetic campaign.
-10. Confirm two separate cases are created, each club sees only its own case, and neither club can infer the other target, recipient address or delivery result.
-11. Confirm every email uses the configured verified GMCL sender and identifies the administrator's name and effective CLO/Junior Administrator role in the body.
-12. Confirm the campaign summary shows target, delivery, acknowledgement and club-reply counts. Simulate one SMTP failure and use the case retry control; verify the existing message is reused and only the failed recorded delivery is retried.
-13. Revoke the staff assignment and confirm the administrator's next portal-work-queue or compose request is denied without ending unrelated legacy-admin access.
+7. As Super Administrator, open `/admin/portal/competitions`, create a synthetic seasonal competition and map at least two controlled clubs.
+8. Open `/admin/portal/staff` and assign a synthetic administrator as a CLO for one test club and as Junior Administrator for a different test club or mapped competition.
+9. Sign in as that administrator. Confirm `/admin/portal/messages/new` lists only clubs permitted by the effective assignment and rejects a forged out-of-scope or out-of-competition club ID server-side.
+10. Change the category and confirm the recipient-role selector immediately removes incompatible roles. Select two controlled clubs, choose an allowed category/recipient role and send a synthetic campaign.
+11. Confirm two separate cases are created, each club sees only its own case, and neither club can infer the other target, recipient address or delivery result.
+12. Confirm every email uses the configured verified GMCL sender and identifies the administrator's name and effective CLO/Junior Administrator role in the body.
+13. Confirm the campaign summary shows target, delivery, acknowledgement and club-reply counts. Simulate one SMTP failure and use the case retry control; verify the existing message is reused and only the failed recorded delivery is retried.
+14. End the competition context and confirm it disappears from compose and no longer grants competition-scoped access.
+15. Revoke the staff assignment and confirm the administrator's next portal-work-queue or compose request is denied without ending unrelated legacy-admin access.
 
 ### Club profile and corrections
 
@@ -297,7 +303,7 @@ On 26-27 July 2026, the implementation was validated from clean disposable Postg
 - `go vet ./...` passed.
 - `go test ./...` passed on the Windows development host.
 - `go test -race ./...` passed in the Linux builder image.
-- A clean 54-migration database reported 12/12 portal-private tables with enabled and forced RLS, a live append-only trigger and validated audit-chain constraints. Schema preflight passed with the portal disabled; a fully configured pilot preflight passed against a local synthetic OIDC discovery endpoint, while uppercase `PILOT` with missing dependencies failed closed.
+- A clean 58-migration database reported 25/25 portal-private tables with enabled and forced RLS, a live append-only trigger and validated audit-chain constraints. Schema preflight passed with the portal disabled; a fully configured pilot preflight passed against a local synthetic OIDC discovery endpoint, while uppercase `PILOT` with missing dependencies failed closed.
 - After the race suite generated audit activity, preflight independently recomputed all 18 version-2 events across two chains and recorded both chain-head digests. A malformed chain-position insert was rejected by PostgreSQL, and a deliberate disposable-database metadata mutation was detected as a canonical hash mismatch with a non-zero preflight exit.
 - The database integration suite passed tenant RLS isolation, append-only audit enforcement, signed OIDC ID-token verification, nonce/state/PKCE replay controls, invitation redemption, same-user step-up, context token rotation, individual/all-device session revocation, club kill-switch session revocation with an audited count, dashboard tenant reads, valid and foreign team filters, denied-scope auditing, captain-handoff club/team validation and immediate appointment revocation.
 - The OIDC lifecycle passed live RSA signing-key rotation: onboarding verified with the initial key, the synthetic provider rotated to a new key and `kid`, and same-user step-up succeeded only after the cached verifier performed a second JWKS retrieval. The provider harness and complete suite remained clean under the race detector.

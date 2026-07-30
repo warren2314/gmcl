@@ -9,6 +9,7 @@ import (
 	"cricket-ground-feedback/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *Server) handleAdminSanctionPermissionsGet() http.HandlerFunc {
@@ -74,9 +75,17 @@ func (s *Server) handleAdminSanctionPermissionsPost() http.HandlerFunc {
 		allowed := map[string]bool{}
 		for allowedRows.Next() {
 			var p string
-			if allowedRows.Scan(&p) == nil {
-				allowed[p] = true
+			if err := allowedRows.Scan(&p); err != nil {
+				allowedRows.Close()
+				http.Error(w, "permissions unavailable", 500)
+				return
 			}
+			allowed[p] = true
+		}
+		if err := allowedRows.Err(); err != nil {
+			allowedRows.Close()
+			http.Error(w, "permissions unavailable", 500)
+			return
 		}
 		allowedRows.Close()
 		chosen := []string{}
@@ -85,37 +94,103 @@ func (s *Server) handleAdminSanctionPermissionsPost() http.HandlerFunc {
 				chosen = append(chosen, p)
 			}
 		}
-		tx, err := s.DB.Begin(r.Context())
-		if err != nil {
-			http.Error(w, "save failed", 500)
-			return
-		}
-		defer tx.Rollback(r.Context())
 		var before []string
-		oldRows, _ := tx.Query(r.Context(), `SELECT permission FROM admin_user_permissions WHERE admin_user_id=$1 AND permission LIKE 'sanctions_%' ORDER BY permission`, id)
-		if oldRows != nil {
-			for oldRows.Next() {
-				var p string
-				if oldRows.Scan(&p) == nil {
-					before = append(before, p)
+		targetID := int32(id)
+		err = s.withAdminUserMutationTx(
+			r.Context(),
+			sess.AdminID,
+			&targetID,
+			func(tx pgx.Tx) error {
+				var targetExists bool
+				if err := tx.QueryRow(
+					r.Context(),
+					`SELECT EXISTS (SELECT 1 FROM admin_users WHERE id = $1)`,
+					id,
+				).Scan(&targetExists); err != nil {
+					return err
 				}
-			}
-			oldRows.Close()
-		}
-		_, err = tx.Exec(r.Context(), `DELETE FROM admin_user_permissions WHERE admin_user_id=$1 AND permission LIKE 'sanctions_%'`, id)
-		if err == nil {
-			for _, p := range chosen {
-				_, err = tx.Exec(r.Context(), `INSERT INTO admin_user_permissions(admin_user_id,permission) VALUES($1,$2)`, id, p)
+				if !targetExists {
+					return errAdminUserNotFound
+				}
+
+				oldRows, err := tx.Query(
+					r.Context(),
+					`SELECT permission
+					 FROM admin_user_permissions
+					 WHERE admin_user_id=$1
+					   AND permission LIKE 'sanctions_%'
+					 ORDER BY permission`,
+					id,
+				)
 				if err != nil {
-					break
+					return err
 				}
-			}
-		}
-		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_configuration_events(configuration_type,configuration_key,actor_admin_id,reason,before_data,after_data,request_id) VALUES('permissions',$1,$2,$3,to_jsonb($4::text[]),to_jsonb($5::text[]),$6)`, strconv.Itoa(id), sess.AdminID, reason, before, chosen, requestID(r))
-		}
-		if err != nil || tx.Commit(r.Context()) != nil {
-			http.Error(w, "save failed", 500)
+				for oldRows.Next() {
+					var permission string
+					if err := oldRows.Scan(&permission); err != nil {
+						oldRows.Close()
+						return err
+					}
+					before = append(before, permission)
+				}
+				if err := oldRows.Err(); err != nil {
+					oldRows.Close()
+					return err
+				}
+				oldRows.Close()
+
+				if _, err := tx.Exec(
+					r.Context(),
+					`DELETE FROM admin_user_permissions
+					 WHERE admin_user_id=$1
+					   AND permission LIKE 'sanctions_%'`,
+					id,
+				); err != nil {
+					return err
+				}
+				for _, p := range chosen {
+					if _, err := tx.Exec(
+						r.Context(),
+						`INSERT INTO admin_user_permissions(admin_user_id,permission)
+						 VALUES($1,$2)`,
+						id,
+						p,
+					); err != nil {
+						return err
+					}
+				}
+				_, err = tx.Exec(
+					r.Context(),
+					`INSERT INTO sanction_configuration_events(
+						configuration_type,
+						configuration_key,
+						actor_admin_id,
+						reason,
+						before_data,
+						after_data,
+						request_id
+					 )
+					 VALUES(
+						'permissions',
+						$1,
+						$2,
+						$3,
+						to_jsonb($4::text[]),
+						to_jsonb($5::text[]),
+						$6
+					 )`,
+					strconv.Itoa(id),
+					sess.AdminID,
+					reason,
+					before,
+					chosen,
+					requestID(r),
+				)
+				return err
+			},
+		)
+		if err != nil {
+			writeAdminUserMutationError(w, err, "save")
 			return
 		}
 		http.Redirect(w, r, "/admin/users", 303)

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -37,6 +38,8 @@ type adminSession struct {
 	JTI      string `json:"jti"`
 	IssuedAt int64  `json:"iat"`
 }
+
+type activeAdminSessionContextKey struct{}
 
 const adminSessionCookie = "adm_sess"
 
@@ -245,6 +248,10 @@ func (s *Server) adminRouter() http.Handler {
 			r.With(s.requireAdminRole("super_admin")).Get("/portal/staff", s.handleAdminPortalStaffGet())
 			r.With(s.requireAdminRole("super_admin")).Post("/portal/staff/assignments", s.handleAdminPortalStaffAssignmentCreate())
 			r.With(s.requireAdminRole("super_admin")).Post("/portal/staff/assignments/{id}/revoke", s.handleAdminPortalStaffAssignmentRevoke())
+			r.With(s.requireAdminRole("super_admin")).Get("/portal/competitions", s.handleAdminPortalCompetitionsGet())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/competitions", s.handleAdminPortalCompetitionCreate())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/competitions/{id}/clubs", s.handleAdminPortalCompetitionClubsUpdate())
+			r.With(s.requireAdminRole("super_admin")).Post("/portal/competitions/{id}/end", s.handleAdminPortalCompetitionEnd())
 			r.With(s.requirePortalStaff()).Get("/portal/messages/new", s.handleAdminPortalMessageNewGet())
 			r.With(s.requirePortalStaff()).Post("/portal/messages", s.handleAdminPortalMessageCreate())
 			r.With(s.requirePortalStaff()).Get("/portal/cases", s.handleAdminPortalCasesGet())
@@ -2574,12 +2581,41 @@ func (s *Server) handleAdminCSVApply() http.HandlerFunc {
 func (s *Server) requireAdmin() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, err := getAdminSessionFromRequest(r)
+			sess, err := getAdminSessionFromRequest(r)
 			if err != nil {
 				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 				return
 			}
-			next.ServeHTTP(w, r)
+			role, name, active, err := s.activeAdminIdentity(
+				r.Context(),
+				sess.AdminID,
+			)
+			if err != nil {
+				http.Error(
+					w,
+					"administrator authentication is temporarily unavailable",
+					http.StatusServiceUnavailable,
+				)
+				return
+			}
+			if !active {
+				clearAdminSessionCookie(w)
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
+			}
+			liveSession := *sess
+			liveSession.Role = role
+			if name != "" {
+				liveSession.Name = name
+			}
+			next.ServeHTTP(
+				w,
+				r.WithContext(context.WithValue(
+					r.Context(),
+					activeAdminSessionContextKey{},
+					&liveSession,
+				)),
+			)
 		})
 	}
 }
@@ -2596,12 +2632,22 @@ func (s *Server) requireAdminRole(roles ...string) func(http.Handler) http.Handl
 				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 				return
 			}
-			role := sess.Role
-			if role == "" {
-				role = "admin"
+			role, _, active, err := s.activeAdminIdentity(
+				r.Context(),
+				sess.AdminID,
+			)
+			if err != nil {
+				http.Error(
+					w,
+					"administrator authentication is temporarily unavailable",
+					http.StatusServiceUnavailable,
+				)
+				return
 			}
-			if role != "super_admin" {
-				role = s.effectiveAdminRole(r.Context(), sess.AdminID)
+			if !active {
+				clearAdminSessionCookie(w)
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
 			}
 			if _, ok := allowed[role]; !ok {
 				http.Error(w, "forbidden", http.StatusForbidden)
@@ -2630,20 +2676,53 @@ func (s *Server) requireAdminPermission(permission string) func(http.Handler) ht
 }
 
 func (s *Server) effectiveAdminRole(ctx context.Context, adminID int32) string {
-	role := "admin"
-	var username, email string
-	_ = s.DB.QueryRow(ctx, `SELECT COALESCE(role, 'admin'), COALESCE(username, ''), COALESCE(email, '') FROM admin_users WHERE id=$1`, adminID).Scan(&role, &username, &email)
-	if role == "super_admin" || isConfiguredSuperAdmin(username, email) {
-		return "super_admin"
+	role, _, active, err := s.activeAdminIdentity(ctx, adminID)
+	if err != nil || !active {
+		return "admin"
 	}
-	return "admin"
+	return role
+}
+
+func (s *Server) activeAdminIdentity(
+	ctx context.Context,
+	adminID int32,
+) (role string, name string, active bool, err error) {
+	var email string
+	err = s.DB.QueryRow(ctx, `
+		SELECT
+			COALESCE(role, 'admin'),
+			COALESCE(username, ''),
+			COALESCE(email, ''),
+			is_active
+		FROM admin_users
+		WHERE id = $1
+	`, adminID).Scan(&role, &name, &email, &active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	if !active {
+		return "", name, false, nil
+	}
+	if role == "super_admin" || isConfiguredSuperAdmin(name, email) {
+		role = "super_admin"
+	} else {
+		role = "admin"
+	}
+	return role, name, true, nil
 }
 
 func (s *Server) adminHasPermission(ctx context.Context, adminID int32, permission string) bool {
+	role, _, active, err := s.activeAdminIdentity(ctx, adminID)
+	if err != nil || !active {
+		return false
+	}
 	if permission == "" {
 		return true
 	}
-	if s.effectiveAdminRole(ctx, adminID) == "super_admin" {
+	if role == "super_admin" {
 		return true
 	}
 
@@ -2667,17 +2746,7 @@ func adminIDForRequest(r *http.Request) int32 {
 }
 
 func isConfiguredSuperAdmin(username, email string) bool {
-	username = strings.ToLower(strings.TrimSpace(username))
-	email = strings.ToLower(strings.TrimSpace(email))
-	configured := []string{"warren2314"}
-	configured = append(configured, strings.Split(os.Getenv("SUPER_ADMIN_EMAILS"), ",")...)
-	for _, entry := range configured {
-		entry = strings.ToLower(strings.TrimSpace(entry))
-		if entry != "" && (entry == username || entry == email) {
-			return true
-		}
-	}
-	return username == "warren2314"
+	return auth.IsConfiguredSuperAdmin(username, email)
 }
 
 func adminRoleForRequest(r *http.Request) string {
@@ -2689,6 +2758,11 @@ func adminRoleForRequest(r *http.Request) string {
 }
 
 func getAdminSessionFromRequest(r *http.Request) (*adminSession, error) {
+	if sess, ok := r.Context().Value(
+		activeAdminSessionContextKey{},
+	).(*adminSession); ok && sess != nil {
+		return sess, nil
+	}
 	c, err := r.Cookie(adminSessionCookie)
 	if err != nil {
 		return nil, err
@@ -2729,6 +2803,18 @@ func getAdminSessionFromRequest(r *http.Request) (*adminSession, error) {
 		return nil, fmt.Errorf("invalid session audience")
 	}
 	return &sess, nil
+}
+
+func clearAdminSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookie,
+		Value:    "",
+		Path:     "/admin",
+		MaxAge:   -1,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func setAdminSessionCookie(w http.ResponseWriter, sess *adminSession) error {
