@@ -369,59 +369,142 @@ func (s *Server) handleAdminStarredReplacementCorrectedResend() http.HandlerFunc
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
-
-		var clubKey, clubName, playerName, originalRecipient string
-		err = s.DB.QueryRow(ctx, `
-			SELECT club_key,club_name,player_name,COALESCE(captain_email,'')
-			FROM starred_player_replacement_requests
-			WHERE id=$1 AND status='sent'`, id).
-			Scan(&clubKey, &clubName, &playerName, &originalRecipient)
-		if err != nil {
-			http.Error(w, "sent email record not found", http.StatusNotFound)
-			return
-		}
-		recipient, err := starredClubCorrectionEmail(clubKey, clubName)
-		if err != nil {
-			http.Error(w, "could not determine corrected club email: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		var subject, body string
-		err = s.DB.QueryRow(ctx, `
-			UPDATE starred_player_replacement_requests
-			SET correction_recipient=$1,correction_status='sending',
-			    correction_send_error=NULL,updated_at=now()
-			WHERE id=$2 AND status='sent'
-			  AND (correction_status IS NULL OR correction_status='send_failed')
-			RETURNING email_subject,email_body`, recipient, id).Scan(&subject, &body)
-		if err != nil {
+		result := s.sendStarredReplacementCorrection(ctx, r, id, email.NewFromEnv(), s.resolveAdminID(r))
+		if result.Skipped {
 			http.Error(w, "this corrected email has already been sent or is currently being sent", http.StatusConflict)
 			return
 		}
-
-		adminID := s.resolveAdminID(r)
-		if err = email.NewFromEnv().Send(recipient, subject, body); err != nil {
-			_, _ = s.DB.Exec(ctx, `
-				UPDATE starred_player_replacement_requests
-				SET correction_status='send_failed',correction_send_error=$1,updated_at=now()
-				WHERE id=$2 AND correction_status='sending'`, err.Error(), id)
-			s.audit(ctx, r, "admin", adminID, "starred_replacement_corrected_resend_failed", "starred_player_replacement_request", &id, map[string]any{
-				"club": clubName, "player": playerName, "original_recipient": originalRecipient,
-				"correction_recipient": recipient, "error": err.Error(),
-			})
-			http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(r.FormValue("sender"))+"&error="+url.QueryEscape("Corrected resend to "+recipient+" failed: "+err.Error()), http.StatusSeeOther)
+		if result.Err != nil {
+			http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(r.FormValue("sender"))+"&error="+url.QueryEscape("Corrected resend to "+result.Recipient+" failed: "+result.Err.Error()), http.StatusSeeOther)
 			return
 		}
+		http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(r.FormValue("sender"))+"&message="+url.QueryEscape("Corrected copy sent to "+result.Recipient+" for "+result.PlayerName), http.StatusSeeOther)
+	}
+}
+
+type starredReplacementCorrectionResult struct {
+	Recipient  string
+	PlayerName string
+	Skipped    bool
+	Err        error
+}
+
+func (s *Server) sendStarredReplacementCorrection(ctx context.Context, r *http.Request, id int64, mailer *email.Client, adminID *int32) starredReplacementCorrectionResult {
+	var clubKey, clubName, playerName, originalRecipient, status, correctionStatus string
+	err := s.DB.QueryRow(ctx, `
+		SELECT club_key,club_name,player_name,COALESCE(captain_email,''),status,
+		       COALESCE(correction_status,'')
+		FROM starred_player_replacement_requests
+		WHERE id=$1`, id).
+		Scan(&clubKey, &clubName, &playerName, &originalRecipient, &status, &correctionStatus)
+	result := starredReplacementCorrectionResult{PlayerName: playerName}
+	if err != nil {
+		result.Err = fmt.Errorf("email record not found")
+		return result
+	}
+	if status != "sent" || correctionStatus == "sent" || correctionStatus == "sending" {
+		result.Skipped = true
+		return result
+	}
+	recipient, err := starredClubCorrectionEmail(clubKey, clubName)
+	result.Recipient = recipient
+	if err != nil {
+		result.Err = err
+		return result
+	}
+
+	var subject, body string
+	err = s.DB.QueryRow(ctx, `
+		UPDATE starred_player_replacement_requests
+		SET correction_recipient=$1,correction_status='sending',
+		    correction_send_error=NULL,updated_at=now()
+		WHERE id=$2 AND status='sent'
+		  AND (correction_status IS NULL OR correction_status='send_failed')
+		RETURNING email_subject,email_body`, recipient, id).Scan(&subject, &body)
+	if err != nil {
+		result.Skipped = true
+		return result
+	}
+	if err = mailer.Send(recipient, subject, body); err != nil {
 		_, _ = s.DB.Exec(ctx, `
 			UPDATE starred_player_replacement_requests
-			SET correction_status='sent',correction_sent_by=$1,correction_sent_at=now(),
-			    correction_send_error=NULL,updated_at=now()
-			WHERE id=$2 AND correction_status='sending'`, adminID, id)
-		s.audit(ctx, r, "admin", adminID, "starred_replacement_corrected_resend_sent", "starred_player_replacement_request", &id, map[string]any{
+			SET correction_status='send_failed',correction_send_error=$1,updated_at=now()
+			WHERE id=$2 AND correction_status='sending'`, err.Error(), id)
+		s.audit(ctx, r, "admin", adminID, "starred_replacement_corrected_resend_failed", "starred_player_replacement_request", &id, map[string]any{
 			"club": clubName, "player": playerName, "original_recipient": originalRecipient,
-			"correction_recipient": recipient,
+			"correction_recipient": recipient, "error": err.Error(),
 		})
-		http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(r.FormValue("sender"))+"&message="+url.QueryEscape("Corrected copy sent to "+recipient+" for "+playerName), http.StatusSeeOther)
+		result.Err = err
+		return result
+	}
+	if _, err = s.DB.Exec(ctx, `
+		UPDATE starred_player_replacement_requests
+		SET correction_status='sent',correction_sent_by=$1,correction_sent_at=now(),
+		    correction_send_error=NULL,updated_at=now()
+		WHERE id=$2 AND correction_status='sending'`, adminID, id); err != nil {
+		result.Err = fmt.Errorf("email was delivered, but its correction status could not be saved: %w", err)
+		return result
+	}
+	s.audit(ctx, r, "admin", adminID, "starred_replacement_corrected_resend_sent", "starred_player_replacement_request", &id, map[string]any{
+		"club": clubName, "player": playerName, "original_recipient": originalRecipient,
+		"correction_recipient": recipient,
+	})
+	return result
+}
+
+func (s *Server) handleAdminStarredReplacementCorrectedBatchResend() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		rawIDs := r.Form["request_id"]
+		senderFilter := strings.TrimSpace(r.FormValue("sender"))
+		if len(rawIDs) == 0 {
+			http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(senderFilter)+"&error="+url.QueryEscape("Select at least one email to resend."), http.StatusSeeOther)
+			return
+		}
+		if len(rawIDs) > 250 {
+			http.Error(w, "too many emails selected", http.StatusBadRequest)
+			return
+		}
+
+		ids := make([]int64, 0, len(rawIDs))
+		seen := make(map[int64]bool, len(rawIDs))
+		for _, rawID := range rawIDs {
+			id, err := strconv.ParseInt(rawID, 10, 64)
+			if err != nil || id <= 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			http.Redirect(w, r, "/admin/starred-player-replacements?sender="+url.QueryEscape(senderFilter)+"&error="+url.QueryEscape("No valid emails were selected."), http.StatusSeeOther)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		mailer := email.NewFromEnv()
+		adminID := s.resolveAdminID(r)
+		sent, skipped, failed := 0, 0, 0
+		for _, id := range ids {
+			result := s.sendStarredReplacementCorrection(ctx, r, id, mailer, adminID)
+			if result.Skipped {
+				skipped++
+			} else if result.Err != nil {
+				failed++
+			} else {
+				sent++
+			}
+		}
+		message := fmt.Sprintf("Batch correction complete: %d sent, %d skipped, %d failed.", sent, skipped, failed)
+		redirect := "/admin/starred-player-replacements?sender=" + url.QueryEscape(senderFilter) + "&message=" + url.QueryEscape(message)
+		if failed > 0 {
+			redirect += "&error=" + url.QueryEscape("Some corrected emails failed. Failed rows remain available to retry.")
+		}
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
 }
 
@@ -458,7 +541,7 @@ func (s *Server) handleAdminStarredReplacements() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-danger">%s</div>`, escapeHTML(errMsg))
 		}
 		fmt.Fprintf(w, `<div class="card mb-3"><div class="card-body"><form method="get" class="row g-2 align-items-end"><div class="col-sm-5 col-lg-3"><label class="form-label fw-semibold">Sent by username</label><input class="form-control" name="sender" value="%s" placeholder="For example: joep"></div><div class="col-auto"><button class="btn btn-primary">Filter emails</button></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-player-replacements">Clear</a></div></form><div class="form-text">Use <strong>joep</strong> to review Joe's emails. Corrected copies are sent to the club address ending <strong>cc@gtrmcrcricket.co.uk</strong>; the original recipient and message remain unchanged.</div></div></div>`, escapeHTML(senderFilter))
-		fmt.Fprint(w, `<div class="card"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Player</th><th>Club</th><th>List</th><th>Original recipient</th><th>Sent by</th><th>Status</th><th>Created</th><th>Correction</th><th></th></tr></thead><tbody>`)
+		fmt.Fprintf(w, `<form method="post" action="/admin/starred-player-replacements/resend-corrected-batch" onsubmit="return confirmBatchCorrection()"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="sender" value="%s"><div class="card"><div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2"><div><strong>Correction queue</strong><span id="correction-selection-count" class="text-muted ms-2">0 selected</span></div><button id="correction-batch-button" class="btn btn-warning" disabled>Send selected corrections</button></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th><input id="correction-select-all" class="form-check-input" type="checkbox" aria-label="Select all pending corrections"></th><th>Player</th><th>Club</th><th>List</th><th>Original recipient</th><th>Sent by</th><th>Status</th><th>Created</th><th>Correction</th><th></th></tr></thead><tbody>`, escapeHTML(csrf), escapeHTML(senderFilter))
 		count := 0
 		for rows.Next() {
 			var id int64
@@ -488,12 +571,38 @@ func (s *Server) handleAdminStarredReplacements() http.HandlerFunc {
 					correctionHTML = fmt.Sprintf(`<div class="small fw-semibold">%s</div>%s<a class="btn btn-sm btn-warning mt-1" href="/admin/starred-player-replacements/%d#correction">Review correction</a>`, escapeHTML(corrected), errorHTML, id)
 				}
 			}
-			fmt.Fprintf(w, `<tr><td><strong>%s</strong><div class="small text-muted">%d</div></td><td>%s</td><td>List %s</td><td>%s<div class="small text-muted">%s</div></td><td>%s</td><td><span class="badge %s">%s</span></td><td>%s</td><td>%s</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/starred-player-replacements/%d">%s</a></td></tr>`, escapeHTML(player), year, escapeHTML(club), escapeHTML(listType), escapeHTML(captain), escapeHTML(emailAddr), escapeHTML(sender), badge, escapeHTML(status), created.In(s.LondonLoc).Format("02 Jan 2006 15:04"), correctionHTML, id, map[bool]string{true: "View", false: "Review"}[status == "sent"])
+			selectionHTML := ""
+			if correctionErr == nil && status == "sent" && correctionStatus != "sent" && correctionStatus != "sending" {
+				selectionHTML = fmt.Sprintf(`<input class="form-check-input correction-select" type="checkbox" name="request_id" value="%d" aria-label="Select correction for %s">`, id, escapeHTML(player))
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td><strong>%s</strong><div class="small text-muted">%d</div></td><td>%s</td><td>List %s</td><td>%s<div class="small text-muted">%s</div></td><td>%s</td><td><span class="badge %s">%s</span></td><td>%s</td><td>%s</td><td><a class="btn btn-sm btn-outline-primary" href="/admin/starred-player-replacements/%d">%s</a></td></tr>`, selectionHTML, escapeHTML(player), year, escapeHTML(club), escapeHTML(listType), escapeHTML(captain), escapeHTML(emailAddr), escapeHTML(sender), badge, escapeHTML(status), created.In(s.LondonLoc).Format("02 Jan 2006 15:04"), correctionHTML, id, map[bool]string{true: "View", false: "Review"}[status == "sent"])
 		}
 		if count == 0 {
-			fmt.Fprint(w, `<tr><td colspan="9" class="text-center text-muted py-4">No replacement requests match this sender.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="10" class="text-center text-muted py-4">No replacement requests match this sender.</td></tr>`)
 		}
-		fmt.Fprint(w, `</tbody></table></div></div></main>`)
+		fmt.Fprint(w, `</tbody></table></div></div></form><script>
+const correctionBoxes = Array.from(document.querySelectorAll('.correction-select'));
+const correctionSelectAll = document.getElementById('correction-select-all');
+const correctionBatchButton = document.getElementById('correction-batch-button');
+const correctionSelectionCount = document.getElementById('correction-selection-count');
+function updateCorrectionSelection() {
+	const selected = correctionBoxes.filter(box => box.checked).length;
+	correctionSelectionCount.textContent = selected + ' selected';
+	correctionBatchButton.disabled = selected === 0;
+	correctionSelectAll.checked = correctionBoxes.length > 0 && selected === correctionBoxes.length;
+	correctionSelectAll.indeterminate = selected > 0 && selected < correctionBoxes.length;
+}
+correctionSelectAll.addEventListener('change', () => {
+	correctionBoxes.forEach(box => { box.checked = correctionSelectAll.checked; });
+	updateCorrectionSelection();
+});
+correctionBoxes.forEach(box => box.addEventListener('change', updateCorrectionSelection));
+function confirmBatchCorrection() {
+	const selected = correctionBoxes.filter(box => box.checked).length;
+	return selected > 0 && confirm('Send the original locked email to the corrected club address for ' + selected + ' selected record(s)?');
+}
+updateCorrectionSelection();
+</script></main>`)
 		pageFooter(w)
 	}
 }
