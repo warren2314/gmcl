@@ -189,6 +189,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-player-replacements/send-club", s.handleAdminStarredReplacementClubSend())
 		r.With(s.requireAdminRole("super_admin")).Get("/starred-player-replacements/{id}", s.handleAdminStarredReplacementDraft())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-player-replacements/{id}/send", s.handleAdminStarredReplacementSend())
+		r.With(s.requireAdminRole("super_admin")).Post("/starred-player-replacements/{id}/resend-corrected", s.handleAdminStarredReplacementCorrectedResend())
 		r.Get("/fixtures", s.handleAdminFixtures())
 		r.Get("/teams-captains", s.handleAdminTeamsCaptainsGet())
 		r.Post("/captain-change-requests/{id}/approve", s.handleAdminCaptainChangeApprove())

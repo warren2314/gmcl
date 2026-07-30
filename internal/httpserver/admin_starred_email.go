@@ -35,6 +35,23 @@ func starredClubEmail(clubKey, clubName string) (string, error) {
 	return address, nil
 }
 
+func starredClubCorrectionEmail(clubKey, clubName string) (string, error) {
+	address, err := starredClubEmail(clubKey, clubName)
+	if err != nil {
+		return "", err
+	}
+	at := strings.LastIndex(address, "@")
+	if at <= 0 {
+		return "", fmt.Errorf("invalid club email %q", address)
+	}
+	localPart := strings.TrimSuffix(address[:at], "cc") + "cc"
+	corrected := localPart + address[at:]
+	if _, err := mail.ParseAddress(corrected); err != nil {
+		return "", fmt.Errorf("invalid corrected club email %q: %w", corrected, err)
+	}
+	return corrected, nil
+}
+
 func starredCandidateRequestEmail(row starredPlayerReviewRow, cutoff time.Time) (string, string) {
 	subject := fmt.Sprintf("GMCL List B review request - %s", row.PlayerName)
 	body := fmt.Sprintf(`Hello %s,

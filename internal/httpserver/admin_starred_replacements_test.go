@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestStarredClubCorrectionEmailUsesClubCCAlias(t *testing.T) {
+	got, err := starredClubCorrectionEmail("Wythenshawe CC", "Wythenshawe CC")
+	if err != nil {
+		t.Fatalf("starredClubCorrectionEmail returned an error: %v", err)
+	}
+	if want := "wythenshawecc@gtrmcrcricket.co.uk"; got != want {
+		t.Fatalf("starredClubCorrectionEmail = %q, want %q", got, want)
+	}
+}
+
 func TestStarredReplacementDraftTextIncludesReviewAndSafetyWording(t *testing.T) {
 	player := starredPlayerReviewRow{ClubName: "Alpha CC", PlayerName: "Alex Player", ListType: "A", Total: 12, RuleGames: 2, RulePct: 16.7, Signal: "red"}
 	captain := starredReplacementCaptain{Name: "Casey Captain", Email: "captain@example.test", Team: "1st XI"}
