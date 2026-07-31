@@ -60,6 +60,34 @@ func TestCaptainReportClientAllowsDedicatedReplyToOverride(t *testing.T) {
 	}
 }
 
+func TestStarredPlayerClientUsesJoesMailbox(t *testing.T) {
+	t.Setenv("SMTP_REPLY_TO", "webmaster@gmcl.co.uk")
+	t.Setenv("STARRED_PLAYER_REPLY_TO", "")
+
+	headers, err := NewStarredPlayerFromEnv().messageHeaders("club@example.com", "Rule 3.5 review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(headers, "Reply-To: <joep@gtrmcrcricket.co.uk>\r\n") {
+		t.Fatalf("starred-player reply-to missing: %s", headers)
+	}
+	if strings.Contains(headers, "Reply-To: <webmaster@gmcl.co.uk>") {
+		t.Fatalf("starred-player email inherited the general reply-to: %s", headers)
+	}
+}
+
+func TestStarredPlayerClientAllowsDedicatedReplyToOverride(t *testing.T) {
+	t.Setenv("STARRED_PLAYER_REPLY_TO", "Joe <joe-replies@example.com>")
+
+	headers, err := NewStarredPlayerFromEnv().messageHeaders("club@example.com", "Rule 3.5 review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(headers, "Reply-To: \"Joe\" <joe-replies@example.com>\r\n") {
+		t.Fatalf("dedicated starred-player reply-to missing: %s", headers)
+	}
+}
+
 func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 	html := toHTML("Primary:\nBUTTON_URL:https://gmcl.co.uk/magic-link/confirm?token=abc\nBackup:\nBACKUP_URL:https://www.gmcl.co.uk/magic-link/confirm?token=abc\nACCESS_URL:https://gmcl.co.uk/access\nACCESS_CODE:abc")
 

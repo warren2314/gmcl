@@ -6,6 +6,7 @@ This app sends mail through SMTP and can receive Amazon SES events through an SN
 
 - SMTP sending is configured with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM`.
 - Set `SMTP_REPLY_TO` to the monitored mailbox for general transactional messages.
+- Starred-player messages use `STARRED_PLAYER_REPLY_TO`, which defaults to `joep@gtrmcrcricket.co.uk`.
 - Captain-report messages use `CAPTAIN_REPORT_REPLY_TO`, which defaults to `reports@gtrmcrcricket.co.uk`.
 - SES/SNS events are received at:
 
@@ -78,6 +79,7 @@ SMTP_USERNAME=<ses-smtp-username>
 SMTP_PASSWORD=<ses-smtp-password>
 SMTP_FROM=webmaster@gmcl.co.uk
 SMTP_REPLY_TO=joep@gtrmcrcricket.co.uk
+STARRED_PLAYER_REPLY_TO=joep@gtrmcrcricket.co.uk
 CAPTAIN_REPORT_REPLY_TO=reports@gtrmcrcricket.co.uk
 ```
 

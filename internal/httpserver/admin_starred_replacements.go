@@ -177,7 +177,7 @@ func (s *Server) handleAdminStarredReplacementClubSend() http.HandlerFunc {
 			redirectStarredPlayerReview(w, r, year, cutoff, "", "Could not record removal review email: "+err.Error())
 			return
 		}
-		if err = email.NewFromEnv().Send(recipient, subject, body); err != nil {
+		if err = email.NewStarredPlayerFromEnv().Send(recipient, subject, body); err != nil {
 			_, _ = s.DB.Exec(ctx, `UPDATE starred_player_replacement_requests SET status='send_failed',send_error=$1,updated_at=now() WHERE id=$2`, err.Error(), requestID)
 			s.audit(ctx, r, "admin", adminID, "starred_removal_review_email_failed", "starred_player_replacement_request", &requestID, map[string]any{
 				"season": year, "club": player.ClubName, "player": player.PlayerName, "recipient": recipient, "error": err.Error(),
@@ -344,7 +344,7 @@ func (s *Server) handleAdminStarredReplacementSend() http.HandlerFunc {
 			http.Error(w, "recipient email is invalid", 400)
 			return
 		}
-		if err = email.NewFromEnv().Send(recipient, subject, body); err != nil {
+		if err = email.NewStarredPlayerFromEnv().Send(recipient, subject, body); err != nil {
 			_, _ = s.DB.Exec(ctx, `UPDATE starred_player_replacement_requests SET status='send_failed',send_error=$1,updated_at=now() WHERE id=$2`, err.Error(), id)
 			s.audit(ctx, r, "admin", adminID, "starred_replacement_send_failed", "starred_player_replacement_request", &id, map[string]any{"recipient": recipient, "error": err.Error()})
 			http.Redirect(w, r, fmt.Sprintf("/admin/starred-player-replacements/%d", id), 303)
@@ -369,7 +369,7 @@ func (s *Server) handleAdminStarredReplacementCorrectedResend() http.HandlerFunc
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
-		result := s.sendStarredReplacementCorrection(ctx, r, id, email.NewFromEnv(), s.resolveAdminID(r))
+		result := s.sendStarredReplacementCorrection(ctx, r, id, email.NewStarredPlayerFromEnv(), s.resolveAdminID(r))
 		if result.Skipped {
 			http.Error(w, "this corrected email has already been sent or is currently being sent", http.StatusConflict)
 			return
@@ -486,7 +486,7 @@ func (s *Server) handleAdminStarredReplacementCorrectedBatchResend() http.Handle
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
-		mailer := email.NewFromEnv()
+		mailer := email.NewStarredPlayerFromEnv()
 		adminID := s.resolveAdminID(r)
 		sent, skipped, failed := 0, 0, 0
 		for _, id := range ids {

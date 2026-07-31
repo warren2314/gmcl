@@ -250,7 +250,7 @@ func (s *Server) handleAdminStarredCandidateRequest() http.HandlerFunc {
 			return
 		}
 		subject, body := starredCandidateRequestEmail(row, cutoff)
-		if err := email.NewFromEnv().Send(recipient, subject, body); err != nil {
+		if err := email.NewStarredPlayerFromEnv().Send(recipient, subject, body); err != nil {
 			_, _ = s.DB.Exec(ctx, `UPDATE starred_candidate_reviews SET email_send_error=$1,email_sent_at=NULL,updated_at=now() WHERE id=$2`, err.Error(), reviewID)
 			s.audit(ctx, r, "admin", adminID, "starred_list_b_candidate_email_failed", "starred_candidate_review", &reviewID, map[string]any{
 				"season": year, "club": row.ClubName, "player": row.PlayerName, "recipient": recipient, "error": err.Error(),

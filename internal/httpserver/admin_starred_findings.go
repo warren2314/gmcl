@@ -753,7 +753,7 @@ func (s *Server) handleAdminStarredFindingApprove() http.HandlerFunc {
 			http.Error(w, "this letter has already been approved or sent", http.StatusConflict)
 			return
 		}
-		if err := email.NewFromEnv().Send(recipient, subject, body); err != nil {
+		if err := email.NewStarredPlayerFromEnv().Send(recipient, subject, body); err != nil {
 			_, _ = s.DB.Exec(ctx, `UPDATE starred_finding_reviews SET status='send_failed',send_error=$1,updated_at=now() WHERE id=$2`, err.Error(), id)
 			s.audit(ctx, r, "admin", adminID, "starred_finding_send_failed", "starred_finding_review", &id, map[string]any{"recipient": recipient, "error": err.Error()})
 			http.Redirect(w, r, fmt.Sprintf("/admin/starred-players/findings/%d", id), http.StatusSeeOther)

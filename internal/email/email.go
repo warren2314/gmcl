@@ -27,6 +27,7 @@ type Client struct {
 }
 
 const defaultCaptainReportReplyTo = "reports@gtrmcrcricket.co.uk"
+const defaultStarredPlayerReplyTo = "joep@gtrmcrcricket.co.uk"
 
 func NewFromEnv() *Client {
 	fromHeader := getEnv("SMTP_FROM", "webmaster@gmcl.co.uk")
@@ -61,6 +62,19 @@ func NewCaptainReportFromEnv() *Client {
 	replyTo := strings.TrimSpace(os.Getenv("CAPTAIN_REPORT_REPLY_TO"))
 	if replyTo == "" {
 		replyTo = defaultCaptainReportReplyTo
+	}
+	client.replyTo = replyTo
+	return client
+}
+
+// NewStarredPlayerFromEnv returns the SMTP client used by all starred-player
+// messages. Replies must go to Joe's monitored mailbox rather than falling
+// back to the general webmaster From address.
+func NewStarredPlayerFromEnv() *Client {
+	client := NewFromEnv()
+	replyTo := strings.TrimSpace(os.Getenv("STARRED_PLAYER_REPLY_TO"))
+	if replyTo == "" {
+		replyTo = defaultStarredPlayerReplyTo
 	}
 	client.replyTo = replyTo
 	return client
