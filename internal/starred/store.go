@@ -140,6 +140,8 @@ func StoreSnapshot(ctx context.Context, pool *db.Pool, snapshot Snapshot, body [
 	return ImportResult{RunID: runID, Entries: len(snapshot.Entries), Amendments: len(snapshot.Amendments), Issues: len(rosterIssues)}, nil
 }
 
+// PendingMatchIDs returns real Play-Cricket fixtures that still need scorecards.
+// Negative IDs are local synthetic fixture keys and must never be sent upstream.
 func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) ([]int64, error) {
 	if limit < 1 || limit > 100 {
 		limit = 25
@@ -149,6 +151,7 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND lf.play_cricket_match_id > 0
 		  AND CONCAT_WS(' ',lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,lf.payload->>'competition_name') !~* '(wom(en|an)|ladies|female|girls)'
 		  AND (
 		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
@@ -184,6 +187,7 @@ func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int,
 		FROM league_fixtures lf
 		LEFT JOIN starred_match_imports sm ON sm.play_cricket_match_id=lf.play_cricket_match_id
 		WHERE EXTRACT(YEAR FROM lf.match_date)::int=$1
+		  AND lf.play_cricket_match_id > 0
 		  AND CONCAT_WS(' ',lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,lf.payload->>'competition_name') !~* '(wom(en|an)|ladies|female|girls)'
 		  AND (
 		    COALESCE(lf.home_team_name,'') ~* '([1-6](st|nd|rd|th)[[:space:]]*XI|top[[:space:]]+guns)'
