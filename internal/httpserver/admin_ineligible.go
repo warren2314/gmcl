@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -53,6 +54,7 @@ type ineligibleQueueRow struct {
 	CaseReference     string
 	CaseStatus        string
 	Assignee          string
+	AttachmentCount   int64
 }
 
 type ineligibleDashboardCounts struct {
@@ -185,7 +187,8 @@ func buildIneligibleQueueQuery(filter ineligibleQueueFilters) (string, []any) {
 		SELECT i.id,i.origin,i.external_key,i.state,COALESCE(i.reporting_club_text,''),
 		       COALESCE(i.offending_club_text,''),COALESCE(i.team_text,''),COALESCE(i.player_text,''),
 		       i.fixture_date,i.external_created_at,c.id,COALESCE(c.reference,''),COALESCE(c.status,''),
-		       COALESCE(a.username,'')
+		       COALESCE(a.username,''),
+		       (SELECT COUNT(*) FROM sanction_intake_attachments attachment WHERE attachment.intake_id=i.id)
 		FROM sanction_intakes i
 		LEFT JOIN LATERAL (
 			SELECT l.case_id
@@ -218,7 +221,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queue := []ineligibleQueueRow{}
 		for rows.Next() {
 			var row ineligibleQueueRow
-			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee); err != nil {
+			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.AttachmentCount); err != nil {
 				rows.Close()
 				http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
 				return
@@ -299,7 +302,15 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				}
 				caseHTML += `</div>`
 			}
-			fmt.Fprintf(w, `<tr><td data-label="Received"><a href="/admin/ineligible/%d">%s</a><div class="small text-muted">%s</div></td><td data-label="Source">%s</td><td data-label="Reporting club">%s</td><td data-label="Offending club / team"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="Player / fixture"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="State">%s</td><td data-label="Case">%s</td></tr>`, row.ID, escapeHTML(received), escapeHTML(row.ExternalKey), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), escapeHTML(row.ReportingClubText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.PlayerText), escapeHTML(fixture), ineligibleStateBadge(row.State), caseHTML)
+			evidenceHTML := ""
+			if row.AttachmentCount > 0 {
+				label := "files"
+				if row.AttachmentCount == 1 {
+					label = "file"
+				}
+				evidenceHTML = fmt.Sprintf(`<div class="small mt-1"><span class="badge text-bg-light border">%d evidence %s</span></div>`, row.AttachmentCount, label)
+			}
+			fmt.Fprintf(w, `<tr><td data-label="Received"><a href="/admin/ineligible/%d">%s</a><div class="small text-muted">%s</div></td><td data-label="Source">%s%s</td><td data-label="Reporting club">%s</td><td data-label="Offending club / team"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="Player / fixture"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="State">%s</td><td data-label="Case">%s</td></tr>`, row.ID, escapeHTML(received), escapeHTML(row.ExternalKey), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), evidenceHTML, escapeHTML(row.ReportingClubText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.PlayerText), escapeHTML(fixture), ineligibleStateBadge(row.State), caseHTML)
 		}
 		if len(queue) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-5">No intake records match these filters.</td></tr>`)
@@ -528,11 +539,31 @@ func (s *Server) writeIneligibleIntakeAttachments(w http.ResponseWriter, ctx con
 			continue
 		}
 		count++
-		fmt.Fprintf(&content, `<li class="list-group-item"><a href="/admin/ineligible/%d/attachments/%d">%s</a><div class="small text-muted">Source revision %d · %s · %d bytes · SHA-256 %s · retained %s</div></li>`, intakeID, attachmentID, escapeHTML(name), revision, escapeHTML(media), size, escapeHTML(digest[:minInt(12, len(digest))]), escapeHTML(observed.In(s.LondonLoc).Format("02 Jan 2006 15:04")))
+		attachmentURL := fmt.Sprintf("/admin/ineligible/%d/attachments/%d", intakeID, attachmentID)
+		metadata := fmt.Sprintf(`Source revision %d &middot; %s &middot; %d bytes &middot; SHA-256 %s &middot; retained %s`, revision, escapeHTML(media), size, escapeHTML(digest[:minInt(12, len(digest))]), escapeHTML(observed.In(s.LondonLoc).Format("02 Jan 2006 15:04")))
+		if ineligibleAttachmentDisposition(media, true) == "inline" {
+			fmt.Fprintf(&content, `<div class="col"><article class="border rounded h-100 overflow-hidden"><a href="%s?preview=1" target="_blank" rel="noopener noreferrer"><img src="%s?preview=1" alt="Preview of %s" loading="lazy" decoding="async" style="display:block;width:100%%;height:220px;object-fit:contain;background:#f8f9fa"></a><div class="p-3"><div class="fw-semibold text-break">%s</div><div class="small text-muted mt-1">%s</div><a class="btn btn-sm btn-outline-secondary mt-2" href="%s">Download original</a></div></article></div>`, attachmentURL, attachmentURL, escapeHTML(name), escapeHTML(name), metadata, attachmentURL)
+			continue
+		}
+		fmt.Fprintf(&content, `<div class="col"><article class="border rounded h-100 p-3"><a class="fw-semibold text-break" href="%s">%s</a><div class="small text-muted mt-1">%s</div></article></div>`, attachmentURL, escapeHTML(name), metadata)
 	}
 	if count > 0 {
-		fmt.Fprintf(w, `<section class="card mb-4"><div class="card-header fw-semibold">Immutable Google Drive evidence</div><ul class="list-group list-group-flush">%s</ul></section>`, content.String())
+		fmt.Fprintf(w, `<section class="card mb-4"><div class="card-header fw-semibold">Immutable Google Drive evidence <span class="badge text-bg-secondary ms-1">%d</span></div><div class="card-body"><div class="row row-cols-1 row-cols-md-2 g-3">%s</div></div></section>`, count, content.String())
 	}
+}
+
+func ineligibleAttachmentDisposition(contentType string, preview bool) string {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		mediaType = strings.ToLower(strings.TrimSpace(contentType))
+	}
+	if preview {
+		switch strings.ToLower(mediaType) {
+		case "image/gif", "image/jpeg", "image/png", "image/webp":
+			return "inline"
+		}
+	}
+	return "attachment"
 }
 
 func (s *Server) handleAdminIneligibleAttachmentDownload() http.HandlerFunc {
@@ -570,8 +601,11 @@ func (s *Server) handleAdminIneligibleAttachmentDownload() http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", media)
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, strings.ReplaceAll(filepath.Base(name), `"`, "")))
+		disposition := ineligibleAttachmentDisposition(media, r.URL.Query().Get("preview") == "1")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, strings.ReplaceAll(filepath.Base(name), `"`, "")))
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeContent(w, r, filepath.Base(name), observed, bytes.NewReader(data))
 	}
 }

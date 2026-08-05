@@ -52,6 +52,25 @@ func TestBuildIneligibleQueueQueryUsesArgumentsForUserInput(t *testing.T) {
 	if !strings.Contains(query, "interval '7 days'") {
 		t.Fatalf("validated age filter missing from query: %s", query)
 	}
+	if !strings.Contains(query, "sanction_intake_attachments") {
+		t.Fatalf("queue query does not include evidence attachment counts: %s", query)
+	}
+}
+
+func TestIneligibleAttachmentDispositionAllowsOnlyBrowserSafeImagesInline(t *testing.T) {
+	for _, mediaType := range []string{"image/jpeg", "image/png", "image/webp", "image/gif; charset=binary"} {
+		if got := ineligibleAttachmentDisposition(mediaType, true); got != "inline" {
+			t.Errorf("%s disposition = %q, want inline", mediaType, got)
+		}
+	}
+	for _, mediaType := range []string{"image/heic", "image/svg+xml", "application/pdf", "text/html"} {
+		if got := ineligibleAttachmentDisposition(mediaType, true); got != "attachment" {
+			t.Errorf("%s disposition = %q, want attachment", mediaType, got)
+		}
+	}
+	if got := ineligibleAttachmentDisposition("image/jpeg", false); got != "attachment" {
+		t.Fatalf("non-preview image disposition = %q, want attachment", got)
+	}
 }
 
 func TestSourceStringFieldReadsExactGoogleFormHeaders(t *testing.T) {
