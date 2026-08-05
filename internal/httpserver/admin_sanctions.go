@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -854,8 +855,13 @@ func (s *Server) handleAdminSanctionEmailApprove() http.HandlerFunc {
 		}
 		defer tx.Rollback(ctx)
 		var beforeData []byte
-		if tx.QueryRow(ctx, `SELECT to_jsonb(sa) FROM sanctions sa WHERE id=$1 FOR UPDATE`, sanctionID).Scan(&beforeData) != nil {
+		var caseID *int64
+		if tx.QueryRow(ctx, `SELECT to_jsonb(sa),sa.case_id FROM sanctions sa WHERE id=$1 FOR UPDATE`, sanctionID).Scan(&beforeData, &caseID) != nil {
 			http.NotFound(w, r)
+			return
+		}
+		if caseID != nil {
+			http.Error(w, "case-managed notices must be issued from the approved case outcome", http.StatusConflict)
 			return
 		}
 
@@ -993,7 +999,8 @@ func (s *Server) handleAdminSanctionRecipientSave() http.HandlerFunc {
 		}
 		name := strings.TrimSpace(r.FormValue("name"))
 		emailAddr := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
-		if name == "" || emailAddr == "" {
+		parsed, parseErr := mail.ParseAddress(emailAddr)
+		if name == "" || parseErr != nil || parsed.Address == "" || !strings.EqualFold(parsed.Address, emailAddr) {
 			http.Redirect(w, r, "/admin/sanctions", http.StatusSeeOther)
 			return
 		}

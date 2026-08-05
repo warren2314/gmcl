@@ -116,6 +116,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 		r.With(middleware.RateLimit(8)).Post("/sanctions/report", s.handleSanctionReportSubmit())
 		r.With(middleware.RateLimit(20)).Get("/sanctions/case/respond", s.handleSanctionCaseResponseForm())
 		r.With(middleware.RateLimit(10)).Post("/sanctions/case/respond", s.handleSanctionCaseResponseSubmit())
+		r.With(middleware.RateLimit(20)).Get("/sanctions/case/evidence/{evidenceID}", s.handleSanctionCasePartyEvidenceDownload())
 	})
 	// Rate limit magic link requests per IP + club/team.
 	r.With(middleware.RateLimit(15)).Post("/magic-link/request", s.handleMagicLinkRequest())
@@ -142,19 +143,23 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	// admin portal
 	r.Mount("/admin", s.adminRouter())
 
-	// internal n8n endpoints (HMAC protected)
-	internalMux := chi.NewRouter()
-	internalMux.Use(middleware.HMACVerifier(middleware.HMACConfig{}))
-	internalMux.Post("/send-reminders", s.handleInternalSendReminders())
-	internalMux.Post("/generate-sanctions", s.handleInternalGenerateSanctions())
-	internalMux.Post("/generate-weekly-report", s.handleInternalGenerateWeeklyReport())
-	internalMux.Post("/sync-league-fixtures", s.handleInternalSyncLeagueFixtures())
-	internalMux.Post("/sync-starred-players", s.handleInternalSyncStarredPlayers())
-	internalMux.Post("/refresh-umpire-prefills", s.handleInternalRefreshUmpirePrefills())
-	internalMux.Post("/preview-email", s.handleInternalPreviewEmail())
-	internalMux.Post("/sync-rules", s.handleInternalSyncRules())
-	internalMux.Post("/process-sanction-outbox", s.handleInternalSanctionOutbox())
-	r.Mount("/internal", internalMux)
+	// Internal jobs are migrating from the legacy bearer header to request
+	// signatures. The new ineligible sync is signature-only from day one.
+	r.Route("/internal", func(internal chi.Router) {
+		internal.With(middleware.HMACVerifier(middleware.HMACConfig{})).Post("/sync-ineligible-reports", s.handleInternalSyncIneligibleReports())
+		internal.Group(func(legacy chi.Router) {
+			legacy.Use(middleware.HMACVerifier(middleware.HMACConfig{AllowBearer: true}))
+			legacy.Post("/send-reminders", s.handleInternalSendReminders())
+			legacy.Post("/generate-sanctions", s.handleInternalGenerateSanctions())
+			legacy.Post("/generate-weekly-report", s.handleInternalGenerateWeeklyReport())
+			legacy.Post("/sync-league-fixtures", s.handleInternalSyncLeagueFixtures())
+			legacy.Post("/sync-starred-players", s.handleInternalSyncStarredPlayers())
+			legacy.Post("/refresh-umpire-prefills", s.handleInternalRefreshUmpirePrefills())
+			legacy.Post("/preview-email", s.handleInternalPreviewEmail())
+			legacy.Post("/sync-rules", s.handleInternalSyncRules())
+			legacy.Post("/process-sanction-outbox", s.handleInternalSanctionOutbox())
+		})
+	})
 
 	stopStarredWeeklySync := s.startStarredWeeklySync(context.Background())
 	return r, func() {

@@ -1,14 +1,20 @@
 package email
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"html"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,6 +30,14 @@ type Client struct {
 	password   string
 	heloDomain string
 	configSet  string
+}
+
+// Attachment is an immutable email attachment snapshot. Callers are expected
+// to load bytes from their audited storage only after validating the manifest.
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
 }
 
 const defaultCaptainReportReplyTo = "reports@gtrmcrcricket.co.uk"
@@ -81,17 +95,38 @@ func NewStarredPlayerFromEnv() *Client {
 }
 
 func (c *Client) Send(to, subject, body string) error {
+	return c.SendWithAttachments(to, subject, body, nil)
+}
+
+// SendWithAttachments sends a transactional message with optional MIME
+// attachments. The envelope still has exactly one recipient; multi-recipient
+// workflows create one immutable outbox row per recipient.
+func (c *Client) SendWithAttachments(to, subject, body string, attachments []Attachment) error {
+	return c.sendWithMessageID(to, subject, body, attachments, "")
+}
+
+// SendSnapshot sends an immutable outbox message with a stable RFC Message-ID
+// so retries and provider bounce/complaint events can be correlated.
+func (c *Client) SendSnapshot(to, subject, body, messageID string, attachments []Attachment) error {
+	return c.sendWithMessageID(to, subject, body, attachments, messageID)
+}
+
+func (c *Client) sendWithMessageID(to, subject, body string, attachments []Attachment, messageID string) error {
 	if override := os.Getenv("EMAIL_OVERRIDE"); override != "" {
 		log.Printf("[email override] original_to=%s redirecting_to=%s subject=%s", to, override, subject)
 		to = override
 	}
+	recipient, err := parseSingleRecipient(to)
+	if err != nil {
+		return fmt.Errorf("email_failed: invalid recipient: %w", err)
+	}
+	message, err := c.buildMessageWithID(recipient.String(), subject, body, attachments, messageID)
+	if err != nil {
+		return err
+	}
 	if c.host == "" {
 		log.Printf("[email dev] to=%s subject=%s body=%s", to, subject, body)
 		return nil
-	}
-	headers, err := c.messageHeaders(to, subject)
-	if err != nil {
-		return err
 	}
 
 	addr := net.JoinHostPort(c.host, c.port)
@@ -136,7 +171,7 @@ func (c *Client) Send(to, subject, body string) error {
 	if err := client.Mail(c.fromAddr); err != nil {
 		return fmt.Errorf("2fa_email_failed: MAIL FROM: %w", err)
 	}
-	if err := client.Rcpt(to); err != nil {
+	if err := client.Rcpt(recipient.Address); err != nil {
 		return fmt.Errorf("2fa_email_failed: RCPT TO: %w", err)
 	}
 
@@ -145,17 +180,7 @@ func (c *Client) Send(to, subject, body string) error {
 		return fmt.Errorf("2fa_email_failed: DATA: %w", err)
 	}
 
-	msg := headers
-	if c.configSet != "" {
-		msg += "X-SES-CONFIGURATION-SET: " + c.configSet + "\r\n"
-	}
-	msg +=
-		"MIME-Version: 1.0\r\n" +
-			"Content-Type: text/html; charset=UTF-8\r\n" +
-			"\r\n" +
-			toHTML(body) + "\r\n"
-
-	if _, err := fmt.Fprint(w, msg); err != nil {
+	if _, err := w.Write(message); err != nil {
 		return fmt.Errorf("2fa_email_failed: write: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -169,11 +194,156 @@ func (c *Client) Send(to, subject, body string) error {
 	return nil
 }
 
+func (c *Client) buildMessage(to, subject, body string, attachments []Attachment) ([]byte, error) {
+	return c.buildMessageWithID(to, subject, body, attachments, "")
+}
+
+func (c *Client) buildMessageWithID(to, subject, body string, attachments []Attachment, messageID string) ([]byte, error) {
+	headers, err := c.messageHeadersWithID(to, subject, messageID)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	out.WriteString(headers)
+	if c.configSet != "" {
+		if hasHeaderControl(c.configSet) {
+			return nil, fmt.Errorf("email_failed: invalid SES configuration-set header")
+		}
+		out.WriteString("X-SES-CONFIGURATION-SET: " + c.configSet + "\r\n")
+	}
+	out.WriteString("MIME-Version: 1.0\r\n")
+	if len(attachments) == 0 {
+		out.WriteString("Content-Type: text/html; charset=UTF-8\r\n\r\n")
+		out.WriteString(toHTML(body))
+		out.WriteString("\r\n")
+		return out.Bytes(), nil
+	}
+
+	var mimeBody bytes.Buffer
+	writer := multipart.NewWriter(&mimeBody)
+	boundary := writer.Boundary()
+	out.WriteString("Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n")
+
+	htmlHeader := make(textproto.MIMEHeader)
+	htmlHeader.Set("Content-Type", "text/html; charset=UTF-8")
+	htmlHeader.Set("Content-Transfer-Encoding", "8bit")
+	htmlPart, err := writer.CreatePart(htmlHeader)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = htmlPart.Write([]byte(toHTML(body))); err != nil {
+		return nil, err
+	}
+	for _, attachment := range attachments {
+		filename := filepath.Base(strings.TrimSpace(attachment.Filename))
+		if filename == "" || filename == "." {
+			filename = "attachment"
+		}
+		if hasHeaderControl(filename) {
+			return nil, fmt.Errorf("email_failed: attachment filename contains control characters")
+		}
+		contentType := strings.TrimSpace(attachment.ContentType)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		parsedContentType, _, parseErr := mime.ParseMediaType(contentType)
+		if parseErr != nil || hasHeaderControl(parsedContentType) || !validMediaType(parsedContentType) {
+			return nil, fmt.Errorf("email_failed: invalid attachment content type %q", contentType)
+		}
+		contentType = parsedContentType
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Type", contentType+"; name="+mime.QEncoding.Encode("UTF-8", filename))
+		header.Set("Content-Disposition", "attachment; filename="+mime.QEncoding.Encode("UTF-8", filename))
+		header.Set("Content-Transfer-Encoding", "base64")
+		part, createErr := writer.CreatePart(header)
+		if createErr != nil {
+			return nil, createErr
+		}
+		encoder := base64.NewEncoder(base64.StdEncoding, newBase64LineWriter(part))
+		if _, err = encoder.Write(attachment.Data); err != nil {
+			return nil, err
+		}
+		if err = encoder.Close(); err != nil {
+			return nil, err
+		}
+	}
+	if err = writer.Close(); err != nil {
+		return nil, err
+	}
+	out.Write(mimeBody.Bytes())
+	return out.Bytes(), nil
+}
+
+type base64LineWriter struct {
+	w       interface{ Write([]byte) (int, error) }
+	lineLen int
+}
+
+func newBase64LineWriter(w interface{ Write([]byte) (int, error) }) *base64LineWriter {
+	return &base64LineWriter{w: w}
+}
+
+func (w *base64LineWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		remaining := 76 - w.lineLen
+		if remaining == 0 {
+			if _, err := w.w.Write([]byte("\r\n")); err != nil {
+				return written, err
+			}
+			w.lineLen = 0
+			remaining = 76
+		}
+		n := remaining
+		if n > len(p) {
+			n = len(p)
+		}
+		if _, err := w.w.Write(p[:n]); err != nil {
+			return written, err
+		}
+		written += n
+		w.lineLen += n
+		p = p[n:]
+	}
+	return written, nil
+}
+
 func (c *Client) messageHeaders(to, subject string) (string, error) {
+	return c.messageHeadersWithID(to, subject, "")
+}
+
+func (c *Client) messageHeadersWithID(to, subject, messageID string) (string, error) {
+	if hasHeaderControl(c.fromHeader) || hasHeaderControl(subject) {
+		return "", fmt.Errorf("email_failed: header contains control characters")
+	}
+	if _, err := mail.ParseAddress(c.fromHeader); err != nil {
+		return "", fmt.Errorf("email_failed: invalid From address: %w", err)
+	}
+	recipient, err := parseSingleRecipient(to)
+	if err != nil {
+		return "", fmt.Errorf("email_failed: invalid recipient: %w", err)
+	}
+	encodedSubject := subject
+	if containsNonASCII(subject) {
+		encodedSubject = mime.QEncoding.Encode("UTF-8", subject)
+	}
+	recipientHeader := recipient.Address
+	if strings.TrimSpace(recipient.Name) != "" {
+		recipientHeader = recipient.String()
+	}
 	headers := "From: " + c.fromHeader + "\r\n" +
-		"To: " + to + "\r\n" +
-		"Subject: " + subject + "\r\n"
+		"To: " + recipientHeader + "\r\n" +
+		"Subject: " + encodedSubject + "\r\n"
+	if messageID != "" {
+		if !validMessageID(messageID) {
+			return "", fmt.Errorf("email_failed: invalid Message-ID")
+		}
+		headers += "Message-ID: " + messageID + "\r\n"
+	}
 	if c.replyTo != "" {
+		if hasHeaderControl(c.replyTo) {
+			return "", fmt.Errorf("email_failed: invalid SMTP_REPLY_TO")
+		}
 		replyTo, err := mail.ParseAddress(c.replyTo)
 		if err != nil {
 			return "", fmt.Errorf("2fa_email_failed: invalid SMTP_REPLY_TO: %w", err)
@@ -181,6 +351,64 @@ func (c *Client) messageHeaders(to, subject string) (string, error) {
 		headers += "Reply-To: " + replyTo.String() + "\r\n"
 	}
 	return headers, nil
+}
+
+func parseSingleRecipient(value string) (*mail.Address, error) {
+	if hasHeaderControl(value) {
+		return nil, fmt.Errorf("address contains control characters")
+	}
+	parsed, err := mail.ParseAddress(strings.TrimSpace(value))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(parsed.Address) == "" || strings.ContainsAny(parsed.Address, "\r\n,;") {
+		return nil, fmt.Errorf("exactly one recipient is required")
+	}
+	return parsed, nil
+}
+
+func hasHeaderControl(value string) bool {
+	for _, r := range value {
+		if r < 32 || r == 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNonASCII(value string) bool {
+	for _, r := range value {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func validMessageID(value string) bool {
+	if len(value) < 5 || len(value) > 254 || hasHeaderControl(value) || !strings.HasPrefix(value, "<") || !strings.HasSuffix(value, ">") {
+		return false
+	}
+	inner := value[1 : len(value)-1]
+	return strings.Count(inner, "@") == 1 && !strings.ContainsAny(inner, " <>(),;:\\[]")
+}
+
+func validMediaType(value string) bool {
+	parts := strings.Split(value, "/")
+	return len(parts) == 2 && validMIMEToken(parts[0]) && validMIMEToken(parts[1])
+}
+
+func validMIMEToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("!#$&^_.+-", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func getEnv(key, def string) string {

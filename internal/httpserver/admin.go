@@ -107,6 +107,24 @@ func (s *Server) adminRouter() http.Handler {
 		r.Get("/captain-preview", s.handleAdminCaptainPreview())
 
 		// Sanctions
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible", s.handleAdminIneligibleDashboard())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/rollout", s.handleAdminIneligibleRollout())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/count", s.handleAdminIneligibleCount())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/sync", s.handleAdminIneligibleSync())
+		r.With(s.requireAdminPermission("sanctions_import")).Get("/ineligible/backfill", s.handleAdminIneligibleBackfills())
+		r.With(s.requireAdminPermission("sanctions_import")).Post("/ineligible/backfill", s.handleAdminIneligibleBackfillUpload())
+		r.With(s.requireAdminPermission("sanctions_import")).Get("/ineligible/backfill/{runID}", s.handleAdminIneligibleBackfillRun())
+		r.With(s.requireAdminPermission("sanctions_import")).Get("/ineligible/backfill/{runID}/source", s.handleAdminIneligibleBackfillSource())
+		r.With(s.requireAdminPermission("sanctions_import")).Post("/ineligible/backfill/{runID}/rows/{rowID}/review", s.handleAdminIneligibleBackfillReview())
+		r.With(s.requireAdminPermission("sanctions_import")).Post("/ineligible/backfill/{runID}/signoff", s.handleAdminIneligibleBackfillSignoff())
+		r.With(s.requireAdminPermission("sanctions_import")).Post("/ineligible/backfill/{runID}/apply", s.handleAdminIneligibleBackfillApply())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/{id}/native-evidence/{revision}/{sha}", s.handleAdminNativeIntakeEvidenceDownload())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/{id}/attachments/{attachmentID}", s.handleAdminIneligibleAttachmentDownload())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/{id}", s.handleAdminIneligibleDetail())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/create-case", s.handleAdminIneligibleCreateCase())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/link-case", s.handleAdminIneligibleLinkCase())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/duplicate", s.handleAdminIneligibleDuplicate())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/ignore", s.handleAdminIneligibleIgnore())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases", s.handleAdminCases())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases/new", s.handleAdminCaseNew())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/cases", s.handleAdminCaseCreate())
@@ -122,16 +140,27 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_import")).Post("/cases/imports/{id}/rows/{rowID}/resolve", s.handleAdminSanctionImportResolve())
 		r.With(s.requireAdminPermission("sanctions_publish")).Get("/cases/recipients", s.handleAdminSanctionRecipients())
 		r.With(s.requireAdminPermission("sanctions_publish")).Post("/cases/recipients", s.handleAdminSanctionRecipientDirectoryPost())
-		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/{id}", s.handleAdminCaseDetail())
+		r.With(s.requireAdminPermission("sanctions_publish")).Post("/cases/club-contacts", s.handleAdminSanctionClubContactPost())
+		r.With(s.requireAnyAdminPermission("sanctions_investigate", "sanctions_approve")).Get("/cases/{id}", s.handleAdminCaseDetail())
+		r.With(s.requireAnyAdminPermission("sanctions_investigate", "sanctions_approve")).Get("/cases/{id}/outcome-preview", s.handleAdminCaseOutcomePreview())
+		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/outcome-drafts/{audience}", s.handleAdminCaseOutcomeDraftSave())
 		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/propose", s.handleAdminCasePropose())
 		r.With(s.requireAdminPermission("sanctions_approve")).Post("/cases/{id}/approve", s.handleAdminCaseApprove())
 		r.With(s.requireAdminPermission("sanctions_approve")).Post("/cases/{id}/reject", s.handleAdminCaseReject())
+		r.With(s.requireAnyAdminPermission("sanctions_investigate", "sanctions_approve")).Post("/cases/{id}/reopen-source-change", s.handleAdminCaseReopenSourceChange())
 		r.With(s.requireAdminPermission("sanctions_publish")).Post("/cases/{id}/publish", s.handleAdminCasePublish())
+		r.With(s.requireAdminPermission("sanctions_publish")).Post("/cases/{id}/notices/{outboxID}/resend", s.handleAdminCaseNoticeResend())
 		r.With(s.requireAdminPermission("sanctions_appeals")).Post("/cases/{id}/overturn", s.handleAdminCaseOverturn())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/correct", s.handleAdminCaseCorrect())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/request-response", s.handleAdminCaseRequestResponse())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/response-drafts/{kind}", s.handleAdminCaseResponseDraftSave())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/{id}/response-drafts/{kind}/preview", s.handleAdminCaseResponseDraftPreview())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/investigation-note", s.handleAdminCaseInvestigationNote())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/manual-response", s.handleAdminCaseManualResponse())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/response-reviewed", s.handleAdminCaseResponseReviewed())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/assign-self", s.handleAdminCaseAssignSelf())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/{id}/evidence/{evidenceID}", s.handleAdminCaseEvidenceDownload())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/evidence/{evidenceID}/share-with-offending-club", s.handleAdminCaseEvidenceShare())
 		r.Get("/sanctions", s.handleAdminSanctions())
 		r.Get("/sanctions/export.csv", s.handleAdminSanctionsExportCSV())
 		r.Get("/sanctions/weekly-report", s.handleAdminWeeklyCardReport())
@@ -180,6 +209,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions", s.handleAdminStarredExemptionCreate())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions/{id}/status", s.handleAdminStarredExemptionStatus())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/accept", s.handleAdminStarredFindingAccept())
+		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/create-case", s.handleAdminStarredFindingCaseCreate())
+		// Compatibility alias for forms rendered before the case workflow was deployed.
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/escalate", s.handleAdminStarredFindingEscalate())
 		r.With(s.requireAdminRole("super_admin")).Get("/starred-players/findings/{id}", s.handleAdminStarredFindingDraft())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/{id}/approve", s.handleAdminStarredFindingApprove())
@@ -2594,6 +2625,25 @@ func (s *Server) requireAdminPermission(permission string) func(http.Handler) ht
 				return
 			}
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func (s *Server) requireAnyAdminPermission(permissions ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sess, err := getAdminSessionFromRequest(r)
+			if err != nil {
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
+			}
+			for _, permission := range permissions {
+				if s.adminHasPermission(r.Context(), sess.AdminID, permission) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
 		})
 	}
 }

@@ -24,8 +24,11 @@ import (
 )
 
 type starredFindingState struct {
-	ID     int64
-	Status string
+	ID            int64
+	Status        string
+	CaseID        int64
+	CaseReference string
+	CaseStatus    string
 }
 
 type starredBreachGroup struct {
@@ -79,7 +82,11 @@ func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time)
 func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
 	outstanding := make([]starred.Breach, 0, len(breaches))
 	for _, breach := range breaches {
-		switch states[starredFindingKey(breach)].Status {
+		state := states[starredFindingKey(breach)]
+		if state.CaseID > 0 {
+			continue
+		}
+		switch state.Status {
 		case "accepted", "sent":
 			continue
 		default:
@@ -90,6 +97,17 @@ func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[stri
 }
 
 func starredFindingStatus(state starredFindingState) string {
+	if state.CaseID > 0 {
+		label := strings.TrimSpace(state.CaseReference)
+		if label == "" {
+			label = fmt.Sprintf("Case %d", state.CaseID)
+		}
+		status := strings.ReplaceAll(strings.TrimSpace(state.CaseStatus), "_", " ")
+		if status == "" {
+			return label
+		}
+		return label + " / " + status
+	}
 	if state.ID == 0 {
 		return "Outstanding"
 	}
@@ -97,13 +115,13 @@ func starredFindingStatus(state starredFindingState) string {
 	case "accepted":
 		return "Accepted / closed"
 	case "draft":
-		return "Draft letter"
+		return "Legacy draft (read only)"
 	case "approved":
-		return "Approved / sending"
+		return "Legacy approved letter"
 	case "sent":
 		return "Letter sent"
 	case "send_failed":
-		return "Send failed"
+		return "Legacy send failed"
 	default:
 		return state.Status
 	}
@@ -306,19 +324,30 @@ func juniorTaggedIdentityBreaches(breaches []starred.Breach, selected starred.Br
 }
 
 func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int, breachFrom, breachTo string) string {
+	if state.CaseID > 0 {
+		label := strings.TrimSpace(state.CaseReference)
+		if label == "" {
+			label = fmt.Sprintf("Case %d", state.CaseID)
+		}
+		status := strings.ReplaceAll(strings.TrimSpace(state.CaseStatus), "_", " ")
+		if status != "" {
+			label += " — " + status
+		}
+		return fmt.Sprintf(`<a class="badge bg-info text-dark text-decoration-none" href="/admin/cases/%d">%s</a>`, state.CaseID, escapeHTML(label))
+	}
 	if state.ID > 0 {
 		label, class := "Review", "bg-secondary"
 		switch state.Status {
 		case "accepted":
 			return `<span class="badge bg-success">Accepted / closed</span><div class="small text-muted mt-1">No letter required</div>`
 		case "draft":
-			label, class = "Draft — review letter", "bg-warning text-dark"
+			label, class = "Legacy draft — read only", "bg-warning text-dark"
 		case "approved":
-			label, class = "Approved — sending", "bg-info text-dark"
+			label, class = "Legacy approved letter", "bg-info text-dark"
 		case "sent":
 			label, class = "Letter sent", "bg-success"
 		case "send_failed":
-			label, class = "Send failed — retry", "bg-danger"
+			label, class = "Legacy send failed — read only", "bg-danger"
 		}
 		return fmt.Sprintf(`<a class="badge %s text-decoration-none" href="/admin/starred-players/findings/%d">%s</a>`, class, state.ID, escapeHTML(label))
 	}
@@ -333,15 +362,25 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 	if exemptionURL := starredExemptionRequestURL(b, year); exemptionURL != "" {
 		exemptionAction = fmt.Sprintf(`<a class="btn btn-sm btn-outline-success w-100" href="%s">Record Sunday exemption</a>`, escapeHTML(exemptionURL))
 	}
-	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('%s')">%s<button class="btn btn-sm btn-outline-primary w-100">%s</button></form>%s<form method="post" action="/admin/starred-players/findings/escalate">%s<button class="btn btn-sm btn-outline-primary w-100">Not accepted — draft letter</button></form></div>`, escapeHTML(acceptPrompt), hidden, escapeHTML(acceptLabel), exemptionAction, hidden)
+	return fmt.Sprintf(`<div class="d-flex flex-column gap-1" style="min-width:190px"><form method="post" action="/admin/starred-players/findings/accept" onsubmit="return confirm('%s')">%s<button class="btn btn-sm btn-outline-primary w-100">%s</button></form>%s<form method="post" action="/admin/starred-players/findings/create-case" onsubmit="return confirm('Create an ineligible-player investigation case? No email will be sent.')">%s<button class="btn btn-sm btn-outline-danger w-100">Create ineligible-player case</button></form></div>`, escapeHTML(acceptPrompt), hidden, escapeHTML(acceptLabel), exemptionAction, hidden)
 }
 
 func starredFindingKey(b starred.Breach) string {
-	identity := b.Appearance.PlayerKey
-	if b.Appearance.PlayerID > 0 {
-		identity = "id:" + strconv.FormatInt(b.Appearance.PlayerID, 10)
+	return starredFindingIdentityKey(
+		b.Appearance.MatchID,
+		b.Appearance.PlayerID,
+		b.Appearance.ClubKey,
+		b.Appearance.PlayerKey,
+		b.ListType,
+	)
+}
+
+func starredFindingIdentityKey(matchID, playerID int64, clubKey, playerKey, listType string) string {
+	identity := playerKey
+	if playerID > 0 {
+		identity = "id:" + strconv.FormatInt(playerID, 10)
 	}
-	raw := fmt.Sprintf("%d|%s|%s|%s", b.Appearance.MatchID, b.Appearance.ClubKey, identity, b.ListType)
+	raw := fmt.Sprintf("%d|%s|%s|%s", matchID, clubKey, identity, listType)
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
@@ -352,12 +391,38 @@ func (s *Server) loadStarredFindingStates(ctx context.Context, seasonYear int) m
 	if err != nil {
 		return states
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var key string
 		var state starredFindingState
 		if rows.Scan(&key, &state.ID, &state.Status) == nil {
 			states[key] = state
+		}
+	}
+	rows.Close()
+	caseRows, err := s.DB.Query(ctx, `
+		SELECT i.external_key,c.id,c.reference,c.status
+		FROM sanction_intakes i
+		JOIN sanction_intake_case_links l ON l.intake_id=i.id AND l.relationship='primary'
+		JOIN sanction_cases c ON c.id=l.case_id
+		WHERE i.origin='starred_player'
+		  AND EXTRACT(YEAR FROM i.fixture_date)::integer=$1
+		ORDER BY l.id DESC`, seasonYear)
+	if err != nil {
+		return states
+	}
+	defer caseRows.Close()
+	for caseRows.Next() {
+		var key string
+		var caseID int64
+		var reference, status string
+		if caseRows.Scan(&key, &caseID, &reference, &status) == nil {
+			state := states[key]
+			if state.CaseID == 0 {
+				state.CaseID = caseID
+				state.CaseReference = reference
+				state.CaseStatus = status
+				states[key] = state
+			}
 		}
 	}
 	return states
@@ -621,41 +686,7 @@ Greater Manchester Cricket League`, name, breach.Appearance.ClubName, breach.App
 }
 
 func (s *Server) handleAdminStarredFindingEscalate() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		year, matchID, playerID, clubKey, playerKey, listType, err := parseStarredFindingForm(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		defer cancel()
-		breach, err := s.verifiedStarredBreach(ctx, year, matchID, playerID, clubKey, playerKey, listType)
-		if err != nil {
-			redirectStarred(w, r, year, "", err.Error())
-			return
-		}
-		captain := s.captainForStarredBreach(ctx, breach)
-		recipient, err := starredClubEmail(breach.Appearance.ClubKey, breach.Appearance.ClubName)
-		if err != nil {
-			redirectStarred(w, r, year, "", "Could not determine club email: "+err.Error())
-			return
-		}
-		subject, body := starredFindingDraft(breach, captain, s.starredScorecardEvidence(ctx, breach))
-		adminID := s.resolveAdminID(r)
-		var findingID int64
-		err = s.DB.QueryRow(ctx, `
-			INSERT INTO starred_finding_reviews(finding_key,season_year,play_cricket_match_id,match_date,club_name,club_key,team_name,play_cricket_player_id,player_name,player_key,list_type,status,captain_id,captain_name,captain_email,email_subject,email_body,reviewed_by,reviewed_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,0),$9,$10,$11,'draft',NULLIF($12,0),NULLIF($13,''),NULLIF($14,''),$15,$16,$17,now())
-			ON CONFLICT(finding_key) DO UPDATE SET status='draft',captain_id=EXCLUDED.captain_id,captain_name=EXCLUDED.captain_name,captain_email=EXCLUDED.captain_email,email_subject=EXCLUDED.email_subject,email_body=EXCLUDED.email_body,reviewed_by=EXCLUDED.reviewed_by,reviewed_at=now(),send_error=NULL,updated_at=now()
-			WHERE starred_finding_reviews.status <> 'sent'
-			RETURNING id`, starredFindingKey(breach), year, matchID, breach.Appearance.MatchDate, breach.Appearance.ClubName, breach.Appearance.ClubKey, breach.Appearance.TeamName, breach.Appearance.PlayerID, breach.Appearance.PlayerName, breach.Appearance.PlayerKey, breach.ListType, captain.ID, captain.Name, recipient, subject, body, adminID).Scan(&findingID)
-		if err != nil {
-			redirectStarred(w, r, year, "", "Could not create letter draft: "+err.Error())
-			return
-		}
-		s.audit(ctx, r, "admin", adminID, "starred_finding_escalated", "starred_finding_review", &findingID, map[string]any{"match_id": matchID, "recipient": recipient})
-		http.Redirect(w, r, fmt.Sprintf("/admin/starred-players/findings/%d", findingID), http.StatusSeeOther)
-	}
+	return s.handleAdminStarredFindingCaseCreate()
 }
 
 func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
@@ -687,21 +718,31 @@ func (s *Server) handleAdminStarredFindingDraft() http.HandlerFunc {
 		fmt.Fprintf(w, `<div class="card shadow-sm mb-3"><div class="card-header fw-semibold">Evidence%s</div><div class="card-body">`+``,
 			starredHelpIcon("Evidence", "The finding this letter is about. Starred-player communications are sent to the club mailbox derived from the club key."))
 		fmt.Fprintf(w, `<div class="row g-3"><div class="col-md-3"><div class="small text-muted">List</div><strong>List %s</strong></div><div class="col-md-3"><div class="small text-muted">Team</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Captain</div><strong>%s</strong></div><div class="col-md-3"><div class="small text-muted">Recipient</div><strong>%s</strong></div></div><a class="btn btn-sm btn-outline-primary mt-3" href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">Open scorecard evidence</a></div></div>`, escapeHTML(listType), escapeHTML(team), escapeHTML(captainName), escapeHTML(captainEmail), year, matchID)
-		if captainEmail == "" {
-			fmt.Fprint(w, `<div class="alert alert-danger">The club email address could not be determined. Return to the finding and recreate the draft.</div>`)
-		}
+		// Preserve the historic recipient above, but force the obsolete action to
+		// render disabled. The POST endpoint also fails closed below.
+		captainEmail = ""
+		fmt.Fprint(w, `<div class="alert alert-info"><strong>Legacy record:</strong> starred-player letters are no longer sent from this screen. New breaches use <em>Create ineligible-player case</em>, so correspondence and independent approval are tracked centrally.</div>`)
 		if sendError != "" {
-			fmt.Fprintf(w, `<div class="alert alert-danger">Previous send failed: %s</div>`, escapeHTML(sendError))
+			fmt.Fprintf(w, `<div class="alert alert-warning">Historic send error: %s</div>`, escapeHTML(sendError))
 		}
 		if status == "sent" {
 			fmt.Fprint(w, `<div class="alert alert-success">This approved letter has been sent to the club. The record is now locked.</div>`)
 		}
-		fmt.Fprintf(w, `<form method="post" action="/admin/starred-players/findings/%d/approve"><input type="hidden" name="csrf_token" value="%s"><div class="card shadow-sm"><div class="card-header fw-semibold">Editable letter`+starredHelpIcon("Editable letter", "A pre-filled Rule 3.5 notice to the club, including the scorecard evidence. Edit the subject and body freely — nothing is sent until you approve this exact text, and the send is recorded in the audit trail.")+`</div><div class="card-body"><div class="mb-3"><label class="form-label fw-semibold">Subject</label><input class="form-control" name="email_subject" value="%s" required></div><div><label class="form-label fw-semibold">Body</label><textarea class="form-control font-monospace" name="email_body" rows="24" required>%s</textarea></div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Status: %s. Sending requires this separate approval.</span><button class="btn btn-primary" %s onclick="return confirm('Approve this exact letter and send it to %s?')">Approve &amp; Send to Club</button></div></div></form></div>`, id, escapeHTML(csrf), escapeHTML(subject), escapeHTML(body), escapeHTML(status), disabledIf(captainEmail == "" || (status != "draft" && status != "send_failed")), escapeHTML(captainEmail))
+		fmt.Fprintf(w, `<div class="card shadow-sm"><div class="card-header fw-semibold">Historic letter snapshot</div><div class="card-body"><div class="mb-3"><div class="form-label fw-semibold">Subject</div><div class="form-control bg-light">%s</div></div><div><div class="form-label fw-semibold">Body</div><pre class="form-control bg-light" style="white-space:pre-wrap;min-height:18rem">%s</pre></div></div><div class="card-footer small text-muted">Legacy status: %s. This record is read-only.</div></div></div>`, escapeHTML(subject), escapeHTML(body), escapeHTML(status))
 		pageFooterWithScript(w, starredPopoverInitScript)
 	}
 }
 
 func (s *Server) handleAdminStarredFindingApprove() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "legacy starred-player letters are read-only; create an ineligible-player case instead", http.StatusGone)
+	}
+}
+
+// handleAdminStarredFindingApproveLegacy is retained temporarily so the old
+// record shape and delivery history remain understandable during migration.
+// It is deliberately not mounted by the router.
+func (s *Server) handleAdminStarredFindingApproveLegacy() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid form", http.StatusBadRequest)

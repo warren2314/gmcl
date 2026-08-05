@@ -163,6 +163,8 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             Sanctions
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
+            <li><a class="dropdown-item d-flex justify-content-between align-items-center gap-2" href="/admin/ineligible">Ineligible-player intake <span id="ineligibleIntakeNavCount" class="badge text-bg-danger" hidden></span></a></li>
+            <li><a class="dropdown-item" href="/admin/ineligible/rollout">Ineligible rollout gate</a></li>
             <li><a class="dropdown-item" href="/admin/cases">Case dashboard</a></li>
             <li><a class="dropdown-item" href="/admin/cases/new">Add card, ban, fine or points decision</a></li>
             <li><a class="dropdown-item" href="/admin/cases/imports">Import legacy bans &amp; cards</a></li>
@@ -173,7 +175,7 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             <li><a class="dropdown-item" href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener">View public register</a></li>
             <li><a class="dropdown-item" href="/admin/sanctions">Legacy card ledger</a></li>
           </ul>
-        </li>`, dropdownActive("/admin/cases", "/admin/sanctions"))
+        </li>`, dropdownActive("/admin/ineligible", "/admin/cases", "/admin/sanctions"))
 
 	operationsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
@@ -298,6 +300,19 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
     </div>
   </div>
 </nav>
+<script>
+(function () {
+  var badge = document.getElementById("ineligibleIntakeNavCount");
+  if (!badge || !window.fetch) return;
+  fetch("/admin/ineligible/count", {credentials: "same-origin", headers: {"Accept": "application/json"}})
+    .then(function (response) { if (!response.ok) throw new Error("unavailable"); return response.json(); })
+    .then(function (data) {
+      var count = Number(data.count || 0);
+      if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
+    })
+    .catch(function () {});
+}());
+</script>
 <div class="mb-4"></div>
 `,
 		menu,

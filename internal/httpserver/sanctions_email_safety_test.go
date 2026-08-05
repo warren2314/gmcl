@@ -24,3 +24,14 @@ func TestSanctionsEmailDisabled(t *testing.T) {
 		})
 	}
 }
+
+func TestIneligibleOutboundEmailRequiresExplicitEnablement(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "false": false, "0": false, "true": true, " YES ": true, "1": true} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("INELIGIBLE_OUTBOUND_EMAIL_ENABLED", value)
+			if got := ineligibleOutboundEmailEnabled(); got != want {
+				t.Fatalf("ineligibleOutboundEmailEnabled() = %v, want %v", got, want)
+			}
+		})
+	}
+}

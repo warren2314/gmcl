@@ -16,3 +16,15 @@ func sanctionsEmailDisabled() bool {
 		return false
 	}
 }
+
+// ineligibleOutboundEmailEnabled is deliberately separate from intake. A
+// deployment can reconcile private reports while retaining every ineligible
+// response/outcome message in the immutable outbox for later release.
+func ineligibleOutboundEmailEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("INELIGIBLE_OUTBOUND_EMAIL_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}

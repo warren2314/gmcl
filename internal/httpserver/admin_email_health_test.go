@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -79,11 +80,47 @@ func TestValidSESSNSWebhookTokenSupportsRotation(t *testing.T) {
 	}
 }
 
-func TestValidSESSNSWebhookTokenCanBeUnconfigured(t *testing.T) {
+func TestValidSESSNSWebhookTokenFailsClosedWhenUnconfigured(t *testing.T) {
 	t.Setenv("SES_SNS_WEBHOOK_TOKEN", "")
 	t.Setenv("SES_SNS_WEBHOOK_TOKEN_NEXT", "")
 
-	if !validSESSNSWebhookToken("") {
-		t.Fatal("unconfigured webhook should preserve existing open behaviour")
+	if validSESSNSWebhookToken("") {
+		t.Fatal("unconfigured webhook token must fail closed")
+	}
+}
+
+func TestCanonicalSNSNotification(t *testing.T) {
+	canonical, err := canonicalSNSMessage(snsEnvelope{
+		Type: "Notification", Message: "payload", MessageID: "message-1",
+		Timestamp: "2026-08-04T03:30:00.000Z", TopicARN: "arn:aws:sns:eu-west-2:123:gmcl", Subject: "subject",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Message\npayload\nMessageId\nmessage-1\nSubject\nsubject\nTimestamp\n2026-08-04T03:30:00.000Z\nTopicArn\narn:aws:sns:eu-west-2:123:gmcl\nType\nNotification\n"
+	if canonical != want {
+		t.Fatalf("canonical message:\n%s\nwant:\n%s", canonical, want)
+	}
+}
+
+func TestValidateSNSWebhookEnvelopeRequiresConfiguredTopic(t *testing.T) {
+	t.Setenv("SES_SNS_TOPIC_ARN", "")
+	if err := validateSNSWebhookEnvelope(context.Background(), snsEnvelope{}, "sns_raw"); err == nil {
+		t.Fatal("missing topic ARN should fail closed")
+	}
+	t.Setenv("SES_SNS_TOPIC_ARN", "arn:aws:sns:eu-west-2:123:gmcl")
+	t.Setenv("SES_SNS_ALLOW_RAW", "1")
+	if err := validateSNSWebhookEnvelope(context.Background(), snsEnvelope{TopicARN: "arn:aws:sns:eu-west-2:999:attacker"}, "sns_raw"); err == nil {
+		t.Fatal("unexpected topic ARN should be rejected")
+	}
+}
+
+func TestSanctionAttemptStatusForSESEvent(t *testing.T) {
+	for eventType, want := range map[string]string{
+		"bounce": "bounced", "complaint": "complained", "reject": "failed", "rendering_failure": "failed", "delivery": "",
+	} {
+		if got := sanctionAttemptStatusForSESEvent(eventType); got != want {
+			t.Fatalf("status for %s = %q, want %q", eventType, got, want)
+		}
 	}
 }

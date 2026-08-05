@@ -21,6 +21,9 @@ type HMACConfig struct {
 	HeaderTimestamp string
 	HeaderNonce     string
 	MaxAge          time.Duration
+	// AllowBearer exists only for older internal jobs during migration. New
+	// endpoints must leave it false and provide a timestamped HMAC signature.
+	AllowBearer bool
 }
 
 var nonceCache sync.Map
@@ -64,8 +67,7 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Accept simple bearer token as alternative to full HMAC (for n8n HTTP nodes).
-			if auth := r.Header.Get("Authorization"); auth == "Bearer "+secret {
+			if cfg.AllowBearer && hmac.Equal([]byte(r.Header.Get("Authorization")), []byte("Bearer "+secret)) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -75,6 +77,10 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 			nonce := r.Header.Get(cfg.HeaderNonce)
 			if sigHex == "" || tsStr == "" || nonce == "" {
 				http.Error(w, "missing signature", http.StatusUnauthorized)
+				return
+			}
+			if len(nonce) < 8 || len(nonce) > 128 {
+				http.Error(w, "invalid nonce", http.StatusUnauthorized)
 				return
 			}
 
@@ -87,21 +93,6 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 			now := time.Now().Unix()
 			if abs(now-ts) > int64(cfg.MaxAge.Seconds()) {
 				http.Error(w, "request too old", http.StatusUnauthorized)
-				return
-			}
-
-			// Simple nonce replay cache within window.
-			nonceKey := nonce + "|" + tsStr
-			if _, found := nonceCache.Load(nonceKey); found {
-				http.Error(w, "replayed request", http.StatusUnauthorized)
-				return
-			}
-			nonceCache.Store(nonceKey, now+int64(cfg.MaxAge.Seconds()))
-			atomic.AddInt64(&nonceCount, 1)
-
-			// enforce a soft cap on nonce entries
-			if atomic.LoadInt64(&nonceCount) > 10000 {
-				http.Error(w, "nonce cache capacity exceeded", http.StatusTooManyRequests)
 				return
 			}
 
@@ -130,9 +121,31 @@ func HMACVerifier(cfg HMACConfig) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Consume a nonce only after the signature is authentic. LoadOrStore
+			// closes the concurrent replay race and prevents invalid signatures
+			// from filling the cache.
+			nonceKey := nonce + "|" + tsStr
+			if _, loaded := nonceCache.LoadOrStore(nonceKey, hmacNonceExpiry(now, ts, cfg.MaxAge)); loaded {
+				http.Error(w, "replayed request", http.StatusUnauthorized)
+				return
+			}
+			if atomic.AddInt64(&nonceCount, 1) > 10000 {
+				nonceCache.Delete(nonceKey)
+				atomic.AddInt64(&nonceCount, -1)
+				http.Error(w, "nonce cache capacity exceeded", http.StatusTooManyRequests)
+				return
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func hmacNonceExpiry(now, timestamp int64, maxAge time.Duration) int64 {
+	if timestamp > now {
+		now = timestamp
+	}
+	return now + int64(maxAge.Seconds())
 }
 
 func abs(n int64) int64 {
@@ -141,4 +154,3 @@ func abs(n int64) int64 {
 	}
 	return n
 }
-

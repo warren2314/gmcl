@@ -163,17 +163,26 @@ func TestStarredFindingKeyIsStableAndPlayerSpecific(t *testing.T) {
 	}
 }
 
-func TestStarredFindingActionsRequireSeparateDraftAndApproval(t *testing.T) {
+func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.T) {
 	breach := sampleStarredBreach()
 	pending := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "2026-05-01", "2026-06-30")
-	for _, want := range []string{"Accept / close", "Not accepted", "/findings/escalate", `name="breach_from" value="2026-05-01"`, `name="breach_to" value="2026-06-30"`} {
+	for _, want := range []string{"Accept / close", "Create ineligible-player case", "/findings/create-case", "No email will be sent", `name="breach_from" value="2026-05-01"`, `name="breach_to" value="2026-06-30"`} {
 		if !strings.Contains(pending, want) {
 			t.Fatalf("pending actions do not contain %q: %s", want, pending)
 		}
 	}
+	if strings.Contains(pending, "draft letter") || strings.Contains(pending, "/findings/escalate") {
+		t.Fatalf("new findings must not create a legacy letter draft: %s", pending)
+	}
 	draft := starredFindingActionsHTML(breach, starredFindingState{ID: 42, Status: "draft"}, "token", 2026, "", "")
 	if !strings.Contains(draft, "/findings/42") || strings.Contains(draft, "approve") {
 		t.Fatalf("draft state should link to review without approving inline: %s", draft)
+	}
+	caseAction := starredFindingActionsHTML(breach, starredFindingState{
+		CaseID: 73, CaseReference: "GMCL-2026-001073", CaseStatus: "investigating",
+	}, "token", 2026, "", "")
+	if !strings.Contains(caseAction, `/admin/cases/73`) || !strings.Contains(caseAction, "GMCL-2026-001073") || strings.Contains(caseAction, "<form") {
+		t.Fatalf("linked finding should open its existing case: %s", caseAction)
 	}
 	breach.NeedsExemptionReview = true
 	junior := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "", "")
@@ -202,12 +211,15 @@ func TestOutstandingStarredBreachesExcludeAcceptedAndSent(t *testing.T) {
 	sent.Appearance.MatchID += 2
 	pending := sampleStarredBreach()
 	pending.Appearance.MatchID += 3
+	linked := sampleStarredBreach()
+	linked.Appearance.MatchID += 4
 	states := map[string]starredFindingState{
 		starredFindingKey(accepted): {Status: "accepted"},
 		starredFindingKey(draft):    {Status: "draft"},
 		starredFindingKey(sent):     {Status: "sent"},
+		starredFindingKey(linked):   {CaseID: 55, CaseReference: "GMCL-2026-001055", CaseStatus: "investigating"},
 	}
-	got := filterOutstandingStarredBreaches([]starred.Breach{accepted, draft, sent, pending}, states)
+	got := filterOutstandingStarredBreaches([]starred.Breach{accepted, draft, sent, pending, linked}, states)
 	if len(got) != 2 || got[0].Appearance.MatchID != draft.Appearance.MatchID || got[1].Appearance.MatchID != pending.Appearance.MatchID {
 		t.Fatalf("outstanding breaches=%#v", got)
 	}

@@ -2,8 +2,16 @@ package httpserver
 
 import (
 	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,14 +20,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type snsEnvelope struct {
-	Type         string `json:"Type"`
-	MessageID    string `json:"MessageId"`
-	Message      string `json:"Message"`
-	SubscribeURL string `json:"SubscribeURL"`
-	TopicARN     string `json:"TopicArn"`
+	Type             string `json:"Type"`
+	MessageID        string `json:"MessageId"`
+	Message          string `json:"Message"`
+	Subject          string `json:"Subject"`
+	SubscribeURL     string `json:"SubscribeURL"`
+	Token            string `json:"Token"`
+	Timestamp        string `json:"Timestamp"`
+	TopicARN         string `json:"TopicArn"`
+	Signature        string `json:"Signature"`
+	SignatureVersion string `json:"SignatureVersion"`
+	SigningCertURL   string `json:"SigningCertURL"`
 }
 
 type sesNotification struct {
@@ -31,7 +47,8 @@ type sesNotification struct {
 		MessageID     string   `json:"messageId"`
 		Destination   []string `json:"destination"`
 		CommonHeaders struct {
-			Subject string `json:"subject"`
+			Subject   string `json:"subject"`
+			MessageID string `json:"messageId"`
 		} `json:"commonHeaders"`
 	} `json:"mail"`
 	Bounce struct {
@@ -101,6 +118,11 @@ func (s *Server) handleSESEventWebhook() http.HandlerFunc {
 			http.Error(w, "invalid SES/SNS payload", http.StatusBadRequest)
 			return
 		}
+		if err = validateSNSWebhookEnvelope(ctx, env, deliveryMode); err != nil {
+			s.recordSESWebhookReceipt(ctx, env, deliveryMode, "rejected", err.Error())
+			http.Error(w, "untrusted SES/SNS payload", http.StatusForbidden)
+			return
+		}
 		if env.Type == "SubscriptionConfirmation" {
 			status := "pending_confirmation"
 			detail := "Set SES_SNS_AUTO_CONFIRM=1 temporarily or confirm the subscription in Amazon SNS."
@@ -143,11 +165,131 @@ func validSESSNSWebhookToken(provided string) bool {
 	current := strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN"))
 	next := strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN_NEXT"))
 	if current == "" && next == "" {
-		return true
+		return false
 	}
 	providedBytes := []byte(provided)
 	return (current != "" && subtle.ConstantTimeCompare(providedBytes, []byte(current)) == 1) ||
 		(next != "" && subtle.ConstantTimeCompare(providedBytes, []byte(next)) == 1)
+}
+
+func validateSNSWebhookEnvelope(ctx context.Context, env snsEnvelope, deliveryMode string) error {
+	expectedTopic := strings.TrimSpace(os.Getenv("SES_SNS_TOPIC_ARN"))
+	if expectedTopic == "" {
+		return errors.New("SES_SNS_TOPIC_ARN is not configured")
+	}
+	if strings.TrimSpace(env.TopicARN) != expectedTopic {
+		return errors.New("SNS topic is not authorised")
+	}
+	if deliveryMode == "sns_raw" {
+		if os.Getenv("SES_SNS_ALLOW_RAW") != "1" {
+			return errors.New("raw SNS delivery is disabled because it has no verifiable envelope signature")
+		}
+		return nil
+	}
+	if deliveryMode != "sns_wrapped" {
+		return errors.New("unsupported SNS delivery mode")
+	}
+	return verifySNSMessageSignature(ctx, env)
+}
+
+func verifySNSMessageSignature(ctx context.Context, env snsEnvelope) error {
+	if env.SignatureVersion != "1" && env.SignatureVersion != "2" {
+		return errors.New("unsupported SNS signature version")
+	}
+	certURL, err := url.Parse(strings.TrimSpace(env.SigningCertURL))
+	if err != nil || certURL.Scheme != "https" || certURL.User != nil || certURL.RawQuery != "" || certURL.Fragment != "" {
+		return errors.New("invalid SNS signing certificate URL")
+	}
+	host := strings.ToLower(certURL.Hostname())
+	if certURL.Port() != "" || (host != "sns.amazonaws.com" && (!strings.HasPrefix(host, "sns.") || !strings.HasSuffix(host, ".amazonaws.com"))) {
+		return errors.New("untrusted SNS signing certificate host")
+	}
+	if !strings.HasPrefix(certURL.EscapedPath(), "/SimpleNotificationService-") || !strings.HasSuffix(certURL.EscapedPath(), ".pem") || strings.Contains(certURL.EscapedPath(), "..") {
+		return errors.New("untrusted SNS signing certificate path")
+	}
+	client := http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("SNS signing certificate redirects are not allowed")
+		},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, certURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("load SNS signing certificate: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("load SNS signing certificate: %s", response.Status)
+	}
+	certificatePEM, err := io.ReadAll(io.LimitReader(response.Body, 128<<10))
+	if err != nil {
+		return fmt.Errorf("read SNS signing certificate: %w", err)
+	}
+	block, _ := pem.Decode(certificatePEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return errors.New("SNS signing certificate is invalid")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return errors.New("SNS signing certificate is invalid")
+	}
+	if time.Now().Before(certificate.NotBefore) || time.Now().After(certificate.NotAfter) || certificate.VerifyHostname(host) != nil {
+		return errors.New("SNS signing certificate is not valid for its host")
+	}
+	publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("SNS signing certificate does not contain an RSA key")
+	}
+	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(env.Signature))
+	if err != nil || len(signature) == 0 {
+		return errors.New("SNS signature is invalid")
+	}
+	canonical, err := canonicalSNSMessage(env)
+	if err != nil {
+		return err
+	}
+	if env.SignatureVersion == "1" {
+		digest := sha1.Sum([]byte(canonical))
+		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA1, digest[:], signature)
+	}
+	digest := sha256.Sum256([]byte(canonical))
+	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature)
+}
+
+func canonicalSNSMessage(env snsEnvelope) (string, error) {
+	fields := []string{"Message", env.Message, "MessageId", env.MessageID}
+	switch env.Type {
+	case "Notification":
+		if env.Subject != "" {
+			fields = append(fields, "Subject", env.Subject)
+		}
+	case "SubscriptionConfirmation", "UnsubscribeConfirmation":
+		fields = append(fields, "SubscribeURL", env.SubscribeURL)
+	default:
+		return "", fmt.Errorf("unsupported SNS message type %q", env.Type)
+	}
+	fields = append(fields, "Timestamp", env.Timestamp)
+	if env.Type != "Notification" {
+		fields = append(fields, "Token", env.Token)
+	}
+	fields = append(fields, "TopicArn", env.TopicARN, "Type", env.Type)
+	for index := 1; index < len(fields); index += 2 {
+		if strings.TrimSpace(fields[index]) == "" {
+			return "", fmt.Errorf("SNS %s is required", fields[index-1])
+		}
+	}
+	var canonical strings.Builder
+	for index := 0; index < len(fields); index += 2 {
+		canonical.WriteString(fields[index])
+		canonical.WriteByte('\n')
+		canonical.WriteString(fields[index+1])
+		canonical.WriteByte('\n')
+	}
+	return canonical.String(), nil
 }
 
 func decodeSESWebhook(body []byte, header http.Header) (snsEnvelope, sesNotification, string, error) {
@@ -350,8 +492,75 @@ func (s *Server) storeSESEvent(ctx context.Context, env snsEnvelope, n sesNotifi
 		if err != nil {
 			return err
 		}
+		if status := sanctionAttemptStatusForSESEvent(eventType); status != "" && strings.TrimSpace(r.recipient) != "" {
+			if err := s.recordSanctionNotificationEvent(ctx, n, r.recipient, status, r.diagnostic, occurredAt); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func sanctionAttemptStatusForSESEvent(eventType string) string {
+	switch eventType {
+	case "bounce":
+		return "bounced"
+	case "complaint":
+		return "complained"
+	case "reject", "rendering_failure":
+		return "failed"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) recordSanctionNotificationEvent(ctx context.Context, n sesNotification, recipient, status, diagnostic string, occurredAt time.Time) error {
+	customMessageID := strings.TrimSpace(n.Mail.CommonHeaders.MessageID)
+	var outboxID, caseID int64
+	err := s.DB.QueryRow(ctx, `SELECT outbox.id,outbox.case_id
+		FROM sanction_notification_outbox outbox
+		WHERE lower(outbox.recipient)=lower($1)
+		  AND outbox.created_at BETWEEN $4::timestamptz-interval '30 days' AND $4::timestamptz+interval '1 day'
+		  AND EXISTS(SELECT 1 FROM sanction_notification_attempts sent WHERE sent.outbox_id=outbox.id AND sent.status='sent')
+		  AND (($2<>'' AND EXISTS(SELECT 1 FROM sanction_notification_attempts identified WHERE identified.outbox_id=outbox.id AND identified.provider_message_id=$2)) OR outbox.subject=$3)
+		ORDER BY CASE WHEN $2<>'' AND EXISTS(SELECT 1 FROM sanction_notification_attempts identified WHERE identified.outbox_id=outbox.id AND identified.provider_message_id=$2) THEN 0 ELSE 1 END,outbox.id DESC
+		LIMIT 1`, recipient, customMessageID, n.Mail.CommonHeaders.Subject, occurredAt).Scan(&outboxID, &caseID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	marker := fmt.Sprintf("SES %s %s %s", n.Mail.MessageID, status, strings.ToLower(strings.TrimSpace(recipient)))
+	errorMessage := marker
+	if strings.TrimSpace(diagnostic) != "" {
+		errorMessage += ": " + strings.TrimSpace(diagnostic)
+	}
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = tx.QueryRow(ctx, `SELECT id FROM sanction_notification_outbox WHERE id=$1 FOR UPDATE`, outboxID).Scan(&outboxID); err != nil {
+		return err
+	}
+	var attemptID int64
+	err = tx.QueryRow(ctx, `INSERT INTO sanction_notification_attempts(outbox_id,attempt_number,status,provider_message_id,error_message,occurred_at)
+		SELECT $1,COALESCE(MAX(attempt_number),0)+1,$2,NULLIF($3,''),$4,$5 FROM sanction_notification_attempts WHERE outbox_id=$1
+		HAVING NOT EXISTS(SELECT 1 FROM sanction_notification_attempts existing WHERE existing.outbox_id=$1 AND existing.error_message=$4)
+		RETURNING id`, outboxID, status, n.Mail.MessageID, errorMessage, occurredAt).Scan(&attemptID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,after_data)
+		VALUES($1,'notice_delivery_exception','system','Amazon SES',$2,$3)`, caseID, errorMessage, mapJSONHTTP(map[string]any{"outbox_id": outboxID, "attempt_id": attemptID, "status": status}))
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
@@ -576,8 +785,8 @@ func (s *Server) handleAdminEmailHealth() http.HandlerFunc {
 
 		if strings.TrimSpace(os.Getenv("SMTP_HOST")) == "" {
 			fmt.Fprint(w, `<div class="alert alert-danger"><strong>Email sending is not configured.</strong> SMTP_HOST is empty, so the application only logs emails and does not hand them to SES.</div>`)
-		} else if strings.TrimSpace(os.Getenv("SES_CONFIGURATION_SET")) == "" || strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN")) == "" {
-			fmt.Fprint(w, `<div class="alert alert-warning"><strong>SES tracking is incomplete.</strong> Sends may work, but delivery and bounce results will not appear reliably until SES_CONFIGURATION_SET and SES_SNS_WEBHOOK_TOKEN are configured.</div>`)
+		} else if strings.TrimSpace(os.Getenv("SES_CONFIGURATION_SET")) == "" || strings.TrimSpace(os.Getenv("SES_SNS_WEBHOOK_TOKEN")) == "" || strings.TrimSpace(os.Getenv("SES_SNS_TOPIC_ARN")) == "" {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>SES tracking is incomplete.</strong> Sends may work, but delivery and bounce results remain fail-closed until SES_CONFIGURATION_SET, SES_SNS_WEBHOOK_TOKEN and SES_SNS_TOPIC_ARN are configured.</div>`)
 		}
 		if len(webhookReceipts) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-danger"><strong>No SES/SNS webhook has reached this application.</strong> Confirm the HTTPS subscription in Amazon SNS and ensure the SES configuration set event destination publishes to that topic.</div>`)

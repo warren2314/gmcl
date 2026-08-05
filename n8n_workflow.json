@@ -236,6 +236,47 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [220, 960]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "30 3 * * *" }]
+        }
+      },
+      "id": "trigger-ineligible-intake",
+      "name": "Ineligible reports 03:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 1120]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_HMAC_SECRET;\nif (!secret) throw new Error('N8N_HMAC_SECRET is not configured');\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst nonce = crypto.randomUUID();\nconst canonical = `${timestamp}|${nonce}|POST|/internal/sync-ineligible-reports||`;\nconst signature = crypto.createHmac('sha256', secret).update(canonical).digest('hex');\nreturn [{ json: { timestamp, nonce, signature } }];"
+      },
+      "id": "sign-ineligible-intake",
+      "name": "Sign ineligible sync request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 1120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmcl.co.uk/internal/sync-ineligible-reports",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "X-Nonce", "value": "={{ $json.nonce }}" },
+            { "name": "X-Signature", "value": "={{ $json.signature }}" }
+          ]
+        }
+      },
+      "id": "http-ineligible-intake",
+      "name": "POST sync ineligible reports",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 1120]
     }
   ],
   "connections": {
@@ -245,9 +286,11 @@
     "Wednesday 10:00": { "main": [[{ "node": "POST Wednesday reminder", "type": "main", "index": 0 }]] },
     "Wednesday 23:59": { "main": [[{ "node": "POST generate-sanctions", "type": "main", "index": 0 }]] },
     "Nightly rules sync": { "main": [[{ "node": "POST sync-rules", "type": "main", "index": 0 }]] },
-    "Sanction notice outbox": { "main": [[{ "node": "POST sanction outbox", "type": "main", "index": 0 }]] }
+    "Sanction notice outbox": { "main": [[{ "node": "POST sanction outbox", "type": "main", "index": 0 }]] },
+    "Ineligible reports 03:30": { "main": [[{ "node": "Sign ineligible sync request", "type": "main", "index": 0 }]] },
+    "Sign ineligible sync request": { "main": [[{ "node": "POST sync ineligible reports", "type": "main", "index": 0 }]] }
   },
   "active": false,
-  "settings": { "executionOrder": "v1" },
+  "settings": { "executionOrder": "v1", "timezone": "Europe/London" },
   "tags": []
 }

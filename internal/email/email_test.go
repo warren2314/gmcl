@@ -1,6 +1,7 @@
 package email
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -105,5 +106,86 @@ func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 	}
 	if !strings.Contains(html, "<strong>Access code:</strong>") || !strings.Contains(html, ">abc</pre>") {
 		t.Fatalf("access code missing: %s", html)
+	}
+}
+
+func TestBuildMessageWithAttachmentCreatesMultipartSnapshot(t *testing.T) {
+	client := &Client{fromHeader: "GMCL <webmaster@gmcl.co.uk>"}
+	pdf := []byte("%PDF-1.4 outcome letter")
+	message, err := client.buildMessage(
+		"club@example.com",
+		"Case IP-2026-0001 outcome",
+		"The approved finding is attached.",
+		[]Attachment{{Filename: `C:\\private\\IP-2026-0001.pdf`, ContentType: "application/pdf", Data: pdf}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(message)
+	for _, want := range []string{
+		"Content-Type: multipart/mixed",
+		"Content-Type: text/html; charset=UTF-8",
+		"Content-Type: application/pdf",
+		"Content-Disposition: attachment; filename=IP-2026-0001.pdf",
+		base64.StdEncoding.EncodeToString(pdf),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("message does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `C:\\private`) {
+		t.Fatalf("attachment storage path leaked into message: %s", got)
+	}
+}
+
+func TestBuildMessageWithoutAttachmentsRemainsHTML(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	message, err := client.buildMessage("club@example.com", "Subject", "Hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(message)
+	if !strings.Contains(got, "Content-Type: text/html; charset=UTF-8") {
+		t.Fatalf("HTML content type missing: %s", got)
+	}
+	if strings.Contains(got, "multipart/mixed") {
+		t.Fatalf("unexpected multipart wrapper: %s", got)
+	}
+}
+
+func TestMessageHeadersRejectHeaderInjection(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	for _, test := range []struct {
+		name, to, subject string
+	}{
+		{name: "recipient", to: "club@example.com\r\nBcc: attacker@example.com", subject: "Outcome"},
+		{name: "subject", to: "club@example.com", subject: "Outcome\r\nBcc: attacker@example.com"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := client.messageHeaders(test.to, test.subject); err == nil {
+				t.Fatal("header injection was accepted")
+			}
+		})
+	}
+}
+
+func TestBuildMessageRejectsInjectedAttachmentContentType(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	_, err := client.buildMessage("club@example.com", "Outcome", "Body", []Attachment{{
+		Filename: "outcome.pdf", ContentType: "application/pdf\r\nBcc: attacker@example.com", Data: []byte("pdf"),
+	}})
+	if err == nil {
+		t.Fatal("injected attachment content type was accepted")
+	}
+}
+
+func TestBuildMessageIncludesStableMessageID(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	message, err := client.buildMessageWithID("club@example.com", "Outcome", "Body", nil, "<sanction-outbox-42@gmcl.co.uk>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(message), "Message-ID: <sanction-outbox-42@gmcl.co.uk>\r\n") {
+		t.Fatalf("stable Message-ID missing: %s", message)
 	}
 }
