@@ -23,17 +23,17 @@ type retentionSummary struct {
 }
 
 type securityPageData struct {
-	Disable2FA         bool
-	SessionSecretSet   bool
-	AdminSecretSet     bool
-	HMACSecretSet      bool
-	SMTPConfigured     bool
-	HSTSEnabled        bool
-	MaxFailedAttempts  int
-	LockoutMinutes     int
-	Summaries          []retentionSummary
-	SuccessMsg         string
-	ErrorMsg           string
+	Disable2FA        bool
+	SessionSecretSet  bool
+	AdminSecretSet    bool
+	HMACSecretSet     bool
+	SMTPConfigured    bool
+	HSTSEnabled       bool
+	MaxFailedAttempts int
+	LockoutMinutes    int
+	Summaries         []retentionSummary
+	SuccessMsg        string
+	ErrorMsg          string
 }
 
 func (s *Server) handleAdminSecurityGet() http.HandlerFunc {
