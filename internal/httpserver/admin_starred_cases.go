@@ -543,7 +543,7 @@ func (s *Server) createStarredIneligibleCase(ctx context.Context, breach starred
 		VALUES(
 			$1,'starred_player_case_created','admin',$2,NULLIF($3,''),
 			'Revalidated starred-player finding escalated for investigation',$4::jsonb,NULLIF($5,''),
-			jsonb_build_object('origin','starred_player','finding_key',$6)
+			jsonb_build_object('origin','starred_player','finding_key',$6::text)
 		)`, result.CaseID, actorID, strings.TrimSpace(actorLabel), string(afterData),
 		reqID, findingKey); err != nil {
 		return result, fmt.Errorf("append starred-player case event: %w", err)

@@ -1017,10 +1017,10 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_parties(case_id,party_type,name,email) VALUES($1,'reporter',$2,$3)`, caseID, nullIfEmptyHTTP(reporterName), nullIfEmptyHTTP(reporterEmail))
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,metadata,request_id) VALUES($1,'ineligible_intake_case_created','admin',$2,$3,$4,jsonb_build_object('reference',$5,'team_id',$6::bigint,'reporting_club_id',$7::integer,'assigned_admin_id',$8::integer),jsonb_build_object('intake_id',$9::bigint,'origin',$10,'external_key',$11),$12)`, caseID, *actor.ID, actor.Label, "Investigation created from private intake and assigned to "+assignee, reference, teamID, reportingClubID, assigneeID, intakeID, origin, externalKey, actor.RequestID)
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,metadata,request_id) VALUES($1,'ineligible_intake_case_created','admin',$2,$3,$4,jsonb_build_object('reference',$5::text,'team_id',$6::bigint,'reporting_club_id',$7::integer,'assigned_admin_id',$8::integer),jsonb_build_object('intake_id',$9::bigint,'origin',$10::text,'external_key',$11::text),$12)`, caseID, *actor.ID, actor.Label, "Investigation created from private intake and assigned to "+assignee, reference, teamID, reportingClubID, assigneeID, intakeID, origin, externalKey, actor.RequestID)
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'case_created',$2,$3,$4,jsonb_build_object('state',$5),jsonb_build_object('state','linked','case_id',$6::bigint,'reference',$7,'relationship',$8,'offending_club_id',$9::integer,'reporting_club_id',$10::integer,'team_id',$11::bigint),$12)`, intakeID, *actor.ID, actor.Label, "Created "+reference+" without sending correspondence", state, caseID, reference, relationship, clubID, reportingClubID, teamID, actor.RequestID)
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'case_created',$2,$3,$4,jsonb_build_object('state',$5::text),jsonb_build_object('state','linked','case_id',$6::bigint,'reference',$7::text,'relationship',$8::text,'offending_club_id',$9::integer,'reporting_club_id',$10::integer,'team_id',$11::bigint),$12)`, intakeID, *actor.ID, actor.Label, "Created "+reference+" without sending correspondence", state, caseID, reference, relationship, clubID, reportingClubID, teamID, actor.RequestID)
 		}
 		if err == nil {
 			err = projectIneligibleIntakeMergeState(r.Context(), tx, intakeID)
@@ -1144,10 +1144,10 @@ func (s *Server) handleAdminIneligibleLinkCase() http.HandlerFunc {
 			eventType = "case_linked"
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,$2,$3,$4,$5,jsonb_build_object('state',$6),jsonb_build_object('state','linked','case_id',$7::bigint,'reference',$8,'relationship',$9,'team_id',$10::bigint,'reporting_club_id',$11::integer,'revision_id',$12::bigint),$13)`, intakeID, eventType, *actor.ID, actor.Label, reason, state, caseID, reference, relationship, teamID, reportingClubID, revisionID, actor.RequestID)
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,$2,$3,$4,$5,jsonb_build_object('state',$6::text),jsonb_build_object('state','linked','case_id',$7::bigint,'reference',$8::text,'relationship',$9::text,'team_id',$10::bigint,'reporting_club_id',$11::integer,'revision_id',$12::bigint),$13)`, intakeID, eventType, *actor.ID, actor.Label, reason, state, caseID, reference, relationship, teamID, reportingClubID, revisionID, actor.RequestID)
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,$2,'admin',$3,$4,$5,jsonb_build_object('intake_id',$6::bigint,'origin',$7,'relationship',$8,'team_id',$9::bigint,'reporting_club_id',$10::integer,'revision_id',$11::bigint),$12)`, caseID, "ineligible_intake_"+eventType, *actor.ID, actor.Label, reason, intakeID, origin, relationship, teamID, reportingClubID, revisionID, actor.RequestID)
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,$2,'admin',$3,$4,$5,jsonb_build_object('intake_id',$6::bigint,'origin',$7::text,'relationship',$8::text,'team_id',$9::bigint,'reporting_club_id',$10::integer,'revision_id',$11::bigint),$12)`, caseID, "ineligible_intake_"+eventType, *actor.ID, actor.Label, reason, intakeID, origin, relationship, teamID, reportingClubID, revisionID, actor.RequestID)
 		}
 		if err == nil {
 			err = projectIneligibleIntakeMergeState(r.Context(), tx, intakeID)
@@ -1310,7 +1310,7 @@ func (s *Server) handleAdminIneligibleDuplicate() http.HandlerFunc {
 			)`, caseID, intakeID, revisionID, targetTeamID, reportingClubID, reportingPartyID, leagueOrigin, *actor.ID)
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'marked_duplicate',$2,$3,$4,jsonb_build_object('state',$5),jsonb_build_object('state','duplicate','case_id',$6::bigint,'reference',$7,'reporting_club_id',$8::integer,'league_origin',$9::boolean),$10)`, intakeID, *actor.ID, actor.Label, reason, state, caseID, reference, reportingClubID, leagueOrigin, actor.RequestID)
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'marked_duplicate',$2,$3,$4,jsonb_build_object('state',$5::text),jsonb_build_object('state','duplicate','case_id',$6::bigint,'reference',$7::text,'reporting_club_id',$8::integer,'league_origin',$9::boolean),$10)`, intakeID, *actor.ID, actor.Label, reason, state, caseID, reference, reportingClubID, leagueOrigin, actor.RequestID)
 		}
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'duplicate_intake_linked','admin',$2,$3,$4,jsonb_build_object('intake_id',$5::bigint),$6)`, caseID, *actor.ID, actor.Label, reason, intakeID, actor.RequestID)
@@ -1365,7 +1365,7 @@ func (s *Server) handleAdminIneligibleIgnore() http.HandlerFunc {
 			http.Error(w, "linked or duplicate intake cannot be ignored", http.StatusConflict)
 			return
 		}
-		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'ignored',$2,$3,$4,jsonb_build_object('state',$5),jsonb_build_object('state','ignored'),$6)`, intakeID, *actor.ID, actor.Label, reason, state, actor.RequestID)
+		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'ignored',$2,$3,$4,jsonb_build_object('state',$5::text),jsonb_build_object('state','ignored'),$6)`, intakeID, *actor.ID, actor.Label, reason, state, actor.RequestID)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE sanction_intakes SET state='ignored',updated_at=now(),exception_message=NULL WHERE id=$1`, intakeID)
 		}
@@ -1499,7 +1499,7 @@ func (s *Server) handleAdminCaseManualResponse() http.HandlerFunc {
 			nextStatus = "investigating"
 		}
 		var eventID int64
-		err = tx.QueryRow(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,metadata,request_id) VALUES($1,'external_response_recorded','admin',$2,$3,$4,jsonb_build_object('status',$5),jsonb_build_object('status',$6),jsonb_build_object('channel',$7,'respondent',$8,'late_response',$9::boolean),$10) RETURNING id`, caseID, *actor.ID, actor.Label, response, currentStatus, nextStatus, channel, respondent, lateResponse, actor.RequestID).Scan(&eventID)
+		err = tx.QueryRow(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,metadata,request_id) VALUES($1,'external_response_recorded','admin',$2,$3,$4,jsonb_build_object('status',$5::text),jsonb_build_object('status',$6::text),jsonb_build_object('channel',$7::text,'respondent',$8::text,'late_response',$9::boolean),$10) RETURNING id`, caseID, *actor.ID, actor.Label, response, currentStatus, nextStatus, channel, respondent, lateResponse, actor.RequestID).Scan(&eventID)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE sanction_case_access_tokens SET revoked_at=COALESCE(revoked_at,now()),last_used_at=now()
 				WHERE id IN (SELECT access_token_id FROM sanction_response_requests WHERE case_id=$1 AND status IN ('queued','pending','expired'))`, caseID)
