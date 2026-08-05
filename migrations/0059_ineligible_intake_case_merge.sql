@@ -15,7 +15,7 @@ ALTER TABLE sanction_case_parties
 CREATE TEMP TABLE sanction_party_merge_map (
     old_id BIGINT PRIMARY KEY,
     canonical_id BIGINT NOT NULL
-) ON COMMIT DROP;
+);
 
 INSERT INTO sanction_party_merge_map(old_id,canonical_id)
 SELECT party.id,duplicate.canonical_id
@@ -58,6 +58,8 @@ UPDATE sanction_case_parties party
 SET relationship='representative'
 FROM sanction_party_merge_map merge
 WHERE party.id=merge.old_id;
+
+DROP TABLE sanction_party_merge_map;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sanction_case_reporting_club_party
     ON sanction_case_parties(case_id,club_id)
