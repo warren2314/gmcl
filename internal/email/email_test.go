@@ -112,29 +112,69 @@ func TestToHTMLRendersBackupURLAsLink(t *testing.T) {
 func TestBuildMessageWithAttachmentCreatesMultipartSnapshot(t *testing.T) {
 	client := &Client{fromHeader: "GMCL <webmaster@gmcl.co.uk>"}
 	pdf := []byte("%PDF-1.4 outcome letter")
-	message, err := client.buildMessage(
-		"club@example.com",
-		"Case IP-2026-0001 outcome",
-		"The approved finding is attached.",
-		[]Attachment{{Filename: `C:\\private\\IP-2026-0001.pdf`, ContentType: "application/pdf", Data: pdf}},
-	)
+	for _, test := range []struct {
+		name      string
+		filename  string
+		forbidden string
+	}{
+		{name: "windows", filename: `C:\private\IP-2026-0001.pdf`, forbidden: `C:\private`},
+		{name: "posix", filename: "/srv/private/IP-2026-0001.pdf", forbidden: "/srv/private"},
+		{name: "UNC", filename: `\\fileserver\private\IP-2026-0001.pdf`, forbidden: "fileserver"},
+		{name: "mixed", filename: `C:\private/nested\IP-2026-0001.pdf`, forbidden: "nested"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message, err := client.buildMessage(
+				"club@example.com",
+				"Case IP-2026-0001 outcome",
+				"The approved finding is attached.",
+				[]Attachment{{Filename: test.filename, ContentType: "application/pdf", Data: pdf}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(message)
+			for _, want := range []string{
+				"Content-Type: multipart/mixed",
+				"Content-Type: text/html; charset=UTF-8",
+				"Content-Type: application/pdf",
+				"Content-Disposition: attachment; filename=IP-2026-0001.pdf",
+				base64.StdEncoding.EncodeToString(pdf),
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("message does not contain %q:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, test.forbidden) {
+				t.Fatalf("attachment storage path leaked into message: %s", got)
+			}
+		})
+	}
+}
+
+func TestBuildMessageRejectsInjectedAttachmentFilename(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	_, err := client.buildMessage("club@example.com", "Outcome", "Body", []Attachment{{
+		Filename: "private\r\n/Bcc: attacker@example.com/outcome.pdf", ContentType: "application/pdf", Data: []byte("pdf"),
+	}})
+	if err == nil {
+		t.Fatal("injected attachment filename was accepted")
+	}
+}
+
+func TestBuildMessageSafelyQuotesAttachmentFilename(t *testing.T) {
+	client := &Client{fromHeader: "webmaster@gmcl.co.uk"}
+	message, err := client.buildMessage("club@example.com", "Outcome", "Body", []Attachment{{
+		Filename: `C:\private\outcome"; x=evil.pdf`, ContentType: "application/pdf", Data: []byte("pdf"),
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(message)
-	for _, want := range []string{
-		"Content-Type: multipart/mixed",
-		"Content-Type: text/html; charset=UTF-8",
-		"Content-Type: application/pdf",
-		"Content-Disposition: attachment; filename=IP-2026-0001.pdf",
-		base64.StdEncoding.EncodeToString(pdf),
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("message does not contain %q:\n%s", want, got)
-		}
+	if !strings.Contains(got, `filename="outcome\"; x=evil.pdf"`) {
+		t.Fatalf("attachment filename was not safely quoted: %s", got)
 	}
-	if strings.Contains(got, `C:\\private`) {
-		t.Fatalf("attachment storage path leaked into message: %s", got)
+	if strings.Contains(got, `filename=outcome"; x=evil.pdf`) {
+		t.Fatalf("attachment filename escaped its MIME parameter: %s", got)
 	}
 }
 

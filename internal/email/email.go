@@ -14,7 +14,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 )
@@ -235,12 +235,14 @@ func (c *Client) buildMessageWithID(to, subject, body string, attachments []Atta
 		return nil, err
 	}
 	for _, attachment := range attachments {
-		filename := filepath.Base(strings.TrimSpace(attachment.Filename))
-		if filename == "" || filename == "." {
-			filename = "attachment"
-		}
-		if hasHeaderControl(filename) {
+		rawFilename := strings.TrimSpace(attachment.Filename)
+		if hasHeaderControl(rawFilename) {
 			return nil, fmt.Errorf("email_failed: attachment filename contains control characters")
+		}
+		filename := path.Base(strings.ReplaceAll(rawFilename, `\`, "/"))
+		if filename == "" || filename == "." || filename == ".." || filename == "/" ||
+			(len(filename) == 2 && filename[1] == ':') {
+			filename = "attachment"
 		}
 		contentType := strings.TrimSpace(attachment.ContentType)
 		if contentType == "" {
@@ -252,8 +254,8 @@ func (c *Client) buildMessageWithID(to, subject, body string, attachments []Atta
 		}
 		contentType = parsedContentType
 		header := make(textproto.MIMEHeader)
-		header.Set("Content-Type", contentType+"; name="+mime.QEncoding.Encode("UTF-8", filename))
-		header.Set("Content-Disposition", "attachment; filename="+mime.QEncoding.Encode("UTF-8", filename))
+		header.Set("Content-Type", mime.FormatMediaType(contentType, map[string]string{"name": filename}))
+		header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 		header.Set("Content-Transfer-Encoding", "base64")
 		part, createErr := writer.CreatePart(header)
 		if createErr != nil {
