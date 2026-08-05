@@ -1,7 +1,10 @@
 package httpserver
 
 import (
+	"bytes"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -88,5 +91,53 @@ func TestIneligibleDefaultPublicSummaryIncludesFixture(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary %q does not contain %q", got, want)
 		}
+	}
+}
+
+func TestReadIneligibleRetainedUploadConfinesStorageKey(t *testing.T) {
+	root := t.TempDir()
+	retained := filepath.Join(root, "sha256", "ab", "evidence.pdf")
+	if err := os.MkdirAll(filepath.Dir(retained), 0700); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("private retained evidence")
+	if err := os.WriteFile(retained, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readIneligibleRetainedUpload(root, "sha256/ab/evidence.pdf")
+	if err != nil {
+		t.Fatalf("read valid retained upload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("retained bytes = %q, want %q", got, want)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.pdf")
+	if err := os.WriteFile(outside, []byte("must remain unreachable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relativeEscape, err := filepath.Rel(root, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, storageKey := range []string{filepath.ToSlash(relativeEscape), filepath.ToSlash(outside)} {
+		if _, err := readIneligibleRetainedUpload(root, storageKey); err == nil {
+			t.Fatalf("escaping storage key %q was accepted", storageKey)
+		}
+	}
+}
+
+func TestReadIneligibleRetainedUploadRejectsEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.pdf")
+	if err := os.WriteFile(outside, []byte("must remain unreachable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape.pdf")); err != nil {
+		t.Skipf("symlinks are unavailable on this platform: %v", err)
+	}
+	if _, err := readIneligibleRetainedUpload(root, "escape.pdf"); err == nil {
+		t.Fatal("symlink escaping the retained-upload root was accepted")
 	}
 }

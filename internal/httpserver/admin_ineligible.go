@@ -555,12 +555,11 @@ func (s *Server) handleAdminIneligibleAttachmentDownload() http.HandlerFunc {
 		if baseDirectory == "" {
 			baseDirectory = "/app/data/ineligible-uploads"
 		}
-		relative := filepath.Clean(filepath.FromSlash(storageKey))
-		if filepath.IsAbs(relative) || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		data, err := readIneligibleRetainedUpload(baseDirectory, storageKey)
+		if errors.Is(err, errInvalidIneligibleRetainedUploadPath) {
 			http.Error(w, "retained evidence provenance is invalid", http.StatusInternalServerError)
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(baseDirectory, relative))
 		if err != nil {
 			http.Error(w, "retained evidence is unavailable", http.StatusInternalServerError)
 			return
@@ -575,6 +574,22 @@ func (s *Server) handleAdminIneligibleAttachmentDownload() http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		http.ServeContent(w, r, filepath.Base(name), observed, bytes.NewReader(data))
 	}
+}
+
+var errInvalidIneligibleRetainedUploadPath = errors.New("invalid retained upload path")
+
+func readIneligibleRetainedUpload(baseDirectory, storageKey string) ([]byte, error) {
+	baseDirectory = strings.TrimSpace(baseDirectory)
+	relative := filepath.Clean(filepath.FromSlash(storageKey))
+	if baseDirectory == "" || filepath.IsAbs(relative) || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, errInvalidIneligibleRetainedUploadPath
+	}
+	root, err := os.OpenRoot(baseDirectory)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.ReadFile(relative)
 }
 
 func (s *Server) loadIneligibleMappingOptions(ctx context.Context) ([]ineligibleClubOption, []ineligibleTeamOption, []ineligibleCaseOption, error) {

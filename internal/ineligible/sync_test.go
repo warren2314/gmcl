@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -341,12 +342,22 @@ func TestServiceRetainsPermittedDriveUploadBySHA256(t *testing.T) {
 		if attachment.SHA256 != expectedSHA || attachment.StorageKey != "sha256/"+expectedSHA[:2]+"/"+expectedSHA {
 			t.Fatalf("content address: sha=%q key=%q", attachment.SHA256, attachment.StorageKey)
 		}
-		retained, err := os.ReadFile(filepath.Join(cfg.UploadDir, filepath.FromSlash(attachment.StorageKey)))
+		retainedPath := filepath.Join(cfg.UploadDir, filepath.FromSlash(attachment.StorageKey))
+		retained, err := os.ReadFile(retainedPath)
 		if err != nil {
 			t.Fatalf("read retained upload: %v", err)
 		}
 		if !bytes.Equal(retained, content) {
 			t.Fatalf("retained bytes: %q", retained)
+		}
+		if runtime.GOOS != "windows" {
+			info, statErr := os.Stat(retainedPath)
+			if statErr != nil {
+				t.Fatalf("stat retained upload: %v", statErr)
+			}
+			if got := info.Mode().Perm(); got != 0400 {
+				t.Fatalf("retained upload mode = %#o, want 0400", got)
+			}
 		}
 	}
 }

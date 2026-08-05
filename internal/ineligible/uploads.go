@@ -184,7 +184,7 @@ func storeUpload(ctx context.Context, cfg Config, reference uploadReference, dow
 		if err := verifyStoredUpload(finalPath, digest, written); err != nil {
 			return StoredAttachment{}, err
 		}
-		if err := os.Chmod(finalPath, 0440); err != nil {
+		if err := os.Chmod(finalPath, 0400); err != nil {
 			return StoredAttachment{}, fmt.Errorf("protect immutable upload: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -194,7 +194,7 @@ func storeUpload(ctx context.Context, cfg Config, reference uploadReference, dow
 			return StoredAttachment{}, fmt.Errorf("commit immutable upload: %w", err)
 		}
 		keepTemporary = true
-		if err := os.Chmod(finalPath, 0440); err != nil {
+		if err := os.Chmod(finalPath, 0400); err != nil {
 			return StoredAttachment{}, fmt.Errorf("protect immutable upload: %w", err)
 		}
 	}

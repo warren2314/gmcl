@@ -2,6 +2,11 @@ package httpserver
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/sha256"
 	"net/http"
 	"strings"
 	"testing"
@@ -100,6 +105,40 @@ func TestCanonicalSNSNotification(t *testing.T) {
 	want := "Message\npayload\nMessageId\nmessage-1\nSubject\nsubject\nTimestamp\n2026-08-04T03:30:00.000Z\nTopicArn\narn:aws:sns:eu-west-2:123:gmcl\nType\nNotification\n"
 	if canonical != want {
 		t.Fatalf("canonical message:\n%s\nwant:\n%s", canonical, want)
+	}
+}
+
+func TestVerifySNSCanonicalSignatureSupportsProtocolVersions(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := "Message\npayload\nMessageId\nmessage-1\n"
+	for _, version := range []string{"1", "2"} {
+		t.Run("version_"+version, func(t *testing.T) {
+			var hash crypto.Hash
+			var digest []byte
+			if version == "1" {
+				sum := sha1.Sum([]byte(canonical))
+				hash, digest = crypto.SHA1, sum[:]
+			} else {
+				sum := sha256.Sum256([]byte(canonical))
+				hash, digest = crypto.SHA256, sum[:]
+			}
+			signature, signErr := rsa.SignPKCS1v15(rand.Reader, privateKey, hash, digest)
+			if signErr != nil {
+				t.Fatal(signErr)
+			}
+			if err := verifySNSCanonicalSignature(&privateKey.PublicKey, version, canonical, signature); err != nil {
+				t.Fatalf("verify legitimate SNS version %s signature: %v", version, err)
+			}
+			if err := verifySNSCanonicalSignature(&privateKey.PublicKey, version, canonical+"tampered", signature); err == nil {
+				t.Fatalf("tampered SNS version %s message was accepted", version)
+			}
+		})
+	}
+	if err := verifySNSCanonicalSignature(&privateKey.PublicKey, "3", canonical, []byte("signature")); err == nil {
+		t.Fatal("unsupported SNS signature version was accepted")
 	}
 }
 

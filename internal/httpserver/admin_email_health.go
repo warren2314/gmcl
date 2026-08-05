@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- AWS SNS SignatureVersion 1 requires SHA-1 solely for verification; version 2 uses SHA-256.
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -252,12 +252,20 @@ func verifySNSMessageSignature(ctx context.Context, env snsEnvelope) error {
 	if err != nil {
 		return err
 	}
-	if env.SignatureVersion == "1" {
-		digest := sha1.Sum([]byte(canonical))
+	return verifySNSCanonicalSignature(publicKey, env.SignatureVersion, canonical, signature)
+}
+
+func verifySNSCanonicalSignature(publicKey *rsa.PublicKey, version, canonical string, signature []byte) error {
+	switch version {
+	case "1":
+		digest := sha1.Sum([]byte(canonical)) // #nosec G401 -- AWS SNS v1 mandates SHA-1 verification; v2 uses SHA-256 below.
 		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA1, digest[:], signature)
+	case "2":
+		digest := sha256.Sum256([]byte(canonical))
+		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature)
+	default:
+		return errors.New("unsupported SNS signature version")
 	}
-	digest := sha256.Sum256([]byte(canonical))
-	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature)
 }
 
 func canonicalSNSMessage(env snsEnvelope) (string, error) {
