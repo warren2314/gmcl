@@ -1034,7 +1034,14 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 			http.Error(w, "could not create ineligible-player case", http.StatusInternalServerError)
 			return
 		}
-		redirectIneligible(w, r, intakeID, "success", reference+" created and assigned to "+assignee+"; no email was sent")
+		message := reference + " created and assigned to " + assignee + "; no email was sent"
+		if result, collectErr := s.collectIneligibleScorecardEvidence(r.Context(), caseID, *actor.ID, actor.Label, actor.RequestID); collectErr == nil {
+			message += fmt.Sprintf("; Play-Cricket scorecard %d was retained as private evidence", result.MatchID)
+		} else {
+			slog.Warn("automatic Play-Cricket scorecard collection", "case_id", caseID, "error", collectErr)
+			message += "; scorecard evidence was not collected automatically (open the case to review or retry)"
+		}
+		redirectIneligible(w, r, intakeID, "success", message)
 		_ = reportingText
 		_ = offendingText
 	}
@@ -1156,7 +1163,14 @@ func (s *Server) handleAdminIneligibleLinkCase() http.HandlerFunc {
 			http.Error(w, "could not link intake", http.StatusInternalServerError)
 			return
 		}
-		redirectIneligible(w, r, intakeID, "success", "Intake linked and merged into "+reference+"; no email was sent")
+		message := "Intake linked and merged into " + reference + "; no email was sent"
+		if result, collectErr := s.collectIneligibleScorecardEvidence(r.Context(), caseID, *actor.ID, actor.Label, actor.RequestID); collectErr == nil {
+			message += fmt.Sprintf("; Play-Cricket scorecard %d was retained as private evidence", result.MatchID)
+		} else {
+			slog.Warn("automatic Play-Cricket scorecard collection after intake link", "case_id", caseID, "error", collectErr)
+			message += "; scorecard evidence was not collected automatically (open the case to review or retry)"
+		}
+		redirectIneligible(w, r, intakeID, "success", message)
 	}
 }
 

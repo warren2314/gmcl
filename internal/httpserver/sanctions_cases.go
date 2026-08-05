@@ -1247,7 +1247,13 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
+		if failure := strings.TrimSpace(r.URL.Query().Get("error")); failure != "" {
+			fmt.Fprintf(w, `<div class="alert alert-warning">%s</div>`, escapeHTML(failure))
+		}
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
+		if source == "ineligible_player" {
+			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
+		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 		if !hasProposed && canPropose {
 			fmt.Fprint(w, s.adminDecisionBundleFormHTML(r.Context(), id, csrf, publicSummary))
