@@ -773,6 +773,15 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 				return
 			}
 		}
+		allegedRuleParagraph := ""
+		if sourceType == "ineligible_player" {
+			allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, id)
+			if ruleErr != nil {
+				http.Error(w, "record the published rule alleged in this investigation before requesting a club response", http.StatusConflict)
+				return
+			}
+			allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+		}
 		type savedDraft struct {
 			id            int64
 			subject, body string
@@ -790,11 +799,11 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 			http.Error(w, "save both the response request and reminder drafts before sending", http.StatusConflict)
 			return
 		}
-		if validationErr := validateResponseDraftContent("response_request", requestDraft.body, publicSummary); validationErr != nil {
+		if validationErr := validateResponseDraftContent("response_request", requestDraft.body, publicSummary, allegedRuleParagraph); validationErr != nil {
 			http.Error(w, "saved response request is invalid or stale: "+validationErr.Error()+"; save a new request draft", http.StatusConflict)
 			return
 		}
-		if validationErr := validateResponseDraftContent("response_reminder", reminderDraft.body, publicSummary); validationErr != nil {
+		if validationErr := validateResponseDraftContent("response_reminder", reminderDraft.body, publicSummary, allegedRuleParagraph); validationErr != nil {
 			http.Error(w, "saved response reminder is invalid or stale: "+validationErr.Error()+"; save a new reminder draft", http.StatusConflict)
 			return
 		}
@@ -853,8 +862,12 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 				VALUES($1,$2,$3,'response_request',$4,$5,$6,$7)`, id, policyID, requestCorrespondenceID, fmt.Sprintf("case:%d:response-request:%d", id, requestCorrespondenceID), officialEmail, requestDraft.subject, body)
 		}
 		if err == nil {
+			allegationSnapshot := publicSummary
+			if allegedRuleParagraph != "" {
+				allegationSnapshot += "\n\n" + allegedRuleParagraph
+			}
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_response_requests(case_id,party_id,access_token_id,correspondence_revision_id,reminder_correspondence_revision_id,status,allegation_snapshot)
-				VALUES($1,$2,$3,$4,$5,'queued',$6)`, id, partyID, tokenID, requestCorrespondenceID, reminderCorrespondenceID, publicSummary)
+				VALUES($1,$2,$3,$4,$5,'queued',$6)`, id, partyID, tokenID, requestCorrespondenceID, reminderCorrespondenceID, allegationSnapshot)
 		}
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,request_id) VALUES($1,'response_request_queued','admin',$2,$3,$4,$5)`, id, actorIDAny(actor), actor.Label, "Initial secure response request queued for the official mailbox for "+clubName+"; the response clock starts only after successful delivery", actor.RequestID)
@@ -1165,6 +1178,10 @@ type adminDecisionSubject struct {
 }
 
 func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, csrf, publicSummary string) string {
+	allegedRuleReference := ""
+	if allegedRule, ruleErr := loadCaseAllegedRule(ctx, s.DB, caseID); ruleErr == nil {
+		allegedRuleReference = allegedRule.Reference
+	}
 	var subjects []adminDecisionSubject
 	rows, err := s.DB.Query(ctx, `SELECT cs.id,cs.subject_type,COALESCE(t.name,''),COALESCE(cs.player_name,''),cs.is_primary
 		FROM sanction_case_subjects cs LEFT JOIN teams t ON t.id=cs.team_id
@@ -1196,7 +1213,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 		}
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Propose atomic decision bundle</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Rule reference or explicit not-applicable determination</label><input class="form-control" name="rule_reference" required></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(publicSummary), escapeHTML(publicSummary))
+	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Propose atomic decision bundle</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
 	effectOptions := []struct{ value, label string }{
 		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"suspended_red", "Suspended red"},
 		{"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"},
@@ -1252,6 +1269,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
 		if source == "ineligible_player" {
+			s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf)
 			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
 		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]

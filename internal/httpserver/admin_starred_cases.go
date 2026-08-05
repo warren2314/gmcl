@@ -459,6 +459,9 @@ func (s *Server) createStarredIneligibleCase(ctx context.Context, breach starred
 	if err != nil {
 		return result, fmt.Errorf("create ineligible-player case: %w", err)
 	}
+	if err = recordStarredCaseAllegedRule(ctx, tx, result.CaseID, actorID, actorLabel, reqID); err != nil {
+		return result, fmt.Errorf("record Rule 3.5 allegation: %w", err)
+	}
 
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO sanction_case_parties(case_id,party_type,name,team_id,relationship)

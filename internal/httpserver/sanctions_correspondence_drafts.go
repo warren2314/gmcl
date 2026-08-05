@@ -70,15 +70,24 @@ func (s *Server) handleAdminCaseResponseDraftSave() http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback(r.Context())
-		var status, publicSummary string
+		var status, publicSummary, sourceType string
 		var offendingClubID *int32
-		err = tx.QueryRow(r.Context(), `SELECT status,club_id,COALESCE(public_summary,'') FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).
-			Scan(&status, &offendingClubID, &publicSummary)
+		err = tx.QueryRow(r.Context(), `SELECT status,club_id,COALESCE(public_summary,''),source_type FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).
+			Scan(&status, &offendingClubID, &publicSummary, &sourceType)
 		if err != nil || !map[string]bool{"submitted": true, "triage": true, "investigating": true}[status] {
 			http.Error(w, "response drafts can only be saved before a decision is proposed", http.StatusConflict)
 			return
 		}
-		if validationErr := validateResponseDraftContent(kind, body, publicSummary); validationErr != nil {
+		allegedRuleParagraph := ""
+		if sourceType == "ineligible_player" {
+			allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, caseID)
+			if ruleErr != nil {
+				http.Error(w, "record the published rule alleged in this investigation before saving correspondence", http.StatusConflict)
+				return
+			}
+			allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+		}
+		if validationErr := validateResponseDraftContent(kind, body, publicSummary, allegedRuleParagraph); validationErr != nil {
 			http.Error(w, validationErr.Error(), http.StatusBadRequest)
 			return
 		}
@@ -162,8 +171,17 @@ func outcomeDraftIsReadOnly(audience string) bool {
 }
 
 func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf, ref, teamName, publicSummary, sourceType string) {
+	allegedRuleParagraph := ""
+	if sourceType == "ineligible_player" {
+		allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID)
+		if err != nil {
+			fmt.Fprint(w, `<div class="card mb-3 border-warning"><div class="card-body"><strong>Correspondence is waiting for the alleged rule.</strong><p class="small text-muted mb-0">Record the published GMCL rule under investigation before creating the offending-club response request.</p></div></div>`)
+			return
+		}
+		allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+	}
 	defaults := map[string]responseDraftView{
-		"response_request":  {kind: "response_request", subject: "Response requested for GMCL case " + ref, body: "Dear Club Secretary,\n\nThe GMCL requests an official response from " + teamName + " concerning the following allegation:\n\n" + publicSummary + "\n\nUse the secure link below to respond and upload any supporting evidence:\n" + responseLinkPlaceholder + "\n\nCase reference: " + ref + "\nThis secure link expires in seven days.\n\nRegards,\nGreater Manchester Cricket League"},
+		"response_request":  {kind: "response_request", subject: "Response requested for GMCL case " + ref, body: "Dear Club Secretary,\n\nThe GMCL requests an official response from " + teamName + " concerning the following allegation:\n\n" + publicSummary + "\n\n" + allegedRuleParagraph + "\n\nUse the secure link below to respond and upload any supporting evidence:\n" + responseLinkPlaceholder + "\n\nCase reference: " + ref + "\nThis secure link expires in seven days.\n\nRegards,\nGreater Manchester Cricket League"},
 		"response_reminder": {kind: "response_reminder", subject: "Reminder: Response requested for GMCL case " + ref, body: "Dear Club Secretary,\n\nThis is the single reminder that the response for GMCL case " + ref + " is due in two days. No adverse decision is made automatically if the deadline passes.\n\n" + responseLinkPlaceholder + "\n\nRegards,\nGreater Manchester Cricket League"},
 	}
 	for _, kind := range []string{"response_request", "response_reminder"} {
@@ -171,7 +189,7 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 		var stored responseDraftView
 		err := s.DB.QueryRow(r.Context(), `SELECT id,revision,subject,body FROM sanction_correspondence_revisions WHERE case_id=$1 AND message_kind=$2 AND audience='offending_club' AND status='draft' ORDER BY revision DESC,id DESC LIMIT 1`, caseID, kind).
 			Scan(&stored.id, &stored.revision, &stored.subject, &stored.body)
-		if err == nil {
+		if err == nil && validateResponseDraftContent(kind, stored.body, publicSummary, allegedRuleParagraph) == nil {
 			view = stored
 			view.kind, view.exists = kind, true
 		}
@@ -208,7 +226,7 @@ func validResponseDraftBody(body string) bool {
 
 var responseDraftParagraphBreak = regexp.MustCompile(`\n[\t ]*\n+`)
 
-func validateResponseDraftContent(kind, body, currentPublicAllegation string) error {
+func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRuleParagraph string) error {
 	if !validResponseDraftBody(body) {
 		return fmt.Errorf("the body must contain exactly one %s placeholder", responseLinkPlaceholder)
 	}
@@ -220,6 +238,9 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation string) er
 		}
 		if !containsExactResponseDraftParagraph(body, currentPublicAllegation) {
 			return fmt.Errorf("the response request must contain the current public allegation exactly as a standalone paragraph")
+		}
+		if strings.TrimSpace(allegedRuleParagraph) != "" && !containsExactResponseDraftParagraph(body, allegedRuleParagraph) {
+			return fmt.Errorf("the response request must contain the current alleged rule exactly as a standalone paragraph")
 		}
 		if !containsSevenDayWindow(normalized) {
 			return fmt.Errorf("the response request must state that the secure response window lasts seven days")
