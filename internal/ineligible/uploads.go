@@ -64,6 +64,11 @@ func parseUploadReferences(cell string) ([]uploadReference, error) {
 		if reference == "" {
 			continue
 		}
+		// Play-Cricket links are evidence references, not downloadable uploads.
+		// They remain in the immutable raw intake data and are never fetched here.
+		if isPermittedExternalEvidenceURL(reference) {
+			continue
+		}
 		fileID, err := driveFileIDFromReference(reference)
 		if err != nil {
 			return nil, err
@@ -75,6 +80,15 @@ func parseUploadReferences(cell string) ([]uploadReference, error) {
 		result = append(result, uploadReference{FileID: fileID, SourceURL: reference})
 	}
 	return result, nil
+}
+
+func isPermittedExternalEvidenceURL(reference string) bool {
+	u, err := url.Parse(strings.TrimSpace(reference))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return host == "play-cricket.com" || strings.HasSuffix(host, ".play-cricket.com")
 }
 
 func driveFileIDFromReference(reference string) (string, error) {

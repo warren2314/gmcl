@@ -492,6 +492,61 @@ func TestParseUploadReferencesRejectsNonDriveHost(t *testing.T) {
 	}
 }
 
+func TestParseUploadReferencesAllowsPlayCricketEvidenceLinksWithoutDownloading(t *testing.T) {
+	for _, reference := range []string{
+		"https://play-cricket.com/website/results/12345",
+		"https://springhead.play-cricket.com/website/results/12345",
+	} {
+		references, err := parseUploadReferences(reference)
+		if err != nil {
+			t.Fatalf("parse %q: %v", reference, err)
+		}
+		if len(references) != 0 {
+			t.Fatalf("expected %q to remain an external reference, got %+v", reference, references)
+		}
+	}
+}
+
+func TestParseUploadReferencesRejectsUnsafePlayCricketLookalikes(t *testing.T) {
+	for _, reference := range []string{
+		"http://springhead.play-cricket.com/website/results/12345",
+		"https://play-cricket.com.evil.example/website/results/12345",
+		"https://evilplay-cricket.com/website/results/12345",
+		"https://user@springhead.play-cricket.com/website/results/12345",
+	} {
+		if _, err := parseUploadReferences(reference); err == nil {
+			t.Fatalf("expected %q to be rejected", reference)
+		}
+	}
+}
+
+func TestServiceRetainsPlayCricketEvidenceLinkWithoutDriveRequest(t *testing.T) {
+	cfg := testConfig()
+	cfg.UploadDir = t.TempDir()
+	row := validSourceRow()
+	const evidenceURL = "https://springhead.play-cricket.com/website/results/12345"
+	row[12] = evidenceURL
+	source := &fakeSource{data: sheetWithRows(row), downloads: map[string]fakeUpload{}, downloadErrors: map[string]error{}}
+	store := newFakeStore()
+	service, err := NewService(cfg, source, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := service.Sync(context.Background(), Trigger{Type: "n8n"})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if summary.Errors != 0 || len(source.downloadCalls) != 0 {
+		t.Fatalf("summary=%+v download calls=%v", summary, source.downloadCalls)
+	}
+	for _, intake := range store.intakes {
+		if intake.row.UploadCell != evidenceURL {
+			t.Fatalf("stored upload cell = %q, want %q", intake.row.UploadCell, evidenceURL)
+		}
+	}
+}
+
 func sheetWithRows(rows ...[]any) SheetData {
 	values := make([][]any, 0, len(rows)+1)
 	values = append(values, stringsToAny(DefaultGoogleFormSchema().Headers))
