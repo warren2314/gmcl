@@ -365,6 +365,7 @@ func readTrackerGrid(file *zip.File) ([]trackerGridRow, error) {
 	defer stream.Close()
 	decoder := xml.NewDecoder(io.LimitReader(stream, maxTrackerXML+1))
 	rows := make([]trackerGridRow, 0, 128)
+	mergedRefs := make([]string, 0, 16)
 	for {
 		token, decodeErr := decoder.Token()
 		if decodeErr == io.EOF {
@@ -374,7 +375,19 @@ func readTrackerGrid(file *zip.File) ([]trackerGridRow, error) {
 			return nil, fmt.Errorf("read tracker worksheet: %w", decodeErr)
 		}
 		start, ok := token.(xml.StartElement)
-		if !ok || start.Name.Local != "row" {
+		if !ok {
+			continue
+		}
+		if start.Name.Local == "mergeCell" {
+			for _, attribute := range start.Attr {
+				if attribute.Name.Local == "ref" {
+					mergedRefs = append(mergedRefs, attribute.Value)
+					break
+				}
+			}
+			continue
+		}
+		if start.Name.Local != "row" {
 			continue
 		}
 		var row trackerSheetRow
@@ -411,7 +424,92 @@ func readTrackerGrid(file *zip.File) ([]trackerGridRow, error) {
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Number < rows[j].Number })
+	if err := inheritTrackerMergedHistory(rows, mergedRefs); err != nil {
+		return nil, err
+	}
 	return rows, nil
+}
+
+// inheritTrackerMergedHistory expands only vertical, single-column merges in
+// the manual O:Z tracker area. Excel stores a merged value solely in the
+// top-left cell; without this expansion the other intake rows in a multi-player
+// investigation would silently lose their shared response and outcome history.
+func inheritTrackerMergedHistory(rows []trackerGridRow, references []string) error {
+	byNumber := make(map[int]*trackerGridRow, len(rows))
+	for index := range rows {
+		byNumber[rows[index].Number] = &rows[index]
+	}
+	for _, reference := range references {
+		startColumn, startRow, endColumn, endRow, err := trackerMergedCoordinates(reference)
+		if err != nil {
+			return fmt.Errorf("tracker contains invalid merged range %q", reference)
+		}
+		if startRow == endRow {
+			continue
+		}
+		if startColumn < 14 || endColumn >= len(trackerHeaders) {
+			if startColumn < len(trackerHeaders) && endColumn >= 0 {
+				return fmt.Errorf("tracker merged range %q overlaps intake or unsupported columns", reference)
+			}
+			continue
+		}
+		if startColumn != endColumn {
+			return fmt.Errorf("tracker merged history range %q must cover one column", reference)
+		}
+		sourceRow := byNumber[startRow]
+		if sourceRow == nil {
+			return fmt.Errorf("tracker merged range %q has no source row", reference)
+		}
+		source, ok := sourceRow.Cells[startColumn]
+		if !ok || !trackerCellHasStoredValue(source) {
+			continue
+		}
+		for rowNumber := startRow + 1; rowNumber <= endRow; rowNumber++ {
+			targetRow := byNumber[rowNumber]
+			if targetRow == nil {
+				return fmt.Errorf("tracker merged range %q crosses missing row %d", reference, rowNumber)
+			}
+			if target, exists := targetRow.Cells[startColumn]; exists && trackerCellHasStoredValue(target) {
+				return fmt.Errorf("tracker merged range %q contains conflicting data in row %d", reference, rowNumber)
+			}
+			targetRow.Cells[startColumn] = source
+		}
+	}
+	return nil
+}
+
+func trackerMergedCoordinates(reference string) (int, int, int, int, error) {
+	parts := strings.Split(strings.TrimSpace(reference), ":")
+	if len(parts) != 2 {
+		return 0, 0, 0, 0, fmt.Errorf("expected a two-cell range")
+	}
+	startColumn, startRow, ok := trackerCellCoordinates(parts[0])
+	if !ok {
+		return 0, 0, 0, 0, fmt.Errorf("invalid start cell")
+	}
+	endColumn, endRow, ok := trackerCellCoordinates(parts[1])
+	if !ok || endColumn < startColumn || endRow < startRow {
+		return 0, 0, 0, 0, fmt.Errorf("invalid end cell")
+	}
+	return startColumn, startRow, endColumn, endRow, nil
+}
+
+func trackerCellCoordinates(reference string) (int, int, bool) {
+	reference = strings.TrimSpace(reference)
+	separator := 0
+	for separator < len(reference) && ((reference[separator] >= 'A' && reference[separator] <= 'Z') || (reference[separator] >= 'a' && reference[separator] <= 'z')) {
+		separator++
+	}
+	if separator == 0 || separator == len(reference) {
+		return 0, 0, false
+	}
+	column := trackerColumnIndex(reference[:separator])
+	row, err := strconv.Atoi(reference[separator:])
+	return column, row, err == nil && column >= 0 && row > 0
+}
+
+func trackerCellHasStoredValue(cell trackerSheetCell) bool {
+	return strings.TrimSpace(cell.Value) != "" || strings.TrimSpace(cell.Inline.value()) != ""
 }
 
 func trackerColumnIndex(reference string) int {

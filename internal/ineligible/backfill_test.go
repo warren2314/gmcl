@@ -25,8 +25,18 @@ func TestParseSuppliedTrackerWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workbook.SheetName != TrackerSheetName || len(workbook.Rows) != 37 {
-		t.Fatalf("supplied tracker parsed sheet=%q rows=%d, want %q and 37", workbook.SheetName, len(workbook.Rows), TrackerSheetName)
+	if workbook.SheetName != TrackerSheetName || len(workbook.Rows) == 0 {
+		t.Fatalf("supplied tracker parsed sheet=%q rows=%d", workbook.SheetName, len(workbook.Rows))
+	}
+	bySourceRow := make(map[int]TrackerRow, len(workbook.Rows))
+	for _, row := range workbook.Rows {
+		bySourceRow[row.SourceRowNumber] = row
+	}
+	for _, sourceRow := range []int{17, 18, 19, 35, 36, 37} {
+		row, ok := bySourceRow[sourceRow]
+		if !ok || row.PointsText == "" || row.CardsText == "" || row.TrackerStateHint != "closed" {
+			t.Fatalf("merged tracker history was not inherited for source row %d: %+v", sourceRow, row)
+		}
 	}
 }
 
@@ -83,6 +93,45 @@ func makeTrackerWorkbook(t *testing.T, sheetName string, headers []string, rows 
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestInheritTrackerMergedHistory(t *testing.T) {
+	sourceResponse := trackerSheetCell{Type: "inlineStr", Inline: trackerRichText{Text: "The shared club response."}}
+	sourcePoints := trackerSheetCell{Type: "inlineStr", Inline: trackerRichText{Text: "Six league points discussed."}}
+	sourceClosed := trackerSheetCell{Type: "inlineStr", Inline: trackerRichText{Text: "Yes"}}
+	rows := []trackerGridRow{
+		{Number: 2, Cells: map[int]trackerSheetCell{20: sourceResponse, 22: sourcePoints, 25: sourceClosed}},
+		{Number: 3, Cells: map[int]trackerSheetCell{}},
+	}
+
+	if err := inheritTrackerMergedHistory(rows, []string{"U2:U3", "W2:W3", "Z2:Z3"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := trackerCellText(rows[1].Cells[20], nil); got != "The shared club response." {
+		t.Fatalf("response=%q", got)
+	}
+	if got := trackerCellText(rows[1].Cells[22], nil); got != "Six league points discussed." {
+		t.Fatalf("points=%q", got)
+	}
+	if got := trackerCellText(rows[1].Cells[25], nil); got != "Yes" {
+		t.Fatalf("closed=%q", got)
+	}
+}
+
+func TestInheritTrackerMergedHistoryFailsClosed(t *testing.T) {
+	rows := []trackerGridRow{
+		{Number: 2, Cells: map[int]trackerSheetCell{20: {Type: "inlineStr", Inline: trackerRichText{Text: "Source"}}}},
+		{Number: 3, Cells: map[int]trackerSheetCell{20: {Type: "inlineStr", Inline: trackerRichText{Text: "Conflict"}}}},
+	}
+	if err := inheritTrackerMergedHistory(rows, []string{"U2:U3"}); err == nil || !strings.Contains(err.Error(), "conflicting data") {
+		t.Fatalf("expected conflicting data error, got %v", err)
+	}
+	if err := inheritTrackerMergedHistory(rows, []string{"C2:C3"}); err == nil || !strings.Contains(err.Error(), "overlaps intake") {
+		t.Fatalf("expected merged intake error, got %v", err)
+	}
+	if err := inheritTrackerMergedHistory(rows, []string{"U2:V3"}); err == nil || !strings.Contains(err.Error(), "one column") {
+		t.Fatalf("expected horizontal history error, got %v", err)
+	}
 }
 
 func trackerExcelSerial(value time.Time) string {
