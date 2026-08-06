@@ -430,6 +430,8 @@ func (s *Server) handleAdminIneligibleSync() http.HandlerFunc {
 				message = "Import is disabled by INELIGIBLE_IMPORT_ENABLED."
 			case errors.Is(err, ineligibledomain.ErrSyncInProgress):
 				message = "Another ineligible-player sync is already running."
+			case errors.Is(err, ineligibledomain.ErrBackfillPrerequisite):
+				message = "Manual staging is blocked until bootstrap mode is enabled or the named tracker reconciliation is signed off and applied."
 			}
 			slog.Error("manual ineligible intake sync", "admin_id", adminID, "run_id", summary.RunID, "error", err)
 			redirectIneligibleDashboard(w, r, "error", message)
