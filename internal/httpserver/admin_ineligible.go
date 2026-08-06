@@ -497,7 +497,7 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 			if link.Reason != "" {
 				fmt.Fprint(w, `<p class="small mt-2 mb-0">`+escapeHTML(link.Reason)+`</p>`)
 			}
-			fmt.Fprintf(w, `<div class="row g-3 mt-1"><div class="col-md-6"><form method="POST" action="/admin/cases/%d/investigation-note"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">Immutable investigation note</label><textarea class="form-control form-control-sm" name="note" rows="3" maxlength="10000" required></textarea><button class="btn btn-sm btn-outline-primary mt-2">Record note</button></form></div><div class="col-md-6"><form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">External club response</label><select class="form-select form-select-sm mb-2" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select><input class="form-control form-control-sm mb-2" name="respondent" placeholder="Respondent name / mailbox" maxlength="300"><textarea class="form-control form-control-sm" name="response" rows="3" maxlength="20000" required></textarea><label class="form-label small mt-2 mb-1">Attachment (PDF, JPEG, PNG, WebP, or text; max 10 MB)</label><input class="form-control form-control-sm" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,text/plain"><button class="btn btn-sm btn-outline-success mt-2">Record response</button></form></div></div></article>`, link.CaseID, csrf, intakeID, link.CaseID, csrf, intakeID)
+			fmt.Fprintf(w, `<div class="row g-3 mt-1"><div class="col-md-6"><form method="POST" action="/admin/cases/%d/investigation-note"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">Immutable investigation note</label><textarea class="form-control form-control-sm" name="note" rows="3" maxlength="10000" required></textarea><button class="btn btn-sm btn-outline-primary mt-2">Record note</button></form></div><div class="col-md-6"><form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">External club response</label><select class="form-select form-select-sm mb-2" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select><input class="form-control form-control-sm mb-2" name="respondent" placeholder="Respondent name / mailbox" maxlength="300"><textarea class="form-control form-control-sm" name="response" rows="3" maxlength="20000" required></textarea><label class="form-label small mt-2 mb-1">Attachment (PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control form-control-sm" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"><button class="btn btn-sm btn-outline-success mt-2">Record response</button></form></div></div></article>`, link.CaseID, csrf, intakeID, link.CaseID, csrf, intakeID)
 		}
 		fmt.Fprint(w, `</div></section>`)
 		writeIneligibleIntakeEvents(w, s, r.Context(), intakeID)
@@ -541,8 +541,12 @@ func (s *Server) writeIneligibleIntakeAttachments(w http.ResponseWriter, ctx con
 		count++
 		attachmentURL := fmt.Sprintf("/admin/ineligible/%d/attachments/%d", intakeID, attachmentID)
 		metadata := fmt.Sprintf(`Source revision %d &middot; %s &middot; %d bytes &middot; SHA-256 %s &middot; retained %s`, revision, escapeHTML(media), size, escapeHTML(digest[:minInt(12, len(digest))]), escapeHTML(observed.In(s.LondonLoc).Format("02 Jan 2006 15:04")))
-		if ineligibleAttachmentDisposition(media, true) == "inline" {
+		switch ineligibleAttachmentPreviewKind(media) {
+		case "image":
 			fmt.Fprintf(&content, `<div class="col"><article class="border rounded h-100 overflow-hidden"><a href="%s?preview=1" target="_blank" rel="noopener noreferrer"><img src="%s?preview=1" alt="Preview of %s" loading="lazy" decoding="async" style="display:block;width:100%%;height:220px;object-fit:contain;background:#f8f9fa"></a><div class="p-3"><div class="fw-semibold text-break">%s</div><div class="small text-muted mt-1">%s</div><a class="btn btn-sm btn-outline-secondary mt-2" href="%s">Download original</a></div></article></div>`, attachmentURL, attachmentURL, escapeHTML(name), escapeHTML(name), metadata, attachmentURL)
+			continue
+		case "video":
+			fmt.Fprintf(&content, `<div class="col"><article class="border rounded h-100 overflow-hidden"><video controls preload="metadata" playsinline style="display:block;width:100%%;height:220px;background:#000"><source src="%s?preview=1" type="video/mp4">Your browser does not support MP4 video.</video><div class="p-3"><div class="fw-semibold text-break">%s</div><div class="small text-muted mt-1">%s</div><a class="btn btn-sm btn-outline-secondary mt-2" href="%s">Download original</a></div></article></div>`, attachmentURL, escapeHTML(name), metadata, attachmentURL)
 			continue
 		}
 		fmt.Fprintf(&content, `<div class="col"><article class="border rounded h-100 p-3"><a class="fw-semibold text-break" href="%s">%s</a><div class="small text-muted mt-1">%s</div></article></div>`, attachmentURL, escapeHTML(name), metadata)
@@ -552,16 +556,24 @@ func (s *Server) writeIneligibleIntakeAttachments(w http.ResponseWriter, ctx con
 	}
 }
 
-func ineligibleAttachmentDisposition(contentType string, preview bool) string {
+func ineligibleAttachmentPreviewKind(contentType string) string {
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil {
 		mediaType = strings.ToLower(strings.TrimSpace(contentType))
 	}
-	if preview {
-		switch strings.ToLower(mediaType) {
-		case "image/gif", "image/jpeg", "image/png", "image/webp":
-			return "inline"
-		}
+	switch strings.ToLower(mediaType) {
+	case "image/gif", "image/jpeg", "image/png", "image/webp":
+		return "image"
+	case "video/mp4":
+		return "video"
+	default:
+		return ""
+	}
+}
+
+func ineligibleAttachmentDisposition(contentType string, preview bool) string {
+	if preview && ineligibleAttachmentPreviewKind(contentType) != "" {
+		return "inline"
 	}
 	return "attachment"
 }

@@ -62,6 +62,41 @@ func TestGoogleDriveDownloadUsesMetadataThenBoundedMedia(t *testing.T) {
 	}
 }
 
+func TestGoogleDriveDownloadAcceptsMP4Evidence(t *testing.T) {
+	const fileID = "drive-video-1234567890"
+	content := []byte("\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("alt") == "media" {
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Length", "24")
+			_, _ = w.Write(content)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + fileID + `","name":"evidence.mp4","mimeType":"video/mp4","size":"24","trashed":false}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig()
+	cfg.DriveBaseURL = server.URL
+	source := &GoogleSheetsSource{
+		cfg: cfg, httpClient: server.Client(), accessToken: "cached-test-token",
+		tokenExpiry: time.Now().Add(time.Hour),
+	}
+	download, err := source.DownloadUpload(context.Background(), fileID, 1024)
+	if err != nil {
+		t.Fatalf("download MP4: %v", err)
+	}
+	defer download.Body.Close()
+	got, err := io.ReadAll(download.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) || download.Name != "evidence.mp4" || download.ContentType != "video/mp4" || download.Size != 24 {
+		t.Fatalf("download=%+v body=%x", download, got)
+	}
+}
+
 func TestGoogleDriveDownloadRejectsMetadataOverLimitWithoutMediaRequest(t *testing.T) {
 	const fileID = "drive-file-1234567890"
 	var mediaCalls atomic.Int32

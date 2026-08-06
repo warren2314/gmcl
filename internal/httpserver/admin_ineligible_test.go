@@ -57,16 +57,19 @@ func TestBuildIneligibleQueueQueryUsesArgumentsForUserInput(t *testing.T) {
 	}
 }
 
-func TestIneligibleAttachmentDispositionAllowsOnlyBrowserSafeImagesInline(t *testing.T) {
-	for _, mediaType := range []string{"image/jpeg", "image/png", "image/webp", "image/gif; charset=binary"} {
+func TestIneligibleAttachmentDispositionAllowsSafeMediaInline(t *testing.T) {
+	for _, mediaType := range []string{"image/jpeg", "image/png", "image/webp", "image/gif; charset=binary", "video/mp4"} {
 		if got := ineligibleAttachmentDisposition(mediaType, true); got != "inline" {
 			t.Errorf("%s disposition = %q, want inline", mediaType, got)
 		}
 	}
-	for _, mediaType := range []string{"image/heic", "image/svg+xml", "application/pdf", "text/html"} {
+	for _, mediaType := range []string{"image/heic", "image/svg+xml", "application/pdf", "text/html", "video/webm"} {
 		if got := ineligibleAttachmentDisposition(mediaType, true); got != "attachment" {
 			t.Errorf("%s disposition = %q, want attachment", mediaType, got)
 		}
+	}
+	if got := ineligibleAttachmentPreviewKind("video/mp4; codecs=avc1"); got != "video" {
+		t.Fatalf("MP4 preview kind = %q, want video", got)
 	}
 	if got := ineligibleAttachmentDisposition("image/jpeg", false); got != "attachment" {
 		t.Fatalf("non-preview image disposition = %q, want attachment", got)

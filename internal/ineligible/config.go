@@ -68,6 +68,7 @@ var defaultUploadContentTypes = []string{
 	"image/webp",
 	"message/rfc822",
 	"text/plain",
+	"video/mp4",
 }
 
 // DefaultGoogleFormSchema is the reviewed A1:N1 contract from the 2026 form.

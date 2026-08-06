@@ -416,7 +416,7 @@ func (s *Server) handleSanctionReportForm() http.HandlerFunc {
 		} else {
 			fmt.Fprint(w, `<div id="ineligible-player-fields" hidden></div>`)
 		}
-		fmt.Fprint(w, `<div class="col-12"><label class="form-label">What happened?</label><textarea class="form-control" name="summary" rows="7" required maxlength="10000"></textarea></div><div class="col-12"><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,.txt"></div><div class="col-12 form-check ms-2"><input class="form-check-input" type="checkbox" name="consent" value="yes" required id="consent"><label class="form-check-label" for="consent">I confirm this report is accurate to the best of my knowledge. The league may use the allegation and approved evidence while protecting personal contact details.</label></div></div><div class="card-footer"><button class="btn btn-danger" id="sanction-report-submit">Submit and verify email</button></div></form></main><script>(function(){var select=document.getElementById('sanction-report-type');var section=document.getElementById('ineligible-player-fields');var button=document.getElementById('sanction-report-submit');var labels=document.querySelectorAll('.ineligible-required-label');var requested=new URLSearchParams(window.location.search).get('type');if(requested==='ineligible_player'){select.value=requested;}function update(){var active=select.value==='ineligible_player';section.hidden=!active;document.querySelectorAll('[data-ineligible-required]').forEach(function(field){field.required=active;});labels.forEach(function(label){label.textContent=active?'(required)':'(if relevant)';});button.textContent=active?'Submit for private triage':'Submit and verify email';}select.addEventListener('change',update);update();}());</script>`)
+		fmt.Fprint(w, `<div class="col-12"><label class="form-label">What happened?</label><textarea class="form-control" name="summary" rows="7" required maxlength="10000"></textarea></div><div class="col-12"><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt"></div><div class="col-12 form-check ms-2"><input class="form-check-input" type="checkbox" name="consent" value="yes" required id="consent"><label class="form-check-label" for="consent">I confirm this report is accurate to the best of my knowledge. The league may use the allegation and approved evidence while protecting personal contact details.</label></div></div><div class="card-footer"><button class="btn btn-danger" id="sanction-report-submit">Submit and verify email</button></div></form></main><script>(function(){var select=document.getElementById('sanction-report-type');var section=document.getElementById('ineligible-player-fields');var button=document.getElementById('sanction-report-submit');var labels=document.querySelectorAll('.ineligible-required-label');var requested=new URLSearchParams(window.location.search).get('type');if(requested==='ineligible_player'){select.value=requested;}function update(){var active=select.value==='ineligible_player';section.hidden=!active;document.querySelectorAll('[data-ineligible-required]').forEach(function(field){field.required=active;});labels.forEach(function(label){label.textContent=active?'(required)':'(if relevant)';});button.textContent=active?'Submit for private triage':'Submit and verify email';}select.addEventListener('change',update);update();}());</script>`)
 		if !nativeActive {
 			fmt.Fprint(w, `<script>(function(){var option=document.querySelector('#sanction-report-type option[value="ineligible_player"]');if(option){option.remove();}}());</script>`)
 		}
@@ -620,7 +620,7 @@ func (s *Server) handleSanctionCaseResponseForm() http.HandlerFunc {
 				fmt.Fprintf(w, `<section class="card mb-3"><div class="card-header">Evidence shared for your response</div><ul class="list-group list-group-flush">%s</ul></section>`, shared.String())
 			}
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/sanctions/case/respond" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="token" value="%s"><div class="card-body"><label class="form-label">Your explanation</label><textarea class="form-control mb-3" name="response" rows="8" required maxlength="20000"></textarea><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, or text; max 10 MB)</label><input class="form-control mb-3" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,.txt"><label class="form-check"><input class="form-check-input" type="checkbox" name="appeal" value="yes"> <span class="form-check-label">This response is a formal appeal against a published decision</span></label></div><div class="card-footer"><button class="btn btn-danger">Submit response</button></div></form></main>`, csrf, escapeHTML(raw))
+		fmt.Fprintf(w, `<form method="POST" action="/sanctions/case/respond" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="token" value="%s"><div class="card-body"><label class="form-label">Your explanation</label><textarea class="form-control mb-3" name="response" rows="8" required maxlength="20000"></textarea><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control mb-3" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt"><label class="form-check"><input class="form-check-input" type="checkbox" name="appeal" value="yes"> <span class="form-check-label">This response is a formal appeal against a published decision</span></label></div><div class="card-footer"><button class="btn btn-danger">Submit response</button></div></form></main>`, csrf, escapeHTML(raw))
 		secureResponsePageFooter(w)
 	}
 }
@@ -1369,7 +1369,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Immutable internal investigation note"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record note</button></div></form>`, id, escapeHTML(csrf))
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Record external club response</div><div class="card-body"><div class="row g-2"><div class="col-md-5"><label class="form-label">Channel</label><select class="form-select" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select></div><div class="col-md-7"><label class="form-label">Respondent / mailbox</label><input class="form-control" name="respondent" maxlength="300"></div><div class="col-12"><label class="form-label">Response</label><textarea class="form-control" name="response" rows="4" maxlength="20000" required></textarea></div><div class="col-12"><label class="form-label">Attachment (optional PDF, JPEG, PNG, WebP, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,text/plain"></div></div></div><div class="card-footer"><button class="btn btn-outline-success">Record response</button></div></form>`, id, escapeHTML(csrf))
+			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Record external club response</div><div class="card-body"><div class="row g-2"><div class="col-md-5"><label class="form-label">Channel</label><select class="form-select" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select></div><div class="col-md-7"><label class="form-label">Respondent / mailbox</label><input class="form-control" name="respondent" maxlength="300"></div><div class="col-12"><label class="form-label">Response</label><textarea class="form-control" name="response" rows="4" maxlength="20000" required></textarea></div><div class="col-12"><label class="form-label">Attachment (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"></div></div></div><div class="card-footer"><button class="btn btn-outline-success">Record response</button></div></form>`, id, escapeHTML(csrf))
 		}
 		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Correction reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record immutable correction</button></div></form></aside></div></main>`, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
 		pageFooter(w)
@@ -1766,7 +1766,7 @@ func adminEvidenceDisclosureControlsHTML(caseID, evidenceID int64, csrf string, 
 		fmt.Fprint(&output, `<div class="small text-muted mt-1">This source record is unavailable and cannot be used to create a derivative.</div>`)
 		return output.String()
 	}
-	fmt.Fprintf(&output, `<form method="POST" action="%s" enctype="multipart/form-data" class="mt-2 border rounded p-2"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="action" value="create_redacted_derivative"><label class="form-label small fw-semibold">Upload a separately redacted copy (PDF, JPEG, PNG, WebP, or text)</label><input class="form-control form-control-sm mb-2" type="file" name="redacted_evidence" accept="application/pdf,image/jpeg,image/png,image/webp,text/plain" required><label class="form-check small mb-2"><input class="form-check-input" type="checkbox" name="reviewer_attestation" value="confirmed" required> <span class="form-check-label">I reviewed this copy and confirm that reporter name, role, email, phone and reporting-club identity have been removed.</span></label><textarea class="form-control form-control-sm mb-2" name="reason" rows="2" maxlength="2000" required placeholder="Describe the redactions and review performed"></textarea><button class="btn btn-sm btn-outline-primary">Create reviewed redacted derivative</button></form>`, endpoint, escapeHTML(csrf))
+	fmt.Fprintf(&output, `<form method="POST" action="%s" enctype="multipart/form-data" class="mt-2 border rounded p-2"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="action" value="create_redacted_derivative"><label class="form-label small fw-semibold">Upload a separately redacted copy (PDF, JPEG, PNG, WebP, MP4, or text)</label><input class="form-control form-control-sm mb-2" type="file" name="redacted_evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain" required><label class="form-check small mb-2"><input class="form-check-input" type="checkbox" name="reviewer_attestation" value="confirmed" required> <span class="form-check-label">I reviewed this copy and confirm that reporter name, role, email, phone and reporting-club identity have been removed.</span></label><textarea class="form-control form-control-sm mb-2" name="reason" rows="2" maxlength="2000" required placeholder="Describe the redactions and review performed"></textarea><button class="btn btn-sm btn-outline-primary">Create reviewed redacted derivative</button></form>`, endpoint, escapeHTML(csrf))
 	return output.String()
 }
 
@@ -1964,7 +1964,7 @@ func (s *Server) handleSanctionCasePartyEvidenceDownload() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		extension := map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "text/plain": ".txt"}[strings.ToLower(media)]
+		extension := map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "video/mp4": ".mp4", "text/plain": ".txt"}[strings.ToLower(media)]
 		w.Header().Set("Content-Type", media)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="GMCL-case-evidence-%d%s"`, evidenceID, extension))
 		w.Header().Set("Cache-Control", "no-store")
@@ -1998,6 +1998,31 @@ func evidenceDir() string {
 	}
 	return filepath.Join("data", "sanction-evidence")
 }
+func detectedEvidenceContentType(prefix []byte) string {
+	media := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(prefix), ";", 2)[0]))
+	if media == "application/octet-stream" && hasMP4FileTypeBox(prefix) {
+		return "video/mp4"
+	}
+	return media
+}
+
+func hasMP4FileTypeBox(prefix []byte) bool {
+	if len(prefix) < 12 || string(prefix[4:8]) != "ftyp" {
+		return false
+	}
+	boxSize := uint32(prefix[0])<<24 | uint32(prefix[1])<<16 | uint32(prefix[2])<<8 | uint32(prefix[3])
+	if boxSize < 12 {
+		return false
+	}
+	switch string(prefix[8:12]) {
+	case "isom", "iso2", "iso3", "iso4", "iso5", "iso6", "iso7", "iso8", "iso9",
+		"avc1", "mp41", "mp42", "M4V ", "MSNV", "dash", "3gp4", "3gp5", "3gp6":
+		return true
+	default:
+		return false
+	}
+}
+
 func copyEvidence(file multipart.File, header *multipart.FileHeader) (string, string, int64, string, error) {
 	if header.Size > 10<<20 {
 		return "", "", 0, "", fmt.Errorf("evidence exceeds 10 MB")
@@ -2011,9 +2036,9 @@ func copyEvidence(file multipart.File, header *multipart.FileHeader) (string, st
 		return "", "", 0, "", fmt.Errorf("evidence file is empty")
 	}
 	prefix = prefix[:n]
-	media := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(prefix), ";", 2)[0]))
+	media := detectedEvidenceContentType(prefix)
 	switch media {
-	case "application/pdf", "image/jpeg", "image/png", "image/webp":
+	case "application/pdf", "image/jpeg", "image/png", "image/webp", "video/mp4":
 	case "text/plain":
 		plainPrefix := strings.ToLower(strings.TrimSpace(string(prefix)))
 		if strings.HasPrefix(plainPrefix, "<svg") || strings.HasPrefix(plainPrefix, "<?xml") ||

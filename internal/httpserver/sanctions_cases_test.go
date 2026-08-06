@@ -243,9 +243,35 @@ func TestCopyEvidenceUsesDetectedContentType(t *testing.T) {
 	}
 }
 
+func TestCopyEvidenceAcceptsDetectedMP4(t *testing.T) {
+	t.Setenv("SANCTIONS_EVIDENCE_DIR", t.TempDir())
+	mp4 := append([]byte("\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"), make([]byte, 488)...)
+	file, err := os.CreateTemp(t.TempDir(), "evidence-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err = file.Write(mp4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	header := &multipart.FileHeader{Size: int64(len(mp4))}
+	header.Header = map[string][]string{"Content-Type": {"application/octet-stream"}}
+	_, _, size, media, err := copyEvidence(file, header)
+	if err != nil {
+		t.Fatalf("detected MP4 should be accepted: %v", err)
+	}
+	if media != "video/mp4" || size != int64(len(mp4)) {
+		t.Fatalf("copyEvidence returned media=%q size=%d", media, size)
+	}
+}
+
 func TestCopyEvidenceRejectsSpoofedImageAndSVG(t *testing.T) {
 	for name, data := range map[string][]byte{
 		"executable": []byte("MZ\x90\x00not really a png"),
+		"fake-mp4":   []byte("\x00\x00\x00\x18ftypEVIL\x00\x00\x00\x00payload"),
 		"svg":        []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
 	} {
 		t.Run(name, func(t *testing.T) {
