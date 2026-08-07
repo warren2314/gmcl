@@ -69,3 +69,55 @@ func TestResponseReminderRequiresTwoDayContextAndNoAutomaticAdverseDecision(t *t
 		})
 	}
 }
+
+func TestDefaultAdminResponseDraftViewsExposeTemplates(t *testing.T) {
+	views := defaultAdminResponseDraftViews(
+		"GMCL-2026-0169",
+		"Example CC First XI",
+		"An eligibility concern was reported.",
+		"Alleged rule under investigation: Rule 3.5 - Player eligibility",
+	)
+	request := views["response_request"]
+	for _, required := range []string{"GMCL-2026-0169", "Example CC First XI", "eligibility concern", "Rule 3.5", responseLinkPlaceholder, "seven days"} {
+		if !strings.Contains(request.subject+"\n"+request.body, required) {
+			t.Fatalf("response request template does not contain %q", required)
+		}
+	}
+	reminder := views["response_reminder"]
+	for _, required := range []string{"GMCL-2026-0169", responseLinkPlaceholder, "due in two days", "No adverse decision is made automatically"} {
+		if !strings.Contains(reminder.subject+"\n"+reminder.body, required) {
+			t.Fatalf("response reminder template does not contain %q", required)
+		}
+	}
+}
+
+func TestAdminDecisionEffectsHTMLCollapsesOptionalEffects(t *testing.T) {
+	html := adminDecisionEffectsHTML([]adminDecisionSubject{{id: 42, label: "Player - Example Name"}})
+	if !strings.Contains(html, "Primary effect") {
+		t.Fatal("primary effect is not shown")
+	}
+	if got := strings.Count(html, "<details"); got != 4 {
+		t.Fatalf("optional effect count = %d, want 4", got)
+	}
+	if got := strings.Count(html, `name="effect_type"`); got != 5 {
+		t.Fatalf("effect input count = %d, want 5", got)
+	}
+	if strings.Contains(html, "col-md-2") {
+		t.Fatal("effect form still contains cramped two-column-width controls")
+	}
+}
+
+func TestPendingOutcomeEmailTemplatesShowEveryDecisionSection(t *testing.T) {
+	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
+		subject, body := pendingOutcomeEmailTemplate("GMCL-2026-0169", audience)
+		if !strings.Contains(subject, "GMCL-2026-0169") || !strings.Contains(body, "GMCL-2026-0169") {
+			t.Fatalf("%s template does not contain the case reference", audience)
+		}
+		if !strings.Contains(body, "Findings:") || !strings.Contains(body, "Rule determination:") {
+			t.Fatalf("%s template omits core outcome sections", audience)
+		}
+		if !strings.Contains(body, "[Added after the decision is proposed]") {
+			t.Fatalf("%s template does not explain its pending content", audience)
+		}
+	}
+}

@@ -170,6 +170,27 @@ func outcomeDraftIsReadOnly(audience string) bool {
 	return audience == "offending_club" || audience == "reporting_club" || audience == "official"
 }
 
+func defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph string) map[string]responseDraftView {
+	return map[string]responseDraftView{
+		"response_request": {
+			kind:    "response_request",
+			subject: "Response requested for GMCL case " + ref,
+			body: "Dear Club Secretary,\n\nThe GMCL requests an official response from " + teamName +
+				" concerning the following allegation:\n\n" + publicSummary + "\n\n" + allegedRuleParagraph +
+				"\n\nUse the secure link below to respond and upload any supporting evidence:\n" +
+				responseLinkPlaceholder + "\n\nCase reference: " + ref +
+				"\nThis secure link expires in seven days.\n\nRegards,\nGreater Manchester Cricket League",
+		},
+		"response_reminder": {
+			kind:    "response_reminder",
+			subject: "Reminder: Response requested for GMCL case " + ref,
+			body: "Dear Club Secretary,\n\nThis is the single reminder that the response for GMCL case " + ref +
+				" is due in two days. No adverse decision is made automatically if the deadline passes.\n\n" +
+				responseLinkPlaceholder + "\n\nRegards,\nGreater Manchester Cricket League",
+		},
+	}
+}
+
 func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf, ref, teamName, publicSummary, sourceType string) {
 	allegedRuleParagraph := ""
 	if sourceType == "ineligible_player" {
@@ -180,10 +201,7 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 		}
 		allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
 	}
-	defaults := map[string]responseDraftView{
-		"response_request":  {kind: "response_request", subject: "Response requested for GMCL case " + ref, body: "Dear Club Secretary,\n\nThe GMCL requests an official response from " + teamName + " concerning the following allegation:\n\n" + publicSummary + "\n\n" + allegedRuleParagraph + "\n\nUse the secure link below to respond and upload any supporting evidence:\n" + responseLinkPlaceholder + "\n\nCase reference: " + ref + "\nThis secure link expires in seven days.\n\nRegards,\nGreater Manchester Cricket League"},
-		"response_reminder": {kind: "response_reminder", subject: "Reminder: Response requested for GMCL case " + ref, body: "Dear Club Secretary,\n\nThis is the single reminder that the response for GMCL case " + ref + " is due in two days. No adverse decision is made automatically if the deadline passes.\n\n" + responseLinkPlaceholder + "\n\nRegards,\nGreater Manchester Cricket League"},
-	}
+	defaults := defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph)
 	for _, kind := range []string{"response_request", "response_reminder"} {
 		view := defaults[kind]
 		var stored responseDraftView

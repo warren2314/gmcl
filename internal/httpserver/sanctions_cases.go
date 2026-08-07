@@ -1177,6 +1177,37 @@ type adminDecisionSubject struct {
 	label string
 }
 
+func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
+	effectOptions := []struct{ value, label string }{
+		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"suspended_red", "Suspended red"},
+		{"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"},
+		{"points_adjustment", "League-table points adjustment"}, {"warning", "Warning"}, {"no_action", "No action"},
+	}
+	var out strings.Builder
+	for i := 0; i < 5; i++ {
+		if i == 0 {
+			fmt.Fprint(&out, `<fieldset class="border rounded p-3"><legend class="float-none w-auto px-2 fs-6">Primary effect</legend>`)
+		} else {
+			fmt.Fprintf(&out, `<details class="border rounded bg-light"><summary class="p-3 fw-semibold">Add another effect <span class="text-muted fw-normal">(optional %d of 4)</span></summary><div class="p-3 border-top">`, i)
+		}
+		fmt.Fprintf(&out, `<div class="row g-3"><div class="col-md-6"><label class="form-label">Effect</label><select class="form-select" name="effect_type"><option value="">%s</option>`, map[bool]string{true: "Select effect", false: "None"}[i == 0])
+		for _, option := range effectOptions {
+			fmt.Fprintf(&out, `<option value="%s">%s</option>`, option.value, option.label)
+		}
+		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Who or what does it apply to?</label><select class="form-select" name="case_subject_id"><option value="">Primary offending team / case</option>`)
+		for _, subject := range subjects {
+			fmt.Fprintf(&out, `<option value="%d">%s</option>`, subject.id, escapeHTML(subject.label))
+		}
+		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League points <span class="text-muted">(adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
+		if i == 0 {
+			fmt.Fprint(&out, `</fieldset>`)
+		} else {
+			fmt.Fprint(&out, `</div></details>`)
+		}
+	}
+	return out.String()
+}
+
 func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, csrf, publicSummary string) string {
 	allegedRuleReference := ""
 	if allegedRule, ruleErr := loadCaseAllegedRule(ctx, s.DB, caseID); ruleErr == nil {
@@ -1214,23 +1245,8 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
-	effectOptions := []struct{ value, label string }{
-		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"suspended_red", "Suspended red"},
-		{"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"},
-		{"points_adjustment", "League-table points adjustment"}, {"warning", "Warning"}, {"no_action", "No action"},
-	}
-	for i := 0; i < 5; i++ {
-		fmt.Fprintf(&out, `<fieldset class="border rounded p-3"><legend class="float-none w-auto px-2 fs-6">Effect %d</legend><div class="row g-2"><div class="col-md-4"><label class="form-label">Effect</label><select class="form-select" name="effect_type"><option value="">%s</option>`, i+1, map[bool]string{true: "Select effect", false: "None"}[i == 0])
-		for _, option := range effectOptions {
-			fmt.Fprintf(&out, `<option value="%s">%s</option>`, option.value, option.label)
-		}
-		fmt.Fprint(&out, `</select></div><div class="col-md-4"><label class="form-label">Case subject</label><select class="form-select" name="case_subject_id"><option value="">Primary offending team / case</option>`)
-		for _, subject := range subjects {
-			fmt.Fprintf(&out, `<option value="%d">%s</option>`, subject.id, escapeHTML(subject.label))
-		}
-		fmt.Fprint(&out, `</select></div><div class="col-md-2"><label class="form-label">Fine GBP <span class="text-muted">(fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-2"><label class="form-label">League points <span class="text-muted">(adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"></div><div class="col-md-4"><label class="form-label">End date / remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-4"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-md-4"><label class="form-label">Trigger / condition</label><input class="form-control" name="trigger_condition"></div></div></fieldset>`)
-	}
-	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">The complete decision is submitted together. A different authorised administrator must approve it before anything is issued.</span><button class="btn btn-primary">Submit decision for approval</button></div></form></section>`)
+	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
+	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">The complete decision is submitted together. A different authorised administrator must approve it before anything is issued.</span><button class="btn btn-primary align-self-start align-self-md-auto">Submit decision for approval</button></div></form></section>`)
 	return out.String()
 }
 
@@ -1260,7 +1276,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Case "+ref)
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1000px"><a href="/admin/cases" class="btn btn-sm btn-outline-secondary mb-3">Back to cases</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s — %s — %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-lg-7"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="/admin/cases" class="btn btn-sm btn-outline-secondary mb-3">Back to cases</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
@@ -1271,6 +1287,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if source == "ineligible_player" {
 			s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf)
 			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
+			s.writeAdminCaseEmailPreviews(w, r, id, ref, team, publicSummary, hasProposed)
 		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 		if !hasProposed && canPropose {
@@ -1286,9 +1303,6 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			} else if map[string]bool{"approved": true, "published": true, "appealed": true, "closed": true}[status] {
 				fmt.Fprintf(w, `<div class="d-flex flex-wrap gap-2 mb-4"><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=offending_club">View offending-club PDF</a><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=reporting_club">View reporting-club PDF</a><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=official">View league-official PDF</a></div>`, id, id, id)
 			}
-		}
-		if source == "ineligible_player" {
-			s.writeAdminCaseEmailPreviews(w, r, id)
 		}
 		fmt.Fprint(w, `<section class="card"><div class="card-header">Case history</div><div class="card-body py-2 small text-muted">This history cannot be edited. If something needs correcting, add a new correction so the original action remains visible.</div><ul class="list-group list-group-flush">`)
 		events, _ := s.DB.Query(r.Context(), `SELECT event_type,actor_type,COALESCE(actor_label,''),COALESCE(reason,''),created_at,emergency_override FROM sanction_case_events WHERE case_id=$1 ORDER BY id DESC`, id)
@@ -1309,7 +1323,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</ul></section>`)
 		s.writeAdminCaseDeliveryHistory(w, r, id, csrf)
-		fmt.Fprint(w, `</div><aside class="col-lg-5">`)
+		fmt.Fprint(w, `</div><aside class="col-xl-4">`)
 		actor := adminActor(r)
 		fmt.Fprint(w, adminCaseAssignmentHTML(id, csrf, assignedAdminID, assignedAdminName, actor.ID))
 		if hasUnreviewedResponse {
@@ -1379,7 +1393,81 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	}
 }
 
-func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Request, caseID int64) {
+type adminCaseEmailPreview struct {
+	kind          string
+	audience      string
+	subject       string
+	body          string
+	recipientText string
+	status        string
+	revision      int
+	savedAt       *time.Time
+}
+
+func pendingOutcomeEmailTemplate(ref, audience string) (string, string) {
+	subject := "GMCL case outcome " + ref
+	switch audience {
+	case "offending_club":
+		return subject, "Dear Club Secretary,\n\nCase reference: " + ref +
+			"\n\nFindings:\n[Added after the decision is proposed]" +
+			"\n\nRule determination:\n[Added after the decision is proposed]" +
+			"\n\nDecision and sanctions:\n[Added after the decision is proposed]" +
+			"\n\nAppeal instructions:\n[Added after the decision is proposed]" +
+			"\n\nRegards,\nGreater Manchester Cricket League"
+	case "reporting_club":
+		return subject, "Dear Club Secretary,\n\nGMCL case " + ref + " has reached an outcome." +
+			"\n\nFindings:\n[Added after the decision is proposed]" +
+			"\n\nRule determination:\n[Added after the decision is proposed]" +
+			"\n\nFinal outcome:\n[Added after the decision is proposed]" +
+			"\n\nRegards,\nGreater Manchester Cricket League"
+	default:
+		return subject, "Approved league outcome record\n\nCase: " + ref +
+			"\nSource: ineligible player" +
+			"\nOffending club: [Added after the decision is proposed]" +
+			"\nReporting club: [Added after the decision is proposed]" +
+			"\n\nFindings:\n[Added after the decision is proposed]" +
+			"\n\nRule determination:\n[Added after the decision is proposed]" +
+			"\n\nDecision and sanctions:\n[Added after the decision is proposed]" +
+			"\n\nAppeal instructions:\n[Added after the decision is proposed]"
+	}
+}
+
+func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Request, caseID int64, ref, teamName, publicSummary string, hasProposed bool) {
+	allegedRuleParagraph := "[Save a reviewed alleged rule to insert it here.]"
+	if allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID); err == nil {
+		allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+	}
+	responseDefaults := defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph)
+	previews := []adminCaseEmailPreview{
+		{kind: "response_request", audience: "offending_club", subject: responseDefaults["response_request"].subject, body: responseDefaults["response_request"].body, recipientText: "Verified offending-club recipient is added when queued", status: "template - not saved"},
+		{kind: "response_reminder", audience: "offending_club", subject: responseDefaults["response_reminder"].subject, body: responseDefaults["response_reminder"].body, recipientText: "Verified offending-club recipient is added when queued", status: "template - not saved"},
+	}
+	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
+		subject, body := pendingOutcomeEmailTemplate(ref, audience)
+		previews = append(previews, adminCaseEmailPreview{
+			kind: "outcome_" + audience, audience: audience, subject: subject, body: body,
+			recipientText: "Verified " + strings.ReplaceAll(audience, "_", " ") + " recipient is added when queued",
+			status:        "template - decision pending",
+		})
+	}
+	if hasProposed {
+		service := sanctiondomain.NewService(s.DB)
+		for i := 2; i < len(previews); i++ {
+			draft, err := service.OutcomeDraft(r.Context(), caseID, previews[i].audience)
+			if err != nil {
+				continue
+			}
+			previews[i].kind = draft.MessageKind
+			previews[i].subject = draft.Subject
+			previews[i].body = draft.Body
+			previews[i].status = "generated - not saved"
+			if draft.Exists {
+				previews[i].status = "draft"
+				previews[i].revision = draft.Revision
+			}
+		}
+	}
+
 	rows, err := s.DB.Query(r.Context(), `
 		SELECT DISTINCT ON (message_kind,audience)
 		       message_kind,audience,revision,status,COALESCE(recipients,'[]'::jsonb)::text,
@@ -1391,8 +1479,6 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer rows.Close()
-	fmt.Fprint(w, `<section class="card mb-4 border-primary"><div class="card-header d-flex justify-content-between align-items-center"><span>Email preview centre</span><span class="badge text-bg-light border">Nothing sends from this preview</span></div><div class="card-body"><p class="small text-muted">Open a message to review the exact latest saved wording. Response requests, reminders and each outcome audience are kept separately.</p>`)
-	count := 0
 	for rows.Next() {
 		var kind, audience, status, recipientsJSON, subject, body string
 		var revision int
@@ -1400,30 +1486,61 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 		if rows.Scan(&kind, &audience, &revision, &status, &recipientsJSON, &subject, &body, &createdAt) != nil {
 			continue
 		}
-		count++
 		recipients := []string{}
 		_ = json.Unmarshal([]byte(recipientsJSON), &recipients)
 		recipientText := strings.Join(recipients, ", ")
 		if recipientText == "" {
 			recipientText = "Recipients are added when this message is queued"
 		}
+		for i := range previews {
+			isResponse := previews[i].kind == kind && previews[i].audience == audience
+			isOutcome := i >= 2 && previews[i].audience == audience && (strings.HasPrefix(kind, "outcome_") || kind == "no_action_outcome")
+			if !isResponse && !isOutcome {
+				continue
+			}
+			if previews[i].savedAt != nil && !createdAt.After(*previews[i].savedAt) {
+				continue
+			}
+			previews[i].kind = kind
+			previews[i].subject = subject
+			previews[i].body = body
+			previews[i].recipientText = recipientText
+			previews[i].status = status
+			previews[i].revision = revision
+			savedAt := createdAt
+			previews[i].savedAt = &savedAt
+		}
+	}
+
+	fmt.Fprint(w, `<section class="card mb-4 border-primary"><div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2"><span>Email templates and previews</span><span class="badge text-bg-light border">Nothing sends from this screen</span></div><div class="card-body"><p class="mb-1">These are the five messages used during an ineligible-player case.</p><p class="small text-muted">Templates are visible before they are saved. Once a workflow message is saved, its exact latest wording and recipients replace the template here.</p>`)
+	for i, preview := range previews {
 		statusClass := "text-bg-secondary"
-		if status == "approved" || status == "locked" {
+		if preview.status == "approved" || preview.status == "locked" {
 			statusClass = "text-bg-success"
-		} else if status == "draft" {
+		} else if preview.status == "draft" || strings.Contains(preview.status, "not saved") {
 			statusClass = "text-bg-warning"
-		} else if status == "queued" || status == "sent" {
+		} else if preview.status == "queued" || preview.status == "sent" {
 			statusClass = "text-bg-primary"
 		}
-		fmt.Fprintf(w, `<details class="border rounded mb-2"><summary class="p-3 d-flex flex-wrap justify-content-between gap-2"><span><strong>%s</strong> <span class="text-muted">to %s</span></span><span><span class="badge %s">%s</span> <span class="small text-muted">version %d</span></span></summary><div class="border-top p-3"><dl class="row small mb-3"><dt class="col-sm-3">To</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Subject</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Saved</dt><dd class="col-sm-9">%s</dd></dl><div class="bg-light border rounded p-3" style="white-space:pre-wrap">%s</div></div></details>`,
-			escapeHTML(plainIneligibleStatus(kind)), escapeHTML(plainIneligibleStatus(audience)), statusClass, escapeHTML(plainIneligibleStatus(status)), revision,
-			escapeHTML(recipientText), escapeHTML(subject), escapeHTML(createdAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(body))
+		versionText := ""
+		if preview.revision > 0 {
+			versionText = fmt.Sprintf(` <span class="small text-muted">version %d</span>`, preview.revision)
+		}
+		savedText := "Not saved yet"
+		if preview.savedAt != nil {
+			savedText = preview.savedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")
+		}
+		open := ""
+		if i == 0 {
+			open = " open"
+		}
+		displayBody := strings.ReplaceAll(preview.body, responseLinkPlaceholder, "[secure response link generated when queued]")
+		fmt.Fprintf(w, `<details class="border rounded mb-2"%s><summary class="p-3 d-flex flex-wrap justify-content-between gap-2"><span><strong>%s</strong> <span class="text-muted">to %s</span></span><span><span class="badge %s">%s</span>%s</span></summary><div class="border-top p-3"><dl class="row small mb-3"><dt class="col-sm-3">To</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Subject</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Saved</dt><dd class="col-sm-9">%s</dd></dl><div class="bg-light border rounded p-3" style="white-space:pre-wrap">%s</div></div></details>`,
+			open, escapeHTML(plainIneligibleStatus(preview.kind)), escapeHTML(plainIneligibleStatus(preview.audience)),
+			statusClass, escapeHTML(preview.status), versionText, escapeHTML(preview.recipientText),
+			escapeHTML(preview.subject), escapeHTML(savedText), escapeHTML(displayBody))
 	}
-	if count == 0 {
-		fmt.Fprint(w, `<div class="alert alert-light border mb-0">No messages have been saved yet. Use the response-message forms on this page; outcome messages appear after a decision is proposed.</div>`)
-	} else {
-		fmt.Fprint(w, `<p class="small text-muted mb-0 mt-3">Missing messages are created only when their workflow step is reached - for example, outcome emails appear after a decision is proposed.</p>`)
-	}
+	fmt.Fprint(w, `<p class="small text-muted mb-0 mt-3">Outcome placeholders are filled automatically from the proposed findings, rule determination, effects and appeal instructions.</p>`)
 	fmt.Fprint(w, `</div></section>`)
 }
 
