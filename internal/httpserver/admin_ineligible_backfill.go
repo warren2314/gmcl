@@ -74,6 +74,7 @@ func (s *Server) handleAdminIneligibleBackfills() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
+		showVerified := r.URL.Query().Get("view") == "verified"
 		rows, err := s.DB.Query(ctx, `
 			SELECT r.id,r.source_filename,r.storage_key,r.source_sha256,r.rows_total,
 			       r.rows_matched_exact,r.rows_matched_normalized,r.rows_unmatched,
@@ -86,8 +87,9 @@ func (s *Server) handleAdminIneligibleBackfills() http.HandlerFunc {
 				FROM sanction_ineligible_backfill_signoffs s
 				WHERE s.run_id=r.id ORDER BY s.id DESC LIMIT 1
 			) signoff ON TRUE
+			WHERE (($1 AND signoff.created_at IS NOT NULL) OR (NOT $1 AND signoff.created_at IS NULL))
 			ORDER BY r.id DESC LIMIT 100
-		`)
+		`, showVerified)
 		if err != nil {
 			http.Error(w, "tracker reconciliation is unavailable", http.StatusInternalServerError)
 			return
@@ -114,10 +116,17 @@ func (s *Server) handleAdminIneligibleBackfills() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ineligible-player tracker backfill")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-4"><div><h1 class="h2 mb-1">2026 tracker reconciliation</h1><p class="text-muted mb-0">Upload the historical tracker, reconcile it to staged Google-form intake, and explicitly review every open/closed state and free-text effect.</p></div><a class="btn btn-outline-secondary align-self-md-start" href="/admin/ineligible">Back to intake</a></div>`)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-3"><div><h1 class="h2 mb-1">Excel import</h1><p class="text-muted mb-0">Upload the historical tracker, check each match, and confirm how its information should be recorded.</p></div><a class="btn btn-outline-secondary align-self-md-start" href="/admin/ineligible">Back to work queue</a></div>`)
 		writeIneligibleBackfillFlash(w, r)
-		fmt.Fprintf(w, `<section class="alert alert-warning"><strong>Safe historical import.</strong> Upload, reconciliation and sign-off cannot send email, change a case or write to a ledger. A separate post-sign-off apply step appends private history, restores reviewed case status, and retains closed tracker outcomes as non-operative snapshots; it is blocked unless every accepted intake has one unambiguous linked case.</section><section class="card shadow-sm mb-4"><div class="card-header fw-semibold">Stage a tracker workbook</div><form method="POST" action="/admin/ineligible/backfill" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3 align-items-end"><div class="col-lg-8"><label class="form-label">Tracker (.xlsx, max 16 MB)</label><input class="form-control" type="file" name="tracker" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required><div class="form-text">Requires the exact <em>Form responses 1</em> sheet and A:Z headers. The source is retained by SHA-256.</div></div><div class="col-lg-4"><button class="btn btn-primary w-100">Validate and stage</button></div></div></form></section>`, escapeHTML(csrf))
-		fmt.Fprint(w, `<section class="card shadow-sm"><div class="card-header fw-semibold">Immutable reconciliation runs</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Run</th><th>Source</th><th>Rows</th><th>Matches</th><th>Exceptions</th><th>Manual history</th><th>Sign-off</th></tr></thead><tbody>`)
+		pendingClass, verifiedClass := "btn-outline-primary", "btn-outline-primary"
+		if showVerified {
+			verifiedClass = "btn-primary"
+		} else {
+			pendingClass = "btn-primary"
+		}
+		fmt.Fprintf(w, `<nav class="btn-group mb-4" aria-label="Choose imports"><a class="btn %s" href="/admin/ineligible/backfill">Needs checking</a><a class="btn %s" href="/admin/ineligible/backfill?view=verified">Verified history</a></nav>`, pendingClass, verifiedClass)
+		fmt.Fprintf(w, `<section class="alert alert-warning"><strong>Safe historical import.</strong> Uploading and checking the workbook cannot email anyone, change a live case, or add points. Changes are applied only after every row has been checked and the import is signed off.</section><section class="card shadow-sm mb-4"><div class="card-header fw-semibold">Upload a tracker workbook</div><form method="POST" action="/admin/ineligible/backfill" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3 align-items-end"><div class="col-lg-8"><label class="form-label">Tracker (.xlsx, max 16 MB)</label><input class="form-control" type="file" name="tracker" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required><div class="form-text">Use the <em>Form responses 1</em> sheet with columns A to Z. GMCL saves a technical file fingerprint so the original upload can always be identified.</div></div><div class="col-lg-4"><button class="btn btn-primary w-100">Upload and check</button></div></div></form></section>`, escapeHTML(csrf))
+		fmt.Fprint(w, `<section class="card shadow-sm"><div class="card-header fw-semibold">Import checks</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Run</th><th>Source</th><th>Rows</th><th>Matches</th><th>Exceptions</th><th>Manual history</th><th>Verification</th></tr></thead><tbody>`)
 		for _, run := range runs {
 			signoff := `<span class="badge text-bg-warning">Not signed off</span>`
 			if run.SignedOffAt != nil {
@@ -130,7 +139,7 @@ func (s *Server) handleAdminIneligibleBackfills() http.HandlerFunc {
 				run.WithManualHistory, run.RequiringEffectReview, signoff)
 		}
 		if len(runs) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-5">No tracker has been staged.</td></tr>`)
+			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-5">Nothing to show in this view.</td></tr>`)
 		}
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
@@ -196,6 +205,22 @@ func (s *Server) handleAdminIneligibleBackfillRun() http.HandlerFunc {
 			http.Error(w, "could not load tracker rows", http.StatusInternalServerError)
 			return
 		}
+		showVerified := r.URL.Query().Get("view") == "verified"
+		displayRows := make([]ineligibleBackfillRowView, 0, len(rows))
+		pendingCount, verifiedCount := 0, 0
+		for _, row := range rows {
+			if row.ReviewID == nil {
+				pendingCount++
+				if !showVerified {
+					displayRows = append(displayRows, row)
+				}
+			} else {
+				verifiedCount++
+				if showVerified {
+					displayRows = append(displayRows, row)
+				}
+			}
+		}
 		readiness, _ := s.loadIneligibleBackfillReadiness(ctx, runID)
 		applyPreview, applyPreviewErr := ineligibledomain.LoadTrackerBackfillApplyPreview(ctx, s.DB, runID)
 		csrf := middleware.CSRFToken(r)
@@ -203,7 +228,7 @@ func (s *Server) handleAdminIneligibleBackfillRun() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, fmt.Sprintf("Tracker reconciliation %d", runID))
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-3"><div><h1 class="h2 mb-1">Tracker reconciliation #%d</h1><p class="text-muted mb-0">%s · SHA-256 <code>%s</code></p></div><div class="d-flex gap-2 align-self-md-start"><a class="btn btn-outline-secondary" href="/admin/ineligible/backfill">All runs</a><a class="btn btn-outline-primary" href="/admin/ineligible/backfill/%d/source">Download source</a></div></div>`, run.ID, escapeHTML(run.Filename), escapeHTML(shortHash(run.SHA256)), run.ID)
+		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-3"><div><h1 class="h2 mb-1">Import check #%d</h1><p class="text-muted mb-0">%s · file fingerprint <code>%s</code></p></div><div class="d-flex gap-2 align-self-md-start"><a class="btn btn-outline-secondary" href="/admin/ineligible/backfill">All imports</a><a class="btn btn-outline-primary" href="/admin/ineligible/backfill/%d/source">Download original</a></div></div>`, run.ID, escapeHTML(run.Filename), escapeHTML(shortHash(run.SHA256)), run.ID)
 		writeIneligibleBackfillFlash(w, r)
 		fmt.Fprintf(w, `<div class="row row-cols-2 row-cols-md-4 row-cols-xl-7 g-3 mb-4">`)
 		for _, card := range []struct {
@@ -216,10 +241,20 @@ func (s *Server) handleAdminIneligibleBackfillRun() http.HandlerFunc {
 		} {
 			fmt.Fprintf(w, `<div class="col"><div class="card h-100"><div class="card-body py-3"><div class="h3 mb-0">%d</div><div class="small text-muted">%s</div></div></div></div>`, card.value, escapeHTML(card.label))
 		}
-		fmt.Fprint(w, `</div><div class="alert alert-info"><strong>Review semantics:</strong> accepting a match records provenance only. The reviewed open/closed value preserves tracker intent; it does not mutate a case. Manual points/cards interpretation is a gate for sign-off and still does not create a ledger entry.</div>`)
+		fmt.Fprint(w, `</div><div class="alert alert-info"><strong>How this works:</strong> check the suggested match and choose how the tracker row should be treated. Confirming a row records your check; it does not email anyone, change a live case, or add points.</div>`)
+		pendingClass, verifiedClass := "btn-outline-primary", "btn-outline-primary"
+		if showVerified {
+			verifiedClass = "btn-primary"
+		} else {
+			pendingClass = "btn-primary"
+		}
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose import rows"><a class="btn %s" href="/admin/ineligible/backfill/%d">Needs checking <span class="badge text-bg-light ms-1">%d</span></a><a class="btn %s" href="/admin/ineligible/backfill/%d?view=verified">Verified history <span class="badge text-bg-light ms-1">%d</span></a></nav>`, pendingClass, runID, pendingCount, verifiedClass, runID, verifiedCount)
 		fmt.Fprint(w, `<section class="d-grid gap-3">`)
-		for _, row := range rows {
+		for _, row := range displayRows {
 			writeIneligibleBackfillRow(w, csrf, actor.Label, runID, row, s.LondonLoc)
+		}
+		if len(displayRows) == 0 {
+			fmt.Fprint(w, `<div class="card card-body text-center text-muted py-5">Nothing to show in this view.</div>`)
 		}
 		fmt.Fprint(w, `</section>`)
 		if readiness.RowsTotal > 0 {
@@ -229,7 +264,7 @@ func (s *Server) handleAdminIneligibleBackfillRun() http.HandlerFunc {
 				alert = "alert-success"
 				message = "Every staged row has an explicit state and effect interpretation. This run is ready for named sign-off."
 			}
-			fmt.Fprintf(w, `<section class="card shadow-sm mt-4"><div class="card-header fw-semibold">Named reconciliation sign-off</div><div class="card-body"><div class="alert %s">%s</div><form method="POST" action="/admin/ineligible/backfill/%d/signoff"><input type="hidden" name="csrf_token" value="%s"><div class="row g-3"><div class="col-md-4"><label class="form-label">Signatory name</label><input class="form-control" name="signatory_name" value="%s" maxlength="200" required></div><div class="col-md-8"><label class="form-label">Sign-off statement</label><textarea class="form-control" name="statement" rows="2" maxlength="2000" required>I confirm the tracker rows, intake matches, historical open/closed states and manual points/cards interpretations have been reviewed. No email or ledger effect was generated by this reconciliation.</textarea></div><div class="col-12"><label class="form-check"><input class="form-check-input" type="checkbox" name="confirm" value="yes" required> <span class="form-check-label">Record this named sign-off as an immutable audit record.</span></label></div></div><button class="btn btn-success mt-3"%s>Sign off reconciliation</button></form></div></section>`, alert, escapeHTML(message), runID, escapeHTML(csrf), escapeHTML(actor.Label), backfillDisabledIf(readiness.Validate() != nil))
+			fmt.Fprintf(w, `<section class="card shadow-sm mt-4"><div class="card-header fw-semibold">Final verification</div><div class="card-body"><div class="alert %s">%s</div><form method="POST" action="/admin/ineligible/backfill/%d/signoff"><input type="hidden" name="csrf_token" value="%s"><div class="row g-3"><div class="col-md-4"><label class="form-label">Your name</label><input class="form-control" name="signatory_name" value="%s" maxlength="200" required></div><div class="col-md-8"><label class="form-label">Confirmation</label><textarea class="form-control" name="statement" rows="2" maxlength="2000" required>I confirm that the tracker rows, suggested matches, open or closed states, and any points or cards notes have been checked. This check has not sent an email or changed points.</textarea></div><div class="col-12"><label class="form-check"><input class="form-check-input" type="checkbox" name="confirm" value="yes" required> <span class="form-check-label">Save my name and confirmation in the audit history. It cannot be edited later.</span></label></div></div><button class="btn btn-success mt-3"%s>Verify import</button></form></div></section>`, alert, escapeHTML(message), runID, escapeHTML(csrf), escapeHTML(actor.Label), backfillDisabledIf(readiness.Validate() != nil))
 		}
 		writeIneligibleBackfillApplication(w, csrf, actor.Label, applyPreview, applyPreviewErr, s.LondonLoc)
 		fmt.Fprint(w, `</main>`)
@@ -372,7 +407,7 @@ func writeIneligibleBackfillRow(w io.Writer, csrf, defaultReviewer string, runID
 	} else {
 		writeBackfillOption(w, "not_applicable", "Not applicable", effectStatus)
 	}
-	fmt.Fprintf(w, `</select></div><div class="col-md-6"><label class="form-label">Manual effect interpretation</label><textarea class="form-control" name="effect_interpretation" rows="3" maxlength="5000" placeholder="Record the human reading. This does not create an effect.">%s</textarea></div><div class="col-md-6"><label class="form-label">Review reason</label><textarea class="form-control" name="review_reason" rows="3" maxlength="5000" required>%s</textarea></div><div class="col-md-6"><label class="form-label">Reviewer name</label><input class="form-control" name="reviewer_name" value="%s" maxlength="200" required></div><div class="col-md-6 d-flex align-items-end"><button class="btn btn-primary w-100">Record immutable review</button></div></div></form></div></article>`, escapeHTML(row.EffectInterpretation), escapeHTML(row.ReviewReason), escapeHTML(reviewer))
+	fmt.Fprintf(w, `</select></div><div class="col-md-6"><label class="form-label">What do the points or cards notes mean?</label><textarea class="form-control" name="effect_interpretation" rows="3" maxlength="5000" placeholder="Record your reading. This does not add points or cards.">%s</textarea></div><div class="col-md-6"><label class="form-label">Why did you choose this?</label><textarea class="form-control" name="review_reason" rows="3" maxlength="5000" required>%s</textarea></div><div class="col-md-6"><label class="form-label">Checked by</label><input class="form-control" name="reviewer_name" value="%s" maxlength="200" required></div><div class="col-md-6 d-flex align-items-end"><button class="btn btn-primary w-100">Verify row</button></div></div></form></div></article>`, escapeHTML(row.EffectInterpretation), escapeHTML(row.ReviewReason), escapeHTML(reviewer))
 }
 
 func writeIneligibleManualHistory(w io.Writer, row ineligibleBackfillRowView) {
@@ -608,7 +643,7 @@ func (s *Server) handleAdminIneligibleBackfillReview() http.HandlerFunc {
 			return
 		}
 		s.audit(ctx, r, "admin", actor.ID, "ineligible_tracker_row_reviewed", "sanction_ineligible_backfill_review", &reviewID, map[string]any{"run_id": runID, "row_id": rowID, "disposition": input.Disposition, "case_state": input.ReviewedCaseState, "effects_status": input.EffectsReviewStatus})
-		redirectIneligibleBackfill(w, r, fmt.Sprintf("/admin/ineligible/backfill/%d", runID), "success", fmt.Sprintf("Source row review recorded as immutable revision %d.", reviewID))
+		redirectIneligibleBackfill(w, r, fmt.Sprintf("/admin/ineligible/backfill/%d", runID), "success", fmt.Sprintf("Row verified and moved to Verified history (record %d).", reviewID))
 	}
 }
 
@@ -653,7 +688,7 @@ func (s *Server) handleAdminIneligibleBackfillSignoff() http.HandlerFunc {
 			return
 		}
 		if err := r.ParseForm(); err != nil || r.FormValue("confirm") != "yes" {
-			redirectIneligibleBackfill(w, r, fmt.Sprintf("/admin/ineligible/backfill/%d", runID), "error", "Confirm the immutable reconciliation sign-off.")
+			redirectIneligibleBackfill(w, r, fmt.Sprintf("/admin/ineligible/backfill/%d", runID), "error", "Tick the audit-history confirmation before verifying the import.")
 			return
 		}
 		signatory := strings.TrimSpace(r.FormValue("signatory_name"))

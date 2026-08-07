@@ -700,7 +700,7 @@ func (s *Server) handleSanctionCaseResponseSubmit() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		secureResponsePageHead(w, "Response recorded")
-		fmt.Fprint(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Response recorded</h1><p class="mb-0">Your explanation and any evidence are now part of the immutable case timeline.</p></div></main>`)
+		fmt.Fprint(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Response recorded</h1><p class="mb-0">Your explanation and evidence are saved in the case history and cannot be edited. Contact GMCL if a correction is needed.</p></div></main>`)
 		secureResponsePageFooter(w)
 	}
 }
@@ -1213,7 +1213,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 		}
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Propose atomic decision bundle</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
+	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
 	effectOptions := []struct{ value, label string }{
 		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"suspended_red", "Suspended red"},
 		{"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"},
@@ -1230,7 +1230,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 		}
 		fmt.Fprint(&out, `</select></div><div class="col-md-2"><label class="form-label">Fine GBP <span class="text-muted">(fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-2"><label class="form-label">League points <span class="text-muted">(adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"></div><div class="col-md-4"><label class="form-label">End date / remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-4"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-md-4"><label class="form-label">Trigger / condition</label><input class="form-control" name="trigger_condition"></div></div></fieldset>`)
 	}
-	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">Everything is proposed atomically and requires a different authorised administrator to approve the exact outcome.</span><button class="btn btn-primary">Submit bundle for independent approval</button></div></form></section>`)
+	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex justify-content-between align-items-center"><span class="small text-muted">The complete decision is submitted together. A different authorised administrator must approve it before anything is issued.</span><button class="btn btn-primary">Submit decision for approval</button></div></form></section>`)
 	return out.String()
 }
 
@@ -1287,7 +1287,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				fmt.Fprintf(w, `<div class="d-flex flex-wrap gap-2 mb-4"><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=offending_club">View offending-club PDF</a><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=reporting_club">View reporting-club PDF</a><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=official">View league-official PDF</a></div>`, id, id, id)
 			}
 		}
-		fmt.Fprint(w, `<section class="card"><div class="card-header">Immutable timeline</div><ul class="list-group list-group-flush">`)
+		if source == "ineligible_player" {
+			s.writeAdminCaseEmailPreviews(w, r, id)
+		}
+		fmt.Fprint(w, `<section class="card"><div class="card-header">Case history</div><div class="card-body py-2 small text-muted">This history cannot be edited. If something needs correcting, add a new correction so the original action remains visible.</div><ul class="list-group list-group-flush">`)
 		events, _ := s.DB.Query(r.Context(), `SELECT event_type,actor_type,COALESCE(actor_label,''),COALESCE(reason,''),created_at,emergency_override FROM sanction_case_events WHERE case_id=$1 ORDER BY id DESC`, id)
 		if events != nil {
 			defer events.Close()
@@ -1368,12 +1371,60 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
 		}
 		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Immutable internal investigation note"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record note</button></div></form>`, id, escapeHTML(csrf))
+			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Add a private investigation note"></textarea><div class="form-text">Saved notes cannot be edited later. Add a correction if something changes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save note</button></div></form>`, id, escapeHTML(csrf))
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Record external club response</div><div class="card-body"><div class="row g-2"><div class="col-md-5"><label class="form-label">Channel</label><select class="form-select" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select></div><div class="col-md-7"><label class="form-label">Respondent / mailbox</label><input class="form-control" name="respondent" maxlength="300"></div><div class="col-12"><label class="form-label">Response</label><textarea class="form-control" name="response" rows="4" maxlength="20000" required></textarea></div><div class="col-12"><label class="form-label">Attachment (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"></div></div></div><div class="card-footer"><button class="btn btn-outline-success">Record response</button></div></form>`, id, escapeHTML(csrf))
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Correction reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-primary">Record immutable correction</button></div></form></aside></div></main>`, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Why is this correction needed?</label><textarea class="form-control" name="reason" required rows="2"></textarea><div class="form-text">The corrected version is added to the case history; the earlier wording remains visible.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save correction</button></div></form></aside></div></main>`, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
 		pageFooter(w)
 	}
+}
+
+func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Request, caseID int64) {
+	rows, err := s.DB.Query(r.Context(), `
+		SELECT DISTINCT ON (message_kind,audience)
+		       message_kind,audience,revision,status,COALESCE(recipients,'[]'::jsonb)::text,
+		       subject,body,created_at
+		FROM sanction_correspondence_revisions
+		WHERE case_id=$1
+		ORDER BY message_kind,audience,revision DESC,id DESC`, caseID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	fmt.Fprint(w, `<section class="card mb-4 border-primary"><div class="card-header d-flex justify-content-between align-items-center"><span>Email preview centre</span><span class="badge text-bg-light border">Nothing sends from this preview</span></div><div class="card-body"><p class="small text-muted">Open a message to review the exact latest saved wording. Response requests, reminders and each outcome audience are kept separately.</p>`)
+	count := 0
+	for rows.Next() {
+		var kind, audience, status, recipientsJSON, subject, body string
+		var revision int
+		var createdAt time.Time
+		if rows.Scan(&kind, &audience, &revision, &status, &recipientsJSON, &subject, &body, &createdAt) != nil {
+			continue
+		}
+		count++
+		recipients := []string{}
+		_ = json.Unmarshal([]byte(recipientsJSON), &recipients)
+		recipientText := strings.Join(recipients, ", ")
+		if recipientText == "" {
+			recipientText = "Recipients are added when this message is queued"
+		}
+		statusClass := "text-bg-secondary"
+		if status == "approved" || status == "locked" {
+			statusClass = "text-bg-success"
+		} else if status == "draft" {
+			statusClass = "text-bg-warning"
+		} else if status == "queued" || status == "sent" {
+			statusClass = "text-bg-primary"
+		}
+		fmt.Fprintf(w, `<details class="border rounded mb-2"><summary class="p-3 d-flex flex-wrap justify-content-between gap-2"><span><strong>%s</strong> <span class="text-muted">to %s</span></span><span><span class="badge %s">%s</span> <span class="small text-muted">version %d</span></span></summary><div class="border-top p-3"><dl class="row small mb-3"><dt class="col-sm-3">To</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Subject</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Saved</dt><dd class="col-sm-9">%s</dd></dl><div class="bg-light border rounded p-3" style="white-space:pre-wrap">%s</div></div></details>`,
+			escapeHTML(plainIneligibleStatus(kind)), escapeHTML(plainIneligibleStatus(audience)), statusClass, escapeHTML(plainIneligibleStatus(status)), revision,
+			escapeHTML(recipientText), escapeHTML(subject), escapeHTML(createdAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(body))
+	}
+	if count == 0 {
+		fmt.Fprint(w, `<div class="alert alert-light border mb-0">No messages have been saved yet. Use the response-message forms on this page; outcome messages appear after a decision is proposed.</div>`)
+	} else {
+		fmt.Fprint(w, `<p class="small text-muted mb-0 mt-3">Missing messages are created only when their workflow step is reached - for example, outcome emails appear after a decision is proposed.</p>`)
+	}
+	fmt.Fprint(w, `</div></section>`)
 }
 
 func (s *Server) writeAdminCaseDeliveryHistory(w http.ResponseWriter, r *http.Request, caseID int64, csrf string) {

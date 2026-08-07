@@ -19,11 +19,42 @@ func TestParseIneligibleQueueFiltersDefaultsAndRejectsUnknownValues(t *testing.T
 		"age":         {"500 years"},
 		"player":      {"  A Player  "},
 	})
-	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" {
+	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" || got.Scope != "mine" || got.Sort != "newest" {
 		t.Fatalf("unexpected normalised filters: %#v", got)
 	}
 	if got.Player != "A Player" {
 		t.Fatalf("player filter was not trimmed: %q", got.Player)
+	}
+}
+
+func TestBuildIneligibleQueueQuerySupportsMyWorkAndOldestFirst(t *testing.T) {
+	adminID := int32(42)
+	query, args := buildIneligibleQueueQueryForAdmin(ineligibleQueueFilters{
+		State: "all",
+		Scope: "mine",
+		Sort:  "oldest",
+	}, &adminID)
+	if !strings.Contains(query, "c.assigned_admin_id=$1") {
+		t.Fatalf("my-work ownership filter missing: %s", query)
+	}
+	if !strings.Contains(query, "COALESCE(i.external_created_at,i.created_at) ASC,i.id ASC") {
+		t.Fatalf("oldest-first ordering missing: %s", query)
+	}
+	if !reflect.DeepEqual(args, []any{adminID}) {
+		t.Fatalf("query args = %#v, want admin id", args)
+	}
+}
+
+func TestPlainIneligibleStatusExplainsWorkflowTerms(t *testing.T) {
+	tests := map[string]string{
+		"linked":            "Case raised",
+		"response_pending":  "Waiting for response",
+		"decision_proposed": "Decision ready for approval",
+	}
+	for value, want := range tests {
+		if got := plainIneligibleStatus(value); got != want {
+			t.Errorf("plainIneligibleStatus(%q) = %q, want %q", value, got, want)
+		}
 	}
 }
 
