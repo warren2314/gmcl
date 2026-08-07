@@ -45,6 +45,25 @@ func TestBuildIneligibleQueueQuerySupportsMyWorkAndOldestFirst(t *testing.T) {
 	}
 }
 
+func TestLegacyDashboardCaseStatusLinkUsesAllWork(t *testing.T) {
+	filter := parseIneligibleQueueFilters(url.Values{
+		"state":       {"all"},
+		"case_status": {"investigating"},
+	})
+	if filter.Scope != "all" {
+		t.Fatalf("legacy dashboard link scope = %q, want all", filter.Scope)
+	}
+
+	filter = parseIneligibleQueueFilters(url.Values{
+		"state":       {"all"},
+		"case_status": {"investigating"},
+		"scope":       {"mine"},
+	})
+	if filter.Scope != "mine" {
+		t.Fatalf("explicit scope = %q, want mine", filter.Scope)
+	}
+}
+
 func TestPlainIneligibleStatusExplainsWorkflowTerms(t *testing.T) {
 	tests := map[string]string{
 		"linked":            "Case raised",

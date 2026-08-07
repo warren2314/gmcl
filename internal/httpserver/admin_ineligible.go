@@ -146,7 +146,13 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		filter.Age = ""
 	}
 	if filter.Scope == "" {
-		filter.Scope = "mine"
+		// Older dashboard links did not include scope. Case-status cards are
+		// global counts, so keep those legacy URLs aligned with their totals.
+		if filter.CaseStatus != "" {
+			filter.Scope = "all"
+		} else {
+			filter.Scope = "mine"
+		}
 	}
 	if filter.Scope != "mine" && filter.Scope != "all" {
 		filter.Scope = "mine"
@@ -290,15 +296,15 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			Class string
 			Href  string
 		}{
-			{"New / exceptions", counts.NewIntakes, "border-danger", "/admin/ineligible?state=open"},
-			{"Active investigations", counts.ActiveCases, "border-primary", "/admin/ineligible?state=all&case_status=investigating"},
-			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?state=all&case_status=response_pending"},
-			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?state=all&case_status=investigating"},
-			{"New replies", counts.RecentReplies, "border-info", "/admin/ineligible?state=all&case_status=investigating"},
-			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/ineligible?state=all&case_status=decision_proposed"},
+			{"New / exceptions", counts.NewIntakes, "border-danger", "/admin/ineligible?scope=all&state=open"},
+			{"Active investigations", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
+			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"New replies", counts.RecentReplies, "border-info", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=decision_proposed"},
 			{"Denver points tasks", counts.DenverPointsTasks, "border-warning", "/admin/cases/tasks"},
 			{"Delivery exceptions", counts.DeliveryExceptions, "border-danger", "/admin/cases"},
-			{"Closed cases", counts.ClosedCases, "border-success", "/admin/ineligible?state=all&case_status=closed"},
+			{"Closed cases", counts.ClosedCases, "border-success", "/admin/ineligible?scope=all&state=all&case_status=closed"},
 		} {
 			fmt.Fprintf(w, `<div class="col"><a class="card h-100 %s text-decoration-none text-body" href="%s"><div class="card-body py-3"><div class="display-6 fw-semibold">%d</div><div class="small text-muted">%s</div></div></a></div>`, card.Class, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
 		}
