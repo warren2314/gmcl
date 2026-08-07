@@ -167,6 +167,31 @@ the idempotent **Create ineligible-player case** command, retains the stable
 list/match/player/scorecard provenance, requires an unambiguous Play-Cricket
 fixture-side mapping and assigns the configured Hussan account.
 
+### Staff route: ask the club for its explanation
+
+Use this order on the case page:
+
+1. Check the public summary, private source information and scorecard evidence.
+2. Run HawkAI. It ranks published rules using the case wording and any rule
+   already recorded; for example, a starred-player finding should rank the
+   starred-player rule above a generic dispensation rule. Open the cited source
+   and save the rule only after checking it.
+3. In **Contact the club for its explanation**, review and save the initial
+   email. It must ask what happened, why the player appeared, whether the club
+   believes the player was eligible and what permission, exemption or evidence
+   supports its position. It must also say that no decision has been made.
+4. Review and save the reminder. This prepares it but does not send it.
+5. Check the displayed verified official mailbox, then select **Send initial
+   email to club**. This is the action that queues the first email. Opening the
+   case, running HawkAI and saving either draft do not contact the club.
+6. Wait for the secure portal response or record an email, telephone or meeting
+   response manually. Review the response before proposing any decision.
+
+The initial send button is unavailable until outbound email is enabled and the
+offending club has a verified official mailbox. Only the first email is queued
+when staff select it. The saved reminder is queued for day five after confirmed
+delivery and is cancelled if the club responds first.
+
 The initial allegation and response request go only to the verified official
 mailbox for the offending club. Reporter name, role, email, telephone number
 and reporting-club identity are screened from offending-club correspondence.

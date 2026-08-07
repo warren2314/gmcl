@@ -14,7 +14,10 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "outputs" / "ineligible-guide" / "GMCL_Ineligible_Player_Staff_Guide.docx"
+OUT = Path(os.environ.get(
+    "GMCL_INELIGIBLE_GUIDE_OUT",
+    ROOT / "outputs" / "ineligible-guide" / "GMCL_Ineligible_Player_Staff_Guide.docx",
+))
 TMP = ROOT / "tmp" / "ineligible-guide"
 
 RED = "C41E3A"
@@ -707,10 +710,10 @@ def build_document():
 
     # Step 4 Hawk
     add_step_header(doc, 4, "Review the Hawk AI rule suggestion", "Turn evidence into a cited draft rule allegation for staff review", "2-5 minutes")
-    add_callout(doc, "How HawkAI works here", "HawkAI searches GMCL's own active published-rule index for eligibility wording and pre-fills likely rule candidates inside the case. It does not send the player, club or case summary outside GMCL.", kind="warning")
+    add_callout(doc, "How HawkAI works here", "HawkAI compares the case wording and any rule already recorded with GMCL's active published rules. A starred-player case should therefore rank the starred-player rule above a generic dispensation rule. It does not send the player, club or case summary outside GMCL.", kind="warning")
     add_screen_panel(doc, "HAWK AI SUGGESTION", "Draft only - staff confirmation required", [
         ("Suggested rule", "Rule 3.5 - Starred players"),
-        ("Why it may apply", "The active rule contains eligibility or ineligible-player wording"),
+        ("Why it may apply", "The case names Rule 3.5 and the source finding says starred player"),
         ("Source", "Published GMCL rules, Rule 3.5 [Open source]"),
         ("Staff check", "Compare the cited wording with the player, team and fixture evidence"),
         ("Actions", "Refresh suggestions | Edit | Save reviewed rule"),
@@ -749,9 +752,16 @@ def build_document():
     page_break(doc)
 
     # Step 6 email response
-    add_step_header(doc, 6, "Preview and request the club response", "Show the exact proposed email before anything is queued", "5 minutes")
+    add_step_header(doc, 6, "Ask the club for its explanation", "Save both messages, then deliberately send only the initial email", "5 minutes")
+    add_heading(doc, "The three actions on screen", 2)
+    add_list(doc, [
+        "Review and save the initial email. Saving the wording does not contact the club.",
+        "Review and save the reminder. It is prepared now but is not sent now.",
+        "Check the verified official mailbox, then select Send initial email to club. This is the action that queues the first email.",
+    ], ordered=True)
+    add_callout(doc, "What sends now?", "Only the initial email. The reminder is sent on day five only if delivery succeeded and the club has not responded.", kind="success")
     add_heading(doc, "Email preview centre", 2)
-    add_body(doc, "The Email preview centre shows every latest saved message for the case, including its audience, status, recipients, subject and full wording.")
+    add_body(doc, "The Email templates and previews section shows all five messages before they are saved. Once staff save a message, the exact latest wording, audience, status and recipients replace the example.")
     add_data_table(doc, ["Message", "Audience", "Status", "Action"], [
         ("Response request", "Offending club", "Ready to preview", "Review and queue"),
         ("Day-five reminder", "Offending club", "Prepared", "Preview only"),
@@ -759,23 +769,28 @@ def build_document():
         ("Outcome", "Reporting club", "Not available", "Created after approval"),
         ("Official outcome", "League recipients", "Not available", "Created after approval"),
     ], [2500, 2100, 1900, 2860], font_size=8.5)
-    add_email_preview(doc, "Response request", "secretary@riverside.example.invalid", "Response requested for GMCL case GMCL-2026-0042", [
+    page_break(doc)
+    add_email_preview(doc, "Initial email", "secretary@riverside.example.invalid", "Please respond: player eligibility query for Riverside CC 2nd XI (GMCL-2026-0042)", [
         "Dear Club Secretary,",
-        "The GMCL requests an official response from Riverside CC 2nd XI concerning the following allegation:",
+        "GMCL is reviewing a possible player eligibility issue involving Riverside CC 2nd XI.",
+        "What we are asking about:",
         "Jordan Taylor may have appeared in the fixture on 2 August 2026 contrary to the reviewed starred-player restriction.",
-        "Alleged rule: Rule 3.5 - Starred players. This is an allegation for response, not a finding.",
-        "Use the secure link below to respond and upload supporting evidence. [Secure response link]",
-        "Case reference: GMCL-2026-0042. The link expires seven days after this email is delivered.",
+        "Rule being checked: Rule 3.5 - Starred players.",
+        "No decision has been made. Please tell us what happened and why the player appeared, whether the club believes the player was eligible, and any permission, exemption or evidence GMCL should consider.",
+        "Please respond within seven days of delivery using the secure link. [Secure response link]",
+        "If no response is received, the investigation may continue using the available information, but no adverse decision is made automatically because the club did not reply.",
+        "Case reference: GMCL-2026-0042.",
         "Regards, Greater Manchester Cricket League",
     ], warning="No reporter name, email, telephone number or reporting-club identity appears in the message.")
     page_break(doc)
 
     add_heading(doc, "Response reminder preview", 1)
-    add_email_preview(doc, "Day-five reminder", "secretary@riverside.example.invalid", "Reminder: Response requested for GMCL case GMCL-2026-0042", [
+    add_email_preview(doc, "Day-five reminder", "secretary@riverside.example.invalid", "Reminder: player eligibility response due (GMCL-2026-0042)", [
         "Dear Club Secretary,",
-        "This is the single reminder that the response for GMCL case GMCL-2026-0042 is due in two days.",
-        "No adverse decision is made automatically if the deadline passes.",
+        "This is a reminder about GMCL's player eligibility query. The response is due in two days.",
+        "No decision has been made. Please explain what happened, why the player appeared and any permission, exemption or evidence GMCL should consider.",
         "[Secure response link]",
+        "If you have already responded, no further action is needed. No adverse decision is made automatically if the deadline passes.",
         "Regards, Greater Manchester Cricket League",
     ])
     add_heading(doc, "Before you queue the request", 2)
@@ -783,9 +798,11 @@ def build_document():
         "The recipient is the verified official mailbox for the offending club.",
         "The public allegation is accurate and neutral.",
         "The reviewed alleged rule is included.",
+        "The message asks for the club's explanation before any finding is made.",
         "Reporter and reporting-club identity are absent.",
         "Any evidence being shared is a separately redacted copy approved for sharing.",
     ])
+    add_callout(doc, "Final click", "Select Send initial email to club. Opening the case, running HawkAI and saving either draft do not send an email.", kind="warning")
     add_callout(doc, "Clock starts on delivery", "The seven-day response window and day-five reminder begin only after the first email is accepted by the mail provider.", kind="info")
     page_break(doc)
 

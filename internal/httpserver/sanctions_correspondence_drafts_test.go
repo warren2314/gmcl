@@ -78,7 +78,7 @@ func TestDefaultAdminResponseDraftViewsExposeTemplates(t *testing.T) {
 		"Alleged rule under investigation: Rule 3.5 - Player eligibility",
 	)
 	request := views["response_request"]
-	for _, required := range []string{"GMCL-2026-0169", "Example CC First XI", "eligibility concern", "Rule 3.5", responseLinkPlaceholder, "seven days"} {
+	for _, required := range []string{"GMCL-2026-0169", "Example CC First XI", "eligibility concern", "Rule 3.5", responseLinkPlaceholder, "seven days", "No decision has been made", "what happened and why the player appeared"} {
 		if !strings.Contains(request.subject+"\n"+request.body, required) {
 			t.Fatalf("response request template does not contain %q", required)
 		}
@@ -87,6 +87,21 @@ func TestDefaultAdminResponseDraftViewsExposeTemplates(t *testing.T) {
 	for _, required := range []string{"GMCL-2026-0169", responseLinkPlaceholder, "due in two days", "No adverse decision is made automatically"} {
 		if !strings.Contains(reminder.subject+"\n"+reminder.body, required) {
 			t.Fatalf("response reminder template does not contain %q", required)
+		}
+	}
+}
+
+func TestAdminClubResponseStepsExplainWhenEmailIsSent(t *testing.T) {
+	html := adminClubResponseStepsHTML()
+	for _, required := range []string{
+		"No email is sent merely by opening this case",
+		"Review and save the initial email",
+		"Review and save the reminder",
+		"Send initial email to club",
+		"The reminder is sent only later",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("club response steps do not contain %q", required)
 		}
 	}
 }

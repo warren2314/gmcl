@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type caseHawkRuleCandidate struct {
 	URL           string `json:"url"`
 	SourceTitle   string `json:"source_title"`
 	ReleaseID     int64  `json:"release_id"`
+	MatchReason   string `json:"match_reason,omitempty"`
+	matchScore    int
 }
 
 type caseHawkRuleSuggestion struct {
@@ -47,6 +50,82 @@ func normalizeRuleReference(value string) string {
 		value = strings.TrimSpace(value[5:])
 	}
 	return value
+}
+
+func scoreHawkRuleCandidate(candidate caseHawkRuleCandidate, caseContext, recordedReference string) (int, string) {
+	contextText := strings.ToLower(strings.TrimSpace(caseContext))
+	candidateText := strings.ToLower(candidate.Heading + "\n" + candidate.Excerpt)
+	reference := strings.ToLower(normalizeRuleReference(candidate.RuleReference))
+	recordedReference = strings.ToLower(normalizeRuleReference(recordedReference))
+	score := 0
+	reasons := make([]string, 0, 3)
+	if recordedReference != "" && reference == recordedReference {
+		score += 220
+		reasons = append(reasons, "it is the rule already recorded from the source finding")
+	}
+	if reference != "" && (strings.Contains(contextText, "rule "+reference) || strings.Contains(contextText, "rule "+strings.TrimSuffix(reference, "."))) {
+		score += 180
+		reasons = append(reasons, "the case wording names Rule "+candidate.RuleReference)
+	}
+	signals := []struct {
+		caseTerms      []string
+		candidateTerms []string
+		weight         int
+		reason         string
+	}{
+		{[]string{"starred"}, []string{"starred"}, 140, "the case concerns a starred player"},
+		{[]string{"junior exemption", "junior exemptions"}, []string{"junior exemption", "junior exemptions"}, 120, "the case concerns a junior exemption"},
+		{[]string{"dispensation", "advance request"}, []string{"dispensation", "advance request"}, 100, "the case mentions a dispensation request"},
+		{[]string{"registration", "registered"}, []string{"registration", "registered"}, 70, "the case concerns registration"},
+		{[]string{"transfer", "transferred"}, []string{"transfer", "transferred"}, 70, "the case concerns a transfer"},
+		{[]string{"overseas"}, []string{"overseas"}, 70, "the case concerns an overseas player"},
+		{[]string{"age group", "under 13", "under 15", "under 18"}, []string{"age group", "under 13", "under 15", "under 18"}, 60, "the case concerns an age-group restriction"},
+	}
+	for _, signal := range signals {
+		if containsAnyText(contextText, signal.caseTerms...) && containsAnyText(candidateText, signal.candidateTerms...) {
+			score += signal.weight
+			reasons = append(reasons, signal.reason)
+		}
+	}
+	if containsAnyText(candidateText, "ineligible", "eligibility") {
+		score += 10
+	}
+	if len(reasons) == 0 {
+		return score, "it contains published player-eligibility wording"
+	}
+	return score, strings.Join(reasons, "; ")
+}
+
+func containsAnyText(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func rankHawkRuleCandidates(candidates []caseHawkRuleCandidate, caseContext, recordedReference string) []caseHawkRuleCandidate {
+	for i := range candidates {
+		candidates[i].matchScore, candidates[i].MatchReason = scoreHawkRuleCandidate(candidates[i], caseContext, recordedReference)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].matchScore > candidates[j].matchScore
+	})
+	ranked := make([]caseHawkRuleCandidate, 0, 5)
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		reference := strings.ToLower(normalizeRuleReference(candidate.RuleReference))
+		if seen[reference] {
+			continue
+		}
+		seen[reference] = true
+		ranked = append(ranked, candidate)
+		if len(ranked) == 5 {
+			break
+		}
+	}
+	return ranked
 }
 
 func loadCaseAllegedRule(ctx context.Context, query interface {
@@ -192,8 +271,12 @@ func (s *Server) handleAdminCaseHawkRuleSuggestion() http.HandlerFunc {
 			http.Error(w, "invalid HawkAI request", http.StatusBadRequest)
 			return
 		}
-		var status, sourceType string
-		err = s.DB.QueryRow(r.Context(), `SELECT status,source_type FROM sanction_cases WHERE id=$1`, caseID).Scan(&status, &sourceType)
+		var status, sourceType, publicSummary, privateSummary, recordedReference string
+		err = s.DB.QueryRow(r.Context(), `SELECT c.status,c.source_type,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),
+			COALESCE((SELECT allegation.rule_reference FROM sanction_case_rule_allegation_revisions allegation
+				WHERE allegation.case_id=c.id ORDER BY allegation.revision DESC,allegation.id DESC LIMIT 1),'')
+			FROM sanction_cases c WHERE c.id=$1`, caseID).
+			Scan(&status, &sourceType, &publicSummary, &privateSummary, &recordedReference)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -212,9 +295,12 @@ func (s *Server) handleAdminCaseHawkRuleSuggestion() http.HandlerFunc {
 			WHERE release.status='active' AND NULLIF(BTRIM(chunk.rule_reference),'') IS NOT NULL
 			  AND (chunk.heading_path ILIKE '%ineligible%' OR chunk.content ILIKE '%ineligible%'
 			       OR chunk.heading_path ILIKE '%eligibility%' OR chunk.content ILIKE '%eligibility%')
-			ORDER BY CASE WHEN chunk.heading_path ILIKE '%ineligible%' OR chunk.content ILIKE '%ineligible%' THEN 0 ELSE 1 END,
-			         chunk.ordinal,chunk.id
-			LIMIT 5`)
+			       OR chunk.heading_path ILIKE '%starred%' OR chunk.content ILIKE '%starred%'
+			       OR chunk.heading_path ILIKE '%exemption%' OR chunk.content ILIKE '%exemption%'
+			       OR chunk.heading_path ILIKE '%dispensation%' OR chunk.content ILIKE '%dispensation%'
+			       OR chunk.heading_path ILIKE '%registration%' OR chunk.content ILIKE '%registration%')
+			ORDER BY chunk.ordinal,chunk.id
+			LIMIT 100`)
 		if err != nil {
 			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?error=%s", caseID, urlQueryEscape("HawkAI could not search the published rules. Check that a rules release is active, then try again.")), http.StatusSeeOther)
 			return
@@ -231,9 +317,14 @@ func (s *Server) handleAdminCaseHawkRuleSuggestion() http.HandlerFunc {
 				candidate.Excerpt = candidate.Excerpt[:700] + "..."
 			}
 			suggestion.Candidates = append(suggestion.Candidates, candidate)
-			if suggestion.SuggestedRuleReference == "" {
-				suggestion.SuggestedRuleReference = normalizeRuleReference(candidate.RuleReference)
-			}
+		}
+		suggestion.Candidates = rankHawkRuleCandidates(
+			suggestion.Candidates,
+			strings.Join([]string{publicSummary, privateSummary}, "\n"),
+			recordedReference,
+		)
+		if len(suggestion.Candidates) > 0 {
+			suggestion.SuggestedRuleReference = normalizeRuleReference(suggestion.Candidates[0].RuleReference)
 		}
 		if len(suggestion.Candidates) == 0 {
 			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?error=%s", caseID, urlQueryEscape("HawkAI found no eligibility rules in the active published release. Use the rule search or ask a rules administrator to check the release.")), http.StatusSeeOther)
@@ -278,14 +369,24 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 		WHERE case_id=$1 AND event_type='hawk_rule_suggested' ORDER BY id DESC LIMIT 1`, caseID).Scan(&hawkSuggestionJSON); suggestionErr == nil {
 		_ = json.Unmarshal(hawkSuggestionJSON, &hawkSuggestion)
 	}
-	fmt.Fprintf(w, `<section class="card mb-4 border-warning"><div class="card-header d-flex justify-content-between align-items-center"><span>HawkAI rule helper</span><span class="badge text-bg-light border">Staff confirmation required</span></div><div class="card-body"><p class="small text-muted">HawkAI searches GMCL's active published rules for eligibility wording. It does not decide whether a breach occurred and it does not send case details outside GMCL.</p>`)
+	fmt.Fprintf(w, `<section class="card mb-4 border-warning"><div class="card-header d-flex justify-content-between align-items-center"><span>HawkAI rule helper</span><span class="badge text-bg-light border">Staff confirmation required</span></div><div class="card-body"><p class="small text-muted">HawkAI compares this case's wording and any rule already recorded with GMCL's active published rules. It does not decide whether a breach occurred and it does not send case details outside GMCL.</p>`)
 	if len(hawkSuggestion.Candidates) == 0 {
 		fmt.Fprint(w, `<p class="mb-0">No suggestion has been prepared for this case.</p>`)
 	} else {
-		fmt.Fprintf(w, `<div class="alert alert-warning py-2"><strong>Suggested starting point: Rule %s.</strong> Check the cited wording and the case evidence before saving it.</div>`, escapeHTML(hawkSuggestion.SuggestedRuleReference))
+		alertClass := "alert-warning"
+		lead := "Highest case match"
+		if rule.ID > 0 && strings.EqualFold(normalizeRuleReference(rule.Reference), normalizeRuleReference(hawkSuggestion.SuggestedRuleReference)) {
+			alertClass = "alert-success"
+			lead = "Matches the recorded rule"
+		}
+		fmt.Fprintf(w, `<div class="alert %s py-2"><strong>%s: Rule %s.</strong> This ranking is based on the case facts shown above. Check the cited wording before relying on it.</div>`, alertClass, lead, escapeHTML(hawkSuggestion.SuggestedRuleReference))
 		for _, candidate := range hawkSuggestion.Candidates {
-			fmt.Fprintf(w, `<article class="border rounded p-3 mb-2"><div><strong>Rule %s - %s</strong></div><p class="small my-2">%s</p><a class="small" href="%s" target="_blank" rel="noopener noreferrer">Open published source: %s</a></article>`,
-				escapeHTML(candidate.RuleReference), escapeHTML(candidate.Heading), escapeHTML(candidate.Excerpt), escapeHTML(candidate.URL), escapeHTML(candidate.SourceTitle))
+			matchReason := candidate.MatchReason
+			if strings.TrimSpace(matchReason) == "" {
+				matchReason = "Contains published player-eligibility wording; no case-specific explanation was stored with this older suggestion."
+			}
+			fmt.Fprintf(w, `<article class="border rounded p-3 mb-2"><div><strong>Rule %s - %s</strong></div><div class="small text-primary-emphasis mt-2"><strong>Why HawkAI ranked this:</strong> %s.</div><p class="small my-2">%s</p><a class="small" href="%s" target="_blank" rel="noopener noreferrer">Open published source: %s</a></article>`,
+				escapeHTML(candidate.RuleReference), escapeHTML(candidate.Heading), escapeHTML(matchReason), escapeHTML(candidate.Excerpt), escapeHTML(candidate.URL), escapeHTML(candidate.SourceTitle))
 		}
 	}
 	fmt.Fprintf(w, `</div><div class="card-footer"><form method="POST" action="/admin/cases/%d/hawk-rule-suggestion"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-warning">%s</button></form></div></section>`,
@@ -310,7 +411,7 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 	selectionReason := ""
 	if formReference == "" && hawkSuggestion.SuggestedRuleReference != "" {
 		formReference = hawkSuggestion.SuggestedRuleReference
-		selectionReason = "HawkAI suggested this eligibility rule. I checked the published wording and will confirm it against the case evidence before requesting a response."
+		selectionReason = "HawkAI ranked this as the closest published rule. Replace this sentence with the case fact that makes the rule relevant after checking the source wording."
 	}
 	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/alleged-rule" class="card mb-4"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">%s alleged rule</div><div class="card-body"><label class="form-label">Published GMCL rule reference</label><input class="form-control" name="rule_reference" list="published-rule-references" value="%s" placeholder="e.g. 3.5" maxlength="100" required><datalist id="published-rule-references">%s</datalist><div class="form-text">HawkAI can prefill a likely candidate, but the investigator must check the published wording and evidence before saving.</div><label class="form-label mt-3">Why this rule is relevant to the allegation</label><textarea class="form-control" name="selection_reason" rows="2" maxlength="2000" required>%s</textarea><div class="form-text">Saving creates a new case-history version. Earlier versions remain visible for audit purposes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save reviewed rule</button></div></form>`, caseID, escapeHTML(csrf), map[bool]string{true: "Revise", false: "Record"}[rule.ID > 0], escapeHTML(formReference), options, escapeHTML(selectionReason))
 	return rule

@@ -20,3 +20,30 @@ func TestAllegedRuleCorrespondenceParagraph(t *testing.T) {
 		t.Fatalf("paragraph=%q want %q", got, want)
 	}
 }
+
+func TestRankHawkRuleCandidatesUsesCaseFactsNotDocumentOrder(t *testing.T) {
+	candidates := []caseHawkRuleCandidate{
+		{RuleReference: "3.7.3.1", Heading: "Limited dispensation", Excerpt: "An advance request may be made for a normally ineligible player."},
+		{RuleReference: "3.5", Heading: "Starred Players & Junior Exemptions", Excerpt: "Restrictions for starred players and junior exemptions."},
+		{RuleReference: "3.8", Heading: "Disciplinary Regulations", Excerpt: "Penalties may apply for ineligible players."},
+	}
+	context := "Potential Rule 3.5 appearance. Revalidated starred-player finding for List A player."
+	ranked := rankHawkRuleCandidates(candidates, context, "3.5")
+	if got := ranked[0].RuleReference; got != "3.5" {
+		t.Fatalf("top HawkAI candidate = %s, want 3.5", got)
+	}
+	if ranked[0].MatchReason == "" {
+		t.Fatal("top HawkAI candidate has no case-specific explanation")
+	}
+}
+
+func TestRankHawkRuleCandidatesCanPreferDispensationWhenCaseMentionsIt(t *testing.T) {
+	candidates := []caseHawkRuleCandidate{
+		{RuleReference: "3.5", Heading: "Starred Players", Excerpt: "Restrictions for starred players."},
+		{RuleReference: "3.7.3.1", Heading: "Limited dispensation", Excerpt: "An advance request for dispensation may be made."},
+	}
+	ranked := rankHawkRuleCandidates(candidates, "The club says an advance dispensation request was approved.", "")
+	if got := ranked[0].RuleReference; got != "3.7.3.1" {
+		t.Fatalf("top HawkAI candidate = %s, want 3.7.3.1", got)
+	}
+}

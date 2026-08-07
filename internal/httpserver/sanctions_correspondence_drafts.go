@@ -174,21 +174,33 @@ func defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRulePar
 	return map[string]responseDraftView{
 		"response_request": {
 			kind:    "response_request",
-			subject: "Response requested for GMCL case " + ref,
-			body: "Dear Club Secretary,\n\nThe GMCL requests an official response from " + teamName +
-				" concerning the following allegation:\n\n" + publicSummary + "\n\n" + allegedRuleParagraph +
-				"\n\nUse the secure link below to respond and upload any supporting evidence:\n" +
-				responseLinkPlaceholder + "\n\nCase reference: " + ref +
-				"\nThis secure link expires in seven days.\n\nRegards,\nGreater Manchester Cricket League",
+			subject: "Please respond: player eligibility query for " + teamName + " (" + ref + ")",
+			body: "Dear Club Secretary,\n\nGMCL is reviewing a possible player eligibility issue involving " + teamName + ".\n\n" +
+				"What we are asking about:\n\n" + publicSummary + "\n\n" +
+				"Rule being checked:\n\n" + allegedRuleParagraph +
+				"\n\nNo decision has been made. Before GMCL reaches a decision, please tell us:\n" +
+				"- what happened and why the player appeared in this match;\n" +
+				"- whether the club believes the player was eligible, and why; and\n" +
+				"- any relevant permission, exemption or other circumstances we should consider.\n\n" +
+				"You can also upload supporting evidence. Please respond using this secure link:\n" +
+				responseLinkPlaceholder + "\n\nPlease reply within seven days of this email being delivered. " +
+				"If no response is received, the investigation may continue using the available information, but no adverse decision is made automatically because the club did not reply.\n\n" +
+				"Case reference: " + ref + "\n\nRegards,\nGreater Manchester Cricket League",
 		},
 		"response_reminder": {
 			kind:    "response_reminder",
-			subject: "Reminder: Response requested for GMCL case " + ref,
-			body: "Dear Club Secretary,\n\nThis is the single reminder that the response for GMCL case " + ref +
-				" is due in two days. No adverse decision is made automatically if the deadline passes.\n\n" +
-				responseLinkPlaceholder + "\n\nRegards,\nGreater Manchester Cricket League",
+			subject: "Reminder: player eligibility response due (" + ref + ")",
+			body: "Dear Club Secretary,\n\nThis is a reminder about GMCL's player eligibility query for " + teamName +
+				". Your response for case " + ref + " is due in two days.\n\n" +
+				"No decision has been made. Please use the secure link to explain what happened, why the player appeared and any permission, exemption or evidence GMCL should consider:\n" +
+				responseLinkPlaceholder + "\n\nIf you have already responded, no further action is needed. No adverse decision is made automatically if the deadline passes.\n\n" +
+				"Regards,\nGreater Manchester Cricket League",
 		},
 	}
+}
+
+func adminClubResponseStepsHTML() string {
+	return `<section class="card mb-3 border-primary"><div class="card-header">Contact the club for its explanation</div><div class="card-body"><p class="mb-3">No email is sent merely by opening this case. Complete these three steps:</p><ol class="mb-0"><li class="mb-2"><strong>Review and save the initial email.</strong> It asks what happened, why the player appeared and what evidence the club relies on.</li><li class="mb-2"><strong>Review and save the reminder.</strong> This is prepared now but is not sent now.</li><li><strong>Select Send initial email to club.</strong> The first email goes to the verified official club mailbox. The reminder is sent only later if it is still needed.</li></ol></div></section>`
 }
 
 func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf, ref, teamName, publicSummary, sourceType string) {
@@ -202,6 +214,7 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 		allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
 	}
 	defaults := defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph)
+	fmt.Fprint(w, adminClubResponseStepsHTML())
 	for _, kind := range []string{"response_request", "response_reminder"} {
 		view := defaults[kind]
 		var stored responseDraftView
@@ -219,14 +232,29 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 		if view.exists {
 			preview = fmt.Sprintf(`<a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/response-drafts/%s/preview">Preview saved draft</a>`, caseID, kind)
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between"><span>%s draft</span>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="9" maxlength="30000" required>%s</textarea><div class="form-text">Keep exactly one %s placeholder. Saving does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-outline-primary">Save new immutable revision</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), escapeHTML(strings.ReplaceAll(kind, "_", " ")), badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, preview)
+		stepTitle := "1. Review and save the initial email"
+		buttonText := "Save initial email"
+		if kind == "response_reminder" {
+			stepTitle = "2. Review and save the reminder"
+			buttonText = "Save reminder"
+		}
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between gap-2"><span>%s</span>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required>%s</textarea><div class="form-text">Keep exactly one %s placeholder. Saving this wording does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-outline-primary">%s</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), stepTitle, badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, buttonText, preview)
 	}
-	disabled := sanctionsEmailDisabled() || (sourceType == "ineligible_player" && !ineligibleOutboundEmailEnabled())
+	officialEmail := ""
+	_ = s.DB.QueryRow(r.Context(), `SELECT contact.email FROM sanction_cases c
+		JOIN sanction_club_contacts contact ON contact.club_id=c.club_id
+			AND contact.contact_type='official_mailbox' AND contact.active AND contact.verified_at IS NOT NULL
+		WHERE c.id=$1 ORDER BY contact.verified_at DESC NULLS LAST,contact.id DESC LIMIT 1`, caseID).Scan(&officialEmail)
+	disabled := sanctionsEmailDisabled() || (sourceType == "ineligible_player" && !ineligibleOutboundEmailEnabled()) || strings.TrimSpace(officialEmail) == ""
 	if disabled {
-		fmt.Fprint(w, `<div class="card mb-3"><div class="card-body"><button class="btn btn-outline-danger" disabled>Send saved response request</button><div class="form-text">Outbound sanctions email is disabled. Drafts remain editable and safe to preview.</div></div></div>`)
+		reason := "Outbound sanctions email is disabled. Drafts remain editable and safe to preview."
+		if strings.TrimSpace(officialEmail) == "" {
+			reason = "No verified official mailbox is recorded for the offending club. Add or verify it in Recipients before sending."
+		}
+		fmt.Fprintf(w, `<div class="card mb-3 border-warning"><div class="card-header">3. Send the initial email</div><div class="card-body"><button class="btn btn-primary" disabled>Send initial email to club</button><div class="form-text">%s</div></div></div>`, escapeHTML(reason))
 		return
 	}
-	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/request-response" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><p>Lock the latest saved request and reminder drafts, then queue only the initial notice to the verified offending-club mailbox. The seven-day response window and day-five reminder start only after the initial notice is delivered successfully.</p><button class="btn btn-outline-danger">Lock drafts and queue initial notice</button></div></form>`, caseID, escapeHTML(csrf))
+	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/request-response" class="card mb-3 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">3. Send the initial email</div><div class="card-body"><p><strong>To:</strong> %s</p><p>This sends only the initial email now. It securely locks both saved messages, creates the club's response link and queues the first email to the verified official mailbox.</p><p class="small text-muted">The seven-day response period starts when the email is delivered. The saved reminder is sent on day five only if the club has not responded.</p><button class="btn btn-primary">Send initial email to club</button></div></form>`, caseID, escapeHTML(csrf), escapeHTML(officialEmail))
 }
 
 func parsePositiveCaseID(value string) (int64, error) {
