@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -146,16 +147,13 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		filter.Age = ""
 	}
 	if filter.Scope == "" {
-		// Older dashboard links did not include scope. Case-status cards are
-		// global counts, so keep those legacy URLs aligned with their totals.
-		if filter.CaseStatus != "" {
-			filter.Scope = "all"
-		} else {
-			filter.Scope = "mine"
-		}
+		// New reports do not have a case assignee yet, so "My work" hides the
+		// very items staff need in order to raise a case. Start with all work;
+		// the narrower ownership view remains available under manager controls.
+		filter.Scope = "all"
 	}
 	if filter.Scope != "mine" && filter.Scope != "all" {
-		filter.Scope = "mine"
+		filter.Scope = "all"
 	}
 	if filter.Sort == "" {
 		filter.Sort = "newest"
@@ -277,19 +275,25 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		syncHealth, hasSyncHealth := s.loadIneligibleSyncHealth(ctx)
 		csrf := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pageHead(w, "Ineligible-player intake")
+		pageHead(w, "Ineligible-player work")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2 mb-1">Ineligible-player work queue</h1><p class="text-muted mb-0">Review a report, raise or link a case, check the suggested rule, collect evidence, then prepare communications and a decision.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><form method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-primary">Check for new reports</button></form><a class="btn btn-outline-warning" href="/admin/ineligible/backfill">Excel import</a><a class="btn btn-outline-secondary" href="/admin/ineligible?scope=%s&sort=%s">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`, escapeHTML(csrf), escapeHTML(filter.Scope), escapeHTML(filter.Sort))
-		fmt.Fprint(w, `<div class="alert alert-light border mb-3"><strong>What should I do?</strong> Open the next item, check the reported details, then use the clearly labelled next action. Nothing is emailed and no sanction is issued until the relevant approval step.</div>`)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Choose one route below. The system will take you to the next required step.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`)
+		writeIneligibleFlash(w, r)
+		nextReportID := nextIneligibleReportID(queue)
+		writeIneligibleStartRoutes(w, csrf, nextReportID)
+		advancedOpen := ""
+		if ineligibleQueueUsesAdvancedView(filter) {
+			advancedOpen = " open"
+		}
+		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">More filters and manager status</summary><div class="card-body">`, advancedOpen)
 		mineClass, allClass := "btn-outline-primary", "btn-outline-primary"
 		if filter.Scope == "mine" {
 			mineClass = "btn-primary"
-		} else {
+		} else if filter.State == "open" && filter.CaseStatus == "" {
 			allClass = "btn-primary"
 		}
-		fmt.Fprintf(w, `<nav class="btn-group mb-4" aria-label="Choose work queue"><a class="btn %s" href="/admin/ineligible?scope=mine&sort=%s">My work</a><a class="btn %s" href="/admin/ineligible?scope=all&sort=%s">All work</a></nav>`, mineClass, escapeHTML(filter.Sort), allClass, escapeHTML(filter.Sort))
-		writeIneligibleFlash(w, r)
-		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-3 mb-4">`)
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="/admin/ineligible?scope=mine&state=all&sort=%s">My assigned cases</a><a class="btn %s" href="/admin/ineligible?scope=all&sort=%s">All open reports</a></nav>`, mineClass, escapeHTML(filter.Sort), allClass, escapeHTML(filter.Sort))
+		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
 		for _, card := range []struct {
 			Label string
 			Count int64
@@ -306,7 +310,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			{"Delivery exceptions", counts.DeliveryExceptions, "border-danger", "/admin/cases"},
 			{"Closed cases", counts.ClosedCases, "border-success", "/admin/ineligible?scope=all&state=all&case_status=closed"},
 		} {
-			fmt.Fprintf(w, `<div class="col"><a class="card h-100 %s text-decoration-none text-body" href="%s"><div class="card-body py-3"><div class="display-6 fw-semibold">%d</div><div class="small text-muted">%s</div></div></a></div>`, card.Class, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
+			fmt.Fprintf(w, `<div class="col"><a class="border rounded d-block h-100 %s text-decoration-none text-body p-2" href="%s"><div class="h4 mb-0">%d</div><div class="small text-muted">%s</div></a></div>`, card.Class, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
 		}
 		fmt.Fprint(w, `</div>`)
 		if hasSyncHealth {
@@ -320,17 +324,27 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			} else if syncHealth.Status == "running" {
 				alertClass = "alert-info"
 			}
-			fmt.Fprintf(w, `<section class="alert %s d-flex flex-column flex-lg-row justify-content-between gap-2"><div><strong>Latest %s sync: %s</strong><div class="small">Run %d; seen %d, new %d, changed %d, errors %d. Completed: %s.</div>`, alertClass, escapeHTML(strings.ReplaceAll(syncHealth.Origin, "_", " ")), escapeHTML(syncHealth.Status), syncHealth.ID, syncHealth.RowsSeen, syncHealth.RowsNew, syncHealth.RowsChanged, syncHealth.RowsErrored, escapeHTML(completed))
+			fmt.Fprintf(w, `<section class="alert %s d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3"><div><strong>Latest %s import: %s</strong><div class="small">Run %d; seen %d, new %d, changed %d, errors %d. Completed: %s.</div>`, alertClass, escapeHTML(strings.ReplaceAll(syncHealth.Origin, "_", " ")), escapeHTML(syncHealth.Status), syncHealth.ID, syncHealth.RowsSeen, syncHealth.RowsNew, syncHealth.RowsChanged, syncHealth.RowsErrored, escapeHTML(completed))
 			if syncHealth.Error != "" {
 				fmt.Fprintf(w, `<div class="small mt-1">%s</div>`, escapeHTML(syncHealth.Error))
 			}
 			fmt.Fprint(w, `</div><div class="small text-nowrap">Started `+escapeHTML(syncHealth.StartedAt.In(s.LondonLoc).Format("02 Jan 15:04"))+`</div></section>`)
 		} else {
-			fmt.Fprint(w, `<div class="alert alert-warning"><strong>No intake sync has run.</strong> Configure the read-only source and run the protected importer before enabling live intake.</div>`)
+			fmt.Fprint(w, `<div class="alert alert-warning mb-3"><strong>No Google Form import has run.</strong> Configure the read-only source before using the import action.</div>`)
 		}
 
 		writeIneligibleFilters(w, filter)
-		fmt.Fprint(w, `<section class="card shadow-sm"><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Received</th><th>Source</th><th>Reporting club</th><th>Offending club / team</th><th>Player / fixture</th><th>Status</th><th>Next action</th></tr></thead><tbody>`)
+		queueTitle := "Reports ready for review"
+		queueHelp := "Open a report, check the pre-filled details, then raise or link its case."
+		if filter.Origin == "google_form" {
+			queueTitle = "Google Form reports ready for review"
+			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."
+		}
+		if filter.State == "all" || filter.CaseStatus != "" || filter.Scope == "mine" {
+			queueTitle = "Work matching this view"
+			queueHelp = "Open a report or case to continue from its current step."
+		}
+		fmt.Fprintf(w, `</div></details><section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
 		for _, row := range queue {
 			received := "-"
 			if row.ExternalCreatedAt != nil {
@@ -344,7 +358,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			rowClass := ""
 			if row.CaseID != nil {
 				rowClass = ` class="table-success"`
-				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-success" href="/admin/cases/%d">Case raised: %s</a><div class="small text-success-emphasis mt-1">%s`, *row.CaseID, escapeHTML(row.CaseReference), escapeHTML(plainIneligibleStatus(row.CaseStatus)))
+				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-success" href="/admin/cases/%d">Open case %s</a><div class="small text-success-emphasis mt-1">%s`, *row.CaseID, escapeHTML(row.CaseReference), escapeHTML(plainIneligibleStatus(row.CaseStatus)))
 				if row.Assignee != "" {
 					caseHTML += `; ` + escapeHTML(row.Assignee)
 				}
@@ -359,16 +373,56 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				evidenceHTML = fmt.Sprintf(`<div class="small mt-1"><span class="badge text-bg-light border">%d evidence %s</span></div>`, row.AttachmentCount, label)
 			}
 			if row.CaseID == nil {
-				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-outline-primary" href="/admin/ineligible/%d">Review and raise case</a>`, row.ID)
+				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-primary" href="/admin/ineligible/%d">Review report</a>`, row.ID)
 			}
-			fmt.Fprintf(w, `<tr%s><td data-label="Received"><a href="/admin/ineligible/%d">%s</a><div class="small text-muted">%s</div></td><td data-label="Source">%s%s</td><td data-label="Reporting club">%s</td><td data-label="Offending club / team"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="Player / fixture"><strong>%s</strong><div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Next action">%s</td></tr>`, rowClass, row.ID, escapeHTML(received), escapeHTML(row.ExternalKey), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), evidenceHTML, escapeHTML(row.ReportingClubText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.PlayerText), escapeHTML(fixture), ineligibleStateBadge(row.State), caseHTML)
+			fmt.Fprintf(w, `<tr%s><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s</div>%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Next step">%s</td></tr>`, rowClass, row.ID, escapeHTML(row.PlayerText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.ReportingClubText), evidenceHTML, escapeHTML(fixture), escapeHTML(received), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), ineligibleStateBadge(row.State), caseHTML)
 		}
 		if len(queue) == 0 {
-			fmt.Fprint(w, `<tr><td colspan="7" class="text-center text-muted py-5">No work matches this view. Try All work or clear the filters.</td></tr>`)
+			emptyMessage := "No reports match this view. Open the manager controls above to clear filters."
+			if queueTitle == "Work matching this view" {
+				emptyMessage = "No work matches this view. Open the manager controls above to clear filters."
+			}
+			fmt.Fprintf(w, `<tr><td colspan="5" class="text-center text-muted py-5">%s</td></tr>`, escapeHTML(emptyMessage))
 		}
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
 	}
+}
+
+func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
+	nextHref := "/admin/ineligible?scope=all&state=open#reports"
+	nextLabel := "View reports"
+	if nextReportID > 0 {
+		nextHref = fmt.Sprintf("/admin/ineligible/%d", nextReportID)
+		nextLabel = "Open next report"
+	}
+	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-3 g-3">`)
+	fmt.Fprintf(w, `<div class="col"><article class="card h-100 border-primary"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 1</div><h3 class="h5">Raise one case</h3><p class="text-muted flex-grow-1">Open a report, check the pre-filled details, then select <strong>Raise case</strong>.</p><a class="btn btn-primary" href="%s">%s</a></div></article></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
+	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import Google Form reports</h3><p class="text-muted flex-grow-1">Bring several responses into this queue. Staff still raise or link each case.</p><button class="btn btn-outline-primary">Import Google Form reports</button></form></article></div>`, escapeHTML(csrf))
+	fmt.Fprint(w, `<div class="col"><article class="card h-100"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 3</div><h3 class="h5">Import historical tracker</h3><p class="text-muted flex-grow-1">Upload the Excel tracker, check its matches, sign off, then apply history.</p><a class="btn btn-outline-primary" href="/admin/ineligible/backfill">Open tracker import</a></div></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`)
+}
+
+func nextIneligibleReportID(queue []ineligibleQueueRow) int64 {
+	for _, row := range queue {
+		if row.CaseID == nil && (row.State == "new" || row.State == "reviewing" || row.State == "exception") {
+			return row.ID
+		}
+	}
+	return 0
+}
+
+func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
+	return filter.State != "open" ||
+		(filter.Origin != "" && filter.Origin != "google_form") ||
+		filter.ReportingClub != "" ||
+		filter.OffendingClub != "" ||
+		filter.Team != "" ||
+		filter.Player != "" ||
+		filter.Assignee != "" ||
+		filter.CaseStatus != "" ||
+		filter.Age != "" ||
+		filter.Scope != "all" ||
+		filter.Sort != "newest"
 }
 
 func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleDashboardCounts, error) {
@@ -405,7 +459,7 @@ func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHe
 }
 
 func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="card card-body mb-4"><input type="hidden" name="scope" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to your work.</div></div><span class="small text-muted">Current view: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work status</label><select class="form-select" name="state">`, escapeHTML(filter.Scope), escapeHTML(plainIneligibleStatus(filter.Scope)))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to all reports.</div></div><span class="small text-muted">Current view: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work status</label><select class="form-select" name="state">`, escapeHTML(filter.Scope), escapeHTML(plainIneligibleStatus(filter.Scope)))
 	writeSelectedOptions(w, filter.State, []string{"open", "all", "new", "reviewing", "exception", "linked", "duplicate", "ignored"})
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Source</label><select class="form-select" name="origin"><option value="">All sources</option>`)
 	writeSelectedOptions(w, filter.Origin, []string{"google_form", "native_form", "starred_player", "tracker_backfill"})
@@ -538,8 +592,9 @@ func (s *Server) handleAdminIneligibleSync() http.HandlerFunc {
 			redirectIneligibleDashboard(w, r, "error", message)
 			return
 		}
-		message := fmt.Sprintf("Sync %d completed: %d seen, %d new, %d changed, %d errors.", summary.RunID, summary.Seen, summary.New, summary.Changed, summary.Errors)
-		redirectIneligibleDashboard(w, r, "success", message)
+		message := fmt.Sprintf("Google Form import %d completed: %d seen, %d added, %d changed, %d errors.", summary.RunID, summary.Seen, summary.New, summary.Changed, summary.Errors)
+		values := url.Values{"scope": []string{"all"}, "state": []string{"open"}, "origin": []string{"google_form"}, "success": []string{message}}
+		http.Redirect(w, r, "/admin/ineligible?"+values.Encode(), http.StatusSeeOther)
 	}
 }
 
@@ -571,6 +626,13 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 			return
 		}
 		links, _ := s.loadIneligibleCaseLinks(r.Context(), intakeID)
+		var activeLink *ineligibleCaseLinkView
+		for index := range links {
+			if links[index].Relationship != "duplicate" {
+				activeLink = &links[index]
+				break
+			}
+		}
 		csrf := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ineligible intake "+strconv.FormatInt(intakeID, 10))
@@ -587,36 +649,39 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 		fmt.Fprintf(w, `<details class="card mb-4"><summary class="card-header fw-semibold">Original submitted data <span class="small text-muted">(audit copy)</span></summary><div class="card-body"><p class="small text-muted">This saved copy cannot be edited, so there is always a reliable record of what was originally received.</p><pre class="small mb-0" style="white-space:pre-wrap;overflow-wrap:anywhere">%s</pre></div></details>`, escapeHTML(pretty))
 		fmt.Fprint(w, nativeIntakeEvidenceLinks(rawJSON, intakeID, revision))
 		s.writeIneligibleIntakeAttachments(w, r.Context(), intakeID)
-		fmt.Fprint(w, `<section class="card mb-4"><div class="card-header fw-semibold">Linked cases and investigation activity</div><div class="card-body">`)
-		if len(links) == 0 {
-			fmt.Fprint(w, `<p class="text-muted mb-0">No sanction case has been linked.</p>`)
-		}
-		for _, link := range links {
-			fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><div><a href="/admin/cases/%d"><strong>%s</strong></a><div class="small text-muted">%s; %s; %s / %s`, link.CaseID, escapeHTML(link.Reference), escapeHTML(link.Relationship), escapeHTML(link.Status), escapeHTML(link.Club), escapeHTML(link.Team))
-			if link.Player != "" {
-				fmt.Fprint(w, `; `+escapeHTML(link.Player))
+		if len(links) > 0 {
+			fmt.Fprint(w, `<section class="card mb-4"><div class="card-header fw-semibold">Linked case records</div><div class="card-body">`)
+			for _, link := range links {
+				fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><strong>%s</strong><div class="small text-muted mb-2">%s; %s; %s / %s`, escapeHTML(link.Reference), escapeHTML(link.Relationship), escapeHTML(plainIneligibleStatus(link.Status)), escapeHTML(link.Club), escapeHTML(link.Team))
+				if link.Player != "" {
+					fmt.Fprint(w, `; `+escapeHTML(link.Player))
+				}
+				fmt.Fprint(w, `</div>`)
+				if link.Reason != "" {
+					fmt.Fprint(w, `<p class="small">`+escapeHTML(link.Reason)+`</p>`)
+				}
+				buttonClass, buttonLabel := ineligibleCaseLinkAction(link.Relationship)
+				fmt.Fprintf(w, `<a class="%s" href="/admin/cases/%d">%s</a></article>`, buttonClass, link.CaseID, buttonLabel)
 			}
-			fmt.Fprint(w, `</div></div><span class="small text-muted">`+escapeHTML(link.Assignee)+`</span></div>`)
-			if link.Reason != "" {
-				fmt.Fprint(w, `<p class="small mt-2 mb-0">`+escapeHTML(link.Reason)+`</p>`)
-			}
-			fmt.Fprintf(w, `<div class="row g-3 mt-1"><div class="col-md-6"><form method="POST" action="/admin/cases/%d/investigation-note"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">Investigation note</label><div class="form-text mb-1">Saved notes cannot be edited later; add a correction if something changes.</div><textarea class="form-control form-control-sm" name="note" rows="3" maxlength="10000" required></textarea><button class="btn btn-sm btn-outline-primary mt-2">Save note</button></form></div><div class="col-md-6"><form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="return_to" value="/admin/ineligible/%d"><label class="form-label small fw-semibold">External club response</label><select class="form-select form-select-sm mb-2" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select><input class="form-control form-control-sm mb-2" name="respondent" placeholder="Respondent name / mailbox" maxlength="300"><textarea class="form-control form-control-sm" name="response" rows="3" maxlength="20000" required></textarea><label class="form-label small mt-2 mb-1">Attachment (PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control form-control-sm" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"><button class="btn btn-sm btn-outline-success mt-2">Save response</button></form></div></div></article>`, link.CaseID, csrf, intakeID, link.CaseID, csrf, intakeID)
+			fmt.Fprint(w, `</div></section>`)
 		}
-		fmt.Fprint(w, `</div></section>`)
 		writeIneligibleIntakeEvents(w, s, r.Context(), intakeID)
 		fmt.Fprint(w, `</div><aside class="col-lg-5">`)
-		if state != "duplicate" && state != "ignored" {
-			writeIneligibleCreateCaseForm(w, csrf, intakeID, reportingText, playerText, fixtureDate, rawJSON, clubs, teams, len(links) > 0)
+		if activeLink == nil && state != "duplicate" && state != "ignored" {
+			writeIneligibleCreateCaseForm(w, csrf, intakeID, reportingText, playerText, fixtureDate, rawJSON, clubs, teams, false)
+			fmt.Fprint(w, `<details class="card mb-4"><summary class="card-header fw-semibold">Other outcomes</summary><div class="card-body"><p class="small text-muted">Use these only when this report belongs to existing work or should not become a new case.</p>`)
 			writeIneligibleLinkCaseForm(w, csrf, intakeID, reportingText, clubs, teams, cases)
+			writeIneligibleResolutionForms(w, csrf, intakeID, state, reportingText, clubs, cases, false)
+			fmt.Fprint(w, `</div></details>`)
+		} else if activeLink != nil {
+			fmt.Fprintf(w, `<section class="card border-success mb-4"><div class="card-body"><h2 class="h5 text-success">Case %s is ready</h2><p>Continue the investigation, correspondence and decision on the case page.</p><a class="btn btn-success w-100" href="/admin/cases/%d">Open case</a></div></section>`, escapeHTML(activeLink.Reference), activeLink.CaseID)
+			fmt.Fprint(w, `<details class="card mb-4"><summary class="card-header fw-semibold">Advanced case links</summary><div class="card-body"><p class="small text-muted">Only use this if the report genuinely needs another or split investigation.</p>`)
+			writeIneligibleCreateCaseForm(w, csrf, intakeID, reportingText, playerText, fixtureDate, rawJSON, clubs, teams, true)
+			writeIneligibleLinkCaseForm(w, csrf, intakeID, reportingText, clubs, teams, cases)
+			fmt.Fprint(w, `</div></details>`)
+		} else {
+			fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h5">Report resolved</h2><p class="mb-0">This report is recorded as duplicate or no action. Its audit history remains below.</p></div></section>`)
 		}
-		hasActiveCaseLink := false
-		for _, link := range links {
-			if link.Relationship != "duplicate" {
-				hasActiveCaseLink = true
-				break
-			}
-		}
-		writeIneligibleResolutionForms(w, csrf, intakeID, state, reportingText, clubs, cases, hasActiveCaseLink)
 		fmt.Fprint(w, `</aside></div></main>`)
 		pageFooter(w)
 	}
@@ -804,12 +869,19 @@ func (s *Server) loadIneligibleCaseLinks(ctx context.Context, intakeID int64) ([
 	return links, rows.Err()
 }
 
+func ineligibleCaseLinkAction(relationship string) (className, label string) {
+	if relationship == "duplicate" {
+		return "btn btn-outline-secondary", "Open related case"
+	}
+	return "btn btn-success", "Open case and continue"
+}
+
 func writeIneligibleCreateCaseForm(w http.ResponseWriter, csrf string, intakeID int64, reportingText, playerText string, fixtureDate *time.Time, rawJSON []byte, clubs []ineligibleClubOption, teams []ineligibleTeamOption, split bool) {
-	title := "Create investigation case"
-	button := "Create case without sending email"
+	title := "Raise this case"
+	button := "Raise case"
 	if split {
-		title = "Create split investigation case"
-		button = "Create another split case"
+		title = "Raise a split case"
+		button = "Raise another case"
 	}
 	defaultDate := ""
 	if fixtureDate != nil {
@@ -817,7 +889,7 @@ func writeIneligibleCreateCaseForm(w http.ResponseWriter, csrf string, intakeID 
 	}
 	publicSummary := ineligibleDefaultPublicSummary(playerText, fixtureDate)
 	privateSummary := sourceStringField(rawJSON, "Reason you believe the player is ineligible", "reason why the player is ineligible", "reason for report", "details", "reason", "allegation")
-	fmt.Fprintf(w, `<section class="card mb-4"><div class="card-header fw-semibold">%s</div><form method="POST" action="/admin/ineligible/%d/create-case"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><label class="form-label">Offending team</label><select class="form-select mb-3" name="team_id" required><option value="">Choose mapped club and team...</option>`, escapeHTML(title), intakeID, csrf)
+	fmt.Fprintf(w, `<section class="card border-primary mb-4"><div class="card-header fw-semibold">%s</div><form method="POST" action="/admin/ineligible/%d/create-case"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><p class="small text-muted">Check the four items below. Most details are already filled from the report.</p><label class="form-label fw-semibold">1. Offending team</label><select class="form-select mb-3" name="team_id" required><option value="">Choose the club and team...</option>`, escapeHTML(title), intakeID, csrf)
 	for _, team := range teams {
 		fmt.Fprintf(w, `<option value="%d">%s - %s</option>`, team.ID, escapeHTML(team.ClubName), escapeHTML(team.TeamName))
 	}
@@ -828,7 +900,7 @@ func writeIneligibleCreateCaseForm(w http.ResponseWriter, csrf string, intakeID 
 		required = ""
 		blankLabel = "League-origin / GMCL Official"
 	}
-	fmt.Fprintf(w, `</select><label class="form-label">Reporting club</label><select class="form-select mb-1" name="reporting_club_id"%s><option value="">%s</option>`, required, blankLabel)
+	fmt.Fprintf(w, `</select><label class="form-label fw-semibold">2. Reporting club</label><select class="form-select mb-1" name="reporting_club_id"%s><option value="">%s</option>`, required, blankLabel)
 	for _, club := range clubs {
 		selected := ""
 		if strings.EqualFold(strings.TrimSpace(reportingText), strings.TrimSpace(club.Name)) {
@@ -836,7 +908,7 @@ func writeIneligibleCreateCaseForm(w http.ResponseWriter, csrf string, intakeID 
 		}
 		fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, club.ID, selected, escapeHTML(club.Name))
 	}
-	fmt.Fprintf(w, `</select><div class="form-text mb-3">Reported as: %s. Leave league-origin selected for GMCL Official reports.</div><label class="form-label">Fixture date</label><input class="form-control mb-3" type="date" name="match_date" value="%s" required><label class="form-label">Player</label><input class="form-control mb-3" name="player_name" value="%s" maxlength="200" required><label class="form-label">Recorded findings / allegation</label><textarea class="form-control mb-3" name="public_summary" rows="3" maxlength="5000" required>%s</textarea><label class="form-label">Private investigation context</label><textarea class="form-control" name="private_summary" rows="3" maxlength="10000">%s</textarea></div><div class="card-footer"><button class="btn btn-danger">%s</button><div class="form-text mt-2">Assigned to the configured ineligible-player investigator. No notice is queued.</div></div></form></section>`, escapeHTML(reportingText), escapeHTML(defaultDate), escapeHTML(playerText), escapeHTML(publicSummary), escapeHTML(privateSummary), escapeHTML(button))
+	fmt.Fprintf(w, `</select><div class="form-text mb-3">Reported as: %s. Use league-origin only for a GMCL Official report.</div><div class="row g-3 mb-3"><div class="col-md-6"><label class="form-label fw-semibold">3. Fixture date</label><input class="form-control" type="date" name="match_date" value="%s" required></div><div class="col-md-6"><label class="form-label fw-semibold">4. Player</label><input class="form-control" name="player_name" value="%s" maxlength="200" required></div></div><details class="border rounded"><summary class="p-3 fw-semibold">Review case wording <span class="small text-muted">(usually no change)</span></summary><div class="px-3 pb-3"><label class="form-label">Recorded allegation</label><textarea class="form-control mb-3" name="public_summary" rows="3" maxlength="5000" required>%s</textarea><label class="form-label">Private investigation context</label><textarea class="form-control" name="private_summary" rows="3" maxlength="10000">%s</textarea></div></details></div><div class="card-footer"><button class="btn btn-primary w-100">%s</button><div class="form-text mt-2">This opens the investigation only. It does not email either club or decide the outcome.</div></div></form></section>`, escapeHTML(reportingText), escapeHTML(defaultDate), escapeHTML(playerText), escapeHTML(publicSummary), escapeHTML(privateSummary), escapeHTML(button))
 }
 
 func writeIneligibleLinkCaseForm(w http.ResponseWriter, csrf string, intakeID int64, reportingText string, clubs []ineligibleClubOption, teams []ineligibleTeamOption, cases []ineligibleCaseOption) {
@@ -901,7 +973,7 @@ func writeIneligibleIntakeEvents(w http.ResponseWriter, s *Server, ctx context.C
 		return
 	}
 	defer rows.Close()
-	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header fw-semibold">Review history</div><div class="card-body py-2 small text-muted">Previous actions stay visible. Add a new correction instead of changing an earlier entry.</div><ul class="list-group list-group-flush">`)
+	fmt.Fprint(w, `<details class="card mb-4"><summary class="card-header fw-semibold">Source and audit history</summary><div class="card-body py-2 small text-muted">Previous actions stay visible. Add a correction instead of changing an earlier entry.</div><ul class="list-group list-group-flush">`)
 	count := 0
 	for rows.Next() {
 		var eventType, actor, reason string
@@ -914,7 +986,7 @@ func writeIneligibleIntakeEvents(w http.ResponseWriter, s *Server, ctx context.C
 	if count == 0 {
 		fmt.Fprint(w, `<li class="list-group-item text-muted">No triage actions recorded.</li>`)
 	}
-	fmt.Fprint(w, `</ul></section>`)
+	fmt.Fprint(w, `</ul></details>`)
 }
 
 func formatOptionalDate(value *time.Time) string {

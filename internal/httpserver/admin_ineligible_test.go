@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"bytes"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,13 +18,81 @@ func TestParseIneligibleQueueFiltersDefaultsAndRejectsUnknownValues(t *testing.T
 		"origin":      {"untrusted"},
 		"case_status": {"made-up"},
 		"age":         {"500 years"},
+		"scope":       {"not-a-scope"},
 		"player":      {"  A Player  "},
 	})
-	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" || got.Scope != "mine" || got.Sort != "newest" {
+	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" || got.Scope != "all" || got.Sort != "newest" {
 		t.Fatalf("unexpected normalised filters: %#v", got)
 	}
 	if got.Player != "A Player" {
 		t.Fatalf("player filter was not trimmed: %q", got.Player)
+	}
+}
+
+func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
+	var out bytes.Buffer
+	writeIneligibleStartRoutes(&out, "csrf-token", 42)
+	html := out.String()
+	for _, want := range []string{"Raise one case", "Import Google Form reports", "Import historical tracker", "Open next report", "/admin/ineligible/42"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("start routes missing %q", want)
+		}
+	}
+	if strings.Contains(html, "Check for new reports") || strings.Contains(html, ">Excel import<") {
+		t.Fatalf("start routes retained old busy labels: %s", html)
+	}
+}
+
+func TestIneligibleAdvancedControlsStayClosedForDefaultView(t *testing.T) {
+	filter := parseIneligibleQueueFilters(url.Values{})
+	if ineligibleQueueUsesAdvancedView(filter) {
+		t.Fatalf("default filter unexpectedly opens manager controls: %#v", filter)
+	}
+	filter.Origin = "google_form"
+	if ineligibleQueueUsesAdvancedView(filter) {
+		t.Fatal("the Google import result should stay focused on its report queue")
+	}
+	filter.Player = "Alex Player"
+	if !ineligibleQueueUsesAdvancedView(filter) {
+		t.Fatal("an active player filter must open manager controls")
+	}
+}
+
+func TestIneligibleCreateCaseFormUsesFourChecksAndOnePrimaryAction(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	fixtureDate := time.Date(2026, time.August, 8, 0, 0, 0, 0, time.UTC)
+	writeIneligibleCreateCaseForm(recorder, "csrf-token", 7, "Reporting CC", "Alex Player", &fixtureDate, []byte(`{"Reason you believe the player is ineligible":"Not registered"}`), []ineligibleClubOption{{ID: 1, Name: "Reporting CC"}}, []ineligibleTeamOption{{ID: 2, ClubName: "Offending CC", TeamName: "1st XI"}}, false)
+	html := recorder.Body.String()
+	for _, want := range []string{"Raise this case", "1. Offending team", "2. Reporting club", "3. Fixture date", "4. Player", "Review case wording", ">Raise case<", `name="public_summary"`, `name="private_summary"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("create-case form missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Create case without sending email", "btn btn-danger"} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("create-case form retained %q", forbidden)
+		}
+	}
+}
+
+func TestBackfillQuickReviewIsLimitedToClearRows(t *testing.T) {
+	intakeID := int64(42)
+	row := ineligibleBackfillRowView{MatchStatus: "matched_exact", MatchedIntakeID: &intakeID}
+	if !ineligibleBackfillRowCanUseQuickReview(row, "open") {
+		t.Fatal("clear exact match should allow quick review")
+	}
+	row.RequiresEffectReview = true
+	if ineligibleBackfillRowCanUseQuickReview(row, "open") {
+		t.Fatal("points or cards interpretation must require the full review form")
+	}
+	row.RequiresEffectReview = false
+	row.Exception = "ambiguous source identity"
+	if ineligibleBackfillRowCanUseQuickReview(row, "open") {
+		t.Fatal("an exception must require the full review form")
+	}
+	row.Exception = ""
+	if ineligibleBackfillRowCanUseQuickReview(row, "needs_interpretation") {
+		t.Fatal("unknown historical state must require the full review form")
 	}
 }
 
@@ -211,5 +280,45 @@ func TestReadIneligibleRetainedUploadRejectsEscapingSymlink(t *testing.T) {
 	}
 	if _, err := readIneligibleRetainedUpload(root, "escape.pdf"); err == nil {
 		t.Fatal("symlink escaping the retained-upload root was accepted")
+	}
+}
+
+func TestNextIneligibleReportIDSkipsLinkedAndResolvedRows(t *testing.T) {
+	caseID := int64(100)
+	queue := []ineligibleQueueRow{
+		{ID: 1, State: "linked", CaseID: &caseID},
+		{ID: 2, State: "duplicate"},
+		{ID: 3, State: "reviewing"},
+	}
+	if got := nextIneligibleReportID(queue); got != 3 {
+		t.Fatalf("next report = %d, want 3", got)
+	}
+	if got := nextIneligibleReportID(queue[:2]); got != 0 {
+		t.Fatalf("resolved queue returned report %d", got)
+	}
+}
+
+func TestDuplicateCaseLinkUsesNeutralAction(t *testing.T) {
+	className, label := ineligibleCaseLinkAction("duplicate")
+	if strings.Contains(className, "success") || label != "Open related case" {
+		t.Fatalf("duplicate action = %q / %q", className, label)
+	}
+	className, label = ineligibleCaseLinkAction("primary")
+	if !strings.Contains(className, "success") || label != "Open case and continue" {
+		t.Fatalf("active action = %q / %q", className, label)
+	}
+}
+
+func TestBackfillRowCountsAreUniqueAndPendingOnly(t *testing.T) {
+	intakeID := int64(42)
+	reviewID := int64(7)
+	rows := []ineligibleBackfillRowView{
+		{MatchStatus: "matched_exact", MatchedIntakeID: &intakeID, TrackerStateHint: "open"},
+		{MatchStatus: "unmatched", TrackerStateHint: "unknown", RequiresEffectReview: true},
+		{MatchStatus: "ambiguous", TrackerStateHint: "unknown", RequiresEffectReview: true, ReviewID: &reviewID},
+	}
+	pending, verified, suggested, needsHelp := ineligibleBackfillRowCounts(rows)
+	if pending != 2 || verified != 1 || suggested != 1 || needsHelp != 1 {
+		t.Fatalf("counts = pending %d, verified %d, suggested %d, needs help %d", pending, verified, suggested, needsHelp)
 	}
 }

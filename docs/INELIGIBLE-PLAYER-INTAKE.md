@@ -1,5 +1,9 @@
 # Ineligible-player Google Form intake
 
+Staff who need click-by-click instructions should use the
+[Ineligible-player quick guide](INELIGIBLE-PLAYER-QUICK-GUIDE.md). This document
+continues with the technical setup, controls and reconciliation detail.
+
 The private Google Form sync is a read-only staging path. It writes source
 observations to the migration-0050 intake tables; it does not create a sanction
 case, contact either club, or issue a sanction.
