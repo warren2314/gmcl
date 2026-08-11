@@ -20,6 +20,13 @@ func IsWomensAppearance(a Appearance) bool {
 }
 
 func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMapping, cutoff time.Time) Evaluation {
+	return EvaluateAtCutoffs(periods, appearances, mappings, cutoff, cutoff)
+}
+
+// EvaluateAtCutoffs keeps ongoing breach monitoring separate from the fixed
+// 31 July candidate review. Breaches use every eligible appearance through
+// breachCutoff, while the unstarred-player percentage uses candidateCutoff.
+func EvaluateAtCutoffs(periods []Period, appearances []Appearance, mappings []IdentityMapping, breachCutoff, candidateCutoff time.Time) Evaluation {
 	mappingBySource := make(map[string]int64)
 	for _, m := range mappings {
 		mappingBySource[m.ClubKey+"|"+m.StarredPlayerKey] = m.PlayerID
@@ -36,7 +43,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	var out Evaluation
 	for _, a := range appearances {
-		if a.TeamLevel == 0 || a.MatchDate.After(cutoff) || IsWomensAppearance(a) {
+		if a.TeamLevel == 0 || a.MatchDate.After(breachCutoff) || IsWomensAppearance(a) {
 			continue
 		}
 		for _, p := range periods {
@@ -57,7 +64,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 	}
 	stats := make(map[string]*counts)
 	for _, a := range appearances {
-		if a.TeamLevel == 0 || !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(cutoff) || IsWomensAppearance(a) {
+		if a.TeamLevel == 0 || !strings.EqualFold(a.CompetitionType, "League") || a.MatchDate.After(candidateCutoff) || IsWomensAppearance(a) {
 			continue
 		}
 		identity := a.PlayerKey
@@ -83,7 +90,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 		starred := false
 		previouslyStarred := false
 		probe := c.sample
-		probe.MatchDate = cutoff
+		probe.MatchDate = candidateCutoff
 		for _, p := range periods {
 			if periodMatches(p, probe) {
 				starred = true
@@ -95,7 +102,7 @@ func Evaluate(periods []Period, appearances []Appearance, mappings []IdentityMap
 			} else {
 				sameIdentity = p.ClubKey == probe.ClubKey && p.PlayerKey == probe.PlayerKey
 			}
-			if sameIdentity && p.ValidTo != nil && !cutoff.Before(*p.ValidTo) {
+			if sameIdentity && p.ValidTo != nil && !candidateCutoff.Before(*p.ValidTo) {
 				previouslyStarred = true
 			}
 		}
@@ -139,6 +146,12 @@ func ReviewCutoff(seasonYear int, now time.Time) time.Time {
 }
 
 func SuggestMappings(periods []Period, appearances []Appearance, mappings []IdentityMapping, asOf time.Time) []MappingSuggestion {
+	return SuggestMappingsForRange(periods, appearances, mappings, asOf, asOf)
+}
+
+// SuggestMappingsForRange includes list periods that overlap any part of the
+// monitored season range, including players removed before the current date.
+func SuggestMappingsForRange(periods []Period, appearances []Appearance, mappings []IdentityMapping, from, through time.Time) []MappingSuggestion {
 	mapped := make(map[string]bool)
 	for _, m := range mappings {
 		mapped[m.ClubKey+"|"+m.StarredPlayerKey] = true
@@ -174,7 +187,7 @@ func SuggestMappings(periods []Period, appearances []Appearance, mappings []Iden
 	seenSource := make(map[string]bool)
 	var out []MappingSuggestion
 	for _, p := range periods {
-		if asOf.Before(p.ValidFrom) || (p.ValidTo != nil && !asOf.Before(*p.ValidTo)) {
+		if p.ValidFrom.After(through) || (p.ValidTo != nil && !p.ValidTo.After(from)) {
 			continue
 		}
 		sourceKey := p.ClubKey + "|" + p.PlayerKey

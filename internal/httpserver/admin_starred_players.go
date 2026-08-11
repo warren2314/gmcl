@@ -85,6 +85,14 @@ func starredSeasonYear(r *http.Request) int {
 	return time.Now().Year()
 }
 
+func starredMonitoringCutoff(year int, now time.Time) time.Time {
+	seasonEnd := time.Date(year, time.December, 31, 23, 59, 59, 0, time.UTC)
+	if now.After(seasonEnd) {
+		return seasonEnd
+	}
+	return now
+}
+
 func (s *Server) starredSeasonStart(ctx context.Context, year int) time.Time {
 	var start time.Time
 	if err := s.DB.QueryRow(ctx, `SELECT start_date FROM seasons WHERE EXTRACT(YEAR FROM start_date)::int=$1 ORDER BY start_date LIMIT 1`, year).Scan(&start); err == nil {
@@ -98,24 +106,34 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		year := starredSeasonYear(r)
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		cutoff := starred.ReviewCutoff(year, time.Now())
+		now := time.Now()
+		monitoringCutoff := starredMonitoringCutoff(year, now)
+		monitoringStart := s.starredSeasonStart(ctx, year)
+		reviewCutoff := starred.ReviewCutoff(year, now)
 		periods, apps, mappings, issues, loadErr := starred.LoadEvaluationInputs(ctx, s.DB, year)
-		clubStatuses, _ := starred.LoadClubStatuses(ctx, s.DB, year, cutoff)
+		clubStatuses, _ := starred.LoadClubStatuses(ctx, s.DB, year, reviewCutoff)
+		clubOverrides := s.loadStarredAppearanceClubOverrides(ctx, year)
+		monitoringApps := make([]starred.Appearance, 0, len(apps))
 		reviewApps := make([]starred.Appearance, 0, len(apps))
 		for _, appearance := range apps {
-			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) && !starred.IsWomensAppearance(appearance) {
+			if appearance.TeamLevel == 0 || appearance.MatchDate.After(monitoringCutoff) || starred.IsWomensAppearance(appearance) {
+				continue
+			}
+			monitoringApps = append(monitoringApps, appearance)
+			if !appearance.MatchDate.After(reviewCutoff) {
 				reviewApps = append(reviewApps, appearance)
 			}
 		}
-		reviewApps = remapStarredAppearanceClubs(reviewApps, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
+		monitoringApps = remapStarredAppearanceClubs(monitoringApps, clubOverrides, activeStarredClubNames(periods, monitoringCutoff))
+		reviewApps = remapStarredAppearanceClubs(reviewApps, clubOverrides, activeStarredClubNames(periods, reviewCutoff))
 		eval := starred.Evaluation{}
 		var suggestions []starred.MappingSuggestion
 		var unmappedPeriods []starred.Period
 		if loadErr == nil {
-			eval = starred.Evaluate(periods, reviewApps, mappings, cutoff)
-			suggestions = starred.SuggestMappings(periods, reviewApps, mappings, cutoff)
+			eval = starred.EvaluateAtCutoffs(periods, monitoringApps, mappings, monitoringCutoff, reviewCutoff)
+			suggestions = starred.SuggestMappingsForRange(periods, monitoringApps, mappings, monitoringStart, monitoringCutoff)
 			suggestions = s.protectRevokedStarredSuggestions(ctx, year, suggestions)
-			unmappedPeriods = activeUnmappedStarredPeriods(periods, mappings, cutoff)
+			unmappedPeriods = unmappedStarredPeriodsForRange(periods, mappings, monitoringStart, monitoringCutoff)
 		}
 		if r.URL.Query().Get("export") == "unmatched-csv" {
 			if loadErr != nil {
@@ -146,10 +164,10 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		selectedMappingPeriod, mappingSourceValid := findUnmappedStarredPeriod(unmappedPeriods, mappingSource)
 		var identitySearchResults []starred.IdentitySearchResult
 		if mappingSourceValid && len([]rune(mappingQuery)) >= 2 {
-			identitySearchResults = starred.SearchAppearanceIdentities(reviewApps, mappingQuery, 100)
+			identitySearchResults = starred.SearchAppearanceIdentities(monitoringApps, mappingQuery, 100)
 		}
 		if strings.TrimSpace(r.URL.Query().Get("view")) == "player-review" && r.URL.Query().Get("export") == "csv" {
-			s.writeStarredPlayerReviewCSV(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
+			s.writeStarredPlayerReviewCSV(w, ctx, year, reviewCutoff, periods, reviewApps, mappings, r)
 			return
 		}
 		if r.URL.Query().Get("export") == "breaches-csv" {
@@ -180,9 +198,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		currentA, currentB := 0, 0
-		now := cutoff
+		reviewAsOf := reviewCutoff
 		for _, p := range periods {
-			if !now.Before(p.ValidFrom) && (p.ValidTo == nil || now.Before(*p.ValidTo)) {
+			if !reviewAsOf.Before(p.ValidFrom) && (p.ValidTo == nil || reviewAsOf.Before(*p.ValidTo)) {
 				if p.ListType == "A" {
 					currentA++
 				} else {
@@ -191,15 +209,27 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		matchCount := 0
-		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports sm WHERE sm.season_year=$1 AND sm.match_date <= $2::date AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0) AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')`, year, cutoff).Scan(&matchCount)
+		_ = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM starred_match_imports sm WHERE sm.season_year=$1 AND sm.match_date <= $2::date AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0) AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')`, year, monitoringCutoff).Scan(&matchCount)
 		pendingCount, _ := starred.PendingMatchCount(ctx, s.DB, year)
-		automaticSyncStatus := "Automatic weekly refresh is enabled for Mondays at 03:00 Europe/London through 31 July."
+		weeklyWindow := s.loadStarredWeeklyWindow(ctx, now, s.LondonLoc)
+		automaticSyncStatus := fmt.Sprintf(
+			"Automatic weekly refresh is enabled for Mondays at 03:00 Europe/London from %s through %s, with a final catch-up through %s.",
+			weeklyWindow.SeasonStart.Format("02 Jan 2006"),
+			weeklyWindow.SeasonEnd.Format("02 Jan 2006"),
+			weeklyWindow.CatchupEnd.Format("02 Jan 2006"),
+		)
+		if !weeklyWindow.Configured {
+			automaticSyncStatus += " The configured season dates were unavailable, so safe fallback dates are being used."
+		}
 		var lastAutomaticSync time.Time
 		if err := s.DB.QueryRow(ctx, `SELECT created_at FROM audit_logs WHERE action=$1 ORDER BY created_at DESC LIMIT 1`, starredWeeklySyncAction).Scan(&lastAutomaticSync); err == nil {
 			automaticSyncStatus += " Last completed: " + lastAutomaticSync.In(s.LondonLoc).Format("02 Jan 2006 15:04") + "."
 		}
-		if starredWeeklySyncWindowActive(time.Now(), s.LondonLoc) {
-			automaticSyncStatus += " Next scheduled: " + nextStarredWeeklySync(time.Now(), s.LondonLoc).Format("02 Jan 2006 15:04") + "."
+		if weeklyWindow.Active(now) {
+			nextSync := nextStarredWeeklySync(now, s.LondonLoc)
+			if !nextSync.After(weeklyWindow.CatchupEnd) {
+				automaticSyncStatus += " Next scheduled: " + nextSync.Format("02 Jan 2006 15:04") + "."
+			}
 		} else {
 			automaticSyncStatus += " The automatic import window is currently closed."
 		}
@@ -218,7 +248,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 #starred-overview,#card-detail,#sync,#identity-matches,#amendments,#sunday-exemptions,#potential-breaches,#club-lists,#july-31-test,.starred-breach-group{scroll-margin-top:4.5rem}
 .starred-section-nav{position:sticky;top:0;z-index:1020;background:var(--bs-body-bg);border-bottom:1px solid var(--bs-border-color)}
 </style>
-<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Rule 3.5 review from the published lists and Play-Cricket team sheets through 31 July.</p></div>
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Season-to-date breach monitoring, with the separate player-list review fixed at 31 July.</p></div>
 <div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=player-review#card-detail">Player list review</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d" aria-label="Season year"><button class="btn btn-outline-primary">Load</button></form></div></div>`,
 			starredHelpIcon("What this page does", "Rule 3.5 protects lower divisions: each club nominates its strongest players as List A (1st XI only) or List B (1st or 2nd XI only). This page checks every imported Play-Cricket scorecard against the published lists so a person can review possible breaches — nothing is decided automatically. Work through the numbered steps in order: import data, match identities, review breaches, then run the 31 July test."),
 			year, year, year)
@@ -249,8 +279,8 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredHelpIcon("Imported season data", "How much source data has been imported for this season. Every check on this page is only as complete as these numbers — if scorecards are still pending, run the import in step 1 before trusting the results."),
 			starredDataTileHTML("List A at cutoff", "List A", "Players on the published List A on the review date. A List A player may only play for their club's 1st XI in League and Cup matches.", strconv.Itoa(currentA), "", fmt.Sprintf("/admin/starred-players?season=%d&view=list-a#card-detail", year), "View players"),
 			starredDataTileHTML("List B at cutoff", "List B", "Players on the published List B on the review date. A List B player may play 1st or 2nd XI, but not lower.", strconv.Itoa(currentB), "", fmt.Sprintf("/admin/starred-players?season=%d&view=list-b#card-detail", year), "View players"),
-			starredDataTileHTML("Scorecards", "Scorecards", "Men's open-age match scorecards imported from Play-Cricket through 31 July. Pending fixtures have not been imported yet — run the import in step 1 to fetch them.", strconv.Itoa(matchCount), fmt.Sprintf("%d pending import", pendingCount), fmt.Sprintf("/admin/starred-players?season=%d&view=scorecards#card-detail", year), "View scorecards"),
-			starredDataTileHTML("Appearances", "Appearances", "Individual player entries taken from the imported scorecards. These rows are the evidence behind every check on this page.", strconv.Itoa(len(reviewApps)), "", fmt.Sprintf("/admin/starred-players?season=%d&view=appearances#card-detail", year), "View appearances"),
+			starredDataTileHTML("Scorecards", "Scorecards", "Season-to-date men's open-age match scorecards imported from Play-Cricket. Pending fixtures have not been imported yet — run the import in step 1 to fetch them.", strconv.Itoa(matchCount), fmt.Sprintf("%d pending import", pendingCount), fmt.Sprintf("/admin/starred-players?season=%d&view=scorecards#card-detail", year), "View scorecards"),
+			starredDataTileHTML("Appearances", "Appearances", "Season-to-date player entries from imported scorecards. These rows drive ongoing breach monitoring; the separate 31 July review remains fixed.", strconv.Itoa(len(monitoringApps)), "", fmt.Sprintf("/admin/starred-players?season=%d&view=appearances#card-detail", year), "View appearances"),
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
@@ -258,14 +288,14 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or opened as an ineligible-player investigation case.", "#potential-breaches", "Review evidence", "danger"),
 			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
 			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
-		s.renderStarredCardDetail(w, ctx, year, cutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(reviewApps), r)
+		s.renderStarredCardDetail(w, ctx, year, monitoringCutoff, reviewCutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(monitoringApps), r)
 		fmt.Fprintf(w, `<div id="sync" class="card shadow-sm mb-4"><div class="card-header">%s</div><div class="card-body d-flex flex-wrap gap-3">
-<form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments. Automatic refresh: Mondays at 03:00 through 31 July.</div></form>
+<form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments. Automatic refresh: Mondays at 03:00 through season end.</div></form>
 <form id="starred-scorecard-sync-form" method="post" action="/admin/starred-players/sync-appearances"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button id="starred-scorecard-sync-button" class="btn btn-primary">Import all pending scorecards</button><div class="form-text">Runs automatically in batches of 50. Keep this page open until complete.</div><div id="starred-scorecard-sync-progress" class="small mt-2" aria-live="polite"></div></form>
 <div class="w-100 small text-muted border-top pt-2">%s</div>
 </div></div>`,
 			starredSectionTitle("Step 1", "Import data", "Bring in the published lists and the Play-Cricket scorecards. Both imports are safe to repeat — only new or changed data is fetched.",
-				"Where the data comes from", "Two sources feed this page: the published GMCL List A/List B sheet, and Play-Cricket scorecards for every open-age fixture through 31 July. Sync the list first, then import scorecards. A weekly automatic refresh also runs on Mondays at 03:00 during the season, so manual imports are usually only needed for the initial backfill or an urgent check."),
+				"Where the data comes from", "Two sources feed this page: the published GMCL List A/List B sheet, and season-to-date Play-Cricket scorecards for every open-age fixture. Sync the list first, then import scorecards. A weekly automatic refresh also runs on Mondays at 03:00 through season end, so manual imports are usually only needed for the initial backfill or an urgent check."),
 			escapeHTML(csrf), year, escapeHTML(csrf), year, escapeHTML(automaticSyncStatus))
 		fmt.Fprint(w, `<script>
 (function () {
@@ -394,7 +424,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if len(mappings) > 0 {
 			periodBySource := make(map[string]starred.Period)
 			for _, period := range periods {
-				if !cutoff.Before(period.ValidFrom) && (period.ValidTo == nil || cutoff.Before(*period.ValidTo)) {
+				if !monitoringCutoff.Before(period.ValidFrom) && (period.ValidTo == nil || monitoringCutoff.Before(*period.ValidTo)) {
 					periodBySource[period.ClubKey+"|"+period.PlayerKey] = period
 				}
 			}
@@ -520,7 +550,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 			shown++
 			appearanceSearch := starredAppearanceSearch(c.PlayerName, c.PlayerID)
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.TopTwoXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
+			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.TopTwoXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
 		}
 		if shown == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No unstarred candidates currently meet the threshold.</td></tr>`)
@@ -531,7 +561,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 	}
 }
 
-func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Context, year int, cutoff time.Time, view string, periods []starred.Period, reviewApps []starred.Appearance, mappings []starred.IdentityMapping, scorecardTotal, appearanceTotal int, r *http.Request) {
+func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Context, year int, monitoringCutoff, reviewCutoff time.Time, view string, periods []starred.Period, reviewApps []starred.Appearance, mappings []starred.IdentityMapping, scorecardTotal, appearanceTotal int, r *http.Request) {
 	if view == "" {
 		return
 	}
@@ -545,9 +575,9 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 	fmt.Fprint(w, `<div id="card-detail" class="card shadow-sm mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span class="fw-semibold">`)
 	switch view {
 	case "player-review":
-		s.renderStarredPlayerReview(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
+		s.renderStarredPlayerReview(w, ctx, year, reviewCutoff, periods, reviewApps, mappings, r)
 	case "club-list":
-		s.renderStarredClubList(w, ctx, year, cutoff, periods, reviewApps, mappings, r)
+		s.renderStarredClubList(w, ctx, year, reviewCutoff, periods, reviewApps, mappings, r)
 	case "list-a", "list-b":
 		listType := "A"
 		if view == "list-b" {
@@ -557,7 +587,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			starredHelpIcon("List "+listType+" players", "Everyone active on this list at the review date, built from the published sheet plus any dated amendments. Effective from shows when the player joined the list; the source column shows whether the entry came from the original list or an amendment. Click a player to see their imported appearances."), year)
 		active := make([]starred.Period, 0)
 		for _, period := range periods {
-			if period.ListType == listType && !cutoff.Before(period.ValidFrom) && (period.ValidTo == nil || cutoff.Before(*period.ValidTo)) {
+			if period.ListType == listType && !reviewCutoff.Before(period.ValidFrom) && (period.ValidTo == nil || reviewCutoff.Before(*period.ValidTo)) {
 				active = append(active, period)
 			}
 		}
@@ -570,7 +600,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr><th>Club</th><th>Player</th><th>Effective from</th><th>Tags</th><th>Source</th></tr></thead><tbody>`)
 		for _, period := range active {
 			appearanceSearch := starredAppearanceSearch(period.PlayerName, starredMappedPlayerID(period, mappings))
-			fmt.Fprintf(w, `<tr><td><a href="/admin/starred-players?season=%d&amp;view=club-list&amp;club=%s#card-detail">%s</a></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, year, url.QueryEscape(period.ClubKey), escapeHTML(period.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
+			fmt.Fprintf(w, `<tr><td><a href="/admin/starred-players?season=%d&amp;view=club-list&amp;club=%s#card-detail">%s</a></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>`, year, url.QueryEscape(period.ClubKey), escapeHTML(period.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName), period.ValidFrom.Format("02 Jan 2006"), escapeHTML(strings.Join(period.Tags, ", ")), escapeHTML(period.SourceKind))
 		}
 		if len(active) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-3">No active players found.</td></tr>`)
@@ -586,10 +616,10 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 				WHERE sm.season_year=$1 AND sm.match_date <= $2::date
 				  AND EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND sa.team_level > 0)
 				  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')
-				  AND CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3`, year, cutoff, search).Scan(&scorecardTotal)
+				  AND CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3`, year, monitoringCutoff, search).Scan(&scorecardTotal)
 		}
-		fmt.Fprintf(w, `Open-age scorecards through 31 July%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
-			starredHelpIcon("Imported scorecards", "All men's open-age scorecards imported from Play-Cricket for this season, capped at 31 July. Open a match to see both team sheets with each player's starred status on the match date — this is the evidence used by the breach review."), year)
+		fmt.Fprintf(w, `Season-to-date open-age scorecards through %s%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`, monitoringCutoff.Format("02 January 2006"),
+			starredHelpIcon("Imported scorecards", "All men's open-age scorecards imported from Play-Cricket for this season to date. Open a match to see both team sheets with each player's starred status on the match date — this is the evidence used by ongoing breach monitoring."), year)
 		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="scorecards"><div class="col-md-8"><label class="form-label small" for="scorecard-search">Search club, team, competition or match ID</label><input id="scorecard-search" class="form-control" name="q" value="%s" placeholder="e.g. Droylsden, 2nd XI or 7458963"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=scorecards#card-detail">Clear</a></div></form><div class="form-text">Only classified men's open-age XI fixtures are shown; women's and junior scorecards are excluded from this review.</div></div>`, year, escapeHTML(query), year)
 		rows, err := s.DB.Query(ctx, `
 			SELECT sm.play_cricket_match_id,sm.match_date,
@@ -603,7 +633,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			  AND NOT EXISTS (SELECT 1 FROM starred_appearances sa WHERE sa.play_cricket_match_id=sm.play_cricket_match_id AND CONCAT_WS(' ',sa.competition_name,sa.club_name,sa.team_name) ~* '(wom(en|an)|ladies|female|girls)')
 			  AND ($3 = '%%' OR CONCAT_WS(' ',sm.play_cricket_match_id::text,lf.home_club_name,lf.home_team_name,lf.away_club_name,lf.away_team_name,sm.competition_name) ILIKE $3)
 			ORDER BY sm.match_date DESC,sm.play_cricket_match_id DESC
-			LIMIT $4 OFFSET $5`, year, cutoff, search, pageSize, offset)
+			LIMIT $4 OFFSET $5`, year, monitoringCutoff, search, pageSize, offset)
 		if err != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger m-3">%s</div></div>`, escapeHTML(err.Error()))
 			return
@@ -681,14 +711,37 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 	case "appearances":
+		appearanceCutoff := monitoringCutoff
+		appearanceTo := strings.TrimSpace(r.URL.Query().Get("appearance_to"))
+		if appearanceTo == "review" {
+			appearanceCutoff = reviewCutoff
+		} else if parsed, err := time.Parse("2006-01-02", appearanceTo); err == nil {
+			requestedCutoff := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, time.UTC)
+			if requestedCutoff.Before(appearanceCutoff) {
+				appearanceCutoff = requestedCutoff
+			} else {
+				appearanceTo = ""
+			}
+		} else {
+			appearanceTo = ""
+		}
+		appearanceHeading := fmt.Sprintf("Season-to-date open-age player appearances through %s", monitoringCutoff.Format("02 January 2006"))
+		appearanceFilterInput := ""
+		appearanceFilterQuery := ""
+		if appearanceTo != "" {
+			appearanceHeading = "Open-age player appearances through " + appearanceCutoff.Format("02 January 2006")
+			appearanceFilterInput = fmt.Sprintf(`<input type="hidden" name="appearance_to" value="%s">`, escapeHTML(appearanceTo))
+			appearanceFilterQuery = "&amp;appearance_to=" + url.QueryEscape(appearanceTo)
+		}
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		search := "%" + query + "%"
-		if query != "" {
-			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*)::int FROM starred_appearances WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0 AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)' AND CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3`, year, cutoff, search).Scan(&appearanceTotal)
+		if query != "" || appearanceTo != "" {
+			_ = s.DB.QueryRow(ctx, `SELECT COUNT(*)::int FROM starred_appearances WHERE season_year=$1 AND match_date <= $2::date AND team_level > 0 AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)' AND CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3`, year, appearanceCutoff, search).Scan(&appearanceTotal)
 		}
-		fmt.Fprintf(w, `Open-age player appearances through 31 July%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
+		fmt.Fprintf(w, `%s%s</span><a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d">Close</a></div>`,
+			escapeHTML(appearanceHeading),
 			starredHelpIcon("Player appearances", "One row per player per scorecard, taken from the imported team sheets. Search by name, club, team or Play-Cricket ID to check an individual player's season — every compliance check on this page is calculated from these rows."), year)
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="appearances"><div class="col-md-8"><label class="form-label small" for="appearance-search">Search player, club, team or player ID</label><input id="appearance-search" class="form-control" name="q" value="%s" placeholder="e.g. player name, club or ID"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=appearances#card-detail">Clear</a></div></form></div>`, year, escapeHTML(query), year)
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="view" value="appearances">%s<div class="col-md-8"><label class="form-label small" for="appearance-search">Search player, club, team or player ID</label><input id="appearance-search" class="form-control" name="q" value="%s" placeholder="e.g. player name, club or ID"></div><div class="col-auto"><button class="btn btn-primary">Search</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=appearances%s#card-detail">Clear</a></div></form></div>`, year, appearanceFilterInput, escapeHTML(query), year, appearanceFilterQuery)
 		rows, err := s.DB.Query(ctx, `
 			SELECT match_date,club_name,team_name,player_name,COALESCE(play_cricket_player_id,0),COALESCE(competition_name,competition_type,''),play_cricket_match_id
 			FROM starred_appearances
@@ -696,7 +749,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			  AND CONCAT_WS(' ',competition_name,club_name,team_name) !~* '(wom(en|an)|ladies|female|girls)'
 			  AND ($3 = '%%' OR CONCAT_WS(' ',player_name,play_cricket_player_id::text,club_name,team_name,competition_name) ILIKE $3)
 			ORDER BY match_date DESC,club_name,team_name,player_name
-			LIMIT $4 OFFSET $5`, year, cutoff, search, pageSize, offset)
+			LIMIT $4 OFFSET $5`, year, appearanceCutoff, search, pageSize, offset)
 		if err != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger m-3">%s</div></div>`, escapeHTML(err.Error()))
 			return
@@ -718,7 +771,7 @@ func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Cont
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No appearances found on this page.</td></tr>`)
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
-		renderStarredDetailPager(w, year, view, page, appearanceTotal, pageSize, query)
+		renderStarredDetailPager(w, year, view, page, appearanceTotal, pageSize, query, appearanceFilterQuery)
 		fmt.Fprint(w, `</div>`)
 	default:
 		fmt.Fprint(w, `Details</span></div><div class="alert alert-warning m-3">Unknown card view.</div></div>`)
@@ -743,6 +796,10 @@ func activeStarredPeriodsByClub(periods []starred.Period, cutoff time.Time, club
 }
 
 func activeUnmappedStarredPeriods(periods []starred.Period, mappings []starred.IdentityMapping, cutoff time.Time) []starred.Period {
+	return unmappedStarredPeriodsForRange(periods, mappings, cutoff, cutoff)
+}
+
+func unmappedStarredPeriodsForRange(periods []starred.Period, mappings []starred.IdentityMapping, from, through time.Time) []starred.Period {
 	mapped := make(map[string]struct{}, len(mappings))
 	for _, mapping := range mappings {
 		mapped[mapping.ClubKey+"|"+mapping.StarredPlayerKey] = struct{}{}
@@ -750,7 +807,7 @@ func activeUnmappedStarredPeriods(periods []starred.Period, mappings []starred.I
 	seen := make(map[string]struct{})
 	out := make([]starred.Period, 0)
 	for _, period := range periods {
-		if cutoff.Before(period.ValidFrom) || (period.ValidTo != nil && !cutoff.Before(*period.ValidTo)) {
+		if period.ValidFrom.After(through) || (period.ValidTo != nil && !period.ValidTo.After(from)) {
 			continue
 		}
 		key := period.ClubKey + "|" + period.PlayerKey
@@ -1202,7 +1259,7 @@ func (s *Server) renderStarredClubList(w http.ResponseWriter, ctx context.Contex
 			badgeClass = "bg-danger"
 		}
 		appearanceSearch := starredAppearanceSearch(period.PlayerName, starredMappedPlayerID(period, mappings))
-		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName))
+		fmt.Fprintf(w, `<tr><td><span class="badge %s">List %s</span></td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a></td>`, badgeClass, escapeHTML(period.ListType), year, url.QueryEscape(appearanceSearch), escapeHTML(period.PlayerName))
 		playerCounts := teamCounts[period.ClubKey+"|"+period.PlayerKey]
 		total := 0
 		for level := 1; level <= maxTeamLevel; level++ {
@@ -1244,7 +1301,7 @@ func starredListForAppearance(periods []starred.Period, mappings []starred.Ident
 	return ""
 }
 
-func renderStarredDetailPager(w http.ResponseWriter, year int, view string, page, total, pageSize int, query string) {
+func renderStarredDetailPager(w http.ResponseWriter, year int, view string, page, total, pageSize int, query string, extraQuery ...string) {
 	start := (page-1)*pageSize + 1
 	end := page * pageSize
 	if end > total {
@@ -1257,6 +1314,9 @@ func renderStarredDetailPager(w http.ResponseWriter, year int, view string, page
 	queryParam := ""
 	if strings.TrimSpace(query) != "" {
 		queryParam = "&amp;q=" + url.QueryEscape(strings.TrimSpace(query))
+	}
+	if len(extraQuery) > 0 {
+		queryParam += extraQuery[0]
 	}
 	if page > 1 {
 		fmt.Fprintf(w, `<a class="btn btn-sm btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=%s%s&amp;detail_page=%d#card-detail">Previous</a>`, year, view, queryParam, page-1)
@@ -1370,9 +1430,10 @@ func (s *Server) handleAdminStarredPlayersMapping() http.HandlerFunc {
 			redirectStarredAnchor(w, r, year, "", "Could not validate the identity mapping: "+loadErr.Error(), "identity-matches")
 			return
 		}
-		cutoff := starred.ReviewCutoff(year, time.Now())
+		cutoff := starredMonitoringCutoff(year, time.Now())
+		monitoringStart := s.starredSeasonStart(ctx, year)
 		target, targetFound := starred.Period{}, false
-		for _, period := range activeUnmappedStarredPeriods(periods, mappings, cutoff) {
+		for _, period := range unmappedStarredPeriodsForRange(periods, mappings, monitoringStart, cutoff) {
 			if period.ClubKey == clubKey && period.PlayerKey == playerKey {
 				target, targetFound = period, true
 				break
@@ -1432,7 +1493,8 @@ func (s *Server) handleAdminStarredPlayersAutoMatch() http.HandlerFunc {
 			redirectStarredAnchor(w, r, year, "", "Could not load identities for automatic matching: "+err.Error(), "identity-matches")
 			return
 		}
-		cutoff := starred.ReviewCutoff(year, time.Now())
+		cutoff := starredMonitoringCutoff(year, time.Now())
+		monitoringStart := s.starredSeasonStart(ctx, year)
 		reviewAppearances := make([]starred.Appearance, 0, len(appearances))
 		for _, appearance := range appearances {
 			if appearance.TeamLevel > 0 && !appearance.MatchDate.After(cutoff) && !starred.IsWomensAppearance(appearance) {
@@ -1440,7 +1502,7 @@ func (s *Server) handleAdminStarredPlayersAutoMatch() http.HandlerFunc {
 			}
 		}
 		reviewAppearances = remapStarredAppearanceClubs(reviewAppearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, cutoff))
-		suggestions := starred.SuggestMappings(periods, reviewAppearances, mappings, cutoff)
+		suggestions := starred.SuggestMappingsForRange(periods, reviewAppearances, mappings, monitoringStart, cutoff)
 		suggestions = s.protectRevokedStarredSuggestions(ctx, year, suggestions)
 		safe := highConfidenceStarredSuggestions(suggestions)
 		if len(safe) == 0 {

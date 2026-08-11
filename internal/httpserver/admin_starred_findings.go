@@ -433,8 +433,9 @@ func (s *Server) currentStarredBreaches(ctx context.Context, year int) ([]starre
 	if err != nil {
 		return nil, err
 	}
-	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, starred.ReviewCutoff(year, time.Now())))
-	evaluation := starred.Evaluate(periods, appearances, mappings, starred.ReviewCutoff(year, time.Now()))
+	asOf := starredMonitoringCutoff(year, time.Now())
+	appearances = remapStarredAppearanceClubs(appearances, s.loadStarredAppearanceClubOverrides(ctx, year), activeStarredClubNames(periods, asOf))
+	evaluation := starred.Evaluate(periods, appearances, mappings, asOf)
 	return evaluation.Breaches, nil
 }
 
@@ -450,7 +451,7 @@ func findStarredBreach(breaches []starred.Breach, matchID, playerID int64, clubK
 			return breach, nil
 		}
 	}
-	return starred.Breach{}, fmt.Errorf("finding is no longer present in the 31 July compliance evaluation")
+	return starred.Breach{}, fmt.Errorf("finding is no longer present in the current compliance evaluation")
 }
 
 func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, playerID int64, clubKey, playerKey, listType string) (starred.Breach, error) {

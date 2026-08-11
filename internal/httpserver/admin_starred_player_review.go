@@ -358,7 +358,7 @@ func (s *Server) renderStarredPlayerReviewLegacy(w http.ResponseWriter, ctx cont
 			listLabel = "List " + row.ListType
 		}
 		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)
-		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td><span class="badge %s">%s</span></td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), badgeClass, badgeLabel)
+		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a></td><td>%s</td><td><span class="badge %s">%s</span></td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), badgeClass, badgeLabel)
 		for level := 1; level <= 6; level++ {
 			percentage := float64(0)
 			if row.Total > 0 {
@@ -517,7 +517,7 @@ func (s *Server) renderStarredPlayerReview(w http.ResponseWriter, ctx context.Co
 			}
 		}
 		appearanceSearch := starredAppearanceSearch(row.PlayerName, row.PlayerID)
-		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), action)
+		fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a></td><td>%s</td><td>%s</td>`, escapeHTML(row.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(row.PlayerName), escapeHTML(listLabel), action)
 		for level := 1; level <= 6; level++ {
 			percentage := float64(0)
 			if row.TeamGames[level] > 0 {

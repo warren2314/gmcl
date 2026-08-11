@@ -11,6 +11,13 @@ import (
 
 const starredWeeklySyncAction = "automatic_sync_starred_players"
 
+type starredWeeklyWindow struct {
+	SeasonStart time.Time
+	SeasonEnd   time.Time
+	CatchupEnd  time.Time
+	Configured  bool
+}
+
 func starredWeeklySyncEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("STARRED_WEEKLY_SYNC_ENABLED"))) {
 	case "1", "true", "yes", "on":
@@ -20,17 +27,70 @@ func starredWeeklySyncEnabled() bool {
 	}
 }
 
+func buildStarredWeeklyWindow(seasonStart, seasonEnd time.Time, loc *time.Location, configured bool) starredWeeklyWindow {
+	if loc == nil {
+		loc = time.UTC
+	}
+	start := time.Date(seasonStart.Year(), seasonStart.Month(), seasonStart.Day(), 0, 0, 0, 0, loc)
+	end := time.Date(seasonEnd.Year(), seasonEnd.Month(), seasonEnd.Day(), 23, 59, 59, 0, loc)
+	catchup := nextStarredWeeklySync(end, loc)
+	catchupEnd := time.Date(catchup.Year(), catchup.Month(), catchup.Day(), 23, 59, 59, 0, loc)
+	return starredWeeklyWindow{SeasonStart: start, SeasonEnd: end, CatchupEnd: catchupEnd, Configured: configured}
+}
+
+func fallbackStarredWeeklyWindow(year int, loc *time.Location) starredWeeklyWindow {
+	if loc == nil {
+		loc = time.UTC
+	}
+	// A missing season row must not silently stop compliance imports. April to
+	// October safely covers the normal playing season, followed by one Monday
+	// catch-up. Configured season dates take precedence whenever available.
+	start := time.Date(year, time.April, 1, 0, 0, 0, 0, loc)
+	end := time.Date(year, time.October, 31, 0, 0, 0, 0, loc)
+	return buildStarredWeeklyWindow(start, end, loc, false)
+}
+
+func (window starredWeeklyWindow) Active(now time.Time) bool {
+	loc := window.SeasonStart.Location()
+	local := now.In(loc)
+	return !local.Before(window.SeasonStart) && !local.After(window.CatchupEnd)
+}
+
+// starredWeeklySyncWindowActive is retained as the safe, database-free
+// fallback used by callers that have not loaded configured season dates.
 func starredWeeklySyncWindowActive(now time.Time, loc *time.Location) bool {
 	if loc == nil {
 		loc = time.UTC
 	}
-	local := now.In(loc)
-	start := time.Date(local.Year(), time.April, 1, 0, 0, 0, 0, loc)
-	// Keep the scheduler alive through the first Monday after month-end so
-	// matches played during the final partial week of July are collected. The
-	// underlying scorecard query remains capped at 31 July.
-	end := time.Date(local.Year(), time.August, 7, 23, 59, 59, 0, loc)
-	return !local.Before(start) && !local.After(end)
+	return fallbackStarredWeeklyWindow(now.In(loc).Year(), loc).Active(now)
+}
+
+// loadStarredWeeklyWindow returns the configured playing window for the year
+// containing now. The final Monday after season end remains active so delayed
+// scorecards from the last weekend can be collected. If the season table is
+// unavailable or has no row for the year, a conservative playing-season
+// fallback keeps automatic compliance monitoring alive.
+func (s *Server) loadStarredWeeklyWindow(ctx context.Context, now time.Time, loc *time.Location) starredWeeklyWindow {
+	if loc == nil {
+		loc = time.UTC
+	}
+	year := now.In(loc).Year()
+	fallback := fallbackStarredWeeklyWindow(year, loc)
+	if s == nil || s.DB == nil {
+		return fallback
+	}
+	var start, end time.Time
+	err := s.DB.QueryRow(ctx, `
+		SELECT MIN(start_date), MAX(end_date)
+		FROM seasons
+		WHERE EXTRACT(YEAR FROM start_date)::int=$1
+		  AND is_archived = FALSE
+		HAVING COUNT(*) > 0
+	`, year).Scan(&start, &end)
+	if err != nil || start.IsZero() || end.IsZero() || end.Before(start) {
+		return fallback
+	}
+	return buildStarredWeeklyWindow(start, end, loc, true)
 }
 
 func nextStarredWeeklySync(now time.Time, loc *time.Location) time.Time {
@@ -67,8 +127,14 @@ func (s *Server) runAutomaticStarredSync(parent context.Context, now time.Time, 
 	if loc == nil {
 		loc = time.UTC
 	}
-	if !starredWeeklySyncWindowActive(now, loc) {
+	windowCtx, windowCancel := context.WithTimeout(parent, 10*time.Second)
+	window := s.loadStarredWeeklyWindow(windowCtx, now, loc)
+	windowCancel()
+	if !window.Active(now) {
 		return
+	}
+	if !window.Configured {
+		log.Printf("weekly starred-player sync using fallback season window: %s through %s", window.SeasonStart.Format("2006-01-02"), window.SeasonEnd.Format("2006-01-02"))
 	}
 	if !force {
 		checkCtx, checkCancel := context.WithTimeout(parent, 10*time.Second)
@@ -110,6 +176,8 @@ func (s *Server) runAutomaticStarredSync(parent context.Context, now time.Time, 
 	runCancel()
 	metadata := map[string]any{
 		"season": seasonYear, "scheduled_for": now.In(loc).Format(time.RFC3339),
+		"season_start": window.SeasonStart.Format("2006-01-02"), "season_end": window.SeasonEnd.Format("2006-01-02"),
+		"final_catchup_date": window.CatchupEnd.Format("2006-01-02"), "season_window_configured": window.Configured,
 		"list_already_current": summary.List.AlreadyCurrent, "list_entries": summary.List.Entries,
 		"list_amendments": summary.List.Amendments, "scorecards": summary.Scorecards.Matches,
 		"appearances": summary.Scorecards.Appearances, "failures": len(summary.Scorecards.Failures),
@@ -133,8 +201,7 @@ func (s *Server) startStarredWeeklySync(parent context.Context) context.CancelFu
 		return cancel
 	}
 	go func() {
-		// Catch up soon after deployment if no successful automatic run occurred
-		// during the last six days.
+		// Perform a bounded catch-up soon after deployment while the season window is active.
 		initial := time.NewTimer(30 * time.Second)
 		defer initial.Stop()
 		select {
@@ -159,6 +226,6 @@ func (s *Server) startStarredWeeklySync(parent context.Context) context.CancelFu
 			}
 		}
 	}()
-	log.Printf("weekly starred-player sync enabled for Mondays at 03:00 Europe/London through 31 July")
+	log.Printf("weekly starred-player sync enabled for Mondays at 03:00 Europe/London through configured season end plus one catch-up Monday")
 	return cancel
 }

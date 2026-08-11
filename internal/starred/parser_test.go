@@ -307,6 +307,38 @@ func TestReviewCutoffAdvancesUntilJuly31(t *testing.T) {
 	}
 }
 
+func TestEvaluateAtCutoffsIncludesAugustBreachesButKeepsCandidateAtJuly31(t *testing.T) {
+	validFrom := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	periods := []Period{{
+		SeasonYear: 2026, ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A",
+		PlayerName: "Star Player", PlayerKey: "starplayer", ValidFrom: validFrom,
+	}}
+	appearances := []Appearance{
+		{MatchID: 1, MatchDate: time.Date(2026, time.August, 8, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Alpha CC", ClubKey: "alpha", TeamLevel: 2, PlayerName: "Star Player", PlayerKey: "starplayer"},
+		{MatchID: 2, MatchDate: time.Date(2026, time.July, 25, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Beta CC", ClubKey: "beta", TeamLevel: 1, PlayerID: 22, PlayerName: "Candidate Player", PlayerKey: "candidateplayer"},
+		{MatchID: 3, MatchDate: time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Beta CC", ClubKey: "beta", TeamLevel: 3, PlayerID: 22, PlayerName: "Candidate Player", PlayerKey: "candidateplayer"},
+		{MatchID: 4, MatchDate: time.Date(2026, time.August, 8, 0, 0, 0, 0, time.UTC), CompetitionType: "League", ClubName: "Beta CC", ClubKey: "beta", TeamLevel: 3, PlayerID: 22, PlayerName: "Candidate Player", PlayerKey: "candidateplayer"},
+	}
+
+	evaluation := EvaluateAtCutoffs(
+		periods,
+		appearances,
+		nil,
+		time.Date(2026, time.August, 11, 23, 59, 59, 0, time.UTC),
+		time.Date(2026, time.July, 31, 23, 59, 59, 0, time.UTC),
+	)
+	if len(evaluation.Breaches) != 1 || evaluation.Breaches[0].Appearance.MatchID != 1 {
+		t.Fatalf("August breaches=%#v; want match 1", evaluation.Breaches)
+	}
+	if len(evaluation.Candidates) != 1 {
+		t.Fatalf("candidates=%#v; want the 31 July candidate", evaluation.Candidates)
+	}
+	candidate := evaluation.Candidates[0]
+	if candidate.PlayerID != 22 || candidate.TopTwoXILeague != 1 || candidate.AllLeague != 1 || candidate.Percentage != 1 {
+		t.Fatalf("candidate=%#v; August games must not change the 31 July calculation", candidate)
+	}
+}
+
 func TestIsWomensAppearanceUsesCompetitionClubAndTeamLabels(t *testing.T) {
 	tests := []Appearance{
 		{CompetitionName: "GMCL Women's Premier League"},
@@ -383,6 +415,28 @@ func TestSuggestMappingsRecognisesCommonPlayCricketNameVariants(t *testing.T) {
 		if got[source] != candidate {
 			t.Errorf("suggestion for %q=%q want %q; all=%#v", source, got[source], candidate, got)
 		}
+	}
+}
+func TestSuggestMappingsForRangeIncludesPlayerRemovedBeforeCurrentDate(t *testing.T) {
+	seasonStart := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	removedAt := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	asOf := time.Date(2026, time.August, 11, 23, 59, 59, 0, time.UTC)
+	periods := []Period{{
+		ClubName: "Example CC", ClubKey: "example",
+		PlayerName: "Jon Phillips", PlayerKey: NormalizeName("Jon Phillips"),
+		ValidFrom: seasonStart, ValidTo: &removedAt,
+	}}
+	appearances := []Appearance{{
+		ClubKey: "example", PlayerID: 44,
+		PlayerName: "John Phillips", PlayerKey: NormalizeName("John Phillips"),
+	}}
+
+	if got := SuggestMappings(periods, appearances, nil, asOf); len(got) != 0 {
+		t.Fatalf("point-in-time suggestions included a removed player: %#v", got)
+	}
+	got := SuggestMappingsForRange(periods, appearances, nil, seasonStart, asOf)
+	if len(got) != 1 || got[0].CandidateID != 44 {
+		t.Fatalf("season-range suggestions=%#v; want removed player linked to ID 44", got)
 	}
 }
 

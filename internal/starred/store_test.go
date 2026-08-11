@@ -24,7 +24,7 @@ func setupStoreTestDB(t *testing.T) *db.Pool {
 	return pool
 }
 
-func TestPendingMatchesExcludeSyntheticFixtureIDs(t *testing.T) {
+func TestPendingMatchesIncludeAugustAndExcludeSyntheticFixtureIDs(t *testing.T) {
 	pool := setupStoreTestDB(t)
 	ctx := context.Background()
 	const (
@@ -48,8 +48,8 @@ func TestPendingMatchesExcludeSyntheticFixtureIDs(t *testing.T) {
 			play_cricket_match_id,match_date,home_club_name,away_club_name,
 			home_team_name,away_team_name,payload
 		) VALUES
-			($1,'2026-01-01','Real Home CC','Real Away CC','Real Home CC - 1st XI','Real Away CC - 1st XI','{}'::jsonb),
-			($2,'2026-01-01','Synthetic Home CC','Synthetic Away CC','Synthetic Home CC - 1st XI','Synthetic Away CC - 1st XI','{"pitch_fixture_source":"play_cricket_ground_xlsx"}'::jsonb)
+			($1,'2026-08-08','Real Home CC','Real Away CC','Real Home CC - 1st XI','Real Away CC - 1st XI','{}'::jsonb),
+			($2,'2026-08-08','Synthetic Home CC','Synthetic Away CC','Synthetic Home CC - 1st XI','Synthetic Away CC - 1st XI','{"pitch_fixture_source":"play_cricket_ground_xlsx"}'::jsonb)
 	`, realMatchID, syntheticMatchID)
 	if err != nil {
 		t.Fatalf("insert fixtures: %v", err)

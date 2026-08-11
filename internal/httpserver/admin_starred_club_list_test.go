@@ -57,6 +57,25 @@ func TestActiveUnmappedStarredPeriodsRemovesAcceptedPlayers(t *testing.T) {
 	}
 }
 
+func TestUnmappedStarredPeriodsForRangeIncludesRemovedPlayers(t *testing.T) {
+	seasonStart := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	removedAt := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	asOf := time.Date(2026, time.August, 11, 23, 59, 59, 0, time.UTC)
+	periods := []starred.Period{{
+		ClubName: "Alpha CC", ClubKey: "alpha", ListType: "A",
+		PlayerName: "Removed Player", PlayerKey: "removed",
+		ValidFrom: seasonStart, ValidTo: &removedAt,
+	}}
+
+	if got := activeUnmappedStarredPeriods(periods, nil, asOf); len(got) != 0 {
+		t.Fatalf("point-in-time unmapped periods included a removed player: %#v", got)
+	}
+	got := unmappedStarredPeriodsForRange(periods, nil, seasonStart, asOf)
+	if len(got) != 1 || got[0].PlayerKey != "removed" {
+		t.Fatalf("season-range unmapped periods=%#v; want removed player", got)
+	}
+}
+
 func TestSaturdayStarredClubDivisionsUsesFirstXICompetition(t *testing.T) {
 	clubs := map[string]string{"alpha": "Alpha CC", "beta": "Beta CC", "gamma": "Gamma CC"}
 	appearances := []starred.Appearance{

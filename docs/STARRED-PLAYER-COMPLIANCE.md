@@ -33,11 +33,11 @@ the admin review instead of being guessed.
 - List A appearances below the 1st XI in League or Cup matches.
 - List B appearances below the 2nd XI in League or Cup matches.
 - Junior-tagged findings are retained but labelled for exemption review.
-- At 31 July: 1st XI League appearances divided by all personal League
-  appearances. Cup matches are deliberately excluded from this calculation.
-- The review and scorecard backfill are capped at 31 July inclusive. Matches
-  already imported after that date remain stored but are ignored by this
-  mid-season report.
+- The separate 31 July candidate review uses top-two-XI League appearances
+  divided by all personal League appearances. Cup matches are deliberately
+  excluded from this calculation.
+- Breach monitoring and scorecard imports continue throughout the playing
+  season. Matches after 31 July are displayed and evaluated for breaches.
 - Club list-size and missing-form checks.
 
 The first version does not automatically approve junior, Category 3, temporary
@@ -59,15 +59,18 @@ Play-Cricket `last_updated` value changes.
 
 ## Weekly automation
 
-Production enables `STARRED_WEEKLY_SYNC_ENABLED`. During the active window from
-1 April through 31 July, the app refreshes the published list and imports up to
-five batches of 100 missing or changed scorecards every Monday at 03:00
-Europe/London. The first Monday after 31 July is retained as a final catch-up,
-but its fixture query remains capped at 31 July. After a deployment it also
-performs a catch-up run when no
-successful automatic sync was recorded during the previous six days. Every run
-is recorded in `audit_logs`; an advisory database lock prevents overlapping
-instances.
+Production enables `STARRED_WEEKLY_SYNC_ENABLED`. The active window comes from
+the configured `seasons.start_date` and `seasons.end_date`. During that window,
+the app refreshes the published list and imports up to five batches of 100
+missing or changed season-to-date scorecards every Monday at 03:00
+Europe/London. The first Monday after the configured season end is retained as
+a final catch-up for delayed scorecards. If configured season dates are
+unavailable, the scheduler safely falls back to 1 April through 31 October plus
+one catch-up Monday.
+
+A bounded startup refresh also runs 30 seconds after deployment when the season
+window is active. Every run is recorded in `audit_logs`; an advisory database
+lock prevents overlapping instances.
 
 The same operation can be triggered by n8n or another scheduler through the
 HMAC-protected endpoint:

@@ -164,7 +164,7 @@ func PendingMatchIDs(ctx context.Context, pool *db.Pool, seasonYear, limit int) 
 		  AND lf.match_date <= $3::date
 		ORDER BY lf.match_date, lf.play_cricket_match_id
 		LIMIT $2
-	`, seasonYear, limit, ReviewCutoff(seasonYear, time.Now()))
+	`, seasonYear, limit, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func PendingMatchCount(ctx context.Context, pool *db.Pool, seasonYear int) (int,
 		        AND COALESCE(sm.last_updated,'') <> COALESCE(lf.payload->>'last_updated','')
 		      ))
 		  AND lf.match_date <= $2::date
-	`, seasonYear, ReviewCutoff(seasonYear, time.Now())).Scan(&count)
+	`, seasonYear, time.Now()).Scan(&count)
 	return count, err
 }
 
