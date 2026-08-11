@@ -93,14 +93,40 @@ func starredMonitoringCutoff(year int, now time.Time) time.Time {
 	return now
 }
 
-func (s *Server) starredSeasonStart(ctx context.Context, year int) time.Time {
-	var start time.Time
-	if err := s.DB.QueryRow(ctx, `SELECT start_date FROM seasons WHERE EXTRACT(YEAR FROM start_date)::int=$1 ORDER BY start_date LIMIT 1`, year).Scan(&start); err == nil {
-		return start
+func (s *Server) starredSeasonBounds(ctx context.Context, year int) (time.Time, time.Time) {
+	fallbackStart := time.Date(year, time.April, 1, 0, 0, 0, 0, time.UTC)
+	fallbackEnd := time.Date(year, time.October, 31, 0, 0, 0, 0, time.UTC)
+	if s == nil || s.DB == nil {
+		return fallbackStart, fallbackEnd
 	}
-	return time.Date(year, time.April, 1, 0, 0, 0, 0, time.UTC)
+	loadBounds := func(activeOnly bool) (time.Time, time.Time, bool) {
+		query := `
+			SELECT MIN(start_date),MAX(end_date)
+			FROM seasons
+			WHERE EXTRACT(YEAR FROM start_date)::int=$1`
+		if activeOnly {
+			query += " AND is_archived=FALSE"
+		}
+		query += " HAVING COUNT(*) > 0"
+		var start, end time.Time
+		if err := s.DB.QueryRow(ctx, query, year).Scan(&start, &end); err != nil || start.IsZero() || end.IsZero() || end.Before(start) {
+			return time.Time{}, time.Time{}, false
+		}
+		return start, end, true
+	}
+	if start, end, ok := loadBounds(true); ok {
+		return start, end
+	}
+	if start, end, ok := loadBounds(false); ok {
+		return start, end
+	}
+	return fallbackStart, fallbackEnd
 }
 
+func (s *Server) starredSeasonStart(ctx context.Context, year int) time.Time {
+	start, _ := s.starredSeasonBounds(ctx, year)
+	return start
+}
 func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		year := starredSeasonYear(r)
@@ -144,7 +170,11 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			return
 		}
 		findingStates := s.loadStarredFindingStates(ctx, year)
-		exemptions := s.loadStarredExemptions(ctx, year)
+		exemptions, exemptionLoadErr := s.loadStarredExemptions(ctx, year)
+		if exemptionLoadErr != nil {
+			http.Error(w, "starred-player exemptions are unavailable: "+exemptionLoadErr.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		pendingExemptionCount := 0
 		for _, exemption := range exemptions {
 			if exemption.Status == "pending" {
@@ -189,7 +219,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if breachFilterErr == nil {
 			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
 		}
-		closedBreachCount := len(eval.Breaches) - len(outstandingBreaches)
+		resolvedBreachCount := len(eval.Breaches) - len(outstandingBreaches)
 		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
 		acceptedCandidateCount := 0
 		for _, state := range candidateReviewStates {
@@ -284,7 +314,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
-			starredActionTileHTML(pendingExemptionCount, "Exemption requests", "Sunday exemptions", "Sunday player-eligibility requests awaiting a decision. Only approved Sunday league exemptions suppress covered findings.", "#sunday-exemptions", "Review requests", "warning"),
+			starredActionTileHTML(pendingExemptionCount, "Exemption requests", "Player exemptions", "Sunday requests awaiting a decision, plus approved season-long junior exemptions. Approved exemptions automatically suppress every finding they cover.", "#sunday-exemptions", "Review exemptions", "warning"),
 			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or opened as an ineligible-player investigation case.", "#potential-breaches", "Review evidence", "danger"),
 			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
 			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
@@ -477,7 +507,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			breachExportQuery.Set("breach_to", value)
 			breachExportIncludingClosedQuery.Set("breach_to", value)
 		}
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed decisions are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), closedBreachCount)
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed, escalated or exempted findings are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), resolvedBreachCount)
 		if breachFilterErr != nil {
 			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
 		}

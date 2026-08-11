@@ -32,7 +32,13 @@ the admin review instead of being guessed.
 
 - List A appearances below the 1st XI in League or Cup matches.
 - List B appearances below the 2nd XI in League or Cup matches.
-- Junior-tagged findings are retained but labelled for exemption review.
+- Junior-tagged findings are labelled for exemption review. Accepting a junior
+  exemption creates one approved exemption for that player, club and season,
+  closes the player's current findings, and suppresses later imported findings
+  through the configured season end. It never carries into the next season.
+- Sunday single-match and development exemptions remain limited to their
+  approved Sunday League dates; they do not suppress Saturday, Cup or GMCL20
+  findings.
 - The separate 31 July candidate review uses top-two-XI League appearances
   divided by all personal League appearances. Cup matches are deliberately
   excluded from this calculation.
@@ -40,9 +46,13 @@ the admin review instead of being guessed.
   season. Matches after 31 July are displayed and evaluated for breaches.
 - Club list-size and missing-form checks.
 
-The first version does not automatically approve junior, Category 3, temporary
-or exceptional exemptions. Use `starred_exemptions` as the durable source when
-those admin controls are added; findings should be reviewed before sanctions.
+Approved exemptions are stored in `starred_exemptions`. Junior approvals use a
+season-scoped `junior_season` record, while published Sunday approvals retain
+their narrower match/date restrictions. Migration
+`0071_starred_junior_season_exemptions.sql` backfills previously accepted
+junior decisions from their `junior_bulk: true` audit entries. If a best-effort
+audit write was missed, the migration can also recover an accepted finding by
+rechecking the junior tag and identity in the stored starred-list history.
 
 ## Initial backfill
 

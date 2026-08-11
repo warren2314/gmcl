@@ -186,7 +186,7 @@ func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.
 	}
 	breach.NeedsExemptionReview = true
 	junior := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "", "")
-	for _, want := range []string{"Accept junior exemption", "close every finding for this player"} {
+	for _, want := range []string{"Accept junior exemption", "rest of this season", "close every current finding for this player"} {
 		if !strings.Contains(junior, want) {
 			t.Fatalf("junior actions do not contain %q: %s", want, junior)
 		}

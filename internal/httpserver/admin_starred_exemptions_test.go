@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -115,5 +116,164 @@ func TestApprovedExemptionIsIdentifiedInAuditExport(t *testing.T) {
 	writeStarredBreachesCSV(recorder, 2026, []starred.Breach{breach}, nil, []starredExemption{exemption}, nil, nil, true)
 	if !strings.Contains(recorder.Body.String(), "Approved Sunday exemption - Single Sunday match") {
 		t.Fatalf("audit export does not identify the approved exemption:\n%s", recorder.Body.String())
+	}
+}
+
+func TestApprovedJuniorSeasonExemptionCoversFutureFindingsOnlyThisSeason(t *testing.T) {
+	breach := sampleStarredBreach()
+	breach.Appearance.SeasonYear = 2026
+	breach.Appearance.MatchDate = time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	breach.Appearance.CompetitionType = "League"
+	breach.Appearance.PlayingDay = "Saturday"
+	validTo := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+	exemption := starredExemption{
+		SeasonYear: 2026, ClubKey: breach.Appearance.ClubKey, PlayerID: breach.Appearance.PlayerID,
+		PlayerKey: breach.Appearance.PlayerKey, ExemptionType: starredExemptionTypeJuniorSeason, Status: "approved",
+		ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), ValidTo: &validTo,
+	}
+	if !exemption.covers(breach) {
+		t.Fatal("approved junior exemption should cover a later Saturday finding in the same season")
+	}
+	cup := breach
+	cup.Appearance.MatchID++
+	cup.Appearance.CompetitionType = "Cup"
+	if !exemption.covers(cup) {
+		t.Fatal("junior exemption should cover every starred finding for the player, including Cup findings")
+	}
+	if got := filterStarredBreachesWithoutApprovedExemption([]starred.Breach{breach, cup}, []starredExemption{exemption}); len(got) != 0 {
+		t.Fatalf("newly imported findings should remain exempted: %#v", got)
+	}
+	afterSeason := breach
+	afterSeason.Appearance.MatchDate = validTo.AddDate(0, 0, 1)
+	if exemption.covers(afterSeason) {
+		t.Fatal("junior exemption must not cover a finding after its configured season end")
+	}
+	exemption.ValidTo = nil
+	nextSeason := breach
+	nextSeason.Appearance.SeasonYear = 2027
+	nextSeason.Appearance.MatchDate = time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
+	if exemption.covers(nextSeason) {
+		t.Fatal("junior exemption must not carry into the next season")
+	}
+	otherClub := breach
+	otherClub.Appearance.ClubKey = "another"
+	if exemption.covers(otherClub) {
+		t.Fatal("junior exemption must not cover another club")
+	}
+	differentPlayer := breach
+	differentPlayer.Appearance.PlayerID++
+	if exemption.covers(differentPlayer) {
+		t.Fatal("junior exemption must not fall back to a matching name when both player IDs differ")
+	}
+	missingID := breach
+	missingID.Appearance.PlayerID = 0
+	if !exemption.covers(missingID) {
+		t.Fatal("junior exemption should fall back to the stable player key when an appearance has no player ID")
+	}
+	exemption.Status = "pending"
+	if exemption.covers(breach) {
+		t.Fatal("pending junior exemption must not suppress a finding")
+	}
+	exemption.Status = "approved"
+	revokedAt := time.Now()
+	exemption.RevokedAt = &revokedAt
+	if exemption.covers(breach) {
+		t.Fatal("revoked junior exemption must not suppress a finding")
+	}
+}
+
+func TestApprovedJuniorExemptionIsIdentifiedInAuditExport(t *testing.T) {
+	breach := sampleStarredBreach()
+	breach.Appearance.SeasonYear = 2026
+	validTo := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+	exemption := starredExemption{
+		SeasonYear: 2026, ClubKey: breach.Appearance.ClubKey, PlayerID: breach.Appearance.PlayerID,
+		PlayerKey: breach.Appearance.PlayerKey, ExemptionType: starredExemptionTypeJuniorSeason, Status: "approved",
+		ValidFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), ValidTo: &validTo,
+	}
+	recorder := httptest.NewRecorder()
+	writeStarredBreachesCSV(recorder, 2026, []starred.Breach{breach}, nil, []starredExemption{exemption}, nil, nil, true)
+	if !strings.Contains(recorder.Body.String(), "Approved junior exemption - season-long") {
+		t.Fatalf("audit export does not identify the approved junior exemption:\n%s", recorder.Body.String())
+	}
+}
+
+func TestStarredExemptionIdentityKeyPrefersPlayerID(t *testing.T) {
+	if got := starredExemptionIdentityKey(12345, "alexplayer"); got != "id:12345" {
+		t.Fatalf("ID-backed identity=%q", got)
+	}
+	if got := starredExemptionIdentityKey(0, "alexplayer"); got != "key:alexplayer" {
+		t.Fatalf("name-backed identity=%q", got)
+	}
+	if starredExemptionIdentityKey(12345, "alexplayer") == starredExemptionIdentityKey(67890, "alexplayer") {
+		t.Fatal("same-named players with different Play-Cricket IDs must have different exemption identities")
+	}
+}
+
+func TestStarredJuniorExemptionPlayerIDRequiresUnambiguousIdentity(t *testing.T) {
+	tests := []struct {
+		name                   string
+		selectedID, knownCount int64
+		onlyKnownID, wantID    int64
+		wantErr                bool
+	}{
+		{name: "selected ID remains authoritative", selectedID: 201, knownCount: 2, onlyKnownID: 201, wantID: 201},
+		{name: "no known ID remains name-backed"},
+		{name: "sole known ID is adopted", knownCount: 1, onlyKnownID: 301, wantID: 301},
+		{name: "multiple known IDs require matching", knownCount: 2, onlyKnownID: 301, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := starredJuniorExemptionPlayerID(test.selectedID, test.knownCount, test.onlyKnownID)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, test.wantErr)
+			}
+			if got != test.wantID {
+				t.Fatalf("player ID=%d, want %d", got, test.wantID)
+			}
+		})
+	}
+}
+
+func TestJuniorExemptionFallbackCannotReplaceDifferentKnownPlayerID(t *testing.T) {
+	raw, err := os.ReadFile("admin_starred_exemptions.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"HAVING COUNT(*)=1",
+		"BOOL_AND(candidate.play_cricket_player_id IS NULL)",
+		"FROM starred_appearances appearance",
+		"FROM starred_finding_reviews finding",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("junior exemption fallback lacks the known-player-ID guard %q", want)
+		}
+	}
+}
+
+func TestJuniorExemptionMigrationBackfillsAuditedAndAcceptedTaggedApprovals(t *testing.T) {
+	raw, err := os.ReadFile("../../migrations/0071_starred_junior_season_exemptions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"uq_starred_junior_exemptions_season_identity",
+		"exemption_type = 'junior_season'",
+		"log.entity_id = f.id",
+		`log.metadata @> '{"junior_bulk": true}'::jsonb`,
+		"f.status = 'accepted'",
+		"FROM unnest(p.tags) tag",
+		"WHEN related_ids.id_count = 1",
+		"FROM starred_appearances appearance",
+		"AND related_ids.id_count > 1 AS ambiguous_identity",
+		"s.is_archived = FALSE",
+		"ON CONFLICT (season_year, club_key, identity_key)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("junior exemption migration does not contain %q", want)
+		}
 	}
 }

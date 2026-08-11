@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,9 +14,16 @@ import (
 	"cricket-ground-feedback/internal/starred"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 const starredExemptionGuidanceURL = "https://www.gtrmcrcricket.co.uk/pages/exemption-requests"
+
+const (
+	starredExemptionTypeSundaySingle      = "sunday_single_match"
+	starredExemptionTypeSundayDevelopment = "sunday_development"
+	starredExemptionTypeJuniorSeason      = "junior_season"
+)
 
 const starredExemptionInsertSQL = `
 	INSERT INTO starred_exemptions(season_year,club_key,club_name,play_cricket_player_id,player_key,player_name,play_cricket_match_id,exemption_type,status,valid_from,valid_to,wicket_keeper,notes,created_by,decided_by,decided_at)
@@ -53,24 +61,38 @@ func sameStarredExemptionIdentity(exemption starredExemption, breach starred.Bre
 	if exemption.ClubKey != breach.Appearance.ClubKey {
 		return false
 	}
-	if exemption.PlayerID > 0 {
+	if exemption.PlayerID > 0 && breach.Appearance.PlayerID > 0 {
 		return breach.Appearance.PlayerID == exemption.PlayerID
 	}
-	return exemption.PlayerKey != "" && exemption.PlayerKey == breach.Appearance.PlayerKey
+	return exemption.PlayerKey != "" && breach.Appearance.PlayerKey != "" && exemption.PlayerKey == breach.Appearance.PlayerKey
 }
 
 func (exemption starredExemption) covers(breach starred.Breach) bool {
-	if exemption.Status != "approved" || exemption.RevokedAt != nil || !starredSundayExemptionEligible(breach) || !sameStarredExemptionIdentity(exemption, breach) {
+	if exemption.Status != "approved" || exemption.RevokedAt != nil || !sameStarredExemptionIdentity(exemption, breach) {
+		return false
+	}
+	if exemption.SeasonYear > 0 && breach.Appearance.SeasonYear > 0 && exemption.SeasonYear != breach.Appearance.SeasonYear {
 		return false
 	}
 	date := breach.Appearance.MatchDate
 	switch exemption.ExemptionType {
-	case "sunday_single_match":
+	case starredExemptionTypeJuniorSeason:
+		if date.Before(exemption.ValidFrom) {
+			return false
+		}
+		return exemption.ValidTo == nil || !date.After(*exemption.ValidTo)
+	case starredExemptionTypeSundaySingle:
+		if !starredSundayExemptionEligible(breach) {
+			return false
+		}
 		if exemption.MatchID > 0 {
 			return exemption.MatchID == breach.Appearance.MatchID
 		}
 		return sameStarredCalendarDate(exemption.ValidFrom, date)
-	case "sunday_development":
+	case starredExemptionTypeSundayDevelopment:
+		if !starredSundayExemptionEligible(breach) {
+			return false
+		}
 		if date.Before(exemption.ValidFrom) {
 			return false
 		}
@@ -103,33 +125,145 @@ func filterStarredBreachesWithoutApprovedExemption(breaches []starred.Breach, ex
 	return out
 }
 
-func (s *Server) loadStarredExemptions(ctx context.Context, year int) []starredExemption {
+func (s *Server) loadStarredExemptions(ctx context.Context, year int) ([]starredExemption, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT id,season_year,club_key,COALESCE(club_name,club_key),COALESCE(play_cricket_player_id,0),COALESCE(player_key,''),COALESCE(player_name,player_key,''),
 		       COALESCE(play_cricket_match_id,0),exemption_type,status,valid_from,valid_to,wicket_keeper,COALESCE(notes,''),created_at,revoked_at
 		FROM starred_exemptions WHERE season_year=$1 ORDER BY created_at DESC,id DESC`, year)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("load starred-player exemptions: %w", err)
 	}
 	defer rows.Close()
 	out := make([]starredExemption, 0)
 	for rows.Next() {
 		var exemption starredExemption
-		if rows.Scan(&exemption.ID, &exemption.SeasonYear, &exemption.ClubKey, &exemption.ClubName, &exemption.PlayerID, &exemption.PlayerKey, &exemption.PlayerName,
-			&exemption.MatchID, &exemption.ExemptionType, &exemption.Status, &exemption.ValidFrom, &exemption.ValidTo, &exemption.WicketKeeper, &exemption.Notes, &exemption.CreatedAt, &exemption.RevokedAt) == nil {
-			out = append(out, exemption)
+		if err := rows.Scan(&exemption.ID, &exemption.SeasonYear, &exemption.ClubKey, &exemption.ClubName, &exemption.PlayerID, &exemption.PlayerKey, &exemption.PlayerName,
+			&exemption.MatchID, &exemption.ExemptionType, &exemption.Status, &exemption.ValidFrom, &exemption.ValidTo, &exemption.WicketKeeper, &exemption.Notes, &exemption.CreatedAt, &exemption.RevokedAt); err != nil {
+			return nil, fmt.Errorf("scan starred-player exemption: %w", err)
 		}
+		out = append(out, exemption)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read starred-player exemptions: %w", err)
+	}
+	return out, nil
 }
 
 func starredExemptionTypeLabel(value string) string {
-	if value == "sunday_development" {
+	switch value {
+	case starredExemptionTypeJuniorSeason:
+		return "Junior (season-long)"
+	case starredExemptionTypeSundayDevelopment:
 		return "Development (season-long)"
+	default:
+		return "Single Sunday match"
 	}
-	return "Single Sunday match"
 }
 
+func starredExemptionReviewStatus(exemption starredExemption) string {
+	if exemption.ExemptionType == starredExemptionTypeJuniorSeason {
+		return "Approved junior exemption - season-long"
+	}
+	return "Approved Sunday exemption - " + starredExemptionTypeLabel(exemption.ExemptionType)
+}
+
+func starredExemptionIdentityKey(playerID int64, playerKey string) string {
+	if playerID > 0 {
+		return "id:" + strconv.FormatInt(playerID, 10)
+	}
+	return "key:" + strings.TrimSpace(playerKey)
+}
+
+func starredJuniorExemptionPlayerID(selectedID, knownCount, onlyKnownID int64) (int64, error) {
+	if selectedID > 0 {
+		return selectedID, nil
+	}
+	if knownCount > 1 {
+		return 0, fmt.Errorf("player identity is ambiguous; match this player to a Play-Cricket ID before approving the junior exemption")
+	}
+	if knownCount == 1 && onlyKnownID > 0 {
+		return onlyKnownID, nil
+	}
+	return 0, nil
+}
+
+func resolveStarredJuniorExemptionPlayerID(ctx context.Context, tx pgx.Tx, year int, breach starred.Breach) (int64, error) {
+	if breach.Appearance.PlayerID > 0 {
+		return breach.Appearance.PlayerID, nil
+	}
+	var knownCount, onlyKnownID int64
+	err := tx.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT known.player_id),COALESCE(MIN(known.player_id),0)
+		FROM (
+			SELECT appearance.play_cricket_player_id AS player_id
+			FROM starred_appearances appearance
+			WHERE appearance.season_year=$1 AND appearance.club_key=$2 AND appearance.player_key=$3
+			UNION ALL
+			SELECT finding.play_cricket_player_id
+			FROM starred_finding_reviews finding
+			WHERE finding.season_year=$1 AND finding.club_key=$2 AND finding.player_key=$3
+		) known
+		WHERE COALESCE(known.player_id,0)>0`, year, breach.Appearance.ClubKey, breach.Appearance.PlayerKey).Scan(&knownCount, &onlyKnownID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve junior exemption identity: %w", err)
+	}
+	return starredJuniorExemptionPlayerID(0, knownCount, onlyKnownID)
+}
+
+func upsertStarredJuniorSeasonExemption(ctx context.Context, tx pgx.Tx, year int, breach starred.Breach, validFrom, validTo time.Time, note string, adminID *int32) (int64, error) {
+	notes := "Approved from a junior-tagged starred-player finding review."
+	if strings.TrimSpace(note) != "" {
+		notes += " Decision note: " + strings.TrimSpace(note)
+	}
+	identityKey := starredExemptionIdentityKey(breach.Appearance.PlayerID, breach.Appearance.PlayerKey)
+	args := []any{year, breach.Appearance.ClubKey, breach.Appearance.ClubName, breach.Appearance.PlayerID, breach.Appearance.PlayerKey, breach.Appearance.PlayerName, identityKey, validFrom, validTo, notes, adminID}
+	var exemptionID int64
+	err := tx.QueryRow(ctx, `
+		UPDATE starred_exemptions
+		SET club_name=$3,play_cricket_player_id=COALESCE(NULLIF($4::bigint,0),play_cricket_player_id),player_key=$5,player_name=$6,
+		    identity_key=CASE WHEN NULLIF($4::bigint,0) IS NULL AND play_cricket_player_id IS NOT NULL THEN identity_key ELSE $7 END,
+		    play_cricket_match_id=NULL,status='approved',valid_from=$8,valid_to=$9,wicket_keeper=FALSE,notes=$10,
+		    decided_by=$11,decided_at=now(),revoked_by=NULL,revoked_at=NULL,updated_at=now()
+		WHERE season_year=$1 AND club_key=$2 AND exemption_type='junior_season'
+		  AND (identity_key=$7 OR (NULLIF($4::bigint,0) IS NOT NULL AND play_cricket_player_id=$4))
+		RETURNING id`, args...).Scan(&exemptionID)
+	if err == nil {
+		return exemptionID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	err = tx.QueryRow(ctx, `
+		UPDATE starred_exemptions
+		SET club_name=$3,play_cricket_player_id=COALESCE(NULLIF($4::bigint,0),play_cricket_player_id),player_key=$5,player_name=$6,
+		    identity_key=CASE WHEN NULLIF($4::bigint,0) IS NULL AND play_cricket_player_id IS NOT NULL THEN identity_key ELSE $7 END,
+		    play_cricket_match_id=NULL,status='approved',valid_from=$8,valid_to=$9,wicket_keeper=FALSE,notes=$10,
+		    decided_by=$11,decided_at=now(),revoked_by=NULL,revoked_at=NULL,updated_at=now()
+		WHERE id=(
+			SELECT MIN(candidate.id)
+			FROM starred_exemptions candidate
+			WHERE candidate.season_year=$1 AND candidate.club_key=$2 AND candidate.exemption_type='junior_season' AND candidate.player_key=$5
+			HAVING COUNT(*)=1
+			   AND (NULLIF($4::bigint,0) IS NULL OR BOOL_AND(candidate.play_cricket_player_id IS NULL))
+		)
+		RETURNING id`, args...).Scan(&exemptionID)
+	if err == nil {
+		return exemptionID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO starred_exemptions(season_year,club_key,club_name,play_cricket_player_id,player_key,player_name,identity_key,exemption_type,status,valid_from,valid_to,wicket_keeper,notes,created_by,decided_by,decided_at)
+		VALUES($1,$2,$3,NULLIF($4::bigint,0),$5,$6,$7,'junior_season','approved',$8,$9,FALSE,$10,$11,$11,now())
+		ON CONFLICT (season_year,club_key,identity_key) WHERE exemption_type='junior_season'
+		DO UPDATE SET club_name=EXCLUDED.club_name,play_cricket_player_id=COALESCE(EXCLUDED.play_cricket_player_id,starred_exemptions.play_cricket_player_id),
+		              player_key=EXCLUDED.player_key,player_name=EXCLUDED.player_name,play_cricket_match_id=NULL,status='approved',
+		              valid_from=EXCLUDED.valid_from,valid_to=EXCLUDED.valid_to,wicket_keeper=FALSE,notes=EXCLUDED.notes,
+		              decided_by=EXCLUDED.decided_by,decided_at=now(),revoked_by=NULL,revoked_at=NULL,updated_at=now()
+		RETURNING id`, args...).Scan(&exemptionID)
+	return exemptionID, err
+}
 func starredExemptionStatusBadge(status string) string {
 	switch status {
 	case "approved":
@@ -182,9 +316,9 @@ func (s *Server) renderStarredExemptions(w http.ResponseWriter, year int, period
 		}
 	}
 	fmt.Fprintf(w, `<div id="sunday-exemptions" class="card shadow-sm mb-4"><div class="card-header">%s</div>`,
-		starredSectionTitle("", "Sunday exemption requests", "Record and decide Sunday player-eligibility exemption requests. Only approved exemptions remove covered Sunday league findings; Saturday, Cup and GMCL20 findings are never suppressed.",
+		starredSectionTitle("", "Player exemptions", "Record and decide Sunday player-eligibility requests, and review season-long junior exemptions created from accepted junior findings. Junior approvals cover that player for the remainder of the selected season and expire before the next season.",
 			"Sunday exemption rules", "Clubs may make up to four one-match applications and two development applications per season. Requests should arrive by 8pm on the preceding Thursday. Wicketkeepers may receive special consideration. Matchday use without prior approval remains subject to notification and playing restrictions."))
-	fmt.Fprintf(w, `<div class="card-body border-bottom"><div class="row g-3"><div class="col-lg-8"><h6>Rules captured by this workflow</h6><ul class="small mb-2"><li>Sunday league only; never Saturday league, Cup or GMCL20.</li><li>Maximum four single-match applications and two season-long development applications per club.</li><li>Requests are due by 8pm on the Thursday before the Sunday game.</li><li>For an unexpected matchday shortage, the selected List B player may not bowl, may not bat above seven, and may not bat before an under-18 player.</li><li>Wicketkeeper applications can be marked for special consideration.</li></ul><a href="%s" target="_blank" rel="noopener">Open the published exemption guidance</a></div><div class="col-lg-4"><div class="row g-2"><div class="col-6"><div class="border rounded p-3 text-center"><div class="fs-4 fw-semibold">%d</div><div class="small text-muted">Pending</div></div></div><div class="col-6"><div class="border rounded p-3 text-center"><div class="fs-4 fw-semibold">%d</div><div class="small text-muted">Approved</div></div></div></div></div></div></div>`, starredExemptionGuidanceURL, pending, approved)
+	fmt.Fprintf(w, `<div class="card-body border-bottom"><div class="row g-3"><div class="col-lg-8"><h6>Rules captured by the Sunday request workflow</h6><ul class="small mb-2"><li>Sunday league only; never Saturday league, Cup or GMCL20.</li><li>Maximum four single-match applications and two season-long development applications per club.</li><li>Requests are due by 8pm on the Thursday before the Sunday game.</li><li>For an unexpected matchday shortage, the selected List B player may not bowl, may not bat above seven, and may not bat before an under-18 player.</li><li>Wicketkeeper applications can be marked for special consideration.</li></ul><p class="small mb-2">Junior exemptions are created separately when an administrator accepts a junior-tagged finding. They apply to that player across the selected season.</p><a href="%s" target="_blank" rel="noopener">Open the published exemption guidance</a></div><div class="col-lg-4"><div class="row g-2"><div class="col-6"><div class="border rounded p-3 text-center"><div class="fs-4 fw-semibold">%d</div><div class="small text-muted">Pending</div></div></div><div class="col-6"><div class="border rounded p-3 text-center"><div class="fs-4 fw-semibold">%d</div><div class="small text-muted">Approved</div></div></div></div></div></div></div>`, starredExemptionGuidanceURL, pending, approved)
 
 	prefillClub := strings.TrimSpace(r.URL.Query().Get("exemption_club_key"))
 	prefillDate := strings.TrimSpace(r.URL.Query().Get("exemption_date"))
@@ -207,7 +341,7 @@ func (s *Server) renderStarredExemptions(w http.ResponseWriter, year int, period
 	}
 	for _, exemption := range exemptions {
 		scope := exemption.ValidFrom.Format("02 Jan 2006")
-		if exemption.ExemptionType == "sunday_development" && exemption.ValidTo != nil {
+		if (exemption.ExemptionType == starredExemptionTypeSundayDevelopment || exemption.ExemptionType == starredExemptionTypeJuniorSeason) && exemption.ValidTo != nil {
 			scope += " – " + exemption.ValidTo.Format("02 Jan 2006")
 		} else if exemption.MatchID > 0 {
 			scope += fmt.Sprintf(" · match %d", exemption.MatchID)
@@ -290,7 +424,7 @@ func (s *Server) handleAdminStarredExemptionCreate() http.HandlerFunc {
 			return
 		}
 		clubName := clubKey
-		_ = s.DB.QueryRow(ctx, `SELECT club_name FROM starred_periods WHERE season_year=$1 AND club_key=$2 ORDER BY valid_from DESC LIMIT 1`, year, clubKey).Scan(&clubName)
+		_ = s.DB.QueryRow(ctx, `SELECT club_name FROM starred_list_periods WHERE season_year=$1 AND club_key=$2 ORDER BY valid_from DESC LIMIT 1`, year, clubKey).Scan(&clubName)
 		adminID := s.resolveAdminID(r)
 		var exemptionID int64
 		err = s.DB.QueryRow(ctx, starredExemptionInsertSQL, year, clubKey, clubName, playerID, playerKey, playerName, matchID, exemptionType, status, validFrom, validTo, r.FormValue("wicket_keeper") == "1", notes, adminID).Scan(&exemptionID)

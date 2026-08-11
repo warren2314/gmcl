@@ -158,7 +158,7 @@ func writeStarredBreachesCSV(w http.ResponseWriter, year int, breaches []starred
 		}
 		reviewStatus := starredFindingStatus(states[starredFindingKey(breach)])
 		if exemption := starredExemptionForBreach(breach, exemptions); exemption != nil {
-			reviewStatus = "Approved Sunday exemption - " + starredExemptionTypeLabel(exemption.ExemptionType)
+			reviewStatus = starredExemptionReviewStatus(*exemption)
 		}
 		_ = writer.Write([]string{
 			breach.Appearance.MatchDate.Format("2006-01-02"), starredBreachDay(breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType),
@@ -355,8 +355,8 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 	acceptPrompt := "Accept and close this finding with no offence letter?"
 	acceptLabel := "Accept / close — no offence"
 	if b.NeedsExemptionReview {
-		acceptPrompt = "Accept this junior exemption and close every finding for this player?"
-		acceptLabel = "Accept junior exemption — close all"
+		acceptPrompt = "Accept this junior exemption for the rest of this season and close every current finding for this player?"
+		acceptLabel = "Accept junior exemption — season"
 	}
 	exemptionAction := ""
 	if exemptionURL := starredExemptionRequestURL(b, year); exemptionURL != "" {
@@ -459,7 +459,18 @@ func (s *Server) verifiedStarredBreach(ctx context.Context, year int, matchID, p
 	if err != nil {
 		return starred.Breach{}, err
 	}
-	return findStarredBreach(breaches, matchID, playerID, clubKey, playerKey, listType)
+	breach, err := findStarredBreach(breaches, matchID, playerID, clubKey, playerKey, listType)
+	if err != nil {
+		return starred.Breach{}, err
+	}
+	exemptions, err := s.loadStarredExemptions(ctx, year)
+	if err != nil {
+		return starred.Breach{}, err
+	}
+	if exemption := starredExemptionForBreach(breach, exemptions); exemption != nil {
+		return starred.Breach{}, fmt.Errorf("finding is covered by an approved exemption (%s)", starredExemptionTypeLabel(exemption.ExemptionType))
+	}
+	return breach, nil
 }
 
 func parseStarredFindingForm(r *http.Request) (year int, matchID, playerID int64, clubKey, playerKey, listType string, err error) {
@@ -508,12 +519,29 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 		adminID := s.resolveAdminID(r)
 		note := strings.TrimSpace(r.FormValue("decision_note"))
 		toClose := juniorTaggedIdentityBreaches(breaches, breach)
+		var seasonStart, seasonEnd time.Time
+		if breach.NeedsExemptionReview {
+			seasonStart, seasonEnd = s.starredSeasonBounds(ctx, year)
+		}
 		tx, err := s.DB.Begin(ctx)
 		if err != nil {
 			redirectStarredFinding(w, r, year, "", "Could not close finding: "+err.Error(), &breach)
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
+		var juniorExemptionID int64
+		if breach.NeedsExemptionReview {
+			breach.Appearance.PlayerID, err = resolveStarredJuniorExemptionPlayerID(ctx, tx, year, breach)
+			if err != nil {
+				redirectStarredFinding(w, r, year, "", "Could not save junior exemption: "+err.Error(), &breach)
+				return
+			}
+			juniorExemptionID, err = upsertStarredJuniorSeasonExemption(ctx, tx, year, breach, seasonStart, seasonEnd, note, adminID)
+			if err != nil {
+				redirectStarredFinding(w, r, year, "", "Could not save junior exemption: "+err.Error(), &breach)
+				return
+			}
+		}
 		findingIDs := make([]int64, 0, len(toClose))
 		matchIDs := make([]int64, 0, len(toClose))
 		for _, candidate := range toClose {
@@ -540,14 +568,19 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 		}
 		message := "Finding accepted and closed with no letter."
 		if breach.NeedsExemptionReview {
-			message = fmt.Sprintf("Junior exemption accepted for %s; %d findings closed.", breach.Appearance.PlayerName, len(findingIDs))
+			message = fmt.Sprintf("Junior exemption accepted for %s through %s; %d current findings closed.", breach.Appearance.PlayerName, seasonEnd.Format("02 January 2006"), len(findingIDs))
+			s.audit(ctx, r, "admin", adminID, "starred_junior_exemption_approved", "starred_exemption", &juniorExemptionID, map[string]any{
+				"season": year, "club": breach.Appearance.ClubName, "club_key": breach.Appearance.ClubKey,
+				"play_cricket_player_id": breach.Appearance.PlayerID, "player": breach.Appearance.PlayerName,
+				"valid_from": seasonStart.Format("2006-01-02"), "valid_to": seasonEnd.Format("2006-01-02"),
+			})
 		}
-		if len(findingIDs) == 0 {
+		if len(findingIDs) == 0 && !breach.NeedsExemptionReview {
 			message = "This finding was already closed."
-		} else {
+		} else if len(findingIDs) > 0 {
 			s.audit(ctx, r, "admin", adminID, "starred_finding_accepted", "starred_finding_review", &findingIDs[0], map[string]any{
-				"club": breach.Appearance.ClubName, "closed_count": len(findingIDs), "finding_ids": findingIDs,
-				"junior_bulk": breach.NeedsExemptionReview, "list_type": breach.ListType, "match_ids": matchIDs,
+				"club": breach.Appearance.ClubName, "club_key": breach.Appearance.ClubKey, "closed_count": len(findingIDs), "finding_ids": findingIDs,
+				"junior_bulk": breach.NeedsExemptionReview, "junior_exemption_id": juniorExemptionID, "list_type": breach.ListType, "match_ids": matchIDs,
 				"play_cricket_player_id": breach.Appearance.PlayerID, "player": breach.Appearance.PlayerName,
 			})
 		}
