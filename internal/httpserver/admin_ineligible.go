@@ -26,7 +26,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const ineligibleDefaultAssigneeEnv = "INELIGIBLE_DEFAULT_ASSIGNEE_USERNAME"
+const (
+	ineligibleDefaultAssigneeEnv   = "INELIGIBLE_DEFAULT_ASSIGNEE_USERNAME"
+	ineligibleManualSyncTimeout    = 2 * time.Minute
+	ineligibleManualSyncWriteGrace = 30 * time.Second
+)
 
 type ineligibleQueueFilters struct {
 	State         string
@@ -647,7 +651,10 @@ func (s *Server) handleAdminIneligibleSync() http.HandlerFunc {
 			return
 		}
 		adminID := int64(*actor.ID)
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		if err := setIneligibleSyncWriteDeadline(w, time.Now()); err != nil {
+			slog.Warn("extend manual ineligible sync write deadline", "admin_id", adminID, "error", err)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), ineligibleManualSyncTimeout)
 		defer cancel()
 		summary, err := ineligibledomain.SyncFromEnv(ctx, s.DB, ineligibledomain.Trigger{Type: "admin", AdminID: &adminID})
 		if err != nil {
@@ -668,6 +675,10 @@ func (s *Server) handleAdminIneligibleSync() http.HandlerFunc {
 		values := url.Values{"run_id": []string{strconv.FormatInt(summary.RunID, 10)}, "success": []string{message}}
 		http.Redirect(w, r, "/admin/ineligible/selection?"+values.Encode(), http.StatusSeeOther)
 	}
+}
+
+func setIneligibleSyncWriteDeadline(w http.ResponseWriter, now time.Time) error {
+	return http.NewResponseController(w).SetWriteDeadline(now.Add(ineligibleManualSyncTimeout + ineligibleManualSyncWriteGrace))
 }
 
 func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
