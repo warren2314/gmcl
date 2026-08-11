@@ -384,8 +384,8 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		}
 		mineHref := ineligibleQueueTabURL(filter, "mine", "all", "visible")
 		selectedHref := ineligibleQueueTabURL(filter, "all", "open", "visible")
-		importedHref := ineligibleQueueTabURL(filter, "all", "open", "all")
-		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">All imported reports</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
+		importedHref := ineligibleQueueTabURL(filter, "all", "all", "all")
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">Report history</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
 		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
 		for _, card := range []struct {
 			Label string
@@ -433,15 +433,21 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queueTitle := "Selected reports ready for review"
 		queueHelp := "Open a selected report, check its details, then raise or link its case. New arrivals also stay visible until the next selection."
 		switch {
-		case filter.Scope == "mine" || filter.State == "all" || filter.CaseStatus != "":
+		case filter.Scope == "mine" || filter.CaseStatus != "":
 			queueTitle = "Work matching this view"
 			queueHelp = "Open a report or case to continue from its current step."
+		case filter.Worklist == "all" && filter.State == "all":
+			queueTitle = "Report history"
+			queueHelp = "This view includes open, selected, hidden, case-raised, duplicate and ignored reports. Up to 2,000 matching reports are shown; narrow the dates or filters if needed."
 		case filter.Worklist == "deferred":
 			queueTitle = "Hidden reports"
 			queueHelp = "These reports are hidden from the normal queue, not deleted. Change the selection to restore one."
 		case filter.Worklist == "all":
 			queueTitle = "All imported reports"
 			queueHelp = "This audit view shows selected, newly arrived and hidden reports."
+		case filter.State == "all":
+			queueTitle = "Work matching this view"
+			queueHelp = "Open a report or case to continue from its current step."
 		case filter.Origin == "google_form":
 			queueTitle = "Google Form reports ready for review"
 			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."

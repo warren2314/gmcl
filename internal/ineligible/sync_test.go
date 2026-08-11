@@ -464,6 +464,41 @@ func TestServiceRejectsDisallowedDriveContentType(t *testing.T) {
 	}
 }
 
+func TestServiceAcceptsSevenDriveUploadsWithinDefaultLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.UploadDir = t.TempDir()
+	row := validSourceRow()
+	references := make([]string, 0, 7)
+	downloads := make(map[string]fakeUpload, 7)
+	for i := 1; i <= 7; i++ {
+		id := fmt.Sprintf("drive-file-%010d", i)
+		references = append(references, id)
+		downloads[id] = fakeUpload{
+			name: fmt.Sprintf("evidence-%d.jpg", i), contentType: "image/jpeg", data: []byte("image"),
+		}
+	}
+	row[12] = strings.Join(references, ", ")
+	source := &fakeSource{data: sheetWithRows(row), downloads: downloads, downloadErrors: map[string]error{}}
+	store := newFakeStore()
+	service, err := NewService(cfg, source, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := service.Sync(context.Background(), Trigger{Type: "n8n"})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if summary.New != 1 || summary.Errors != 0 {
+		t.Fatalf("summary: %+v", summary)
+	}
+	for _, intake := range store.intakes {
+		if intake.row.State == "exception" || len(intake.row.Attachments) != 7 {
+			t.Fatalf("seven-file report was not imported cleanly: %+v", intake.row)
+		}
+	}
+}
+
 func TestServiceRejectsUploadCountBeforeDriveRequests(t *testing.T) {
 	cfg := testConfig()
 	cfg.UploadDir = t.TempDir()

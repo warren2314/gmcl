@@ -609,28 +609,37 @@ def build_document():
     add_callout(
         doc,
         "Values, not colours",
-        "The system cannot see blue cell formatting. Import the full configured response sheet, then tick the exact reports to progress. Do not delete or reorder rows in the live response sheet.",
+        "Import the full configured Google response sheet. Do not delete, copy or reorder live response rows; choose the active work on the next screen.",
         kind="warning",
     )
     add_list(
         doc,
         [
-            "Make sure the reports are present in the private Google Form response sheet.",
+            "Make sure the required reports are present in the private Google Form response sheet.",
             [("Click ", False), ("Sanctions", True), (", then ", False), ("Ineligible-player work", True), (".", False)],
             [("Under Route 2, click ", False), ("Import and choose reports", True), (".", False)],
-            "Wait for the confirmation showing how many responses were seen, added, changed or returned errors.",
-            [("On Choose the reports to progress, tick ", False), ("Progress", True), (" beside every required report.", False)],
-            [("Check the total. For the Rev 8 blue-row handover, it should show ", False), ("18 selected", True), (".", False)],
-            [("Enter a short reason such as ", False), ("Rev 8 blue rows", True), (".", False)],
-            [("Click ", False), ("Save selection and show work queue", True), (".", False)],
-            [("Click ", False), ("Review report", True), (" beside the first selected report.", False)],
-            "Follow Route 1 from the Reported details check, then return to the queue and repeat.",
+            "Read the summary. Source rows read is every Google response; added and changed are database updates, so zero is normal on a repeat import.",
+            [("If the page says ", False), ("Selection is blocked", True), (", record the import number and error, plus any spreadsheet row shown, then stop for import or identity help.", False)],
+            [("Use ", False), ("Fixture from", True), (", Fixture to, Order or search to find the current handover.", False)],
+            [("Tick ", False), ("Progress", True), (" or use Select all shown. Filtering never unticks a report already selected.", False)],
+            [("Check the selected total against the current handover, enter a label such as ", False), ("Dave handover - 11 Aug 2026", True), (", then save.", False)],
+            [("Click ", False), ("Review report", True), (" beside the first selected report and follow Route 1.", False)],
         ],
     )
-    add_callout(doc, "Expected result", "Selected reports appear in the normal queue. Unselected reports are hidden, not deleted, and remain available under View hidden reports or All imported.", kind="success")
-    add_callout(doc, "New submissions", "A report received after selection stays visible as New - not yet chosen until the next selection.", kind="info")
+    add_heading(doc, "If a report looks missing", 2)
+    add_list(
+        doc,
+        [
+            "Clear the search and fixture-date filters.",
+            "Open Report history and search for the player.",
+            "Do not select the report again if it is already case-raised, linked, duplicate or ignored.",
+            "Treat one spreadsheet row as one report, even when its Player box contains several names.",
+        ],
+        ordered=True,
+    )
+    add_callout(doc, "Expected result", "Selected open reports appear in the normal queue. Unselected open reports are hidden, not deleted. Progressed reports remain in Report history.", kind="success")
+    add_callout(doc, "Need attention", "A row warning does not automatically mean the report is missing. Read the warning shown beside that report; only an identity or manifest problem blocks selection.", kind="info")
     page_break(doc)
-
     # Page 4: tracker upload and row review.
     add_heading(doc, "Route 3 - Import the historical tracker", 1)
     add_callout(
@@ -739,19 +748,32 @@ def build_document():
     add_heading(doc, "Board flow - controlled intake to outcome", 1)
     add_body(
         doc,
-        "The control is deliberate at every stage: import everything, select the active workload, review one report at a time and require independent approval before any outcome.",
+        "Every source row is accounted for, but only open and unlinked reports are offered for selection.",
     )
     add_callout(
         doc,
         "1  SAFE IMPORT",
-        "All configured Google Form responses are imported into the private intake area. Nothing is deleted and no case or email is created.",
+        "Read every configured Google Form response into the private intake area. Nothing is deleted and no case or email is created.",
         kind="info",
+    )
+    add_flow_arrow(doc)
+    add_table(
+        doc,
+        ["OPEN + UNLINKED", "ALREADY PROGRESSED", "IDENTITY NEEDS HELP"],
+        [
+            (
+                "Available to choose",
+                "Retained in report history or its case",
+                "Selection blocks for manual checking",
+            ),
+        ],
+        [3120, 3120, 3120],
     )
     add_flow_arrow(doc)
     add_callout(
         doc,
         "2  STAFF SELECTION",
-        "Staff tick the exact reports to progress and save the work list.",
+        "Staff tick the exact open reports to progress and save the work list.",
         kind="info",
     )
     add_flow_arrow(doc)
@@ -759,7 +781,7 @@ def build_document():
         doc,
         ["SELECTED", "NOT SELECTED"],
         [
-            ("Shown in the normal work queue\nContinues below for individual review", "Hidden from the normal queue\nStops here until deliberately reselected"),
+            ("Shown in the normal work queue\nContinues below for individual review", "Hidden from the normal queue\nRetained until deliberately reselected"),
         ],
         [4680, 4680],
     )
@@ -784,17 +806,6 @@ def build_document():
         "Investigate and contact the club  ->  prepare a decision  ->  independent approval  ->  issue approved outcomes.",
         kind="success",
     )
-    add_heading(doc, "What this protects", 2)
-    add_list(
-        doc,
-        [
-            "The supplied source remains complete and unchanged.",
-            "The active workload is explicit, reversible and auditable.",
-            "Selection alone cannot create a case, contact a club or impose an outcome.",
-        ],
-        ordered=False,
-    )
-
     doc.core_properties.title = "GMCL Ineligible-player Work - Quick Guide"
     doc.core_properties.subject = "Click-by-click staff guide for import selection, live casework, tracker reconciliation and board assurance"
     doc.core_properties.author = "Greater Manchester Cricket League"

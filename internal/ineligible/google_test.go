@@ -172,7 +172,7 @@ func TestConfigFromEnvUsesReviewedFourteenColumnSchema(t *testing.T) {
 	if cfg.SheetRange != "'Form responses 1'!A:N" {
 		t.Fatalf("range: %q", cfg.SheetRange)
 	}
-	if cfg.UploadDir != defaultUploadDir || cfg.UploadMaxFiles != 5 || cfg.UploadMaxFileBytes != 10<<20 || cfg.UploadMaxTotalBytes != 25<<20 {
+	if cfg.UploadDir != defaultUploadDir || cfg.UploadMaxFiles != 10 || cfg.UploadMaxFileBytes != 10<<20 || cfg.UploadMaxTotalBytes != 25<<20 {
 		t.Fatalf("upload defaults: dir=%q files=%d file_bytes=%d total_bytes=%d", cfg.UploadDir, cfg.UploadMaxFiles, cfg.UploadMaxFileBytes, cfg.UploadMaxTotalBytes)
 	}
 	if !contentTypeAllowed(cfg.UploadContentTypes, "video/mp4") {

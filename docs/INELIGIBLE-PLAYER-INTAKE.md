@@ -41,7 +41,7 @@ overridden without changing code:
 
 ```dotenv
 INELIGIBLE_UPLOAD_DIR=/app/data/ineligible-uploads
-INELIGIBLE_UPLOAD_MAX_FILES=5
+INELIGIBLE_UPLOAD_MAX_FILES=10
 INELIGIBLE_UPLOAD_MAX_FILE_BYTES=10485760
 INELIGIBLE_UPLOAD_MAX_TOTAL_BYTES=26214400
 INELIGIBLE_UPLOAD_ALLOWED_CONTENT_TYPES=application/pdf,application/msword,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/gif,image/heic,image/jpeg,image/png,image/webp,message/rfc822,text/plain
@@ -107,6 +107,25 @@ configured Google response range. Staff then choose the reports to progress on
 the selection screen; deleting, reordering or recolouring source rows is not a
 selection mechanism.
 
+The import summary and selection table measure different things:
+
+- **Source rows read** is every data row returned by the configured Google
+  range.
+- **Added** and **changed** count database mutations. Both can be zero on a
+  successful repeat import.
+- **Need attention** counts row warnings and failures. A validation or evidence
+  warning can still be retained as an exception intake; an unresolved source
+  identity or incomplete manifest blocks selection.
+- The chooser contains only Google reports in new, reviewing or exception
+  state that are not already linked to a non-duplicate case. Linked, duplicate
+  and ignored reports remain in **Report history** and are not offered
+  again.
+- A candidate is enabled only when the latest import observed its exact current
+  revision. Older or changed open candidates can be shown disabled for
+  reference.
+- One spreadsheet row creates one intake. Multiple names in the Player cell are
+  not split automatically into separate reports or cases.
+
 Every applied row writes an immutable manifest entry for that sync run,
 including rows whose intake content is unchanged. Each entry pins the source
 row and hash to either the exact intake revision that was resolved or an
@@ -117,8 +136,8 @@ locks; an incomplete or stale run, a manifest-count mismatch, an unresolved
 row, or a changed candidate/revision fails closed and requires a fresh import
 or selection page.
 
-Saving creates an append-only work-list batch and one append-only `visible` or
-`deferred` decision for every candidate. Checked reports become visible in the
+Saving creates an append-only work-list batch and one append-only visible or
+deferred decision for every candidate. Checked reports become visible in the
 default **Selected reports** queue; the server calculates the unchecked
 complement and marks it deferred. A later batch supersedes the presentation
 choice without editing or deleting its history. Reports with no work-list
@@ -126,13 +145,16 @@ decision, including submissions arriving after the saved selection, default to
 visible and are labelled as not yet chosen so new work cannot silently
 disappear.
 
-`deferred` is only a default-queue visibility choice. It does not delete an
+Deferred is only a default-queue visibility choice. It does not delete an
 intake, change its lifecycle state, resolve or ignore it, or create an
-authorisation boundary. The same authorised staff can inspect deferred reports
-through **View hidden reports**, choose **Hidden reports** in the work-list
-filter, or use **All imported reports** for the audit view. Existing intake-to-
-case links and linked sanction cases remain in their normal workflow regardless
-of a work-list choice.
+authorisation boundary. Authorised staff can inspect deferred reports through
+**View hidden reports** or the **Hidden reports** filter. **Report history** uses every lifecycle state and every work-list visibility so linked,
+duplicate and ignored reports can also be found.
+
+The default evidence allowance is ten Drive files per report, with the existing
+10 MB per-file and 25 MB total limits plus the approved content-type allowlist.
+Invalid links, inaccessible files and over-limit evidence are retained as
+reviewable exceptions rather than being silently discarded.
 
 Importing or saving a selection creates no sanction case, correspondence,
 outbox item, decision, effect or outcome. Staff must still open each visible
