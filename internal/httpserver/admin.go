@@ -111,6 +111,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/rollout", s.handleAdminIneligibleRollout())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/count", s.handleAdminIneligibleCount())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/sync", s.handleAdminIneligibleSync())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/selection", s.handleAdminIneligibleSelection())
+		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/selection", s.handleAdminIneligibleSelectionPost())
 		r.With(s.requireAdminPermission("sanctions_import")).Get("/ineligible/backfill", s.handleAdminIneligibleBackfills())
 		r.With(s.requireAdminPermission("sanctions_import")).Post("/ineligible/backfill", s.handleAdminIneligibleBackfillUpload())
 		r.With(s.requireAdminPermission("sanctions_import")).Get("/ineligible/backfill/{runID}", s.handleAdminIneligibleBackfillRun())

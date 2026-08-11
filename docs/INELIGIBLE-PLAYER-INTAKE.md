@@ -99,6 +99,46 @@ files, invalid links, and inaccessible Drive files are likewise preserved as
 partially invalid row remain retained; no exception can create a case
 automatically.
 
+## Import selection and queue visibility
+
+The importer reads cell values, not spreadsheet formatting. It cannot detect
+whether a row is blue, so **Import and choose reports** always reads the full
+configured Google response range. Staff then choose the reports to progress on
+the selection screen; deleting, reordering or recolouring source rows is not a
+selection mechanism.
+
+Every applied row writes an immutable manifest entry for that sync run,
+including rows whose intake content is unchanged. Each entry pins the source
+row and hash to either the exact intake revision that was resolved or an
+unresolved error. A selection can be saved only against the latest Google sync
+run and the exact current revisions represented by that run. The server
+recomputes the candidate fingerprint while holding the import and selection
+locks; an incomplete or stale run, a manifest-count mismatch, an unresolved
+row, or a changed candidate/revision fails closed and requires a fresh import
+or selection page.
+
+Saving creates an append-only work-list batch and one append-only `visible` or
+`deferred` decision for every candidate. Checked reports become visible in the
+default **Selected reports** queue; the server calculates the unchecked
+complement and marks it deferred. A later batch supersedes the presentation
+choice without editing or deleting its history. Reports with no work-list
+decision, including submissions arriving after the saved selection, default to
+visible and are labelled as not yet chosen so new work cannot silently
+disappear.
+
+`deferred` is only a default-queue visibility choice. It does not delete an
+intake, change its lifecycle state, resolve or ignore it, or create an
+authorisation boundary. The same authorised staff can inspect deferred reports
+through **View hidden reports**, choose **Hidden reports** in the work-list
+filter, or use **All imported reports** for the audit view. Existing intake-to-
+case links and linked sanction cases remain in their normal workflow regardless
+of a work-list choice.
+
+Importing or saving a selection creates no sanction case, correspondence,
+outbox item, decision, effect or outcome. Staff must still open each visible
+report and explicitly raise or link its case before following the investigation
+and independent-approval process below.
+
 ## Scheduling and operations
 
 `n8n_workflow.json` calls the HMAC-protected endpoint daily at 03:30 in the

@@ -207,7 +207,6 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 	}
 	anchorResolution := resolveGoogleSourceAnchor(anchors, externalMatchID, row.ExternalKey)
 	if anchorResolution.ConflictKind != "" {
-		disposition := ApplyUnchanged
 		for _, targetID := range anchorResolution.TargetIntakeIDs {
 			current, loadErr := loadGoogleIntakeCurrent(ctx, tx, targetID)
 			if loadErr != nil {
@@ -217,14 +216,13 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 			if recordErr != nil {
 				return ApplyUnchanged, recordErr
 			}
-			if result == ApplyException {
-				disposition = ApplyException
+			if len(anchorResolution.TargetIntakeIDs) == 1 && result == ApplyUnchanged &&
+				googleIdentityConflictAlreadyResolved(current, row) {
+				return commitGoogleResolvedRow(ctx, tx, runID, row, current.ID, current.LatestRevisionID, ApplyUnchanged)
 			}
 		}
-		if err = tx.Commit(ctx); err != nil {
-			return ApplyUnchanged, err
-		}
-		return disposition, nil
+		return commitGoogleUnresolvedRow(ctx, tx, runID, row,
+			googleIdentityExceptionMessage(anchorResolution.ConflictKind, row.SourceRowNumber))
 	}
 
 	var current googleIntakeCurrent
@@ -235,14 +233,12 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 		}
 	}
 	if current.ID != 0 && current.State == "exception" && strings.Contains(current.ExceptionMessage, googleSourceIdentityExceptionPrefix) {
-		result, recordErr := recordGoogleIdentityException(ctx, tx, runID, row, rawJSON, current, "unresolved_identity_exception")
+		_, recordErr := recordGoogleIdentityException(ctx, tx, runID, row, rawJSON, current, "unresolved_identity_exception")
 		if recordErr != nil {
 			return ApplyUnchanged, recordErr
 		}
-		if err = tx.Commit(ctx); err != nil {
-			return ApplyUnchanged, err
-		}
-		return result, nil
+		return commitGoogleUnresolvedRow(ctx, tx, runID, row,
+			googleIdentityExceptionMessage("unresolved_identity_exception", row.SourceRowNumber))
 	}
 
 	intakeID := current.ID
@@ -279,10 +275,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 		if _, err = insertAttachments(ctx, tx, intakeID, revisionID, runID, row.Attachments); err != nil {
 			return ApplyUnchanged, err
 		}
-		if err = tx.Commit(ctx); err != nil {
-			return ApplyUnchanged, err
-		}
-		return ApplyNew, nil
+		return commitGoogleResolvedRow(ctx, tx, runID, row, intakeID, revisionID, ApplyNew)
 	}
 
 	if latestSHA == row.RawSHA256 {
@@ -317,10 +310,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 					return ApplyUnchanged, err
 				}
 			}
-			if err = tx.Commit(ctx); err != nil {
-				return ApplyUnchanged, err
-			}
-			return ApplyException, nil
+			return commitGoogleResolvedRow(ctx, tx, runID, row, intakeID, latestRevisionID, ApplyException)
 		}
 		if row.State == "exception" && (currentState != "exception" || currentException != row.ExceptionMessage) {
 			message := row.ExceptionMessage
@@ -352,10 +342,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 				return ApplyUnchanged, err
 			}
 		}
-		if err = tx.Commit(ctx); err != nil {
-			return ApplyUnchanged, err
-		}
-		return ApplyUnchanged, nil
+		return commitGoogleResolvedRow(ctx, tx, runID, row, intakeID, latestRevisionID, ApplyUnchanged)
 	}
 	nextRevision := latestRevision + 1
 	var revisionID int64
@@ -409,10 +396,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 			return ApplyUnchanged, err
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return ApplyUnchanged, err
-	}
-	return ApplyChanged, nil
+	return commitGoogleResolvedRow(ctx, tx, runID, row, intakeID, revisionID, ApplyChanged)
 }
 
 func loadGoogleIntakeCurrent(ctx context.Context, tx pgx.Tx, intakeID int64) (googleIntakeCurrent, error) {
