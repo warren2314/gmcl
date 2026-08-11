@@ -196,6 +196,18 @@ func TestIneligibleQueueTabURLPreservesFixtureView(t *testing.T) {
 		t.Fatalf("tab URL lost fixture view: %s", href)
 	}
 }
+func TestIneligibleFullHistoryURLUsesEveryState(t *testing.T) {
+	href := ineligibleQueueTabURL(ineligibleQueueFilters{Sort: "fixture_newest"}, "all", "all", "all")
+	parsed, err := url.Parse(href)
+	if err != nil {
+		t.Fatalf("parse full-history URL: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("scope") != "all" || query.Get("state") != "all" || query.Get("worklist") != "all" {
+		t.Fatalf("full-history URL is incomplete: %s", href)
+	}
+}
+
 func TestLegacyDashboardCaseStatusLinkUsesAllWork(t *testing.T) {
 	filter := parseIneligibleQueueFilters(url.Values{
 		"state":       {"all"},

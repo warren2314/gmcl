@@ -77,9 +77,30 @@ func TestIneligibleSelectionFixtureDateUsesCanonicalISO(t *testing.T) {
 	}
 }
 
+func TestSummarizeIneligibleSelectionRunReconcilesSourceRows(t *testing.T) {
+	run := ineligibledomain.WorklistRun{
+		ManifestCount: 6,
+		UnresolvedRows: []ineligibledomain.WorklistUnresolvedRow{
+			{SourceRowNumber: 7, Error: "identity needs help"},
+		},
+		Candidates: []ineligibledomain.WorklistCandidate{
+			{ManifestRowID: 11, Selectable: true},
+			{ManifestRowID: 12, Selectable: false},
+			{ManifestRowID: 0, Selectable: false},
+		},
+	}
+	got := summarizeIneligibleSelectionRun(run)
+	want := ineligibleSelectionRunSummary{
+		Selectable: 1, AlreadyHandled: 3, ObservedNotCurrent: 1, OlderOpen: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selection summary = %#v, want %#v", got, want)
+	}
+}
+
 func TestWriteIneligibleSelectionControlsAddsClientOnlyFixtureView(t *testing.T) {
 	var out bytes.Buffer
-	writeIneligibleSelectionControls(&out, 216)
+	writeIneligibleSelectionControls(&out, 216, 18)
 	html := out.String()
 	for _, want := range []string{
 		`id="selection-fixture-from" type="date"`,
@@ -88,8 +109,9 @@ func TestWriteIneligibleSelectionControlsAddsClientOnlyFixtureView(t *testing.T)
 		`<option value="fixture_newest">Newest fixture first</option>`,
 		`<option value="fixture_oldest">Oldest fixture first</option>`,
 		`<span id="selection-shown-count">216</span> shown`,
-		`selected from 216 reports`,
+		`18 currently available to select`,
 		`Reports already ticked stay selected`,
+		`Select all shown chooses only visible, enabled rows`,
 		`id="selection-clear-dates"`,
 		`Clear all selections`,
 	} {

@@ -19,7 +19,7 @@ const (
 	defaultSheetsBaseURL    = "https://sheets.googleapis.com"
 	defaultDriveBaseURL     = "https://www.googleapis.com/drive/v3"
 	defaultUploadDir        = "/app/data/ineligible-uploads"
-	defaultUploadMaxFiles   = 5
+	defaultUploadMaxFiles   = 10
 	defaultUploadMaxBytes   = int64(10 << 20)
 	defaultUploadTotalBytes = int64(25 << 20)
 )

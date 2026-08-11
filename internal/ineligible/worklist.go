@@ -37,6 +37,7 @@ type WorklistCandidate struct {
 	FixtureDate       *time.Time
 	ReceivedAt        *time.Time
 	EvidenceCount     int64
+	ExceptionMessage  string
 	CurrentVisibility string
 	VisibilityBatchID int64
 	Selectable        bool
@@ -159,6 +160,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 		       COALESCE(intake.team_text,''),COALESCE(intake.player_text,''),intake.fixture_date,
 		       intake.external_created_at,
 		       (SELECT COUNT(*) FROM sanction_intake_attachments attachment WHERE attachment.intake_id=intake.id),
+		       COALESCE(intake.exception_message,''),
 		       COALESCE(visibility.visibility,'visible'),COALESCE(visibility.batch_id,0),
 		       (observed.id IS NOT NULL AND observed.revision_id=latest.id)
 		FROM sanction_intakes intake
@@ -195,7 +197,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 		var item WorklistCandidate
 		if err = rows.Scan(&item.IntakeID, &item.RevisionID, &item.ManifestRowID, &item.SourceRowNumber,
 			&item.State, &item.ReportingClub, &item.OffendingClub, &item.Team, &item.Player,
-			&item.FixtureDate, &item.ReceivedAt, &item.EvidenceCount, &item.CurrentVisibility,
+			&item.FixtureDate, &item.ReceivedAt, &item.EvidenceCount, &item.ExceptionMessage, &item.CurrentVisibility,
 			&item.VisibilityBatchID, &item.Selectable); err != nil {
 			return WorklistRun{}, err
 		}

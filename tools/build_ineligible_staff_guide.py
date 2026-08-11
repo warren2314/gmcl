@@ -550,7 +550,7 @@ def add_cover(doc, logo_png, hawk_png):
     set_run(r, size=10.5, color=INK)
     p = right.add_paragraph()
     set_para(p, after=0)
-    r = p.add_run("Staff guide v1.0 | Fictional case data | Training copy")
+    r = p.add_run("Staff guide v1.1 | Fictional case data | Training copy")
     set_run(r, size=9, color=MUTED, italic=True)
 
     add_callout(doc, "Important", "This guide explains the improved staff experience. Human approval, privacy checks and a permanent case history remain in place. All names, clubs, dates and addresses in the example are fictional.", kind="warning")
@@ -597,7 +597,7 @@ def build_document():
     add_heading(doc, "What the improved feature provides", 2)
     add_data_table(doc, ["Area", "What staff now see", "Why it helps"], [
         ("Intake and cases", "Clear next actions and a green Case raised state", "You can see immediately what is finished and what to do next"),
-        ("Queue", "My Work / All Work tabs and newest/oldest date order", "Focus on your own work or cover the full queue"),
+        ("Queue", "Selected reports, My assigned cases and Report history, with fixture-date range and order", "See active work first and find any progressed report when needed"),
         ("Excel import", "Verified runs and rows hidden by default", "Completed checks leave the working list but remain in history"),
         ("Email", "One preview centre for every saved message and audience", "Review the exact recipients, subject and body before sending"),
         ("HawkAI", "Cited eligibility-rule suggestions prefilled for review", "Staff get a useful starting point while keeping the final decision"),
@@ -605,13 +605,27 @@ def build_document():
     add_callout(doc, "Plain English", "Technical labels are replaced where possible. When a technical control matters, the screen explains it in everyday language; the glossary at the end gives extra detail.", kind="success")
     page_break(doc)
 
+    # Import and selection
+    add_heading(doc, "Import and choose reports", 1)
+    add_callout(doc, "What the counts mean", "Source rows read is every Google response. Added and changed are database updates, so zero is normal when the same sheet is imported again.", kind="info")
+    add_list(doc, [
+        "Open Sanctions, then Ineligible-player work.",
+        "Under Route 2, select Import and choose reports.",
+        "If Selection is blocked, record the import number and error, plus any spreadsheet row shown, then stop for import or identity help.",
+        "Use Fixture from, Fixture to, Order or search to find the current handover.",
+        "Tick Progress or choose Select all shown, check the current handover total, add a handover label and save.",
+        "If a report is missing, open Report history and search for the player before importing again.",
+    ], ordered=True)
+    add_callout(doc, "One row means one report", "Several player names in one Google response remain one report and one checkbox. They are not split automatically into separate cases.", kind="warning")
+    page_break(doc)
+
     # Work queue
     add_heading(doc, "Your home screen", 1)
     add_body(doc, "The home screen answers one question immediately: What do I need to do next?")
     add_screen_panel(doc, "INELIGIBLE PLAYER WORK", "Current queue layout", [
-        ("Tabs", "My Work (default) | All Work"),
-        ("Sort", "Newest first (default) | Oldest first"),
-        ("Filters", "Needs review | Case raised | Waiting for club | Decision | Complete | Exceptions"),
+        ("Tabs", "Selected reports (default) | My assigned cases | Report history"),
+        ("Sort", "Received newest/oldest | Fixture newest/oldest"),
+        ("Filters", "Fixture from/to | Work status | Player, club, team and case status"),
         ("Help", "A next-action sentence appears on every card"),
     ])
     add_heading(doc, "What each colour means", 2)
@@ -630,12 +644,13 @@ def build_document():
         add_status_chip(status.cell(idx, 0), label, fill)
         add_cell_text(status.cell(idx, 1), meaning, bold=True, size=9)
         add_cell_text(status.cell(idx, 2), action, size=9)
-    add_callout(doc, "Example", "The fictional Jordan Taylor report appears under My Work, sorted near the top because it was received recently. Its card says: Next: confirm the offending team and fixture date.", kind="info")
-    add_heading(doc, "My Work and All Work", 2)
+    add_callout(doc, "Example", "The fictional Jordan Taylor report appears under Selected reports. Use fixture-date order to place the match correctly, or My assigned cases after the case has an owner. Its card says: Next: confirm the offending team and fixture date.", kind="info")
+    add_heading(doc, "Selected reports, assignments and history", 2)
     add_list(doc, [
-        ("My Work: ", "shows cases assigned to you."),
-        ("All Work: ", "shows the whole queue for cover, supervision and workload balancing."),
-        ("Keep the date order: ", "moving between My Work and All Work keeps your chosen newest/oldest direction."),
+        ("Selected reports: ", "shows the open work chosen for the current handover."),
+        ("My assigned cases: ", "shows cases assigned to you."),
+        ("Report history: ", "shows open, hidden, case-raised, duplicate and ignored reports for audit and troubleshooting."),
+        ("Keep the fixture view: ", "date range and order stay in place when you move between queue tabs."),
     ])
     page_break(doc)
 
@@ -933,6 +948,7 @@ def build_document():
         ("I cannot propose a decision", "Close or expire the response window and merge the newest linked intake revision."),
         ("I cannot approve", "The approver must be authorised and must not be the proposer."),
         ("I cannot publish", "Check privacy warnings, recipient mailboxes and approved email/PDF snapshots."),
+        ("An imported report is missing", "Clear date/search filters, then open Report history. Case-raised, duplicate and ignored reports are not offered in the chooser."),
         ("A verified Excel row is missing", "Open Show verified history; verified rows are hidden from the working list by design."),
         ("Hawk AI suggests the wrong rule", "Choose Edit or Mark not applicable, record why, and report feedback from the source panel."),
     ]
@@ -953,10 +969,10 @@ def build_document():
         ("1", "Simpler workflow", "Every card has one next action; each case shows a step tracker; help is available without leaving the page."),
         ("2", "Plain English", "Technical terms are removed from primary UI or explained inline and in a glossary."),
         ("3", "Case raised is green", "Creating or linking a case immediately turns the intake card green and shows Open case."),
-        ("4", "Date order", "Queue supports Newest first and Oldest first and remembers the choice."),
+        ("4", "Date order", "Queue supports fixture From/To plus received or fixture newest/oldest order and remembers the view."),
         ("5", "Verified Excel rows", "Verified rows disappear from the default working list and remain under verified history."),
         ("6", "See every email", "A preview centre shows recipient, subject, body, attachments, status and all outcome audiences before sending."),
-        ("7", "My work / all work", "My Work is the default tab; All Work is available to permitted staff."),
+        ("7", "Focused work and report history", "Selected reports is the default; My assigned cases and Report history are available when needed."),
         ("8", "Hawk AI assists", "Hawk AI pre-fills a cited draft rule allegation, asks for missing facts and requires staff confirmation."),
     ]
     add_data_table(doc, ["#", "Requirement", "Pass condition"], acceptance, [600, 2500, 6260], font_size=8.7)

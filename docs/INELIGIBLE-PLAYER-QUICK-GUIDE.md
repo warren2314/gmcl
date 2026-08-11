@@ -51,23 +51,28 @@ Click **Other outcomes**, then choose the appropriate action:
 
 ## Route 2 - Import and choose reports
 
-1. Make sure the reports are present in the private Google Form response sheet.
+1. Make sure the required reports are present in the private Google Form response sheet. Do not delete, copy or reorder live response rows.
 2. Click **Sanctions**.
 3. Click **Ineligible-player work**.
 4. Under **Route 2 - Import and choose reports**, click **Import and choose reports**.
-5. Wait for the success message showing how many responses were seen, added, changed or returned errors.
-6. On **Choose the reports to progress**, search if needed and tick **Progress** beside each required report.
-7. Check the selected total. For the Rev 8 blue-row handover, this should be **18 reports**.
-8. Enter a short reason, for example **Rev 8 blue rows**.
-9. Click **Save selection and show work queue**.
-10. Check that the normal queue contains the selected reports, then click **Review report** beside the first one.
-11. Follow Route 1 from the **Reported details** check, then return to the queue and repeat.
+5. Read the import summary:
+   1. **Source rows read** is every response read from Google.
+   2. **Added** and **changed** are database updates. Zero is normal when the same sheet is imported again.
+   3. **Need attention** means one or more rows have a warning; it does not automatically mean that the row is missing.
+6. If the page says **Selection is blocked**, record the import number and error, plus any spreadsheet row shown, then stop for import or identity help.
+7. The table contains open, unlinked reports only. Use **Fixture from**, **Fixture to**, **Order** or search to find the current handover.
+8. Tick **Progress** beside each required report, or click **Select all shown**. Filtering never unticks a report that is already selected.
+9. If a report is missing, click **Open report history** and search for the player. Do not select it again if it is already case-raised, linked, marked duplicate or ignored.
+10. Check the selected total against the current handover list. Do not use an old fixed total.
+11. Enter a short handover label, for example **Dave handover - 11 Aug 2026**.
+12. Click **Save selection and show work queue**.
+13. Click **Review report** beside the first selected report and follow Route 1.
 
-**Expected result:** selected reports appear in the normal work queue. Unselected reports are hidden from that queue, not deleted, and remain available under **View hidden reports** or **All imported**.
+**Expected result:** selected reports appear in the normal work queue. Unselected open reports are hidden from that queue, not deleted. Progressed reports remain in **Report history**.
 
-> **Important:** the system reads the cell values, not blue formatting. Import the full configured sheet and use the selection screen. Do not delete or reorder rows in the live response sheet.
+> **One row means one report:** if the Player box contains several names, the chooser shows one checkbox. It does not automatically create one report or case per player. Review that row before raising anything.
 
-> A newly submitted report remains visible as **New - not yet chosen** until the next selection. Importing or selecting never sends an email, issues a sanction or bulk-creates live cases.
+> **Important:** the system reads cell values, not blue formatting. Import the full configured sheet and use the selection screen. A new submission remains visible as **New - not yet chosen** until the next selection. Importing or selecting never sends an email, issues a sanction or bulk-creates live cases.
 
 ## Route 3 - Import the historical tracker
 
@@ -130,7 +135,7 @@ When **Needs checking** reaches zero:
 5. A different authorised administrator checks the proposal and clicks **Approve decision and lock outcomes**.
 6. After the final previews, click **Issue approved outcomes**.
 
-Stop and ask the casework lead for help if details conflict, an import reports errors, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
+Stop and ask the casework lead for help if details conflict, **Selection is blocked**, a needs-attention warning cannot be resolved, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
 
 ## Safety checks to remember
 
@@ -142,22 +147,24 @@ Stop and ask the casework lead for help if details conflict, an import reports e
 
 ```mermaid
 flowchart TD
-    A["Private Google Form responses"] --> B["Import all reports safely"]
-    B --> C["Choose the exact reports to progress"]
-    C --> D["Save the work-list selection"]
-    D --> E["Selected reports<br/>Normal work queue"]
-    D --> F["Unselected reports<br/>Hidden, retained and auditable"]
-    F --> G["View in Hidden or All imported"]
-    G --> C
-    E --> H["Review one report"]
-    H --> I{"What is the correct action?"}
-    I -->|New matter| J["Raise a case<br/>No email is sent"]
-    I -->|Already exists| K["Link to the existing case"]
-    I -->|Duplicate or no action| L["Resolve the report"]
-    J --> M["Investigate and contact the club"]
-    M --> N["Prepare a decision"]
-    N --> O["Independent approval"]
-    O --> P["Issue approved outcomes"]
+    A["Private Google Form responses"] --> B["Import every source row safely"]
+    B --> C{"What is the row's current position?"}
+    C -->|Open and unlinked| D["Available to choose"]
+    C -->|Already progressed| E["Retained in report history or its case"]
+    C -->|Identity cannot be matched| F["Selection blocked<br/>Manual help required"]
+    D --> G["Save the exact work-list selection"]
+    G --> H["Selected reports<br/>Normal work queue"]
+    G --> I["Unselected open reports<br/>Hidden, retained and auditable"]
+    I --> D
+    H --> J["Review one report"]
+    J --> K{"What is the correct action?"}
+    K -->|New matter| L["Raise a case<br/>No email is sent"]
+    K -->|Already exists| M["Link to the existing case"]
+    K -->|Duplicate or no action| N["Resolve the report"]
+    L --> O["Investigate and contact the club"]
+    O --> P["Prepare a decision"]
+    P --> Q["Independent approval"]
+    Q --> R["Issue approved outcomes"]
 ```
 
-The board control is simple: the import is complete and auditable, staff deliberately choose the active workload, and only an independently approved decision can produce an outcome.
+The board control is simple: every source row is accounted for, only open and unlinked work is offered for selection, progressed reports remain auditable, and only an independently approved decision can produce an outcome.
