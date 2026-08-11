@@ -29,6 +29,17 @@ func TestParseIneligibleQueueFiltersDefaultsAndRejectsUnknownValues(t *testing.T
 	}
 }
 
+func TestParseIneligibleQueueFiltersNormalisesFixtureRangeAndSort(t *testing.T) {
+	got := parseIneligibleQueueFilters(url.Values{"fixture_from": {"2026-08-10"}, "fixture_to": {"2026-07-01"}, "sort": {"fixture_oldest"}})
+	if got.FixtureFrom != "2026-07-01" || got.FixtureTo != "2026-08-10" || got.Sort != "fixture_oldest" {
+		t.Fatalf("normalised fixture filters = %#v", got)
+	}
+	invalid := parseIneligibleQueueFilters(url.Values{"fixture_from": {"10/08/2026"}, "fixture_to": {"not-a-date"}, "sort": {"random"}})
+	if invalid.FixtureFrom != "" || invalid.FixtureTo != "" || invalid.Sort != "newest" {
+		t.Fatalf("invalid fixture filters were accepted: %#v", invalid)
+	}
+}
+
 func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
@@ -114,6 +125,77 @@ func TestBuildIneligibleQueueQuerySupportsMyWorkAndOldestFirst(t *testing.T) {
 	}
 }
 
+func TestBuildIneligibleQueueQuerySupportsFixtureRangeAndOrder(t *testing.T) {
+	query, args := buildIneligibleQueueQuery(ineligibleQueueFilters{State: "all", Scope: "all", FixtureFrom: "2026-07-01", FixtureTo: "2026-08-10", Sort: "fixture_oldest"})
+	for _, want := range []string{"i.fixture_date >= $1::date", "i.fixture_date <= $2::date"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("fixture query missing %q: %s", want, query)
+		}
+	}
+	if !strings.Contains(query, "ORDER BY i.fixture_date ASC NULLS LAST,COALESCE(i.external_created_at,i.created_at) ASC,i.id ASC") {
+		t.Fatalf("fixture ordering missing or unstable: %s", query)
+	}
+	wantArgs := []any{"2026-07-01", "2026-08-10"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("query args = %#v, want %#v", args, wantArgs)
+	}
+}
+
+func TestWriteIneligibleFixtureDateControlsIsCompactAndPreservesFilters(t *testing.T) {
+	var out bytes.Buffer
+	writeIneligibleFixtureDateControls(&out, ineligibleQueueFilters{State: "open", Scope: "all", Worklist: "visible", Player: `Alex"><script>alert(1)</script>`, FixtureFrom: "2026-07-01", FixtureTo: "2026-08-10", Sort: "fixture_oldest"})
+	html := out.String()
+	for _, want := range []string{
+		"Fixture dates",
+		`name="fixture_from" value="2026-07-01"`,
+		`name="fixture_to" value="2026-08-10"`,
+		`<option value="fixture_oldest" selected>Oldest fixture first</option>`,
+		`name="player" value="Alex&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`,
+		"Apply dates",
+		"Clear dates",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("fixture controls missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `<script>alert(1)</script>`) {
+		t.Fatalf("fixture controls contain unescaped filter input: %s", html)
+	}
+}
+
+func TestWriteIneligibleEmptyQueueExplainsDateRangeAndClearsOnlyDates(t *testing.T) {
+	var out bytes.Buffer
+	filter := ineligibleQueueFilters{State: "open", Scope: "all", Worklist: "visible", Player: "Alex Player", FixtureFrom: "2026-07-01", FixtureTo: "2026-08-10", Sort: "fixture_oldest"}
+	writeIneligibleEmptyQueue(&out, filter, "Google Form reports ready for review")
+	html := out.String()
+	if !strings.Contains(html, "No reports match these fixture dates") || !strings.Contains(html, "Clear dates") {
+		t.Fatalf("date-filtered empty state is unclear: %s", html)
+	}
+	if strings.Contains(html, "No reports are currently selected") {
+		t.Fatalf("date-filtered empty state incorrectly claims there is no selection: %s", html)
+	}
+	href := ineligibleClearFixtureDatesURL(filter)
+	parsed, err := url.Parse(href)
+	if err != nil {
+		t.Fatalf("parse clear-dates URL: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("fixture_from") != "" || query.Get("fixture_to") != "" || query.Get("player") != "Alex Player" || query.Get("sort") != "fixture_oldest" {
+		t.Fatalf("clear-dates URL lost other filters or retained dates: %s", href)
+	}
+}
+
+func TestIneligibleQueueTabURLPreservesFixtureView(t *testing.T) {
+	href := ineligibleQueueTabURL(ineligibleQueueFilters{FixtureFrom: "2026-07-01", FixtureTo: "2026-08-10", Sort: "fixture_newest"}, "mine", "all", "visible")
+	parsed, err := url.Parse(href)
+	if err != nil {
+		t.Fatalf("parse tab URL: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("scope") != "mine" || query.Get("fixture_from") != "2026-07-01" || query.Get("fixture_to") != "2026-08-10" || query.Get("sort") != "fixture_newest" {
+		t.Fatalf("tab URL lost fixture view: %s", href)
+	}
+}
 func TestLegacyDashboardCaseStatusLinkUsesAllWork(t *testing.T) {
 	filter := parseIneligibleQueueFilters(url.Values{
 		"state":       {"all"},
