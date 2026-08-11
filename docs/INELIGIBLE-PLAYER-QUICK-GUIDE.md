@@ -14,7 +14,7 @@ Three routes, one controlled process.
 | What do you need to do? | Choose |
 |---|---|
 | Review one report and raise its case | **Route 1 - Raise one case** |
-| Bring in several Google Form responses | **Route 2 - Import Google Form reports** |
+| Bring in several Google Form responses and choose which to progress | **Route 2 - Import and choose reports** |
 | Reconcile the approved historical workbook | **Route 3 - Import historical tracker** |
 
 ### What “raise one case manually” means
@@ -27,7 +27,7 @@ If the report is not in the queue, complete the current private Google Form and 
 
 1. Click **Sanctions**.
 2. Click **Ineligible-player work**.
-3. Under **Route 1 - Raise one case**, click **Open next report**.
+3. Under **Route 1 - Raise one case**, click **Open next selected report**.
 4. If the button says **View reports**, click it and then click **Review report** beside the correct entry.
 5. On the intake page, check **Reported details** and any evidence.
 6. Under **Raise this case**, check:
@@ -49,21 +49,25 @@ Click **Other outcomes**, then choose the appropriate action:
 - Duplicate report: complete **Resolve without a new case**, then click **Mark duplicate**.
 - Irrelevant or no action: record the reason, then click **Ignore intake**.
 
-## Route 2 - Import Google Form reports
+## Route 2 - Import and choose reports
 
-1. Make sure the required reports have been completed in the private Google Form.
+1. Make sure the reports are present in the private Google Form response sheet.
 2. Click **Sanctions**.
 3. Click **Ineligible-player work**.
-4. Under **Route 2 - Import Google Form reports**, click **Import Google Form reports**.
+4. Under **Route 2 - Import and choose reports**, click **Import and choose reports**.
 5. Wait for the success message showing how many responses were seen, added, changed or returned errors.
-6. The page displays the open Google Form reports.
-7. Click **Review report** beside the first report.
-8. Follow Route 1 from the **Reported details** check.
-9. Return to the queue and repeat for each remaining report.
+6. On **Choose the reports to progress**, search if needed and tick **Progress** beside each required report.
+7. Check the selected total. For the Rev 8 blue-row handover, this should be **18 reports**.
+8. Enter a short reason, for example **Rev 8 blue rows**.
+9. Click **Save selection and show work queue**.
+10. Check that the normal queue contains the selected reports, then click **Review report** beside the first one.
+11. Follow Route 1 from the **Reported details** check, then return to the queue and repeat.
 
-**Expected result:** several reports enter the queue in one import, but staff still raise, link or resolve each one individually.
+**Expected result:** selected reports appear in the normal work queue. Unselected reports are hidden from that queue, not deleted, and remain available under **View hidden reports** or **All imported**.
 
-> Google Form import does not send an email, issue a sanction or bulk-create live cases.
+> **Important:** the system reads the cell values, not blue formatting. Import the full configured sheet and use the selection screen. Do not delete or reorder rows in the live response sheet.
+
+> A newly submitted report remains visible as **New - not yet chosen** until the next selection. Importing or selecting never sends an email, issues a sanction or bulk-creates live cases.
 
 ## Route 3 - Import the historical tracker
 
@@ -133,3 +137,27 @@ Stop and ask the casework lead for help if details conflict, an import reports e
 - Raising a case does not send an email.
 - A decision requires approval by a different authorised administrator.
 - Outcomes are not sent until **Issue approved outcomes** is selected.
+
+## Board flow: controlled intake to outcome
+
+```mermaid
+flowchart TD
+    A["Private Google Form responses"] --> B["Import all reports safely"]
+    B --> C["Choose the exact reports to progress"]
+    C --> D["Save the work-list selection"]
+    D --> E["Selected reports<br/>Normal work queue"]
+    D --> F["Unselected reports<br/>Hidden, retained and auditable"]
+    F --> G["View in Hidden or All imported"]
+    G --> C
+    E --> H["Review one report"]
+    H --> I{"What is the correct action?"}
+    I -->|New matter| J["Raise a case<br/>No email is sent"]
+    I -->|Already exists| K["Link to the existing case"]
+    I -->|Duplicate or no action| L["Resolve the report"]
+    J --> M["Investigate and contact the club"]
+    M --> N["Prepare a decision"]
+    N --> O["Independent approval"]
+    O --> P["Issue approved outcomes"]
+```
+
+The board control is simple: the import is complete and auditable, staff deliberately choose the active workload, and only an independently approved decision can produce an outcome.

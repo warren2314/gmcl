@@ -25,6 +25,7 @@ import (
 	"cricket-ground-feedback/internal/email"
 	"cricket-ground-feedback/internal/middleware"
 	sanctiondomain "cricket-ground-feedback/internal/sanctions"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -58,10 +59,10 @@ const portalSharedEvidenceDownloadQuery = `SELECT evidence.media_type,evidence.s
 	  AND token.revoked_at IS NULL AND token.expires_at>now()`
 
 func requestID(r *http.Request) string {
-	if id := strings.TrimSpace(r.Header.Get("X-Request-ID")); id != "" {
+	if id := strings.TrimSpace(chimiddleware.GetReqID(r.Context())); id != "" {
 		return id
 	}
-	return strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	return strings.TrimSpace(r.Header.Get("X-Request-ID"))
 }
 
 func sanctionsBaseURL() string {

@@ -21,7 +21,7 @@ func TestParseIneligibleQueueFiltersDefaultsAndRejectsUnknownValues(t *testing.T
 		"scope":       {"not-a-scope"},
 		"player":      {"  A Player  "},
 	})
-	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" || got.Scope != "all" || got.Sort != "newest" {
+	if got.State != "open" || got.Origin != "" || got.CaseStatus != "" || got.Age != "" || got.Scope != "all" || got.Worklist != "visible" || got.Sort != "newest" {
 		t.Fatalf("unexpected normalised filters: %#v", got)
 	}
 	if got.Player != "A Player" {
@@ -33,7 +33,7 @@ func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) 
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
 	html := out.String()
-	for _, want := range []string{"Raise one case", "Import Google Form reports", "Import historical tracker", "Open next report", "/admin/ineligible/42"} {
+	for _, want := range []string{"Raise one case", "Import and choose reports", "Import historical tracker", "Open next selected report", "/admin/ineligible/42"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("start routes missing %q", want)
 		}

@@ -39,29 +39,34 @@ type ineligibleQueueFilters struct {
 	CaseStatus    string
 	Age           string
 	Scope         string
+	Worklist      string
 	Sort          string
 }
 
 type ineligibleQueueRow struct {
-	ID                int64
-	Origin            string
-	ExternalKey       string
-	State             string
-	ReportingClubText string
-	OffendingClubText string
-	TeamText          string
-	PlayerText        string
-	FixtureDate       *time.Time
-	ExternalCreatedAt *time.Time
-	CaseID            *int64
-	CaseReference     string
-	CaseStatus        string
-	Assignee          string
-	AttachmentCount   int64
+	ID                 int64
+	Origin             string
+	ExternalKey        string
+	State              string
+	ReportingClubText  string
+	OffendingClubText  string
+	TeamText           string
+	PlayerText         string
+	FixtureDate        *time.Time
+	ExternalCreatedAt  *time.Time
+	CaseID             *int64
+	CaseReference      string
+	CaseStatus         string
+	Assignee           string
+	WorklistVisibility string
+	WorklistBatchID    int64
+	AttachmentCount    int64
 }
 
 type ineligibleDashboardCounts struct {
 	NewIntakes         int64
+	AwaitingSelection  int64
+	HiddenReports      int64
 	ActiveCases        int64
 	ResponsesDue       int64
 	ResponsesOverdue   int64
@@ -129,6 +134,7 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		CaseStatus:    strings.TrimSpace(values.Get("case_status")),
 		Age:           strings.TrimSpace(values.Get("age")),
 		Scope:         strings.TrimSpace(values.Get("scope")),
+		Worklist:      strings.TrimSpace(values.Get("worklist")),
 		Sort:          strings.TrimSpace(values.Get("sort")),
 	}
 	if filter.State == "" {
@@ -145,6 +151,9 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 	}
 	if !map[string]bool{"": true, "2d": true, "7d": true, "14d": true, "30d": true}[filter.Age] {
 		filter.Age = ""
+	}
+	if !map[string]bool{"visible": true, "deferred": true, "all": true}[filter.Worklist] {
+		filter.Worklist = "visible"
 	}
 	if filter.Scope == "" {
 		// New reports do not have a case assignee yet, so "My work" hides the
@@ -181,6 +190,13 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	case "all":
 	default:
 		where = append(where, "i.state="+add(filter.State))
+	}
+	switch filter.Worklist {
+	case "deferred":
+		where = append(where, "COALESCE(worklist.visibility,'visible')='deferred' AND c.id IS NULL")
+	case "all":
+	default:
+		where = append(where, "(COALESCE(worklist.visibility,'visible')='visible' OR c.id IS NOT NULL)")
 	}
 	if filter.Origin != "" {
 		where = append(where, "i.origin="+add(filter.Origin))
@@ -221,6 +237,7 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		       COALESCE(i.offending_club_text,''),COALESCE(i.team_text,''),COALESCE(i.player_text,''),
 		       i.fixture_date,i.external_created_at,c.id,COALESCE(c.reference,''),COALESCE(c.status,''),
 		       COALESCE(a.username,''),
+		       COALESCE(worklist.visibility,'visible'),COALESCE(worklist.batch_id,0),
 		       (SELECT COUNT(*) FROM sanction_intake_attachments attachment WHERE attachment.intake_id=i.id)
 		FROM sanction_intakes i
 		LEFT JOIN LATERAL (
@@ -232,9 +249,10 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		) latest_link ON TRUE
 		LEFT JOIN sanction_cases c ON c.id=latest_link.case_id
 		LEFT JOIN admin_users a ON a.id=c.assigned_admin_id
+		LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=i.id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY COALESCE(i.external_created_at,i.created_at) ` + sortDirection + `,i.id ` + idDirection + `
-		LIMIT 500`
+		LIMIT 2000`
 	return query, args
 }
 
@@ -257,7 +275,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queue := []ineligibleQueueRow{}
 		for rows.Next() {
 			var row ineligibleQueueRow
-			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.AttachmentCount); err != nil {
+			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount); err != nil {
 				rows.Close()
 				http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
 				return
@@ -277,22 +295,27 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ineligible-player work")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Choose one route below. The system will take you to the next required step.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`)
 		writeIneligibleFlash(w, r)
-		nextReportID := nextIneligibleReportID(queue)
+		var nextReportID int64
+		if filter.Worklist == "visible" {
+			nextReportID = nextIneligibleReportID(queue)
+		}
 		writeIneligibleStartRoutes(w, csrf, nextReportID)
 		advancedOpen := ""
 		if ineligibleQueueUsesAdvancedView(filter) {
 			advancedOpen = " open"
 		}
-		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">More filters and manager status</summary><div class="card-body">`, advancedOpen)
-		mineClass, allClass := "btn-outline-primary", "btn-outline-primary"
+		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">More filters and queue status</summary><div class="card-body">`, advancedOpen)
+		mineClass, selectedClass, importedClass := "btn-outline-primary", "btn-outline-primary", "btn-outline-primary"
 		if filter.Scope == "mine" {
 			mineClass = "btn-primary"
-		} else if filter.State == "open" && filter.CaseStatus == "" {
-			allClass = "btn-primary"
+		} else if filter.Worklist == "all" {
+			importedClass = "btn-primary"
+		} else if filter.Worklist == "visible" {
+			selectedClass = "btn-primary"
 		}
-		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="/admin/ineligible?scope=mine&state=all&sort=%s">My assigned cases</a><a class="btn %s" href="/admin/ineligible?scope=all&sort=%s">All open reports</a></nav>`, mineClass, escapeHTML(filter.Sort), allClass, escapeHTML(filter.Sort))
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="/admin/ineligible?scope=mine&amp;state=all&amp;worklist=visible&amp;sort=%s">My assigned cases</a><a class="btn %s" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible&amp;sort=%s">Selected reports</a><a class="btn %s" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=all&amp;sort=%s">All imported reports</a></nav>`, mineClass, escapeHTML(filter.Sort), selectedClass, escapeHTML(filter.Sort), importedClass, escapeHTML(filter.Sort))
 		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
 		for _, card := range []struct {
 			Label string
@@ -300,7 +323,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			Class string
 			Href  string
 		}{
-			{"New / exceptions", counts.NewIntakes, "border-danger", "/admin/ineligible?scope=all&state=open"},
+			{"Visible queue", counts.NewIntakes, "border-primary", "/admin/ineligible?scope=all&state=open&worklist=visible"},
+			{"Not yet selected", counts.AwaitingSelection, "border-warning", "/admin/ineligible/selection"},
+			{"Hidden reports", counts.HiddenReports, "border-secondary", "/admin/ineligible?scope=all&state=open&worklist=deferred"},
 			{"Active investigations", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
 			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
@@ -325,6 +350,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				alertClass = "alert-info"
 			}
 			fmt.Fprintf(w, `<section class="alert %s d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3"><div><strong>Latest %s import: %s</strong><div class="small">Run %d; seen %d, new %d, changed %d, errors %d. Completed: %s.</div>`, alertClass, escapeHTML(strings.ReplaceAll(syncHealth.Origin, "_", " ")), escapeHTML(syncHealth.Status), syncHealth.ID, syncHealth.RowsSeen, syncHealth.RowsNew, syncHealth.RowsChanged, syncHealth.RowsErrored, escapeHTML(completed))
+			fmt.Fprintf(w, `<div class="small mt-1"><a href="/admin/ineligible/selection?run_id=%d">Choose reports from this import</a></div>`, syncHealth.ID)
 			if syncHealth.Error != "" {
 				fmt.Fprintf(w, `<div class="small mt-1">%s</div>`, escapeHTML(syncHealth.Error))
 			}
@@ -334,15 +360,21 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		}
 
 		writeIneligibleFilters(w, filter)
-		queueTitle := "Reports ready for review"
-		queueHelp := "Open a report, check the pre-filled details, then raise or link its case."
-		if filter.Origin == "google_form" {
-			queueTitle = "Google Form reports ready for review"
-			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."
-		}
-		if filter.State == "all" || filter.CaseStatus != "" || filter.Scope == "mine" {
+		queueTitle := "Selected reports ready for review"
+		queueHelp := "Open a selected report, check its details, then raise or link its case. New arrivals also stay visible until the next selection."
+		switch {
+		case filter.Scope == "mine" || filter.State == "all" || filter.CaseStatus != "":
 			queueTitle = "Work matching this view"
 			queueHelp = "Open a report or case to continue from its current step."
+		case filter.Worklist == "deferred":
+			queueTitle = "Hidden reports"
+			queueHelp = "These reports are hidden from the normal queue, not deleted. Change the selection to restore one."
+		case filter.Worklist == "all":
+			queueTitle = "All imported reports"
+			queueHelp = "This audit view shows selected, newly arrived and hidden reports."
+		case filter.Origin == "google_form":
+			queueTitle = "Google Form reports ready for review"
+			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."
 		}
 		fmt.Fprintf(w, `</div></details><section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
 		for _, row := range queue {
@@ -375,10 +407,28 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			if row.CaseID == nil {
 				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-primary" href="/admin/ineligible/%d">Review report</a>`, row.ID)
 			}
-			fmt.Fprintf(w, `<tr%s><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s</div>%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Next step">%s</td></tr>`, rowClass, row.ID, escapeHTML(row.PlayerText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.ReportingClubText), evidenceHTML, escapeHTML(fixture), escapeHTML(received), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), ineligibleStateBadge(row.State), caseHTML)
+			visibilityHTML := ""
+			if row.Origin == "google_form" && row.CaseID == nil {
+				visibilityLabel := "Selected"
+				visibilityClass := "text-bg-primary"
+				if row.WorklistVisibility == "deferred" {
+					visibilityLabel = "Hidden"
+					visibilityClass = "text-bg-secondary"
+				} else if row.WorklistBatchID == 0 {
+					visibilityLabel = "New - not yet chosen"
+					visibilityClass = "text-bg-warning"
+				}
+				if filter.Worklist != "visible" || row.WorklistBatchID == 0 {
+					visibilityHTML = fmt.Sprintf(` <span class="badge %s">%s</span>`, visibilityClass, escapeHTML(visibilityLabel))
+				}
+			}
+			fmt.Fprintf(w, `<tr%s><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s</div>%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s%s</td><td data-label="Next step">%s</td></tr>`, rowClass, row.ID, escapeHTML(row.PlayerText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.ReportingClubText), evidenceHTML, escapeHTML(fixture), escapeHTML(received), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), ineligibleStateBadge(row.State), visibilityHTML, caseHTML)
 		}
 		if len(queue) == 0 {
 			emptyMessage := "No reports match this view. Open the manager controls above to clear filters."
+			if filter.Worklist == "visible" {
+				emptyMessage = "No reports are currently selected. Import and choose reports, or change the selected work list."
+			}
 			if queueTitle == "Work matching this view" {
 				emptyMessage = "No work matches this view. Open the manager controls above to clear filters."
 			}
@@ -390,15 +440,15 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 }
 
 func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
-	nextHref := "/admin/ineligible?scope=all&state=open#reports"
+	nextHref := "/admin/ineligible?scope=all&state=open&worklist=visible#reports"
 	nextLabel := "View reports"
 	if nextReportID > 0 {
 		nextHref = fmt.Sprintf("/admin/ineligible/%d", nextReportID)
-		nextLabel = "Open next report"
+		nextLabel = "Open next selected report"
 	}
 	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-3 g-3">`)
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100 border-primary"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 1</div><h3 class="h5">Raise one case</h3><p class="text-muted flex-grow-1">Open a report, check the pre-filled details, then select <strong>Raise case</strong>.</p><a class="btn btn-primary" href="%s">%s</a></div></article></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
-	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import Google Form reports</h3><p class="text-muted flex-grow-1">Bring several responses into this queue. Staff still raise or link each case.</p><button class="btn btn-outline-primary">Import Google Form reports</button></form></article></div>`, escapeHTML(csrf))
+	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import and choose reports</h3><p class="text-muted flex-grow-1">Import the Google Form, then tick the reports you have been asked to progress.</p><button class="btn btn-outline-primary">Import and choose reports</button></form></article></div>`, escapeHTML(csrf))
 	fmt.Fprint(w, `<div class="col"><article class="card h-100"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 3</div><h3 class="h5">Import historical tracker</h3><p class="text-muted flex-grow-1">Upload the Excel tracker, check its matches, sign off, then apply history.</p><a class="btn btn-outline-primary" href="/admin/ineligible/backfill">Open tracker import</a></div></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`)
 }
 
@@ -422,6 +472,7 @@ func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
 		filter.CaseStatus != "" ||
 		filter.Age != "" ||
 		filter.Scope != "all" ||
+		filter.Worklist != "visible" ||
 		filter.Sort != "newest"
 }
 
@@ -429,7 +480,9 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 	var counts ineligibleDashboardCounts
 	err := s.DB.QueryRow(ctx, `
 		SELECT
-		 (SELECT COUNT(*) FROM sanction_intakes WHERE state IN ('new','reviewing','exception')),
+		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id))),
+		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM sanction_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id)),
 		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('submitted','triage','investigating','response_pending')),
 		 (SELECT COUNT(*) FROM sanction_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
@@ -448,7 +501,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN sanction_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
 			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
 		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('closed','rejected','withdrawn'))
-	`).Scan(&counts.NewIntakes, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
+	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	return counts, err
 }
 
@@ -459,7 +512,15 @@ func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHe
 }
 
 func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to all reports.</div></div><span class="small text-muted">Current view: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work status</label><select class="form-select" name="state">`, escapeHTML(filter.Scope), escapeHTML(plainIneligibleStatus(filter.Scope)))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to selected reports.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.Scope), escapeHTML(plainIneligibleWorklist(filter.Worklist)))
+	for _, option := range []struct{ Value, Label string }{{"visible", "Selected reports"}, {"deferred", "Hidden reports"}, {"all", "All imported reports"}} {
+		selected := ""
+		if filter.Worklist == option.Value {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.Value, selected, option.Label)
+	}
+	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Work status</label><select class="form-select" name="state">`)
 	writeSelectedOptions(w, filter.State, []string{"open", "all", "new", "reviewing", "exception", "linked", "duplicate", "ignored"})
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Source</label><select class="form-select" name="origin"><option value="">All sources</option>`)
 	writeSelectedOptions(w, filter.Origin, []string{"google_form", "native_form", "starred_player", "tracker_backfill"})
@@ -481,7 +542,7 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 		}
 		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.Value, selected, option.Label)
 	}
-	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="/admin/ineligible?scope=%s">Clear</a></div></div></form>`, escapeHTML(filter.Scope))
+	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="/admin/ineligible?scope=%s&amp;worklist=visible">Clear</a></div></div></form>`, escapeHTML(filter.Scope))
 }
 
 func writeSelectedOptions(w http.ResponseWriter, selected string, values []string) {
@@ -492,6 +553,17 @@ func writeSelectedOptions(w http.ResponseWriter, selected string, values []strin
 		}
 		label := strings.Title(strings.ReplaceAll(value, "_", " ")) //nolint:staticcheck -- labels are short ASCII workflow values.
 		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(value), attr, escapeHTML(label))
+	}
+}
+
+func plainIneligibleWorklist(value string) string {
+	switch value {
+	case "deferred":
+		return "Hidden reports"
+	case "all":
+		return "All imported reports"
+	default:
+		return "Selected reports"
 	}
 }
 
@@ -557,7 +629,7 @@ func writeIneligibleFlash(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminIneligibleCount() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var count int64
-		if err := s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intakes WHERE state IN ('new','reviewing','exception')`).Scan(&count); err != nil {
+		if err := s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id))`).Scan(&count); err != nil {
 			http.Error(w, "count unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -593,8 +665,8 @@ func (s *Server) handleAdminIneligibleSync() http.HandlerFunc {
 			return
 		}
 		message := fmt.Sprintf("Google Form import %d completed: %d seen, %d added, %d changed, %d errors.", summary.RunID, summary.Seen, summary.New, summary.Changed, summary.Errors)
-		values := url.Values{"scope": []string{"all"}, "state": []string{"open"}, "origin": []string{"google_form"}, "success": []string{message}}
-		http.Redirect(w, r, "/admin/ineligible?"+values.Encode(), http.StatusSeeOther)
+		values := url.Values{"run_id": []string{strconv.FormatInt(summary.RunID, 10)}, "success": []string{message}}
+		http.Redirect(w, r, "/admin/ineligible/selection?"+values.Encode(), http.StatusSeeOther)
 	}
 }
 

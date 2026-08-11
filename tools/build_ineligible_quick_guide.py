@@ -458,6 +458,15 @@ def page_break(doc):
     doc.add_page_break()
 
 
+def add_flow_arrow(doc):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    set_paragraph(p, after=2, line=1.0)
+    run = p.add_run("\u2193")
+    set_run_font(run, size=16, bold=True, color=BLUE)
+    return p
+
+
 def audit_document(doc):
     section = doc.sections[0]
     assert section.page_width == Inches(PAGE_WIDTH)
@@ -531,7 +540,7 @@ def build_document():
     add_callout(
         doc,
         "Important",
-        "Importing is not the same as raising a case. Google Form imports create reports for review. The tracker applies historical information only. Staff deliberately raise every live case.",
+        "Importing is not the same as raising a case. The Google Form import brings reports in for staff to choose and review. The tracker applies historical information only. Staff deliberately raise every live case.",
         kind="warning",
     )
     add_heading(doc, "Start here", 1)
@@ -549,7 +558,7 @@ def build_document():
         ["What do you need to do?", "Choose"],
         [
             ("Review one report and raise its case", "Route 1 - Raise one case"),
-            ("Bring in several Google Form responses", "Route 2 - Import Google Form reports"),
+            ("Import reports and choose which to progress", "Route 2 - Import and choose reports"),
             ("Reconcile the approved historical workbook", "Route 3 - Import historical tracker"),
         ],
         [4750, 4610],
@@ -567,13 +576,13 @@ def build_document():
     )
     page_break(doc)
 
-    # Page 2: live report routes.
+    # Page 2: raise a live case.
     add_heading(doc, "Route 1 - Raise one case", 1)
     add_list(
         doc,
         [
             [("Click ", False), ("Sanctions", True), (", then ", False), ("Ineligible-player work", True), (".", False)],
-            [("Under ", False), ("Route 1 - Raise one case", True), (", click ", False), ("Open next report", True), (".", False)],
+            [("Under ", False), ("Route 1 - Raise one case", True), (", click ", False), ("Open next selected report", True), (".", False)],
             [("If the button says ", False), ("View reports", True), (", click it, then click ", False), ("Review report", True), (" beside the correct entry.", False)],
             [("Check ", False), ("Reported details", True), (" and any evidence.", False)],
             [("Under ", False), ("Raise this case", True), (", check Offending team, Reporting club, Fixture date and Player.", False)],
@@ -593,22 +602,36 @@ def build_document():
         ],
         ordered=False,
     )
-    add_heading(doc, "Route 2 - Import Google Form reports", 1)
+    page_break(doc)
+
+    # Page 3: import and choose the active work list.
+    add_heading(doc, "Route 2 - Import and choose reports", 1)
+    add_callout(
+        doc,
+        "Values, not colours",
+        "The system cannot see blue cell formatting. Import the full configured response sheet, then tick the exact reports to progress. Do not delete or reorder rows in the live response sheet.",
+        kind="warning",
+    )
     add_list(
         doc,
         [
-            "Make sure the required reports have been completed in the private Google Form.",
+            "Make sure the reports are present in the private Google Form response sheet.",
             [("Click ", False), ("Sanctions", True), (", then ", False), ("Ineligible-player work", True), (".", False)],
-            [("Under Route 2, click ", False), ("Import Google Form reports", True), (".", False)],
+            [("Under Route 2, click ", False), ("Import and choose reports", True), (".", False)],
             "Wait for the confirmation showing how many responses were seen, added, changed or returned errors.",
-            [("Click ", False), ("Review report", True), (" beside the first imported report.", False)],
+            [("On Choose the reports to progress, tick ", False), ("Progress", True), (" beside every required report.", False)],
+            [("Check the total. For the Rev 8 blue-row handover, it should show ", False), ("18 selected", True), (".", False)],
+            [("Enter a short reason such as ", False), ("Rev 8 blue rows", True), (".", False)],
+            [("Click ", False), ("Save selection and show work queue", True), (".", False)],
+            [("Click ", False), ("Review report", True), (" beside the first selected report.", False)],
             "Follow Route 1 from the Reported details check, then return to the queue and repeat.",
         ],
     )
-    add_callout(doc, "Expected result", "Several reports enter the queue together, but staff still raise, link or resolve each report individually.", kind="info")
+    add_callout(doc, "Expected result", "Selected reports appear in the normal queue. Unselected reports are hidden, not deleted, and remain available under View hidden reports or All imported.", kind="success")
+    add_callout(doc, "New submissions", "A report received after selection stays visible as New - not yet chosen until the next selection.", kind="info")
     page_break(doc)
 
-    # Page 3: tracker upload and row review.
+    # Page 4: tracker upload and row review.
     add_heading(doc, "Route 3 - Import the historical tracker", 1)
     add_callout(
         doc,
@@ -654,7 +677,7 @@ def build_document():
     add_callout(doc, "Do not guess", "Ask the casework lead to review ambiguous matches or points/cards wording.", kind="warning")
     page_break(doc)
 
-    # Page 4: tracker completion and downstream case process.
+    # Page 5: tracker completion and downstream case process.
     add_heading(doc, "Finish the tracker import", 1)
     add_heading(doc, "Step 3 - Sign off", 2)
     add_list(
@@ -710,10 +733,72 @@ def build_document():
         ordered=False,
     )
 
+    page_break(doc)
+
+    # Page 6: board-level controlled flow.
+    add_heading(doc, "Board flow - controlled intake to outcome", 1)
+    add_body(
+        doc,
+        "The control is deliberate at every stage: import everything, select the active workload, review one report at a time and require independent approval before any outcome.",
+    )
+    add_callout(
+        doc,
+        "1  SAFE IMPORT",
+        "All configured Google Form responses are imported into the private intake area. Nothing is deleted and no case or email is created.",
+        kind="info",
+    )
+    add_flow_arrow(doc)
+    add_callout(
+        doc,
+        "2  STAFF SELECTION",
+        "Staff tick the exact reports to progress and save the work list.",
+        kind="info",
+    )
+    add_flow_arrow(doc)
+    add_table(
+        doc,
+        ["SELECTED", "NOT SELECTED"],
+        [
+            ("Shown in the normal work queue\nContinues below for individual review", "Hidden from the normal queue\nStops here until deliberately reselected"),
+        ],
+        [4680, 4680],
+    )
+    add_flow_arrow(doc)
+    add_heading(doc, "Selected branch - one report at a time", 2)
+    add_table(
+        doc,
+        ["NEW MATTER", "EXISTING MATTER", "DUPLICATE / NO ACTION"],
+        [
+            (
+                "Raise a case\nNo email is sent",
+                "Link to the existing case",
+                "Resolve the report with a reason",
+            ),
+        ],
+        [3120, 3120, 3120],
+    )
+    add_flow_arrow(doc)
+    add_callout(
+        doc,
+        "3  CASE CONTROL",
+        "Investigate and contact the club  ->  prepare a decision  ->  independent approval  ->  issue approved outcomes.",
+        kind="success",
+    )
+    add_heading(doc, "What this protects", 2)
+    add_list(
+        doc,
+        [
+            "The supplied source remains complete and unchanged.",
+            "The active workload is explicit, reversible and auditable.",
+            "Selection alone cannot create a case, contact a club or impose an outcome.",
+        ],
+        ordered=False,
+    )
+
     doc.core_properties.title = "GMCL Ineligible-player Work - Quick Guide"
-    doc.core_properties.subject = "Click-by-click staff guide for live reports, Google Form imports and tracker reconciliation"
+    doc.core_properties.subject = "Click-by-click staff guide for import selection, live casework, tracker reconciliation and board assurance"
     doc.core_properties.author = "Greater Manchester Cricket League"
-    doc.core_properties.keywords = "GMCL, ineligible player, quick guide, Google Form, tracker"
+    doc.core_properties.keywords = "GMCL, ineligible player, quick guide, Google Form, selection, hidden reports, tracker, board flow"
     doc.core_properties.comments = "compact_reference_guide preset; customer_pack header pattern; August 2026"
     audit_document(doc)
     doc.save(OUT)
