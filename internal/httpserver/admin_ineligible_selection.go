@@ -3,10 +3,12 @@ package httpserver
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	ineligibledomain "cricket-ground-feedback/internal/ineligible"
 	"cricket-ground-feedback/internal/middleware"
@@ -61,8 +63,10 @@ func (s *Server) handleAdminIneligibleSelection() http.HandlerFunc {
 		if !run.Ready() && run.ManifestCount == run.RowsSeen && len(run.UnresolvedRows) == 0 {
 			fmt.Fprint(w, `<div class="alert alert-danger"><strong>Selection is blocked.</strong> This import has no current reports that can be selected safely. Run the import again.</div>`)
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/ineligible/selection" id="ineligible-selection-form"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="run_id" value="%d"><input type="hidden" name="base_batch_id" value="%d"><input type="hidden" name="candidate_sha256" value="%s"><section class="card shadow-sm mb-3"><div class="card-header"><div class="row g-2 align-items-center"><div class="col-lg"><strong>Imported reports</strong><div class="small text-muted"><span id="selection-count">0</span> selected from %d reports</div></div><div class="col-lg-5"><label class="visually-hidden" for="selection-search">Search reports</label><input class="form-control" id="selection-search" type="search" placeholder="Search player, club, team or date"></div><div class="col-auto"><button class="btn btn-sm btn-outline-primary" type="button" id="selection-select-shown">Select all shown</button></div><div class="col-auto"><button class="btn btn-sm btn-outline-secondary" type="button" id="selection-clear">Clear selection</button></div></div></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0" id="selection-table"><thead><tr><th scope="col">Progress</th><th scope="col">Report</th><th scope="col">Fixture</th><th scope="col">Received</th><th scope="col">Current status</th></tr></thead><tbody>`, escapeHTML(csrf), run.RunID, run.CurrentBatchID, escapeHTML(run.CandidateSHA256), len(run.Candidates))
-		for _, item := range run.Candidates {
+		fmt.Fprintf(w, `<form method="POST" action="/admin/ineligible/selection" id="ineligible-selection-form"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="run_id" value="%d"><input type="hidden" name="base_batch_id" value="%d"><input type="hidden" name="candidate_sha256" value="%s"><section class="card shadow-sm mb-3">`, escapeHTML(csrf), run.RunID, run.CurrentBatchID, escapeHTML(run.CandidateSHA256))
+		writeIneligibleSelectionControls(w, len(run.Candidates))
+		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0" id="selection-table"><thead><tr><th scope="col">Progress</th><th scope="col">Report</th><th scope="col">Fixture</th><th scope="col">Received</th><th scope="col">Current status</th></tr></thead><tbody>`)
+		for sourceOrder, item := range run.Candidates {
 			checked := ""
 			if run.CurrentBatchID > 0 && item.VisibilityBatchID > 0 && item.CurrentVisibility == "visible" && item.Selectable {
 				checked = " checked"
@@ -73,10 +77,7 @@ func (s *Server) handleAdminIneligibleSelection() http.HandlerFunc {
 				checkboxDisabled = " disabled"
 				selectionHelp = `<div class="small text-warning-emphasis">Not confirmed in this import; it will remain off the selected list.</div>`
 			}
-			fixture := "-"
-			if item.FixtureDate != nil {
-				fixture = item.FixtureDate.Format("02 Jan 2006")
-			}
+			fixture, fixtureISO := ineligibleSelectionFixtureDate(item.FixtureDate)
 			received := "-"
 			if item.ReceivedAt != nil {
 				received = item.ReceivedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")
@@ -93,12 +94,28 @@ func (s *Server) handleAdminIneligibleSelection() http.HandlerFunc {
 			if item.VisibilityBatchID == 0 {
 				worklistStatus = "Not yet chosen"
 			}
-			fmt.Fprintf(w, `<tr data-selection-row><td data-label="Progress"><input class="form-check-input" type="checkbox" name="selected_intake_id" value="%d" aria-label="Progress %s"%s%s></td><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s; spreadsheet row %d</div>%s%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s</td><td data-label="Current status">%s<div class="small text-muted mt-1">%s</div></td></tr>`, item.IntakeID, escapeHTML(item.Player), checked, checkboxDisabled, item.IntakeID, escapeHTML(item.Player), escapeHTML(item.OffendingClub), escapeHTML(item.Team), escapeHTML(item.ReportingClub), item.SourceRowNumber, evidence, selectionHelp, escapeHTML(fixture), escapeHTML(received), ineligibleStateBadge(item.State), escapeHTML(worklistStatus))
+			fmt.Fprintf(w, `<tr data-selection-row data-fixture-date="%s" data-original-order="%d"><td data-label="Progress"><input class="form-check-input" type="checkbox" name="selected_intake_id" value="%d" aria-label="Progress %s"%s%s></td><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s; spreadsheet row %d</div>%s%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s</td><td data-label="Current status">%s<div class="small text-muted mt-1">%s</div></td></tr>`, escapeHTML(fixtureISO), sourceOrder, item.IntakeID, escapeHTML(item.Player), checked, checkboxDisabled, item.IntakeID, escapeHTML(item.Player), escapeHTML(item.OffendingClub), escapeHTML(item.Team), escapeHTML(item.ReportingClub), item.SourceRowNumber, evidence, selectionHelp, escapeHTML(fixture), escapeHTML(received), ineligibleStateBadge(item.State), escapeHTML(worklistStatus))
 		}
 		fmt.Fprintf(w, `</tbody></table></div></section><section class="card border-primary"><div class="card-body"><label class="form-label fw-semibold" for="selection-reason">Handover label</label><input class="form-control" id="selection-reason" name="reason" required minlength="3" maxlength="200" placeholder="For example: Rev 8 blue rows"><div class="form-text">Saved with your name, the exact import and every selected or deferred report.</div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><span class="small text-muted align-self-sm-center">This action creates no cases, emails or sanctions.</span><button class="btn btn-primary"%s>Save selection and show work queue</button></div></section></form>`, disabled)
-		fmt.Fprint(w, `<script>(function(){var search=document.getElementById('selection-search');var rows=Array.prototype.slice.call(document.querySelectorAll('[data-selection-row]'));var count=document.getElementById('selection-count');function boxes(){return rows.map(function(row){return row.querySelector('input[type="checkbox"]');}).filter(Boolean);}function update(){count.textContent=boxes().filter(function(box){return box.checked;}).length;}search.addEventListener('input',function(){var q=search.value.toLowerCase().trim();rows.forEach(function(row){row.hidden=q!==''&&row.textContent.toLowerCase().indexOf(q)===-1;});});document.getElementById('selection-select-shown').addEventListener('click',function(){rows.forEach(function(row){var box=row.querySelector('input[type="checkbox"]');if(!row.hidden&&box&&!box.disabled){box.checked=true;}});update();});document.getElementById('selection-clear').addEventListener('click',function(){boxes().forEach(function(box){if(!box.disabled){box.checked=false;}});update();});boxes().forEach(function(box){box.addEventListener('change',update);});update();}());</script></main>`)
+		writeIneligibleSelectionScript(w)
+		fmt.Fprint(w, `</main>`)
 		pageFooter(w)
 	}
+}
+
+func ineligibleSelectionFixtureDate(value *time.Time) (string, string) {
+	if value == nil {
+		return "-", ""
+	}
+	return value.Format("02 Jan 2006"), value.Format("2006-01-02")
+}
+
+func writeIneligibleSelectionControls(w io.Writer, total int) {
+	fmt.Fprintf(w, `<div class="card-header"><div class="row g-2 align-items-center"><div class="col-lg"><strong>Imported reports</strong><div class="small text-muted" aria-live="polite"><span id="selection-shown-count">%d</span> shown &middot; <span id="selection-count">0</span> selected from %d reports</div><div class="small text-muted">Filtering only changes what is shown. Reports already ticked stay selected.</div></div><div class="col-lg-5"><label class="visually-hidden" for="selection-search">Search reports</label><input class="form-control" id="selection-search" type="search" placeholder="Search player, club, team or date"></div></div><div class="row g-2 align-items-end mt-2"><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="selection-fixture-from">Fixture from</label><input class="form-control" id="selection-fixture-from" type="date"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="selection-fixture-to">Fixture to</label><input class="form-control" id="selection-fixture-to" type="date"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="selection-fixture-order">Order</label><select class="form-select" id="selection-fixture-order"><option value="source">Spreadsheet order</option><option value="fixture_newest">Newest fixture first</option><option value="fixture_oldest">Oldest fixture first</option></select></div><div class="col-auto"><button class="btn btn-sm btn-outline-secondary" type="button" id="selection-clear-dates">Clear dates</button></div><div class="col-auto ms-lg-auto"><button class="btn btn-sm btn-outline-primary" type="button" id="selection-select-shown">Select all shown</button></div><div class="col-auto"><button class="btn btn-sm btn-outline-secondary" type="button" id="selection-clear">Clear all selections</button></div></div><div class="alert alert-secondary py-2 mt-3 mb-0" id="selection-no-results" hidden>No reports match this search or fixture range. Clear the dates or search to see more.</div></div>`, total, total)
+}
+
+func writeIneligibleSelectionScript(w io.Writer) {
+	fmt.Fprint(w, `<script>(function(){"use strict";var search=document.getElementById("selection-search");var fixtureFrom=document.getElementById("selection-fixture-from");var fixtureTo=document.getElementById("selection-fixture-to");var fixtureOrder=document.getElementById("selection-fixture-order");var rows=Array.prototype.slice.call(document.querySelectorAll("[data-selection-row]"));var tbody=document.querySelector("#selection-table tbody");var selectionCount=document.getElementById("selection-count");var shownCount=document.getElementById("selection-shown-count");var noResults=document.getElementById("selection-no-results");function boxes(){return rows.map(function(row){return row.querySelector('input[type="checkbox"]');}).filter(Boolean);}function originalOrder(row){return parseInt(row.getAttribute("data-original-order"),10)||0;}function fixtureDate(row){return row.getAttribute("data-fixture-date")||"";}function sortRows(){var order=fixtureOrder.value;rows.slice().sort(function(a,b){if(order==="source"){return originalOrder(a)-originalOrder(b);}var aDate=fixtureDate(a);var bDate=fixtureDate(b);if(aDate===""&&bDate===""){return originalOrder(a)-originalOrder(b);}if(aDate===""){return 1;}if(bDate===""){return -1;}var comparison=aDate<bDate?-1:(aDate>bDate?1:0);if(order==="fixture_newest"){comparison=-comparison;}return comparison||originalOrder(a)-originalOrder(b);}).forEach(function(row){tbody.appendChild(row);});}function applyView(){var query=search.value.toLowerCase().trim();var from=fixtureFrom.value;var to=fixtureTo.value;if(from!==""&&to!==""&&from>to){var swap=from;from=to;to=swap;fixtureFrom.value=from;fixtureTo.value=to;}var hasRange=from!==""||to!=="";var shown=0;rows.forEach(function(row){var date=fixtureDate(row);var matchesSearch=query===""||row.textContent.toLowerCase().indexOf(query)!==-1;var matchesDate=!hasRange||(date!==""&&(from===""||date>=from)&&(to===""||date<=to));row.hidden=!(matchesSearch&&matchesDate);if(!row.hidden){shown+=1;}});shownCount.textContent=shown;noResults.hidden=shown!==0;}function updateSelectionCount(){selectionCount.textContent=boxes().filter(function(box){return box.checked;}).length;}function refreshView(){sortRows();applyView();}search.addEventListener("input",applyView);fixtureFrom.addEventListener("input",applyView);fixtureTo.addEventListener("input",applyView);fixtureOrder.addEventListener("change",refreshView);document.getElementById("selection-clear-dates").addEventListener("click",function(){fixtureFrom.value="";fixtureTo.value="";applyView();});document.getElementById("selection-select-shown").addEventListener("click",function(){rows.forEach(function(row){var box=row.querySelector('input[type="checkbox"]');if(!row.hidden&&box&&!box.disabled){box.checked=true;}});updateSelectionCount();});document.getElementById("selection-clear").addEventListener("click",function(){boxes().forEach(function(box){if(!box.disabled){box.checked=false;}});updateSelectionCount();});boxes().forEach(function(box){box.addEventListener("change",updateSelectionCount);});refreshView();updateSelectionCount();}());</script>`)
 }
 
 func (s *Server) handleAdminIneligibleSelectionPost() http.HandlerFunc {

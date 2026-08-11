@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
@@ -62,6 +63,70 @@ func TestParseIneligibleSelectionIDs(t *testing.T) {
 			t.Fatalf("oversized selection returned IDs: %#v", got)
 		}
 	})
+}
+
+func TestIneligibleSelectionFixtureDateUsesCanonicalISO(t *testing.T) {
+	display, iso := ineligibleSelectionFixtureDate(nil)
+	if display != "-" || iso != "" {
+		t.Fatalf("missing fixture = %q, %q; want dash and blank metadata", display, iso)
+	}
+	fixture := time.Date(2026, time.July, 19, 15, 30, 0, 0, time.UTC)
+	display, iso = ineligibleSelectionFixtureDate(&fixture)
+	if display != "19 Jul 2026" || iso != "2026-07-19" {
+		t.Fatalf("fixture = %q, %q; want display and canonical ISO date", display, iso)
+	}
+}
+
+func TestWriteIneligibleSelectionControlsAddsClientOnlyFixtureView(t *testing.T) {
+	var out bytes.Buffer
+	writeIneligibleSelectionControls(&out, 216)
+	html := out.String()
+	for _, want := range []string{
+		`id="selection-fixture-from" type="date"`,
+		`id="selection-fixture-to" type="date"`,
+		`<option value="source">Spreadsheet order</option>`,
+		`<option value="fixture_newest">Newest fixture first</option>`,
+		`<option value="fixture_oldest">Oldest fixture first</option>`,
+		`<span id="selection-shown-count">216</span> shown`,
+		`selected from 216 reports`,
+		`Reports already ticked stay selected`,
+		`id="selection-clear-dates"`,
+		`Clear all selections`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("selection controls missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `name="fixture_`) || strings.Contains(html, `name="sort"`) {
+		t.Fatalf("client-only view controls would alter the selection POST: %s", html)
+	}
+}
+
+func TestWriteIneligibleSelectionScriptFiltersWithoutUntickingHiddenRows(t *testing.T) {
+	var out bytes.Buffer
+	writeIneligibleSelectionScript(&out)
+	script := out.String()
+	for _, want := range []string{
+		`if(from!==""&&to!==""&&from>to)`,
+		`fixtureFrom.value=from;fixtureTo.value=to`,
+		`date!==""&&(from===""||date>=from)&&(to===""||date<=to)`,
+		`row.hidden=!(matchesSearch&&matchesDate)`,
+		`tbody.appendChild(row)`,
+		`if(!row.hidden&&box&&!box.disabled){box.checked=true;}`,
+		`shownCount.textContent=shown`,
+		`noResults.hidden=shown!==0`,
+		`fixtureFrom.value="";fixtureTo.value="";applyView()`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("selection view script missing %q", want)
+		}
+	}
+	if strings.Contains(script, "innerHTML") {
+		t.Fatal("selection sorting must move existing rows, not rebuild checkbox elements")
+	}
+	if count := strings.Count(script, "box.checked=false"); count != 1 {
+		t.Fatalf("checkboxes may only be unticked by the explicit clear-all action; found %d paths", count)
+	}
 }
 
 func TestParseIneligibleQueueFiltersNormalisesWorklist(t *testing.T) {
