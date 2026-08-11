@@ -45,6 +45,8 @@ type ineligibleQueueFilters struct {
 	Scope         string
 	Worklist      string
 	Sort          string
+	FixtureFrom   string
+	FixtureTo     string
 }
 
 type ineligibleQueueRow struct {
@@ -140,6 +142,8 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		Scope:         strings.TrimSpace(values.Get("scope")),
 		Worklist:      strings.TrimSpace(values.Get("worklist")),
 		Sort:          strings.TrimSpace(values.Get("sort")),
+		FixtureFrom:   parseIneligibleFixtureDateFilter(values.Get("fixture_from")),
+		FixtureTo:     parseIneligibleFixtureDateFilter(values.Get("fixture_to")),
 	}
 	if filter.State == "" {
 		filter.State = "open"
@@ -171,10 +175,60 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 	if filter.Sort == "" {
 		filter.Sort = "newest"
 	}
-	if filter.Sort != "newest" && filter.Sort != "oldest" {
+	if !map[string]bool{"newest": true, "oldest": true, "fixture_newest": true, "fixture_oldest": true}[filter.Sort] {
 		filter.Sort = "newest"
 	}
+	if filter.FixtureFrom != "" && filter.FixtureTo != "" && filter.FixtureFrom > filter.FixtureTo {
+		filter.FixtureFrom, filter.FixtureTo = filter.FixtureTo, filter.FixtureFrom
+	}
 	return filter
+}
+
+func parseIneligibleFixtureDateFilter(value string) string {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	return parsed.Format("2006-01-02")
+}
+
+func ineligibleQueueTabURL(filter ineligibleQueueFilters, scope, state, worklist string) string {
+	values := url.Values{
+		"scope":    {scope},
+		"state":    {state},
+		"worklist": {worklist},
+		"sort":     {filter.Sort},
+	}
+	if filter.FixtureFrom != "" {
+		values.Set("fixture_from", filter.FixtureFrom)
+	}
+	if filter.FixtureTo != "" {
+		values.Set("fixture_to", filter.FixtureTo)
+	}
+	return "/admin/ineligible?" + values.Encode()
+}
+
+func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
+	values := url.Values{}
+	for key, value := range map[string]string{
+		"state":          filter.State,
+		"origin":         filter.Origin,
+		"reporting_club": filter.ReportingClub,
+		"offending_club": filter.OffendingClub,
+		"team":           filter.Team,
+		"player":         filter.Player,
+		"assignee":       filter.Assignee,
+		"case_status":    filter.CaseStatus,
+		"age":            filter.Age,
+		"scope":          filter.Scope,
+		"worklist":       filter.Worklist,
+		"sort":           filter.Sort,
+	} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	return "/admin/ineligible?" + values.Encode()
 }
 
 func buildIneligibleQueueQuery(filter ineligibleQueueFilters) (string, []any) {
@@ -227,14 +281,23 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		days := map[string]int{"2d": 2, "7d": 7, "14d": 14, "30d": 30}[filter.Age]
 		where = append(where, fmt.Sprintf("COALESCE(i.external_created_at,i.created_at) < now() - interval '%d days'", days))
 	}
+	if filter.FixtureFrom != "" {
+		where = append(where, "i.fixture_date >= "+add(filter.FixtureFrom)+"::date")
+	}
+	if filter.FixtureTo != "" {
+		where = append(where, "i.fixture_date <= "+add(filter.FixtureTo)+"::date")
+	}
 	if filter.Scope == "mine" && adminID != nil {
 		where = append(where, "c.assigned_admin_id="+add(*adminID))
 	}
-	sortDirection := "DESC"
-	idDirection := "DESC"
-	if filter.Sort == "oldest" {
-		sortDirection = "ASC"
-		idDirection = "ASC"
+	orderBy := "COALESCE(i.external_created_at,i.created_at) DESC,i.id DESC"
+	switch filter.Sort {
+	case "oldest":
+		orderBy = "COALESCE(i.external_created_at,i.created_at) ASC,i.id ASC"
+	case "fixture_newest":
+		orderBy = "i.fixture_date DESC NULLS LAST,COALESCE(i.external_created_at,i.created_at) DESC,i.id DESC"
+	case "fixture_oldest":
+		orderBy = "i.fixture_date ASC NULLS LAST,COALESCE(i.external_created_at,i.created_at) ASC,i.id ASC"
 	}
 	query := `
 		SELECT i.id,i.origin,i.external_key,i.state,COALESCE(i.reporting_club_text,''),
@@ -255,7 +318,7 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		LEFT JOIN admin_users a ON a.id=c.assigned_admin_id
 		LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=i.id
 		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY COALESCE(i.external_created_at,i.created_at) ` + sortDirection + `,i.id ` + idDirection + `
+		ORDER BY ` + orderBy + `
 		LIMIT 2000`
 	return query, args
 }
@@ -319,7 +382,10 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		} else if filter.Worklist == "visible" {
 			selectedClass = "btn-primary"
 		}
-		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="/admin/ineligible?scope=mine&amp;state=all&amp;worklist=visible&amp;sort=%s">My assigned cases</a><a class="btn %s" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible&amp;sort=%s">Selected reports</a><a class="btn %s" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=all&amp;sort=%s">All imported reports</a></nav>`, mineClass, escapeHTML(filter.Sort), selectedClass, escapeHTML(filter.Sort), importedClass, escapeHTML(filter.Sort))
+		mineHref := ineligibleQueueTabURL(filter, "mine", "all", "visible")
+		selectedHref := ineligibleQueueTabURL(filter, "all", "open", "visible")
+		importedHref := ineligibleQueueTabURL(filter, "all", "open", "all")
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">All imported reports</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
 		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
 		for _, card := range []struct {
 			Label string
@@ -380,7 +446,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			queueTitle = "Google Form reports ready for review"
 			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."
 		}
-		fmt.Fprintf(w, `</div></details><section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
+		fmt.Fprint(w, `</div></details>`)
+		writeIneligibleFixtureDateControls(w, filter)
+		fmt.Fprintf(w, `<section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
 		for _, row := range queue {
 			received := "-"
 			if row.ExternalCreatedAt != nil {
@@ -429,14 +497,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			fmt.Fprintf(w, `<tr%s><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s</div>%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s%s</td><td data-label="Next step">%s</td></tr>`, rowClass, row.ID, escapeHTML(row.PlayerText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.ReportingClubText), evidenceHTML, escapeHTML(fixture), escapeHTML(received), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), ineligibleStateBadge(row.State), visibilityHTML, caseHTML)
 		}
 		if len(queue) == 0 {
-			emptyMessage := "No reports match this view. Open the manager controls above to clear filters."
-			if filter.Worklist == "visible" {
-				emptyMessage = "No reports are currently selected. Import and choose reports, or change the selected work list."
-			}
-			if queueTitle == "Work matching this view" {
-				emptyMessage = "No work matches this view. Open the manager controls above to clear filters."
-			}
-			fmt.Fprintf(w, `<tr><td colspan="5" class="text-center text-muted py-5">%s</td></tr>`, escapeHTML(emptyMessage))
+			writeIneligibleEmptyQueue(w, filter, queueTitle)
 		}
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
@@ -515,8 +576,48 @@ func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHe
 	return result, err == nil
 }
 
+func writeIneligibleFixtureDateControls(w io.Writer, filter ineligibleQueueFilters) {
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="age" value="%s"><div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.Age), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
+	writeIneligibleDateSortOptions(w, filter.Sort)
+	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Apply dates</button></div>`)
+	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
+		fmt.Fprintf(w, `<div class="col-auto"><a class="btn btn-outline-secondary" href="%s">Clear dates</a></div>`, escapeHTML(ineligibleClearFixtureDatesURL(filter)))
+	}
+	fmt.Fprint(w, `</div></form>`)
+}
+
+func writeIneligibleEmptyQueue(w io.Writer, filter ineligibleQueueFilters, queueTitle string) {
+	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
+		fmt.Fprintf(w, `<tr><td colspan="5" class="text-center text-muted py-5">No reports match these fixture dates. <a href="%s">Clear dates</a> or choose a wider range.</td></tr>`, escapeHTML(ineligibleClearFixtureDatesURL(filter)))
+		return
+	}
+	emptyMessage := "No reports match this view. Open the manager controls above to clear filters."
+	if filter.Worklist == "visible" {
+		emptyMessage = "No reports are currently selected. Import and choose reports, or change the selected work list."
+	}
+	if queueTitle == "Work matching this view" {
+		emptyMessage = "No work matches this view. Open the manager controls above to clear filters."
+	}
+	fmt.Fprintf(w, `<tr><td colspan="5" class="text-center text-muted py-5">%s</td></tr>`, escapeHTML(emptyMessage))
+}
+
+func writeIneligibleDateSortOptions(w io.Writer, selectedValue string) {
+	for _, option := range []struct{ Value, Label string }{
+		{"fixture_newest", "Newest fixture first"},
+		{"fixture_oldest", "Oldest fixture first"},
+		{"newest", "Newest report received"},
+		{"oldest", "Oldest report received"},
+	} {
+		selected := ""
+		if selectedValue == option.Value {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.Value, selected, option.Label)
+	}
+}
+
 func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to selected reports.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.Scope), escapeHTML(plainIneligibleWorklist(filter.Worklist)))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to selected reports.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.Scope), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), escapeHTML(plainIneligibleWorklist(filter.Worklist)))
 	for _, option := range []struct{ Value, Label string }{{"visible", "Selected reports"}, {"deferred", "Hidden reports"}, {"all", "All imported reports"}} {
 		selected := ""
 		if filter.Worklist == option.Value {
@@ -538,14 +639,8 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 		}
 		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.Value, selected, option.Label)
 	}
-	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Date order</label><select class="form-select" name="sort">`)
-	for _, option := range []struct{ Value, Label string }{{"newest", "Newest first"}, {"oldest", "Oldest first"}} {
-		selected := ""
-		if filter.Sort == option.Value {
-			selected = " selected"
-		}
-		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, option.Value, selected, option.Label)
-	}
+	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Order</label><select class="form-select" name="sort">`)
+	writeIneligibleDateSortOptions(w, filter.Sort)
 	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="/admin/ineligible?scope=%s&amp;worklist=visible">Clear</a></div></div></form>`, escapeHTML(filter.Scope))
 }
 
