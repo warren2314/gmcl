@@ -203,7 +203,7 @@ func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
 				continue
 			}
 			if sendErr == nil {
-				sendErr = mailer.SendSnapshot(m.to, m.subject, m.body, messageID, attachments)
+				sendErr = mailer.SendSanctionSnapshot(m.to, m.subject, m.body, messageID, attachments)
 			}
 			if sendErr != nil {
 				failed++
