@@ -19,6 +19,7 @@ services:
       # The live ineligible-player workflow is approved for outbound email.
       # SANCTIONS_EMAIL_DISABLED remains the global emergency kill switch.
       - INELIGIBLE_OUTBOUND_EMAIL_ENABLED=true
+      - SANCTION_OUTBOX_SCHEDULER_ENABLED=true
       # Manual admin staging only. The rollout gate still blocks n8n until
       # the named tracker backfill is signed off and applied.
       - INELIGIBLE_BOOTSTRAP_IMPORT_ENABLED=true
