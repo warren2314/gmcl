@@ -622,8 +622,12 @@ func (s *Server) handleInternalSyncRules() http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 			service := s.rulesService()
-			_, _ = service.PurgeExpired(ctx)
-			_, _ = service.Sync(ctx, nil)
+			if _, err := service.PurgeExpired(ctx); err != nil {
+				log.Printf("rules assistant conversation purge failed: %v", err)
+			}
+			if releaseID, err := service.Sync(ctx, nil); err != nil {
+				log.Printf("rules assistant internal sync failed: release_id=%d error=%v", releaseID, err)
+			}
 		}()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
@@ -717,7 +721,9 @@ func (s *Server) handleAdminRulesSync() http.HandlerFunc {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
-			_, _ = s.rulesService().Sync(ctx, admin)
+			if releaseID, err := s.rulesService().Sync(ctx, admin); err != nil {
+				log.Printf("rules assistant admin sync failed: release_id=%d error=%v", releaseID, err)
+			}
 		}()
 		http.Redirect(w, r, "/admin/rules-assistant?sync=started", http.StatusSeeOther)
 	}

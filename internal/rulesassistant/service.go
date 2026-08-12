@@ -36,8 +36,9 @@ var (
 	blankRE               = regexp.MustCompile(`\n{3,}`)
 	breakRE               = regexp.MustCompile(`(?i)</?(?:h[1-6]|p|div|li|tr|br|section|article)[^>]*>`)
 	scriptRE              = regexp.MustCompile(`(?is)<(?:script[^>]*>.*?</script|style[^>]*>.*?</style|svg[^>]*>.*?</svg)>`)
-	rulePrefixedRefRE     = regexp.MustCompile(`(?i)\brule\s*([1-8](?:\.\d+){0,4})\b`)
-	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+){1,4})\b`)
+	rulePrefixedRefRE     = regexp.MustCompile(`(?i)\brule\s*([1-8](?:\.\d+)*)\b`)
+	dottedRuleRefRE       = regexp.MustCompile(`\b([1-8](?:\.\d+)+)\b`)
+	lineStartRuleRefRE    = regexp.MustCompile(`(?i)^\s*(?:rule\s+([1-8](?:\.\d+)*)\b|([1-8](?:\.\d+)+)\b)`)
 	updatedRE             = regexp.MustCompile(`(?i)(updated[^\n]{0,100}|\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})`)
 	searchWordRE          = regexp.MustCompile(`[a-z0-9]+`)
 	juniorAgeRE           = regexp.MustCompile(`(?i)\b(?:u\s*[-/]?\s*|under\s+)(9|11|13|15|18)s?\b`)
@@ -45,6 +46,10 @@ var (
 	modelCitationTokenRE  = regexp.MustCompile(`\s*citechunk_id=\d+`)
 	contentStart          = regexp.MustCompile(`(?i)WELCOME TO GMCL FOR YOUR MOBILE`)
 	contentEnd            = regexp.MustCompile(`(?i)Proud Sponsors`)
+
+	// These sanctions-workflow sentinels catch loss of the penalties source
+	// even when broad group/chunk-count checks still pass.
+	requiredCorpusRuleReferences = []string{"8.3.2.5", "8.3.2.5.1"}
 )
 
 type Service struct {
@@ -123,6 +128,9 @@ type ReleaseStatus struct {
 type parsedDocument struct {
 	URL, Title, Updated, Text, Hash string
 	Chunks                          []parsedChunk
+	// SourceRuleReferences records every line-leading reference, including
+	// duplicates, so validation can compare occurrence multiplicity.
+	SourceRuleReferences []string
 }
 
 type parsedChunk struct {
@@ -134,6 +142,11 @@ type parsedChunk struct {
 func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, err error) {
 	if s.APIKey == "" {
 		return 0, errors.New("OPENAI_API_KEY is not configured")
+	}
+	if _, err := s.DB.Exec(ctx, `UPDATE rule_releases
+		SET status='failed', completed_at=now(), error_message='Automatically failed after remaining in building status for more than 30 minutes.'
+		WHERE status='building' AND started_at < now() - interval '30 minutes'`); err != nil {
+		return 0, fmt.Errorf("recover stale rules build: %w", err)
 	}
 	if err := s.DB.QueryRow(ctx, `INSERT INTO rule_releases(status, created_by_admin_id) VALUES ('building',$1) RETURNING id`, adminID).Scan(&releaseID); err != nil {
 		return 0, err
@@ -157,8 +170,35 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 	if previousCount > 0 && len(docs)*100 < previousCount*90 {
 		return releaseID, fmt.Errorf("source count fell from %d to %d", previousCount, len(docs))
 	}
+	chunkCount := parsedChunkCount(docs)
+	activeShape, err := s.activeReleaseShape(ctx)
+	if err != nil {
+		return releaseID, fmt.Errorf("load active rules release shape: %w", err)
+	}
+	candidateShape := candidateReleaseShape(docs)
+	if missing := missingActiveSourceURLs(activeShape, candidateShape); len(missing) > 0 {
+		return releaseID, fmt.Errorf("rules candidate is missing active source %s", missing[0])
+	}
+	if equalReleaseShape(candidateShape, activeShape) {
+		tag, updateErr := s.DB.Exec(ctx, `UPDATE rule_releases
+			SET status='unchanged', completed_at=now(), source_count=$2, chunk_count=$3, changed_source_count=0
+			WHERE id=$1 AND status='building'`, releaseID, len(docs), chunkCount)
+		if updateErr != nil {
+			return releaseID, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return releaseID, errors.New("rules build is no longer active")
+		}
+		return releaseID, nil
+	}
 
 	changed := 0
+	type pendingEmbedding struct {
+		documentIndex int
+		chunkIndex    int
+		input         string
+	}
+	var pendingEmbeddings []pendingEmbedding
 	for di := range docs {
 		var oldHash string
 		_ = s.DB.QueryRow(ctx, `
@@ -176,12 +216,29 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 				docs[di].Chunks[ci].EmbeddingLiteral = existingEmbedding
 				continue
 			}
-			emb, embedErr := s.embed(ctx, docs[di].Chunks[ci].Heading+"\n"+docs[di].Chunks[ci].Content)
-			if embedErr != nil {
-				return releaseID, fmt.Errorf("embed %s chunk %d: %w", docs[di].URL, ci, embedErr)
-			}
-			docs[di].Chunks[ci].Embedding = emb
-			docs[di].Chunks[ci].EmbeddingLiteral = vectorLiteral(emb)
+			pendingEmbeddings = append(pendingEmbeddings, pendingEmbedding{
+				documentIndex: di,
+				chunkIndex:    ci,
+				input:         docs[di].Chunks[ci].Heading + "\n" + docs[di].Chunks[ci].Content,
+			})
+		}
+	}
+	for start := 0; start < len(pendingEmbeddings); start += embeddingBatchSize {
+		end := min(start+embeddingBatchSize, len(pendingEmbeddings))
+		batch := pendingEmbeddings[start:end]
+		inputs := make([]string, len(batch))
+		for i := range batch {
+			inputs[i] = batch[i].input
+		}
+		embeddings, embedErr := s.embedBatch(ctx, inputs)
+		if embedErr != nil {
+			first := batch[0]
+			return releaseID, fmt.Errorf("embed batch beginning with %s chunk %d: %w", docs[first.documentIndex].URL, first.chunkIndex, embedErr)
+		}
+		for i, emb := range embeddings {
+			pending := batch[i]
+			docs[pending.documentIndex].Chunks[pending.chunkIndex].Embedding = emb
+			docs[pending.documentIndex].Chunks[pending.chunkIndex].EmbeddingLiteral = vectorLiteral(emb)
 		}
 	}
 
@@ -190,7 +247,14 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 		return releaseID, err
 	}
 	defer tx.Rollback(ctx)
-	chunkCount := 0
+	var candidateStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM rule_releases WHERE id=$1 FOR UPDATE`, releaseID).Scan(&candidateStatus); err != nil {
+		return releaseID, err
+	}
+	if candidateStatus != "building" {
+		return releaseID, errors.New("rules build is no longer active")
+	}
+	insertedChunkCount := 0
 	for _, doc := range docs {
 		var documentID int64
 		err = tx.QueryRow(ctx, `INSERT INTO rule_documents(release_id,canonical_url,title,page_updated_label,content_hash,extracted_text)
@@ -204,8 +268,11 @@ func (s *Service) Sync(ctx context.Context, adminID *int32) (releaseID int64, er
 			if err != nil {
 				return releaseID, err
 			}
-			chunkCount++
+			insertedChunkCount++
 		}
+	}
+	if insertedChunkCount != chunkCount {
+		return releaseID, fmt.Errorf("rules chunk count changed during build: expected %d, inserted %d", chunkCount, insertedChunkCount)
 	}
 	_, err = tx.Exec(ctx, `UPDATE rule_releases SET status='archived' WHERE status='active'`)
 	if err == nil {
@@ -318,22 +385,25 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 	}
 	lines := strings.Split(text, "\n")
 	var chunks []parsedChunk
+	var sourceRuleReferences []string
 	heading := title
+	currentRef := ""
 	var buf strings.Builder
 	flush := func() {
 		content := strings.TrimSpace(buf.String())
 		buf.Reset()
-		if len(content) < 35 {
+		if content == "" {
 			return
 		}
-		// Content starts with the chunk's own heading line, so it yields the
-		// chunk's precise reference; the heading trail would yield the top
-		// ancestor ("7.10") instead. The trail is still part of the
-		// searchable identity: a leaf like "There are no LBW's in this
-		// competition" is only findable for "U11" questions through its
-		// ancestors, so heading and content together form the hash (and
-		// therefore the embedding input).
-		ref := extractRuleReference(content)
+		// A numbered rule is authoritative even when its complete text is a
+		// very short label such as "Card - Red" or "Comments - None".
+		if len(content) < 35 && currentRef == "" {
+			return
+		}
+		// Keep the rule that opened this chunk across size-based continuation
+		// flushes. Looking inside a continuation could otherwise promote an
+		// inline cross-reference to the chunk's identity.
+		ref := currentRef
 		if ref == "" {
 			ref = deepestRuleReference(heading)
 		}
@@ -348,9 +418,13 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 		if line == "" {
 			continue
 		}
+		ref := lineStartRuleReference(line)
+		if ref != "" {
+			sourceRuleReferences = append(sourceRuleReferences, ref)
+		}
 		if looksLikeHeading(line) {
 			flush()
-			ref := extractRuleReference(line)
+			currentRef = ref
 			if ref == "" {
 				trail = trail[:0]
 			} else {
@@ -392,7 +466,8 @@ func parseHTML(canonicalURL, raw string) parsedDocument {
 	if len(chunks) == 0 && len(text) > 35 {
 		chunks = []parsedChunk{{RuleReference: extractRuleReference(text), Heading: title, Content: text, Hash: hashText(text)}}
 	}
-	return parsedDocument{URL: canonicalURL, Title: title, Updated: updated, Text: text, Hash: hashText(text), Chunks: chunks}
+	return parsedDocument{URL: canonicalURL, Title: title, Updated: updated, Text: text, Hash: ruleDocumentHash(text),
+		Chunks: chunks, SourceRuleReferences: sourceRuleReferences}
 }
 
 // pageContent removes the shared header, navigation and sponsor footer. Link
@@ -422,16 +497,25 @@ func cleanText(value string) string {
 	return blankRE.ReplaceAllString(strings.Join(lines, "\n"), "\n\n")
 }
 
+func lineStartRuleReference(value string) string {
+	match := lineStartRuleRefRE.FindStringSubmatch(value)
+	if len(match) != 3 {
+		return ""
+	}
+	if match[1] != "" {
+		return match[1]
+	}
+	return match[2]
+}
+
 func looksLikeHeading(line string) bool {
+	if lineStartRuleReference(line) != "" {
+		return true
+	}
 	if len(line) > 180 {
 		return false
 	}
-	// Only a real reference marks a heading: "Rule 3" or a dotted number like
-	// "8.1.1.4". Bare digits used to make every short numeric line ("Prem 1
-	// £500...") a heading, fragmenting penalty tables into tiny chunks.
-	if (rulePrefixedRefRE.MatchString(line) || dottedRuleRefRE.MatchString(line)) && len(line) < 130 {
-		return true
-	}
+	// Bare digits never reach here, so numeric table rows remain intact.
 	letters, upper := 0, 0
 	for _, r := range line {
 		if r >= 'A' && r <= 'Z' {
@@ -479,17 +563,51 @@ func deepestRuleReference(value string) string {
 	return best
 }
 
+// missingRuleReferenceOccurrences compares occurrences, rather than only a
+// unique set, so repeated source references must each survive as true chunk
+// boundaries. Size-continuation chunks deliberately retain their parent's
+// reference, but cannot satisfy another source occurrence.
+func missingRuleReferenceOccurrences(doc parsedDocument) []string {
+	chunkOccurrences := make(map[string]int)
+	for _, chunk := range doc.Chunks {
+		if boundaryReference := lineStartRuleReference(chunk.Content); boundaryReference != "" &&
+			boundaryReference == chunk.RuleReference {
+			chunkOccurrences[chunk.RuleReference]++
+		}
+	}
+	missing := make([]string, 0)
+	for _, reference := range doc.SourceRuleReferences {
+		if chunkOccurrences[reference] > 0 {
+			chunkOccurrences[reference]--
+			continue
+		}
+		missing = append(missing, reference)
+	}
+	return missing
+}
+
 func validateCorpus(docs []parsedDocument) error {
 	if len(docs) < 8 {
 		return fmt.Errorf("only %d rules sources were extracted", len(docs))
 	}
 	groups := map[byte]bool{}
 	chunks := 0
+	required := make(map[string]bool, len(requiredCorpusRuleReferences))
+	for _, reference := range requiredCorpusRuleReferences {
+		required[reference] = false
+	}
 	for _, doc := range docs {
+		if missing := missingRuleReferenceOccurrences(doc); len(missing) > 0 {
+			return fmt.Errorf("rules source %s omitted %d numbered rule occurrences from chunks (first missing: %s)",
+				doc.URL, len(missing), missing[0])
+		}
 		chunks += len(doc.Chunks)
 		for _, chunk := range doc.Chunks {
 			if chunk.RuleReference != "" && chunk.RuleReference[0] >= '1' && chunk.RuleReference[0] <= '8' {
 				groups[chunk.RuleReference[0]] = true
+			}
+			if _, tracked := required[chunk.RuleReference]; tracked {
+				required[chunk.RuleReference] = true
 			}
 		}
 	}
@@ -500,6 +618,11 @@ func validateCorpus(docs []parsedDocument) error {
 	}
 	if chunks < 30 {
 		return fmt.Errorf("only %d rule chunks were extracted", chunks)
+	}
+	for _, reference := range requiredCorpusRuleReferences {
+		if !required[reference] {
+			return fmt.Errorf("required rule reference %s was not extracted", reference)
+		}
 	}
 	return nil
 }
@@ -1023,7 +1146,7 @@ func (s *Service) Rollback(ctx context.Context, releaseID int64) error {
 	if err := tx.QueryRow(ctx, `SELECT status FROM rule_releases WHERE id=$1 FOR UPDATE`, releaseID).Scan(&status); err != nil {
 		return err
 	}
-	if status == "failed" || status == "building" {
+	if !releaseCanBeActivated(status) {
 		return errors.New("only a completed release can be activated")
 	}
 	if _, err = tx.Exec(ctx, `UPDATE rule_releases SET status='archived' WHERE status='active'`); err != nil {

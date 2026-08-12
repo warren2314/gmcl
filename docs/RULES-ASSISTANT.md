@@ -62,6 +62,13 @@ The Postgres service uses the `pgvector/pgvector:pg16` image while retaining the
 
 A crawl is published only when validation and every embedding succeed. The prior active release remains live on failure. Super-admins can reactivate an archived release.
 
+Each sync reconciles every line-leading numbered rule occurrence against the
+chunks it produced and refuses an incomplete candidate. A release shown as
+`unchanged` completed successfully but exactly matched the active snapshot, so
+the active release was retained and no duplicate vectors were stored. The
+first sync using parser hash `v2` deliberately rebuilds the corpus; later
+unchanged nightly syncs use the no-op path.
+
 ## Quality and privacy
 
 The admin page shows recent questions, answers, feedback, model, and latency. Conversation records use a random browser identifier and rotating HMAC abuse key; raw IP addresses and names are not stored. Records expire after 90 days and can be purged with `Service.PurgeExpired` from the normal privacy cleanup schedule.
