@@ -31,7 +31,7 @@ WITH aliases AS (
                    '\s+(c&sc|ccc|cc)\s*$','','i'),
                  '\s+lancs\s*$','','i'),
                '&',' and '),
-             '[^a-z0-9]','','g') || '@gtrmcrcricket.co.uk' AS email
+             '[^a-z0-9]','','g') || 'cc@gtrmcrcricket.co.uk' AS email
     FROM clubs c
     WHERE NULLIF(regexp_replace(lower(c.name),'[^a-z0-9]','','g'),'') IS NOT NULL
 )

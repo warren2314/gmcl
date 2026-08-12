@@ -16,6 +16,9 @@ services:
       - SANCTIONS_BASE_URL=https://sanctions.gmcl.co.uk
       - RULES_ASSISTANT_ENABLED=${RULES_ASSISTANT_ENABLED:-false}
       - STARRED_WEEKLY_SYNC_ENABLED=${STARRED_WEEKLY_SYNC_ENABLED:-true}
+      # The live ineligible-player workflow is approved for outbound email.
+      # SANCTIONS_EMAIL_DISABLED remains the global emergency kill switch.
+      - INELIGIBLE_OUTBOUND_EMAIL_ENABLED=true
       # Manual admin staging only. The rollout gate still blocks n8n until
       # the named tracker backfill is signed off and applied.
       - INELIGIBLE_BOOTSTRAP_IMPORT_ENABLED=true
