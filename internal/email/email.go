@@ -111,7 +111,17 @@ func (c *Client) SendSnapshot(to, subject, body, messageID string, attachments [
 	return c.sendWithMessageID(to, subject, body, attachments, messageID)
 }
 
+// SendSanctionSnapshot sends immutable sanctions correspondence using the
+// GMCL case-email presentation while preserving the stored plain-text wording.
+func (c *Client) SendSanctionSnapshot(to, subject, body, messageID string, attachments []Attachment) error {
+	return c.sendWithMessageIDHTML(to, subject, body, messageID, attachments, sanctionEmailHTML(subject, body))
+}
+
 func (c *Client) sendWithMessageID(to, subject, body string, attachments []Attachment, messageID string) error {
+	return c.sendWithMessageIDHTML(to, subject, body, messageID, attachments, toHTML(body))
+}
+
+func (c *Client) sendWithMessageIDHTML(to, subject, body, messageID string, attachments []Attachment, renderedHTML string) error {
 	if override := os.Getenv("EMAIL_OVERRIDE"); override != "" {
 		log.Printf("[email override] original_to=%s redirecting_to=%s subject=%s", to, override, subject)
 		to = override
@@ -120,7 +130,7 @@ func (c *Client) sendWithMessageID(to, subject, body string, attachments []Attac
 	if err != nil {
 		return fmt.Errorf("email_failed: invalid recipient: %w", err)
 	}
-	message, err := c.buildMessageWithID(recipient.String(), subject, body, attachments, messageID)
+	message, err := c.buildMessageWithIDHTML(recipient.String(), subject, attachments, messageID, renderedHTML)
 	if err != nil {
 		return err
 	}
@@ -199,6 +209,10 @@ func (c *Client) buildMessage(to, subject, body string, attachments []Attachment
 }
 
 func (c *Client) buildMessageWithID(to, subject, body string, attachments []Attachment, messageID string) ([]byte, error) {
+	return c.buildMessageWithIDHTML(to, subject, attachments, messageID, toHTML(body))
+}
+
+func (c *Client) buildMessageWithIDHTML(to, subject string, attachments []Attachment, messageID, renderedHTML string) ([]byte, error) {
 	headers, err := c.messageHeadersWithID(to, subject, messageID)
 	if err != nil {
 		return nil, err
@@ -214,7 +228,7 @@ func (c *Client) buildMessageWithID(to, subject, body string, attachments []Atta
 	out.WriteString("MIME-Version: 1.0\r\n")
 	if len(attachments) == 0 {
 		out.WriteString("Content-Type: text/html; charset=UTF-8\r\n\r\n")
-		out.WriteString(toHTML(body))
+		out.WriteString(renderedHTML)
 		out.WriteString("\r\n")
 		return out.Bytes(), nil
 	}
@@ -231,7 +245,7 @@ func (c *Client) buildMessageWithID(to, subject, body string, attachments []Atta
 	if err != nil {
 		return nil, err
 	}
-	if _, err = htmlPart.Write([]byte(toHTML(body))); err != nil {
+	if _, err = htmlPart.Write([]byte(renderedHTML)); err != nil {
 		return nil, err
 	}
 	for _, attachment := range attachments {
