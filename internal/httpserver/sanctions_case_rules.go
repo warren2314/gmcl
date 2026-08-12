@@ -294,15 +294,15 @@ func (s *Server) handleAdminCaseHawkRuleSuggestion() http.HandlerFunc {
 			JOIN rule_documents document ON document.id=chunk.document_id
 			WHERE release.status='active' AND NULLIF(BTRIM(chunk.rule_reference),'') IS NOT NULL
 			  AND (chunk.heading_path ILIKE '%ineligible%' OR chunk.content ILIKE '%ineligible%'
-			       OR chunk.heading_path ILIKE '%eligibility%' OR chunk.content ILIKE '%eligibility%')
+			       OR chunk.heading_path ILIKE '%eligibility%' OR chunk.content ILIKE '%eligibility%'
 			       OR chunk.heading_path ILIKE '%starred%' OR chunk.content ILIKE '%starred%'
 			       OR chunk.heading_path ILIKE '%exemption%' OR chunk.content ILIKE '%exemption%'
 			       OR chunk.heading_path ILIKE '%dispensation%' OR chunk.content ILIKE '%dispensation%'
-			       OR chunk.heading_path ILIKE '%registration%' OR chunk.content ILIKE '%registration%')
+			       OR chunk.heading_path ILIKE '%registration%' OR chunk.content ILIKE '%registration%'))
 			ORDER BY chunk.ordinal,chunk.id
 			LIMIT 100`)
 		if err != nil {
-			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?error=%s", caseID, urlQueryEscape("HawkAI could not search the published rules. Check that a rules release is active, then try again.")), http.StatusSeeOther)
+			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?error=%s#record-alleged-rule", caseID, urlQueryEscape("HawkAI is unavailable. Continue with Record alleged rule below; you do not need HawkAI to save the rule.")), http.StatusSeeOther)
 			return
 		}
 		defer rows.Close()
@@ -358,7 +358,7 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 			escapeHTML(rule.Reference), escapeHTML(rule.Heading), rule.Revision, escapeHTML(excerpt), escapeHTML(rule.URL), escapeHTML(rule.SourceTitle),
 			escapeHTML(rule.SelectedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(rule.SelectedBy), escapeHTML(rule.Reason))
 	} else {
-		fmt.Fprint(w, `<div class="alert alert-warning"><strong>No alleged rule recorded.</strong> Select the published rule being investigated before preparing correspondence to the offending club.</div>`)
+		fmt.Fprint(w, `<div class="alert alert-warning"><strong>No alleged rule recorded.</strong> Select the published rule being investigated before preparing correspondence to the offending club. <a class="alert-link" href="#record-alleged-rule">Continue to Record alleged rule</a>.</div>`)
 	}
 	if !map[string]bool{"submitted": true, "triage": true, "investigating": true}[status] {
 		return rule
@@ -413,6 +413,6 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 		formReference = hawkSuggestion.SuggestedRuleReference
 		selectionReason = "HawkAI ranked this as the closest published rule. Replace this sentence with the case fact that makes the rule relevant after checking the source wording."
 	}
-	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/alleged-rule" class="card mb-4"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">%s alleged rule</div><div class="card-body"><label class="form-label">Published GMCL rule reference</label><input class="form-control" name="rule_reference" list="published-rule-references" value="%s" placeholder="e.g. 3.5" maxlength="100" required><datalist id="published-rule-references">%s</datalist><div class="form-text">HawkAI can prefill a likely candidate, but the investigator must check the published wording and evidence before saving.</div><label class="form-label mt-3">Why this rule is relevant to the allegation</label><textarea class="form-control" name="selection_reason" rows="2" maxlength="2000" required>%s</textarea><div class="form-text">Saving creates a new case-history version. Earlier versions remain visible for audit purposes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save reviewed rule</button></div></form>`, caseID, escapeHTML(csrf), map[bool]string{true: "Revise", false: "Record"}[rule.ID > 0], escapeHTML(formReference), options, escapeHTML(selectionReason))
+	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/alleged-rule" class="card mb-4 border-primary" id="record-alleged-rule"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Next action: %s alleged rule</strong></div><div class="card-body"><p>Choose the published rule being investigated. You do not need HawkAI to complete this step.</p><label class="form-label">Published GMCL rule reference</label><input class="form-control" name="rule_reference" list="published-rule-references" value="%s" placeholder="e.g. 3.5" maxlength="100" required><datalist id="published-rule-references">%s</datalist><div class="form-text">Select a listed published rule and check its wording before saving.</div><label class="form-label mt-3">Why this rule is relevant to the allegation</label><textarea class="form-control" name="selection_reason" rows="2" maxlength="2000" required>%s</textarea><div class="form-text">Saving creates a new case-history version. Earlier versions remain visible for audit purposes.</div></div><div class="card-footer"><button class="btn btn-primary">Save reviewed rule</button></div></form>`, caseID, escapeHTML(csrf), map[bool]string{true: "revise", false: "record"}[rule.ID > 0], escapeHTML(formReference), options, escapeHTML(selectionReason))
 	return rule
 }
