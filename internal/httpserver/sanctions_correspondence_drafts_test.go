@@ -94,11 +94,14 @@ func TestDefaultAdminResponseDraftViewsExposeTemplates(t *testing.T) {
 func TestAdminClubResponseStepsExplainWhenEmailIsSent(t *testing.T) {
 	html := adminClubResponseStepsHTML()
 	for _, required := range []string{
+		`id="contact-club"`,
+		"Next action: contact the club for its explanation",
 		"No email is sent merely by opening this case",
 		"Review and save the initial email",
 		"Review and save the reminder",
 		"Send initial email to club",
 		"The reminder is sent only later",
+		"This is the only button in this section that contacts the club",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("club response steps do not contain %q", required)

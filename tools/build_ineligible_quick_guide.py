@@ -719,23 +719,32 @@ def build_document():
         "It cannot create a case, decision, sanction, points/cards entry, task, correspondence or email.",
         kind="warning",
     )
-    add_heading(doc, "After a live case is raised", 1)
+    add_heading(doc, "Send the first email after raising a case", 1)
+    add_callout(doc, "Where to start", "Use the large Next action: contact the club for its explanation section. Work down the three numbered cards in order.", kind="info")
     add_list(
         doc,
         [
-            "Open the case and check the evidence and published rule.",
-            "Save the initial email and reminder, then send the initial email when ready.",
-            "Review the club response and any new evidence.",
-            "Prepare the decision and submit it for approval.",
-            "A different authorised administrator checks and approves it.",
-            "After final previews, issue the approved outcomes.",
+            "If prompted, record and save the alleged rule under investigation.",
+            "Review the initial email, then select Save initial email. Saving does not contact the club.",
+            "Optional: tick the safe-test confirmation and select Send TEST copy to me. It goes only to your administrator email, has no live response link and does not change the case.",
+            "Review the reminder, then select Save reminder. It is prepared now but is not sent now.",
+            "Check the displayed To address, then select Send initial email to club only when you intend to contact the club.",
+            "Check delivery history. The seven-day period starts after delivery; the reminder is sent on day five only if still needed.",
         ],
     )
-    add_heading(doc, "Three safety checks", 2)
+    add_heading(doc, "Assign the case or ask for help", 2)
+    add_list(doc, [
+        "Under Case owner and help, choose an administrator, enter the reason and select Save case owner to hand over the whole investigation.",
+        "To keep ownership, choose another administrator under Give a supporting task, describe the work, add an optional due date and select Assign supporting task.",
+        "Open supporting tasks remain visible on the case and in the task list. Every change is audited.",
+    ], ordered=False)
+    add_heading(doc, "Safety checks", 2)
     add_list(
         doc,
         [
             "Raising a case does not send an email.",
+            "Saving either draft does not send an email. A TEST copy goes only to your administrator address and cannot open a club response window.",
+            "Send initial email to club is the deliberate live-send action.",
             "A decision requires approval by a different authorised administrator.",
             "Outcomes are not sent until Issue approved outcomes is selected.",
         ],
