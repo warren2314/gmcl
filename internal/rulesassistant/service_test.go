@@ -79,10 +79,34 @@ func TestValidateCorpusRequiresEveryRuleGroup(t *testing.T) {
 		for j := 0; j < 4; j++ {
 			chunks = append(chunks, parsedChunk{RuleReference: string(rune('0'+i)) + "." + string(rune('1'+j)), Content: "Enough rule content for validation and retrieval tests."})
 		}
+		if i == 8 {
+			for _, reference := range requiredCorpusRuleReferences {
+				chunks = append(chunks, parsedChunk{RuleReference: reference, Content: "Required penalties sentinel rule content."})
+			}
+		}
 		docs = append(docs, parsedDocument{URL: "https://example.test/rules/" + string(rune('0'+i)), Text: "rules", Chunks: chunks})
 	}
 	if err := validateCorpus(docs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, missingReference := range requiredCorpusRuleReferences {
+		withoutSentinel := append([]parsedDocument(nil), docs...)
+		withoutSentinel[len(withoutSentinel)-1].Chunks = append([]parsedChunk(nil), docs[len(docs)-1].Chunks...)
+		chunks := withoutSentinel[len(withoutSentinel)-1].Chunks
+		for i, chunk := range chunks {
+			if chunk.RuleReference == missingReference {
+				chunks = append(chunks[:i], chunks[i+1:]...)
+				break
+			}
+		}
+		withoutSentinel[len(withoutSentinel)-1].Chunks = chunks
+		err := validateCorpus(withoutSentinel)
+		if err == nil {
+			t.Fatalf("expected missing required rule %s error", missingReference)
+		}
+		if !strings.Contains(err.Error(), missingReference) {
+			t.Fatalf("missing required rule error %q does not name %s", err, missingReference)
+		}
 	}
 	docs = docs[:7]
 	if err := validateCorpus(docs); err == nil {
