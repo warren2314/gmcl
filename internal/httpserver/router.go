@@ -162,7 +162,9 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 	})
 
 	stopStarredWeeklySync := s.startStarredWeeklySync(context.Background())
+	stopSanctionOutbox := s.startSanctionOutboxScheduler(context.Background())
 	return r, func() {
+		stopSanctionOutbox()
 		stopStarredWeeklySync()
 		pool.Close()
 	}, nil
