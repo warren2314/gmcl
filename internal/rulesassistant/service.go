@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"cricket-ground-feedback/internal/db"
 )
@@ -1186,8 +1187,14 @@ func nullIfEmpty(value string) any {
 	return value
 }
 func truncate(value string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if len(value) <= n {
 		return value
+	}
+	for n > 0 && !utf8.ValidString(value[:n]) {
+		n--
 	}
 	return value[:n]
 }
