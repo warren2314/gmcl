@@ -1285,10 +1285,17 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-warning">%s</div>`, escapeHTML(failure))
 		}
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
+		canRequestResponse := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 		if source == "ineligible_player" {
 			s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf)
 			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
+			if canRequestResponse {
+				s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
+			}
 			s.writeAdminCaseEmailPreviews(w, r, id, ref, team, publicSummary, hasProposed)
+		}
+		if source != "ineligible_player" && canRequestResponse {
+			s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
 		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 		if !hasProposed && canPropose {
@@ -1326,7 +1333,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		s.writeAdminCaseDeliveryHistory(w, r, id, csrf)
 		fmt.Fprint(w, `</div><aside class="col-xl-4">`)
 		actor := adminActor(r)
-		fmt.Fprint(w, adminCaseAssignmentHTML(id, csrf, assignedAdminID, assignedAdminName, actor.ID))
+		s.writeAdminCaseDelegationControls(w, r, id, csrf, assignedAdminID, assignedAdminName, actor.ID)
 		if hasUnreviewedResponse {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-reviewed" class="card mb-3 border-info"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">New club response</div><div class="card-body"><p class="mb-2">The latest portal or externally recorded response is awaiting review.</p><label class="form-label">Review note (optional)</label><input class="form-control" name="note" maxlength="2000"></div><div class="card-footer"><button class="btn btn-info">Mark response reviewed</button></div></form>`, id, escapeHTML(csrf))
 		}
@@ -1380,10 +1387,6 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		if status == "approved" || status == "published" || status == "appealed" {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
-		}
-		canRequestResponse := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
-		if canRequestResponse {
-			s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
 		}
 		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Add a private investigation note"></textarea><div class="form-text">Saved notes cannot be edited later. Add a correction if something changes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save note</button></div></form>`, id, escapeHTML(csrf))

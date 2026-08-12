@@ -652,7 +652,12 @@ def build_document():
         ("Report history: ", "shows open, hidden, case-raised, duplicate and ignored reports for audit and troubleshooting."),
         ("Keep the fixture view: ", "date range and order stay in place when you move between queue tabs."),
     ])
-    page_break(doc)
+    add_heading(doc, "Give another administrator ownership or one task", 2)
+    add_list(doc, [
+        "Open the case and find Case owner and help.",
+        "Whole case: choose the administrator, enter the reason and select Save case owner.",
+        "One task: choose the administrator, describe the work, add an optional due date and select Assign supporting task. It stays on the case and in Open task list. Both actions are audited.",
+    ], ordered=True)
 
     # Step 1
     add_step_header(doc, 1, "Review a new report", "Decide whether the report has enough information to progress", "3-5 minutes")
@@ -767,23 +772,24 @@ def build_document():
     page_break(doc)
 
     # Step 6 email response
-    add_step_header(doc, 6, "Ask the club for its explanation", "Save both messages, then deliberately send only the initial email", "5 minutes")
-    add_heading(doc, "The three actions on screen", 2)
+    add_step_header(doc, 6, "Ask the club for its explanation", "Use the prominent Next action section and work down its three cards", "5 minutes")
+    add_heading(doc, "The exact buttons on screen", 2)
     add_list(doc, [
-        "Review and save the initial email. Saving the wording does not contact the club.",
-        "Review and save the reminder. It is prepared now but is not sent now.",
-        "Check the verified official mailbox, then select Send initial email to club. This is the action that queues the first email.",
+        "If prompted, save the alleged rule under investigation first.",
+        "Under 1. Review and save the initial email, check the wording and select Save initial email. A green saved badge appears; no club is contacted.",
+        "Optional: tick the safe-test confirmation and select Send TEST copy to me. The copy goes only to your signed-in administrator address, contains no live response link and cannot change the case.",
+        "Under 2. Review and save the reminder, check the wording and select Save reminder. It is prepared now but is not sent now.",
+        "Under 3. Send the initial email, check the verified official mailbox and select Send initial email to club only when you intend to make live contact.",
     ], ordered=True)
-    add_callout(doc, "What sends now?", "Only the initial email. The reminder is sent on day five only if delivery succeeded and the club has not responded.", kind="success")
-    add_heading(doc, "Email preview centre", 2)
-    add_body(doc, "The Email templates and previews section shows all five messages before they are saved. Once staff save a message, the exact latest wording, audience, status and recipients replace the example.")
-    add_data_table(doc, ["Message", "Audience", "Status", "Action"], [
-        ("Response request", "Offending club", "Ready to preview", "Review and queue"),
-        ("Day-five reminder", "Offending club", "Prepared", "Preview only"),
-        ("Outcome", "Offending club", "Not available", "Created after approval"),
-        ("Outcome", "Reporting club", "Not available", "Created after approval"),
-        ("Official outcome", "League recipients", "Not available", "Created after approval"),
-    ], [2500, 2100, 1900, 2860], font_size=8.5)
+    add_data_table(doc, ["Action", "Contacts club?", "Response clock"], [
+        ("Save initial email", "No", "No change"),
+        ("Send TEST copy to me", "No", "No change"),
+        ("Save reminder", "No", "No change"),
+        ("Send initial email to club", "Yes", "Starts after delivery"),
+    ], [4200, 2200, 2960], font_size=9)
+    add_callout(doc, "What sends now?", "Only Send initial email to club queues live club contact. The reminder is sent on day five only if delivery succeeded and the club has not responded.", kind="success")
+    add_heading(doc, "If the send button is disabled", 2)
+    add_body(doc, "Read the message beneath the button. Save the alleged rule if requested, make sure both drafts have green saved badges, and confirm the offending club has a verified official mailbox and outbound ineligible-player email is enabled.")
     page_break(doc)
     add_email_preview(doc, "Initial email", "secretary@riverside.example.invalid", "Please respond: player eligibility query for Riverside CC 2nd XI (GMCL-2026-0042)", [
         "Dear Club Secretary,",
@@ -944,7 +950,7 @@ def build_document():
     trouble = [
         ("I cannot raise a case", "Confirm the team mapping, fixture date, player and configured assignee."),
         ("The scorecard cannot be found", "Check the Play-Cricket team ID and fixture date. The system will not choose between multiple matches."),
-        ("I cannot request a response", "Record the alleged rule, save both email drafts, verify the official mailbox and confirm outbound email is enabled."),
+        ("I cannot send the first email", "Read the disabled-button message. Record the alleged rule, save both email drafts, verify the official mailbox and confirm outbound email is enabled."),
         ("I cannot propose a decision", "Close or expire the response window and merge the newest linked intake revision."),
         ("I cannot approve", "The approver must be authorised and must not be the proposer."),
         ("I cannot publish", "Check privacy warnings, recipient mailboxes and approved email/PDF snapshots."),
@@ -971,13 +977,13 @@ def build_document():
         ("3", "Case raised is green", "Creating or linking a case immediately turns the intake card green and shows Open case."),
         ("4", "Date order", "Queue supports fixture From/To plus received or fixture newest/oldest order and remembers the view."),
         ("5", "Verified Excel rows", "Verified rows disappear from the default working list and remain under verified history."),
-        ("6", "See every email", "A preview centre shows recipient, subject, body, attachments, status and all outcome audiences before sending."),
-        ("7", "Focused work and report history", "Selected reports is the default; My assigned cases and Report history are available when needed."),
+        ("6", "Safe first-email route", "The case shows two Save buttons, an optional TEST copy to the signed-in admin, and one clearly labelled live-send button."),
+        ("7", "Assign work", "Authorised admins can change the case owner or give a scoped supporting task to another investigator, with audit history."),
         ("8", "Hawk AI assists", "Hawk AI pre-fills a cited draft rule allegation, asks for missing facts and requires staff confirmation."),
     ]
     add_data_table(doc, ["#", "Requirement", "Pass condition"], acceptance, [600, 2500, 6260], font_size=8.7)
     add_heading(doc, "Suggested user test", 2)
-    add_body(doc, "Give a staff tester the fictional Jordan Taylor intake without coaching. Ask them to raise the case, review HawkAI's rule suggestion, preview the response request and explain what happens next. The feature succeeds if they can complete the route and explain the safety checks in their own words.")
+    add_body(doc, "Give a staff tester the fictional Jordan Taylor intake without coaching. Ask them to raise the case, save both response drafts, send a TEST copy to their own administrator email, assign one supporting task and identify the only button that contacts the club. The feature succeeds if they can complete those actions and explain the safety checks in their own words.")
     add_callout(doc, "Final check", "A new user should never need to understand database tables, hashes, immutable records, rollout gates or outbox processing to complete normal casework.", kind="success")
 
     # Core properties

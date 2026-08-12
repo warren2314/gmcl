@@ -126,20 +126,50 @@ When **Needs checking** reaches zero:
 
 > The tracker cannot create a case, decision, sanction, points/cards entry, task, correspondence or email.
 
-## After a live case is raised
+## Send the first email after raising a case
 
-1. Click **Open case** and check the evidence and published rule.
-2. Save the initial email and reminder, then click **Send initial email to club** when ready.
-3. Review the club response and any new evidence.
-4. Complete **Prepare decision for approval** and click **Submit decision for approval**.
-5. A different authorised administrator checks the proposal and clicks **Approve decision and lock outcomes**.
-6. After the final previews, click **Issue approved outcomes**.
+On the case page, use the large **Next action: contact the club for its explanation** section. Work down the three numbered cards in order.
+
+1. If prompted, record and save the **Alleged rule under investigation** first.
+2. Under **1. Review and save the initial email**, check the subject and body, then click **Save initial email**. This saves wording only; it does not contact the club.
+3. Optional: after the green saved badge appears, tick the confirmation under **Optional safe test** and click **Send TEST copy to me**. The test goes only to your signed-in administrator email, contains no live response link and does not change the case.
+4. Under **2. Review and save the reminder**, check the wording and click **Save reminder**. This also saves wording only.
+5. Under **3. Send the initial email**, check the displayed **To** address is the offending club's verified official mailbox.
+6. Click **Send initial email to club** only when you intend to contact the club. This is the only button in the section that sends the live first email.
+7. Check the case delivery history. The seven-day response period begins only after delivery. The saved reminder is sent on day five only if it is still needed.
+
+| Action | Contacts the club? | Changes the live response window? |
+|---|---:|---:|
+| Save initial email | No | No |
+| Send TEST copy to me | No | No |
+| Save reminder | No | No |
+| Send initial email to club | **Yes** | Starts after confirmed delivery |
+
+If the send button is disabled, read the message beneath it. The usual reasons are: the alleged rule has not been saved, both email drafts do not have green saved badges, there is no verified official club mailbox, or outbound ineligible-player email is disabled.
+
+## Assign a case or ask another admin to help
+
+Open **Case owner and help** on the case page.
+
+- To hand over the whole investigation, choose an administrator under **Assign the whole investigation**, enter the reason and click **Save case owner**.
+- To keep ownership but ask for one piece of work, use **Give a supporting task to another administrator**. Choose the administrator, describe the task, add an optional due date and click **Assign supporting task**.
+- Open tasks appear on the case and in **Open task list**. Assignment changes and tasks are recorded in the audit history.
+
+## Continue the case
+
+1. Review the club response and any new evidence.
+2. Complete **Prepare decision for approval** and click **Submit decision for approval**.
+3. A different authorised administrator checks the proposal and clicks **Approve decision and lock outcomes**.
+4. After the final previews, click **Issue approved outcomes**.
 
 Stop and ask the casework lead for help if details conflict, **Selection is blocked**, a needs-attention warning cannot be resolved, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
 
 ## Safety checks to remember
 
 - Raising a case does not send an email.
+- Saving either email draft does not send an email.
+- **Send TEST copy to me** contacts only your administrator address and cannot open a club response window.
+- **Send initial email to club** is the deliberate live-send action.
 - A decision requires approval by a different authorised administrator.
 - Outcomes are not sent until **Issue approved outcomes** is selected.
 
