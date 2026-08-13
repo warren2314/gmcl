@@ -16,7 +16,7 @@ func TestAdminCaseBackDestinationReturnsOwnerToMyCases(t *testing.T) {
 func TestAdminCaseBackDestinationDoesNotExposeAnotherOwnersQueue(t *testing.T) {
 	ownerID := int32(27)
 	currentID := int32(31)
-	for name, source, assigned, current := range map[string]struct {
+	for name, testCase := range map[string]struct {
 		source   string
 		assigned *int32
 		current  *int32
@@ -26,7 +26,7 @@ func TestAdminCaseBackDestinationDoesNotExposeAnotherOwnersQueue(t *testing.T) {
 		"ordinary case":        {source: "manual", assigned: &currentID, current: &currentID},
 	} {
 		t.Run(name, func(t *testing.T) {
-			label, destination := adminCaseBackDestination(source, assigned, current)
+			label, destination := adminCaseBackDestination(testCase.source, testCase.assigned, testCase.current)
 			if label != "Back to cases" || destination != "/admin/cases" {
 				t.Fatalf("got (%q,%q), want general case list", label, destination)
 			}
