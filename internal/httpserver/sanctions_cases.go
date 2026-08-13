@@ -1454,6 +1454,25 @@ func pendingOutcomeEmailTemplate(ref, audience string) (string, string) {
 	}
 }
 
+func correspondenceStatusBadgeClass(status string) string {
+	status = strings.TrimSpace(status)
+	switch status {
+	case "sent", "delivered", "approved", "locked":
+		return "text-bg-success"
+	case "failed", "bounced", "complained", "revoked":
+		return "text-bg-danger"
+	case "draft":
+		return "text-bg-warning"
+	case "queued", "sending", "processed":
+		return "text-bg-primary"
+	default:
+		if strings.Contains(status, "not saved") || strings.Contains(status, "pending") {
+			return "text-bg-warning"
+		}
+		return "text-bg-secondary"
+	}
+}
+
 func effectiveCorrespondenceDisplayStatus(snapshotStatus, deliveryStatus string) string {
 	deliveryStatus = strings.TrimSpace(deliveryStatus)
 	if deliveryStatus != "" {
@@ -1562,14 +1581,7 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 
 	fmt.Fprint(w, `<section class="card mb-4 border-primary"><div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2"><span>Email templates and previews</span><span class="badge text-bg-light border">Nothing sends from this screen</span></div><div class="card-body"><p class="mb-1">These are the five messages used during an ineligible-player case.</p><p class="small text-muted">Templates are visible before they are saved. Once a workflow message is saved, its exact latest wording and recipients replace the template here.</p>`)
 	for i, preview := range previews {
-		statusClass := "text-bg-secondary"
-		if preview.status == "approved" || preview.status == "locked" {
-			statusClass = "text-bg-success"
-		} else if preview.status == "draft" || strings.Contains(preview.status, "not saved") {
-			statusClass = "text-bg-warning"
-		} else if preview.status == "queued" || preview.status == "sent" {
-			statusClass = "text-bg-primary"
-		}
+		statusClass := correspondenceStatusBadgeClass(preview.status)
 		versionText := ""
 		if preview.revision > 0 {
 			versionText = fmt.Sprintf(` <span class="small text-muted">version %d</span>`, preview.revision)
