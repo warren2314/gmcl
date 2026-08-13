@@ -21,12 +21,12 @@ func TestEffectiveCorrespondenceDisplayStatusUsesActualDelivery(t *testing.T) {
 
 func TestCorrespondenceStatusBadgeClassMakesSentClear(t *testing.T) {
 	for status, want := range map[string]string{
-		"sent":       "text-bg-success",
-		"delivered":  "text-bg-success",
-		"queued":     "text-bg-primary",
-		"failed":     "text-bg-danger",
-		"bounced":    "text-bg-danger",
-		"not saved":  "text-bg-warning",
+		"sent":      "text-bg-success",
+		"delivered": "text-bg-success",
+		"queued":    "text-bg-primary",
+		"failed":    "text-bg-danger",
+		"bounced":   "text-bg-danger",
+		"not saved": "text-bg-warning",
 	} {
 		if got := correspondenceStatusBadgeClass(status); got != want {
 			t.Fatalf("correspondenceStatusBadgeClass(%q)=%q want %q", status, got, want)
