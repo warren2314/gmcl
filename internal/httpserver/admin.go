@@ -128,6 +128,8 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/duplicate", s.handleAdminIneligibleDuplicate())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/ignore", s.handleAdminIneligibleIgnore())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases", s.handleAdminCases())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/link-tests", s.handleAdminPrivateLinkTestCreate())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/link-tests/{id}", s.handleAdminPrivateLinkTestStatus())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases/new", s.handleAdminCaseNew())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/cases", s.handleAdminCaseCreate())
 		r.With(s.requireAdminPermission("sanctions_automation")).Get("/cases/automation", s.handleAdminSanctionAutomation())
