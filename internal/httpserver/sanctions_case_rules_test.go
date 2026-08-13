@@ -75,4 +75,3 @@ func TestCaseAllegedRuleFormValuesUsesHawkSuggestionOnlyForNewReview(t *testing.
 		t.Fatal("new suggested rule should include review guidance")
 	}
 }
-
