@@ -1454,6 +1454,33 @@ func pendingOutcomeEmailTemplate(ref, audience string) (string, string) {
 	}
 }
 
+func correspondenceStatusBadgeClass(status string) string {
+	status = strings.TrimSpace(status)
+	switch status {
+	case "sent", "delivered", "approved", "locked":
+		return "text-bg-success"
+	case "failed", "bounced", "complained", "revoked":
+		return "text-bg-danger"
+	case "draft":
+		return "text-bg-warning"
+	case "queued", "sending", "processed":
+		return "text-bg-primary"
+	default:
+		if strings.Contains(status, "not saved") || strings.Contains(status, "pending") {
+			return "text-bg-warning"
+		}
+		return "text-bg-secondary"
+	}
+}
+
+func effectiveCorrespondenceDisplayStatus(snapshotStatus, deliveryStatus string) string {
+	deliveryStatus = strings.TrimSpace(deliveryStatus)
+	if deliveryStatus != "" {
+		return deliveryStatus
+	}
+	return strings.TrimSpace(snapshotStatus)
+}
+
 func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Request, caseID int64, ref, teamName, publicSummary string, hasProposed bool) {
 	allegedRuleParagraph := "[Save a reviewed alleged rule to insert it here.]"
 	if allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID); err == nil {
@@ -1491,21 +1518,39 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 	}
 
 	rows, err := s.DB.Query(r.Context(), `
-		SELECT DISTINCT ON (message_kind,audience)
-		       message_kind,audience,revision,status,COALESCE(recipients,'[]'::jsonb)::text,
-		       subject,body,created_at
-		FROM sanction_correspondence_revisions
-		WHERE case_id=$1
-		ORDER BY message_kind,audience,revision DESC,id DESC`, caseID)
+		SELECT DISTINCT ON (correspondence.message_kind,correspondence.audience)
+		       correspondence.message_kind,correspondence.audience,correspondence.revision,
+		       correspondence.status,COALESCE(correspondence.recipients,'[]'::jsonb)::text,
+		       correspondence.subject,correspondence.body,correspondence.created_at,
+		       COALESCE(delivery.status,'')
+		FROM sanction_correspondence_revisions correspondence
+		LEFT JOIN LATERAL (
+			SELECT CASE
+				WHEN outbox.revoked_at IS NOT NULL THEN 'revoked'
+				ELSE COALESCE(attempt.status,CASE WHEN outbox.processed_at IS NULL THEN 'queued' ELSE 'processed' END)
+			END AS status
+			FROM sanction_notification_outbox outbox
+			LEFT JOIN LATERAL (
+				SELECT latest.status
+				FROM sanction_notification_attempts latest
+				WHERE latest.outbox_id=outbox.id
+				ORDER BY latest.attempt_number DESC,latest.id DESC LIMIT 1
+			) attempt ON TRUE
+			WHERE outbox.correspondence_revision_id=correspondence.id
+			ORDER BY outbox.id DESC LIMIT 1
+		) delivery ON TRUE
+		WHERE correspondence.case_id=$1
+		ORDER BY correspondence.message_kind,correspondence.audience,
+		         correspondence.revision DESC,correspondence.id DESC`, caseID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var kind, audience, status, recipientsJSON, subject, body string
+		var kind, audience, status, recipientsJSON, subject, body, deliveryStatus string
 		var revision int
 		var createdAt time.Time
-		if rows.Scan(&kind, &audience, &revision, &status, &recipientsJSON, &subject, &body, &createdAt) != nil {
+		if rows.Scan(&kind, &audience, &revision, &status, &recipientsJSON, &subject, &body, &createdAt, &deliveryStatus) != nil {
 			continue
 		}
 		recipients := []string{}
@@ -1527,7 +1572,7 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 			previews[i].subject = subject
 			previews[i].body = body
 			previews[i].recipientText = recipientText
-			previews[i].status = status
+			previews[i].status = effectiveCorrespondenceDisplayStatus(status, deliveryStatus)
 			previews[i].revision = revision
 			savedAt := createdAt
 			previews[i].savedAt = &savedAt
@@ -1536,14 +1581,7 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 
 	fmt.Fprint(w, `<section class="card mb-4 border-primary"><div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2"><span>Email templates and previews</span><span class="badge text-bg-light border">Nothing sends from this screen</span></div><div class="card-body"><p class="mb-1">These are the five messages used during an ineligible-player case.</p><p class="small text-muted">Templates are visible before they are saved. Once a workflow message is saved, its exact latest wording and recipients replace the template here.</p>`)
 	for i, preview := range previews {
-		statusClass := "text-bg-secondary"
-		if preview.status == "approved" || preview.status == "locked" {
-			statusClass = "text-bg-success"
-		} else if preview.status == "draft" || strings.Contains(preview.status, "not saved") {
-			statusClass = "text-bg-warning"
-		} else if preview.status == "queued" || preview.status == "sent" {
-			statusClass = "text-bg-primary"
-		}
+		statusClass := correspondenceStatusBadgeClass(preview.status)
 		versionText := ""
 		if preview.revision > 0 {
 			versionText = fmt.Sprintf(` <span class="small text-muted">version %d</span>`, preview.revision)
