@@ -1268,6 +1268,13 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	return out.String()
 }
 
+func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *int32) (string, string) {
+	if source == "ineligible_player" && assignedAdminID != nil && currentAdminID != nil && *assignedAdminID == *currentAdminID {
+		return "Back to my cases", "/admin/ineligible?scope=mine&state=all"
+	}
+	return "Back to cases", "/admin/cases"
+}
+
 func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -1291,10 +1298,11 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			  AND NOT EXISTS(SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=response.case_id
 				AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=response.id::text)`, id).Scan(&latestResponseEventID) == nil
 		csrf := middleware.CSRFToken(r)
+		backLabel, backURL := adminCaseBackDestination(source, assignedAdminID, adminActor(r).ID)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Case "+ref)
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="/admin/cases" class="btn btn-sm btn-outline-secondary mb-3">Back to cases</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="%s" class="btn btn-sm btn-outline-secondary mb-3">%s</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(backURL), escapeHTML(backLabel), escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
