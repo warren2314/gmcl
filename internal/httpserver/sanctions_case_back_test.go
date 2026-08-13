@@ -8,7 +8,7 @@ func TestAdminCaseBackDestinationReturnsOwnerToMyCases(t *testing.T) {
 	if label != "Back to my cases" {
 		t.Fatalf("label=%q want Back to my cases", label)
 	}
-	if destination != "/admin#my-cases" {
+	if destination != "/admin/dashboard#my-cases" {
 		t.Fatalf("destination=%q want personal dashboard case section", destination)
 	}
 }
