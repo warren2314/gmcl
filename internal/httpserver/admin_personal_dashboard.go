@@ -163,7 +163,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		queueClauses = append(queueClauses, "(cases.status='decision_proposed' AND cases.proposed_by_admin_id IS DISTINCT FROM $1)")
 	}
 	if data.CanPublish {
-		queueClauses = append(queueClauses, "cases.status='approved'")
+		queueClauses = append(queueClauses, "(cases.status='approved' AND $1::integer IS NOT NULL)")
 	}
 	if len(queueClauses) > 0 {
 		queueRows, queryErr := s.DB.Query(ctx, `SELECT cases.id,cases.reference,cases.status,
@@ -285,11 +285,11 @@ func writePersonalTaskList(w http.ResponseWriter, items []personalWorkTask, tota
 				badge = "text-bg-danger"
 			}
 		}
-		fmt.Fprintf(w, `<a class="list-group-item list-group-item-action" href="/admin/cases/tasks#task-%d"><div class="d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge %s">%s</span></div><div class="small">%s</div></a>`,
+		fmt.Fprintf(w, `<a class="list-group-item list-group-item-action" href="/admin/cases/tasks?mine=1#task-%d"><div class="d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge %s">%s</span></div><div class="small">%s</div></a>`,
 			item.ID, escapeHTML(item.Reference), badge, escapeHTML(due), escapeHTML(defaultString(item.Note, "Open supporting task")))
 	}
 	if total > int64(len(items)) {
-		fmt.Fprint(w, `<a class="list-group-item text-center" href="/admin/cases/tasks">View all my tasks</a>`)
+		fmt.Fprint(w, `<a class="list-group-item text-center" href="/admin/cases/tasks?mine=1">View all my tasks</a>`)
 	}
 	fmt.Fprint(w, `</div></div></div>`)
 }
