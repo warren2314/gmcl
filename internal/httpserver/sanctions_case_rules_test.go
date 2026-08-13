@@ -47,3 +47,31 @@ func TestRankHawkRuleCandidatesCanPreferDispensationWhenCaseMentionsIt(t *testin
 		t.Fatalf("top HawkAI candidate = %s, want 3.7.3.1", got)
 	}
 }
+
+func TestCaseAllegedRuleFormValuesKeepsSavedReviewReasonVisible(t *testing.T) {
+	rule := caseAllegedRule{
+		Reference: "8.3.2.5",
+		Reason:    "The player appeared before completing the required registration.",
+	}
+	reference, reason := caseAllegedRuleFormValues(rule, caseHawkRuleSuggestion{
+		SuggestedRuleReference: "3.5",
+	})
+	if reference != rule.Reference {
+		t.Fatalf("reference=%q want %q", reference, rule.Reference)
+	}
+	if reason != rule.Reason {
+		t.Fatalf("reason=%q want saved review reason %q", reason, rule.Reason)
+	}
+}
+
+func TestCaseAllegedRuleFormValuesUsesHawkSuggestionOnlyForNewReview(t *testing.T) {
+	reference, reason := caseAllegedRuleFormValues(caseAllegedRule{}, caseHawkRuleSuggestion{
+		SuggestedRuleReference: "8.3.2.5",
+	})
+	if reference != "8.3.2.5" {
+		t.Fatalf("reference=%q want HawkAI suggestion", reference)
+	}
+	if reason == "" {
+		t.Fatal("new suggested rule should include review guidance")
+	}
+}

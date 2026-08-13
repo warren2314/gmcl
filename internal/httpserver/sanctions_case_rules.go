@@ -347,6 +347,16 @@ func (s *Server) handleAdminCaseHawkRuleSuggestion() http.HandlerFunc {
 	}
 }
 
+func caseAllegedRuleFormValues(rule caseAllegedRule, hawkSuggestion caseHawkRuleSuggestion) (string, string) {
+	formReference := rule.Reference
+	selectionReason := rule.Reason
+	if formReference == "" && hawkSuggestion.SuggestedRuleReference != "" {
+		formReference = hawkSuggestion.SuggestedRuleReference
+		selectionReason = "HawkAI ranked this as the closest published rule. Replace this sentence with the case fact that makes the rule relevant after checking the source wording."
+	}
+	return formReference, selectionReason
+}
+
 func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Context, caseID int64, status, csrf string) caseAllegedRule {
 	rule, err := loadCaseAllegedRule(ctx, s.DB, caseID)
 	if err == nil {
@@ -407,12 +417,8 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 		}
 		options = builder.String()
 	}
-	formReference := rule.Reference
-	selectionReason := ""
-	if formReference == "" && hawkSuggestion.SuggestedRuleReference != "" {
-		formReference = hawkSuggestion.SuggestedRuleReference
-		selectionReason = "HawkAI ranked this as the closest published rule. Replace this sentence with the case fact that makes the rule relevant after checking the source wording."
-	}
+	formReference, selectionReason := caseAllegedRuleFormValues(rule, hawkSuggestion)
+
 	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/alleged-rule" class="card mb-4 border-primary" id="record-alleged-rule"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Next action: %s alleged rule</strong></div><div class="card-body"><p>Choose the published rule being investigated. You do not need HawkAI to complete this step.</p><label class="form-label">Published GMCL rule reference</label><input class="form-control" name="rule_reference" list="published-rule-references" value="%s" placeholder="e.g. 3.5" maxlength="100" required><datalist id="published-rule-references">%s</datalist><div class="form-text">Select a listed published rule and check its wording before saving.</div><label class="form-label mt-3">Why this rule is relevant to the allegation</label><textarea class="form-control" name="selection_reason" rows="2" maxlength="2000" required>%s</textarea><div class="form-text">Saving creates a new case-history version. Earlier versions remain visible for audit purposes.</div></div><div class="card-footer"><button class="btn btn-primary">Save reviewed rule</button></div></form>`, caseID, escapeHTML(csrf), map[bool]string{true: "revise", false: "record"}[rule.ID > 0], escapeHTML(formReference), options, escapeHTML(selectionReason))
 	return rule
 }
