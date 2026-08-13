@@ -742,6 +742,10 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 </div>
 `)
 
+		// Put each administrator's actionable casework first. The existing
+		// league-wide statistics remain below as a secondary overview.
+		s.writeAdminPersonalWork(w, r)
+
 		// ── KPI cards ────────────────────────────────────────────────────
 		fmt.Fprint(w, `<div class="row g-3 mb-4">`)
 
