@@ -275,7 +275,7 @@ func loadTrackerBackfillApplyPreview(ctx context.Context, query backfillApplyQue
 			       EXISTS(SELECT 1 FROM sanction_notification_outbox outbox WHERE outbox.case_id=c.id),
 			       EXISTS(SELECT 1 FROM sanction_response_requests request WHERE request.case_id=c.id AND request.status IN ('queued','pending')),
 			       EXISTS(SELECT 1 FROM sanction_case_access_tokens token WHERE token.case_id=c.id AND token.purpose='respond' AND token.revoked_at IS NULL AND token.expires_at>now())
-			FROM sanction_intake_case_links link
+			FROM sanction_intake_effective_case_links link
 			JOIN sanction_cases c ON c.id=link.case_id
 			WHERE link.intake_id=$1
 			ORDER BY c.id`

@@ -177,7 +177,7 @@ func (s *PGStore) StageNative(ctx context.Context, submission NativeSubmission) 
 			_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,metadata)
 				SELECT DISTINCT link.case_id,'linked_intake_revision_changed','system','Native ineligible-player intake',$2,
 					jsonb_build_object('intake_id',$1::bigint,'intake_revision',$3::integer,'origin','native_form')
-				FROM sanction_intake_case_links link WHERE link.intake_id=$1`, intakeID, resolvedChangeMessage, nextRevision)
+				FROM sanction_intake_effective_case_links link WHERE link.intake_id=$1`, intakeID, resolvedChangeMessage, nextRevision)
 		}
 		if err == nil && resolvedChange {
 			err = invalidateLinkedCaseResponseWindows(ctx, tx, intakeID, resolvedChangeMessage, nextRevision)

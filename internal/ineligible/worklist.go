@@ -181,7 +181,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 		WHERE intake.origin='google_form'
 		  AND intake.state IN ('new','reviewing','exception')
 		  AND NOT EXISTS(
-			SELECT 1 FROM sanction_intake_case_links link
+			SELECT 1 FROM sanction_intake_effective_case_links link
 			WHERE link.intake_id=intake.id AND link.relationship<>'duplicate'
 		  )
 		ORDER BY COALESCE(observed.source_row_number,latest.source_row_number,2147483647),intake.id`
