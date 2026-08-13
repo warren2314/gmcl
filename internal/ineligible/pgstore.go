@@ -303,7 +303,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 				if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,metadata)
 					SELECT DISTINCT link.case_id,'linked_intake_revision_changed','system','Daily ineligible-player sync',$2,
 						jsonb_build_object('intake_id',$1::bigint,'intake_revision',$3::integer,'attachment_only',true)
-					FROM sanction_intake_case_links link WHERE link.intake_id=$1`, intakeID, message, latestRevision); err != nil {
+					FROM sanction_intake_effective_case_links link WHERE link.intake_id=$1`, intakeID, message, latestRevision); err != nil {
 					return ApplyUnchanged, err
 				}
 				if err = invalidateLinkedCaseResponseWindows(ctx, tx, intakeID, message, latestRevision); err != nil {
@@ -328,7 +328,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 				if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,metadata)
 					SELECT DISTINCT link.case_id,'linked_intake_revision_changed','system','Daily ineligible-player sync',$2,
 						jsonb_build_object('intake_id',$1::bigint,'intake_revision',$3::integer,'validation_exception',true)
-					FROM sanction_intake_case_links link WHERE link.intake_id=$1`, intakeID, message, latestRevision); err != nil {
+					FROM sanction_intake_effective_case_links link WHERE link.intake_id=$1`, intakeID, message, latestRevision); err != nil {
 					return ApplyUnchanged, err
 				}
 				if err = invalidateLinkedCaseResponseWindows(ctx, tx, intakeID, message, latestRevision); err != nil {
@@ -389,7 +389,7 @@ func (s *PGStore) ApplyRow(ctx context.Context, runID int64, row IntakeRow) (App
 		if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,metadata)
 			SELECT DISTINCT link.case_id,'linked_intake_revision_changed','system','Daily ineligible-player sync',$2,
 				jsonb_build_object('intake_id',$1::bigint,'intake_revision',$3::integer)
-			FROM sanction_intake_case_links link WHERE link.intake_id=$1`, intakeID, resolvedChangeMessage, nextRevision); err != nil {
+			FROM sanction_intake_effective_case_links link WHERE link.intake_id=$1`, intakeID, resolvedChangeMessage, nextRevision); err != nil {
 			return ApplyUnchanged, err
 		}
 		if err = invalidateLinkedCaseResponseWindows(ctx, tx, intakeID, resolvedChangeMessage, nextRevision); err != nil {
@@ -403,7 +403,7 @@ func loadGoogleIntakeCurrent(ctx context.Context, tx pgx.Tx, intakeID int64) (go
 	var current googleIntakeCurrent
 	err := tx.QueryRow(ctx, `SELECT intake.id,intake.latest_revision,intake.state,COALESCE(intake.exception_message,''),
 		intake.state IN ('linked','duplicate','ignored') OR EXISTS(
-			SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id
+			SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id
 		),COALESCE(latest.id,0),COALESCE(latest.raw_sha256,''),
 		COALESCE(latest.raw_data ? '_gmcl_identity_anchor_exception',FALSE)
 		FROM sanction_intakes intake
@@ -495,7 +495,7 @@ func recordGoogleIdentityException(ctx context.Context, tx pgx.Tx, runID int64, 
 			SELECT DISTINCT link.case_id,'linked_intake_revision_changed','system','Daily ineligible-player sync',$2,
 				jsonb_build_object('intake_id',$1::bigint,'intake_revision',$3::integer,
 					'identity_change',true,'identity_conflict_kind',$4::text,'source_row_number',$5::integer)
-			FROM sanction_intake_case_links link WHERE link.intake_id=$1`,
+			FROM sanction_intake_effective_case_links link WHERE link.intake_id=$1`,
 			current.ID, message, nextRevision, conflictKind, row.SourceRowNumber); err != nil {
 			return ApplyUnchanged, err
 		}
@@ -509,7 +509,7 @@ func recordGoogleIdentityException(ctx context.Context, tx pgx.Tx, runID int64, 
 func invalidateLinkedCaseResponseWindows(ctx context.Context, tx pgx.Tx, intakeID int64, reason string, revision int) error {
 	_, err := tx.Exec(ctx, `WITH affected AS (
 		SELECT DISTINCT link.case_id
-		FROM sanction_intake_case_links link
+		FROM sanction_intake_effective_case_links link
 		WHERE link.intake_id=$1 AND link.relationship<>'duplicate'
 	), cancelled AS (
 		UPDATE sanction_response_requests request

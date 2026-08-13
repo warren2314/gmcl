@@ -221,7 +221,7 @@ func linkIneligibleSubjectRevision(ctx context.Context, tx pgx.Tx, subjectID int
 func projectIneligibleIntakeMergeState(ctx context.Context, tx pgx.Tx, intakeID int64) error {
 	_, err := tx.Exec(ctx, `UPDATE sanction_intakes intake
 		SET state=CASE WHEN EXISTS(
-			SELECT 1 FROM sanction_intake_case_links link
+			SELECT 1 FROM sanction_intake_effective_case_links link
 			JOIN sanction_intake_revisions latest
 			  ON latest.intake_id=intake.id AND latest.revision=intake.latest_revision
 			WHERE link.intake_id=intake.id AND link.relationship<>'duplicate'
@@ -234,7 +234,7 @@ func projectIneligibleIntakeMergeState(ctx context.Context, tx pgx.Tx, intakeID 
 			  )
 		) THEN 'exception' ELSE 'linked' END,
 		exception_message=CASE WHEN EXISTS(
-			SELECT 1 FROM sanction_intake_case_links link
+			SELECT 1 FROM sanction_intake_effective_case_links link
 			JOIN sanction_intake_revisions latest
 			  ON latest.intake_id=intake.id AND latest.revision=intake.latest_revision
 			WHERE link.intake_id=intake.id AND link.relationship<>'duplicate'

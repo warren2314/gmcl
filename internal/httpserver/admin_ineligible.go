@@ -309,7 +309,7 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		FROM sanction_intakes i
 		LEFT JOIN LATERAL (
 			SELECT l.case_id
-			FROM sanction_intake_case_links l
+			FROM sanction_intake_effective_case_links l
 			WHERE l.intake_id=i.id
 			ORDER BY CASE l.relationship WHEN 'primary' THEN 0 WHEN 'split' THEN 1 ELSE 2 END,l.id DESC
 			LIMIT 1
@@ -551,9 +551,9 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 	var counts ineligibleDashboardCounts
 	err := s.DB.QueryRow(ctx, `
 		SELECT
-		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id))),
-		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM sanction_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
+		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM sanction_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
 		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('submitted','triage','investigating','response_pending')),
 		 (SELECT COUNT(*) FROM sanction_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
@@ -734,7 +734,7 @@ func writeIneligibleFlash(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminIneligibleCount() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var count int64
-		if err := s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id))`).Scan(&count); err != nil {
+		if err := s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))`).Scan(&count); err != nil {
 			http.Error(w, "count unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -1364,7 +1364,7 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 		playCricketMatchID := sourceInt64Field(rawJSON, "play-cricket match id", "play cricket match id")
 		playCricketPlayerID := sourceInt64Field(rawJSON, "play-cricket player id", "play cricket player id")
 		var existingLinks int
-		_ = tx.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intake_case_links WHERE intake_id=$1`, intakeID).Scan(&existingLinks)
+		_ = tx.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intake_effective_case_links WHERE intake_id=$1`, intakeID).Scan(&existingLinks)
 		relationship := "primary"
 		if existingLinks > 0 {
 			relationship = "split"
@@ -1494,7 +1494,7 @@ func (s *Server) handleAdminIneligibleLinkCase() http.HandlerFunc {
 		playCricketMatchID := sourceInt64Field(rawJSON, "play-cricket match id", "play cricket match id")
 		playCricketPlayerID := sourceInt64Field(rawJSON, "play-cricket player id", "play cricket player id")
 		var linkCount int
-		_ = tx.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intake_case_links WHERE intake_id=$1`, intakeID).Scan(&linkCount)
+		_ = tx.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intake_effective_case_links WHERE intake_id=$1`, intakeID).Scan(&linkCount)
 		relationship := "primary"
 		if linkCount > 0 {
 			relationship = "supporting"
@@ -1619,7 +1619,7 @@ func (s *Server) handleAdminIneligibleDuplicate() http.HandlerFunc {
 		var revisionID int64
 		var hasActiveCaseLink bool
 		if err = tx.QueryRow(r.Context(), `SELECT intake.state,COALESCE(intake.reporting_club_text,''),revision.id,
-			EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id AND link.relationship<>'duplicate')
+			EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id AND link.relationship<>'duplicate')
 			FROM sanction_intakes intake
 			JOIN LATERAL (SELECT id FROM sanction_intake_revisions WHERE intake_id=intake.id ORDER BY revision DESC LIMIT 1) revision ON TRUE
 			WHERE intake.id=$1 FOR UPDATE OF intake`, intakeID).Scan(&state, &reportingText, &revisionID, &hasActiveCaseLink); err != nil {
@@ -1737,7 +1737,7 @@ func (s *Server) handleAdminIneligibleIgnore() http.HandlerFunc {
 		var state string
 		var hasActiveCaseLink bool
 		if err = tx.QueryRow(r.Context(), `SELECT intake.state,
-			EXISTS(SELECT 1 FROM sanction_intake_case_links link WHERE link.intake_id=intake.id AND link.relationship<>'duplicate')
+			EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id AND link.relationship<>'duplicate')
 			FROM sanction_intakes intake WHERE intake.id=$1 FOR UPDATE OF intake`, intakeID).Scan(&state, &hasActiveCaseLink); err != nil {
 			http.NotFound(w, r)
 			return
