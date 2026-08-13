@@ -455,11 +455,22 @@ func parseIntOrNil(v string) *int {
 func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		includeClosed := r.URL.Query().Get("archive") == "1"
+		mineOnly := r.URL.Query().Get("mine") == "1"
 		where := `t.status IN ('open','in_progress')`
 		if includeClosed {
 			where = `TRUE`
 		}
-		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`)
+		args := []any{}
+		if mineOnly {
+			actor := adminActor(r)
+			if actor.ID == nil {
+				http.Error(w, "administrator identity is required", http.StatusUnauthorized)
+				return
+			}
+			args = append(args, *actor.ID)
+			where += ` AND t.assigned_admin_id=$1`
+		}
+		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`, args...)
 		if err != nil {
 			http.Error(w, "tasks unavailable", 500)
 			return
@@ -469,7 +480,11 @@ func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions follow-up tasks")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4" style="max-width:1000px"><div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-3"><div><h1 class="h2">Sanctions follow-up tasks</h1><p class="text-muted mb-0">Points deductions, fine recovery, Board intervention, suspension reviews, appeals and ban expiry.</p></div><a class="btn btn-outline-secondary align-self-sm-start" href="/admin/cases">Back to cases</a></div><form method="GET" class="mb-3"><label class="form-check"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
+		fmt.Fprint(w, `<main class="container py-4" style="max-width:1000px"><div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-3"><div><h1 class="h2">Sanctions follow-up tasks</h1><p class="text-muted mb-0">Points deductions, fine recovery, Board intervention, suspension reviews, appeals and ban expiry.</p></div><a class="btn btn-outline-secondary align-self-sm-start" href="/admin/dashboard">Back to My work</a></div><form method="GET" class="mb-3">`)
+		if mineOnly {
+			fmt.Fprint(w, `<input type="hidden" name="mine" value="1"><div class="alert alert-info py-2">Showing tasks assigned to you. <a class="alert-link" href="/admin/cases/tasks">Show all tasks</a></div>`)
+		}
+		fmt.Fprint(w, `<label class="form-check"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
 		if includeClosed {
 			fmt.Fprint(w, ` checked`)
 		}
