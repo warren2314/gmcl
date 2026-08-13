@@ -455,11 +455,22 @@ func parseIntOrNil(v string) *int {
 func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		includeClosed := r.URL.Query().Get("archive") == "1"
+		mineOnly := r.URL.Query().Get("mine") == "1"
 		where := `t.status IN ('open','in_progress')`
 		if includeClosed {
 			where = `TRUE`
 		}
-		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`)
+		args := []any{}
+		if mineOnly {
+			actor := adminActor(r)
+			if actor.ID == nil {
+				http.Error(w, "administrator identity is required", http.StatusUnauthorized)
+				return
+			}
+			args = append(args, *actor.ID)
+			where += ` AND t.assigned_admin_id=$1`
+		}
+		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`, args...)
 		if err != nil {
 			http.Error(w, "tasks unavailable", 500)
 			return
@@ -469,7 +480,11 @@ func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions follow-up tasks")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4" style="max-width:1000px"><div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-3"><div><h1 class="h2">Sanctions follow-up tasks</h1><p class="text-muted mb-0">Points deductions, fine recovery, Board intervention, suspension reviews, appeals and ban expiry.</p></div><a class="btn btn-outline-secondary align-self-sm-start" href="/admin/cases">Back to cases</a></div><form method="GET" class="mb-3"><label class="form-check"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
+		fmt.Fprint(w, `<main class="container py-4" style="max-width:1000px"><div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-3"><div><h1 class="h2">Sanctions follow-up tasks</h1><p class="text-muted mb-0">Points deductions, fine recovery, Board intervention, suspension reviews, appeals and ban expiry.</p></div><a class="btn btn-outline-secondary align-self-sm-start" href="/admin/dashboard">Back to My work</a></div><form method="GET" class="mb-3">`)
+		if mineOnly {
+			fmt.Fprint(w, `<input type="hidden" name="mine" value="1"><div class="alert alert-info py-2">Showing tasks assigned to you. <a class="alert-link" href="/admin/cases/tasks">Show all tasks</a></div>`)
+		}
+		fmt.Fprint(w, `<label class="form-check"><input class="form-check-input" type="checkbox" name="archive" value="1"`)
 		if includeClosed {
 			fmt.Fprint(w, ` checked`)
 		}
@@ -488,7 +503,7 @@ func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 			if due != nil {
 				dueLabel = due.In(s.LondonLoc).Format("02 Jan 2006 15:04")
 			}
-			fmt.Fprintf(w, `<div class="col-12"><article class="card"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><div><a href="/admin/cases/%d"><strong>%s</strong></a> <span class="badge text-bg-secondary">%s</span></div><span>%s</span></div><form method="POST" action="/admin/cases/tasks/%d"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-3"><label class="form-label">Status</label><select class="form-select" name="status"><option value="open"%s>Open</option><option value="in_progress"%s>In progress</option><option value="complete"%s>Complete</option><option value="cancelled"%s>Cancelled</option></select></div><div class="col-md-4"><label class="form-label">Operational note</label><input class="form-control" name="note" value="%s"></div><div class="col-md-5"><label class="form-label">Reason for change</label><input class="form-control" name="reason" required placeholder="Why is this task changing?"></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><small class="text-muted">Due: %s · Assigned: %s · Created: %s</small><button class="btn btn-primary">Record task update</button></div></form></article></div>`, caseID, escapeHTML(ref), escapeHTML(strings.ReplaceAll(taskType, "_", " ")), escapeHTML(status), taskID, csrf, selectedMode(status, "open"), selectedMode(status, "in_progress"), selectedMode(status, "complete"), selectedMode(status, "cancelled"), escapeHTML(note), escapeHTML(dueLabel), escapeHTML(defaultString(assigned, "unassigned")), created.In(s.LondonLoc).Format("02 Jan 2006"))
+			fmt.Fprintf(w, `<div class="col-12" id="task-%d"><article class="card"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><div><a href="/admin/cases/%d"><strong>%s</strong></a> <span class="badge text-bg-secondary">%s</span></div><span>%s</span></div><form method="POST" action="/admin/cases/tasks/%d"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-3"><label class="form-label">Status</label><select class="form-select" name="status"><option value="open"%s>Open</option><option value="in_progress"%s>In progress</option><option value="complete"%s>Complete</option><option value="cancelled"%s>Cancelled</option></select></div><div class="col-md-4"><label class="form-label">Operational note</label><input class="form-control" name="note" value="%s"></div><div class="col-md-5"><label class="form-label">Reason for change</label><input class="form-control" name="reason" required placeholder="Why is this task changing?"></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><small class="text-muted">Due: %s · Assigned: %s · Created: %s</small><button class="btn btn-primary">Record task update</button></div></form></article></div>`, taskID, caseID, escapeHTML(ref), escapeHTML(strings.ReplaceAll(taskType, "_", " ")), escapeHTML(status), taskID, csrf, selectedMode(status, "open"), selectedMode(status, "in_progress"), selectedMode(status, "complete"), selectedMode(status, "cancelled"), escapeHTML(note), escapeHTML(dueLabel), escapeHTML(defaultString(assigned, "unassigned")), created.In(s.LondonLoc).Format("02 Jan 2006"))
 		}
 		if count == 0 {
 			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-success">There are no follow-up tasks in this view.</div></div>`)
