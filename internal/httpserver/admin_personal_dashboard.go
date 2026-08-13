@@ -291,7 +291,7 @@ func writePersonalTaskList(w http.ResponseWriter, items []personalWorkTask, tota
 }
 
 func writePersonalCaseList(w http.ResponseWriter, items []personalWorkCase, total int64, loc *time.Location) {
-	fmt.Fprint(w, `<div class="col-12 col-xl-6"><div class="border rounded h-100"><div class="p-3 border-bottom"><strong>Cases I own</strong></div><div class="list-group list-group-flush">`)
+	fmt.Fprint(w, `<div class="col-12 col-xl-6" id="my-cases"><div class="border rounded h-100"><div class="p-3 border-bottom"><strong>Cases I own</strong></div><div class="list-group list-group-flush">`)
 	if len(items) == 0 {
 		fmt.Fprint(w, `<div class="list-group-item text-muted">No active cases are assigned to you.</div>`)
 	}

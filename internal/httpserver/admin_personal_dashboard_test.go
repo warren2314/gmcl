@@ -57,6 +57,7 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 		"Responses awaiting review",
 		`href="/admin/cases/1176"`,
 		`href="/admin/cases/tasks?mine=1#task-42"`,
+		`id="my-cases"`,
 		"Overdue",
 	} {
 		if !strings.Contains(html, want) {
