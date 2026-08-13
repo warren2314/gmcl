@@ -203,10 +203,10 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		}
 		return 0, errors.New("case is not in a state that permits a decision proposal")
 	}
+	if strings.TrimSpace(req.RuleReference) == "" {
+		return 0, errors.New("an outcome requires a reviewed rule reference or an explicit not-applicable determination")
+	}
 	if source == "ineligible_player" {
-		if strings.TrimSpace(req.RuleReference) == "" {
-			return 0, errors.New("an ineligible-player outcome requires a reviewed rule reference or an explicit not-applicable determination")
-		}
 		if err = EnsureIneligibleLinkedIntakesCurrent(ctx, tx, req.CaseID); err != nil {
 			return 0, err
 		}

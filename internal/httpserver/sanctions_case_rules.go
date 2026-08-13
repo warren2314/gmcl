@@ -218,10 +218,7 @@ func (s *Server) handleAdminCaseAllegedRuleSave() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if sourceType != "ineligible_player" {
-			http.Error(w, "alleged-rule selection is currently limited to ineligible-player investigations", http.StatusConflict)
-			return
-		}
+		_ = sourceType
 		if !map[string]bool{"submitted": true, "triage": true, "investigating": true}[status] {
 			http.Error(w, "the alleged rule is locked once a response is requested or a decision is proposed", http.StatusConflict)
 			return
@@ -357,7 +354,7 @@ func caseAllegedRuleFormValues(rule caseAllegedRule, hawkSuggestion caseHawkRule
 	return formReference, selectionReason
 }
 
-func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Context, caseID int64, status, csrf string) caseAllegedRule {
+func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Context, caseID int64, status, csrf, sourceType string) caseAllegedRule {
 	rule, err := loadCaseAllegedRule(ctx, s.DB, caseID)
 	if err == nil {
 		excerpt := strings.TrimSpace(rule.Text)
@@ -374,33 +371,35 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 		return rule
 	}
 	var hawkSuggestion caseHawkRuleSuggestion
-	var hawkSuggestionJSON []byte
-	if suggestionErr := s.DB.QueryRow(ctx, `SELECT after_data FROM sanction_case_events
+	if sourceType == "ineligible_player" {
+		var hawkSuggestionJSON []byte
+		if suggestionErr := s.DB.QueryRow(ctx, `SELECT after_data FROM sanction_case_events
 		WHERE case_id=$1 AND event_type='hawk_rule_suggested' ORDER BY id DESC LIMIT 1`, caseID).Scan(&hawkSuggestionJSON); suggestionErr == nil {
-		_ = json.Unmarshal(hawkSuggestionJSON, &hawkSuggestion)
-	}
-	fmt.Fprintf(w, `<section class="card mb-4 border-warning"><div class="card-header d-flex justify-content-between align-items-center"><span>HawkAI rule helper</span><span class="badge text-bg-light border">Staff confirmation required</span></div><div class="card-body"><p class="small text-muted">HawkAI compares this case's wording and any rule already recorded with GMCL's active published rules. It does not decide whether a breach occurred and it does not send case details outside GMCL.</p>`)
-	if len(hawkSuggestion.Candidates) == 0 {
-		fmt.Fprint(w, `<p class="mb-0">No suggestion has been prepared for this case.</p>`)
-	} else {
-		alertClass := "alert-warning"
-		lead := "Highest case match"
-		if rule.ID > 0 && strings.EqualFold(normalizeRuleReference(rule.Reference), normalizeRuleReference(hawkSuggestion.SuggestedRuleReference)) {
-			alertClass = "alert-success"
-			lead = "Matches the recorded rule"
+			_ = json.Unmarshal(hawkSuggestionJSON, &hawkSuggestion)
 		}
-		fmt.Fprintf(w, `<div class="alert %s py-2"><strong>%s: Rule %s.</strong> This ranking is based on the case facts shown above. Check the cited wording before relying on it.</div>`, alertClass, lead, escapeHTML(hawkSuggestion.SuggestedRuleReference))
-		for _, candidate := range hawkSuggestion.Candidates {
-			matchReason := candidate.MatchReason
-			if strings.TrimSpace(matchReason) == "" {
-				matchReason = "Contains published player-eligibility wording; no case-specific explanation was stored with this older suggestion."
+		fmt.Fprintf(w, `<section class="card mb-4 border-warning"><div class="card-header d-flex justify-content-between align-items-center"><span>HawkAI rule helper</span><span class="badge text-bg-light border">Staff confirmation required</span></div><div class="card-body"><p class="small text-muted">HawkAI compares this case's wording and any rule already recorded with GMCL's active published rules. It does not decide whether a breach occurred and it does not send case details outside GMCL.</p>`)
+		if len(hawkSuggestion.Candidates) == 0 {
+			fmt.Fprint(w, `<p class="mb-0">No suggestion has been prepared for this case.</p>`)
+		} else {
+			alertClass := "alert-warning"
+			lead := "Highest case match"
+			if rule.ID > 0 && strings.EqualFold(normalizeRuleReference(rule.Reference), normalizeRuleReference(hawkSuggestion.SuggestedRuleReference)) {
+				alertClass = "alert-success"
+				lead = "Matches the recorded rule"
 			}
-			fmt.Fprintf(w, `<article class="border rounded p-3 mb-2"><div><strong>Rule %s - %s</strong></div><div class="small text-primary-emphasis mt-2"><strong>Why HawkAI ranked this:</strong> %s.</div><p class="small my-2">%s</p><a class="small" href="%s" target="_blank" rel="noopener noreferrer">Open published source: %s</a></article>`,
-				escapeHTML(candidate.RuleReference), escapeHTML(candidate.Heading), escapeHTML(matchReason), escapeHTML(candidate.Excerpt), escapeHTML(candidate.URL), escapeHTML(candidate.SourceTitle))
+			fmt.Fprintf(w, `<div class="alert %s py-2"><strong>%s: Rule %s.</strong> This ranking is based on the case facts shown above. Check the cited wording before relying on it.</div>`, alertClass, lead, escapeHTML(hawkSuggestion.SuggestedRuleReference))
+			for _, candidate := range hawkSuggestion.Candidates {
+				matchReason := candidate.MatchReason
+				if strings.TrimSpace(matchReason) == "" {
+					matchReason = "Contains published player-eligibility wording; no case-specific explanation was stored with this older suggestion."
+				}
+				fmt.Fprintf(w, `<article class="border rounded p-3 mb-2"><div><strong>Rule %s - %s</strong></div><div class="small text-primary-emphasis mt-2"><strong>Why HawkAI ranked this:</strong> %s.</div><p class="small my-2">%s</p><a class="small" href="%s" target="_blank" rel="noopener noreferrer">Open published source: %s</a></article>`,
+					escapeHTML(candidate.RuleReference), escapeHTML(candidate.Heading), escapeHTML(matchReason), escapeHTML(candidate.Excerpt), escapeHTML(candidate.URL), escapeHTML(candidate.SourceTitle))
+			}
 		}
+		fmt.Fprintf(w, `</div><div class="card-footer"><form method="POST" action="/admin/cases/%d/hawk-rule-suggestion"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-warning">%s</button></form></div></section>`,
+			caseID, escapeHTML(csrf), map[bool]string{true: "Refresh HawkAI suggestions", false: "Ask HawkAI to suggest rules"}[len(hawkSuggestion.Candidates) > 0])
 	}
-	fmt.Fprintf(w, `</div><div class="card-footer"><form method="POST" action="/admin/cases/%d/hawk-rule-suggestion"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-warning">%s</button></form></div></section>`,
-		caseID, escapeHTML(csrf), map[bool]string{true: "Refresh HawkAI suggestions", false: "Ask HawkAI to suggest rules"}[len(hawkSuggestion.Candidates) > 0])
 	rows, queryErr := s.DB.Query(ctx, `SELECT DISTINCT ON (LOWER(BTRIM(chunk.rule_reference))) chunk.rule_reference,chunk.heading_path
 		FROM rule_releases release JOIN rule_chunks chunk ON chunk.release_id=release.id
 		WHERE release.status='active' AND NULLIF(BTRIM(chunk.rule_reference),'') IS NOT NULL

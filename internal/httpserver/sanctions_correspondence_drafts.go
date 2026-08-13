@@ -81,15 +81,12 @@ func (s *Server) handleAdminCaseResponseDraftSave() http.HandlerFunc {
 			http.Error(w, "response drafts can only be saved before a decision is proposed", http.StatusConflict)
 			return
 		}
-		allegedRuleParagraph := ""
-		if sourceType == "ineligible_player" {
-			allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, caseID)
-			if ruleErr != nil {
-				http.Error(w, "record the published rule alleged in this investigation before saving correspondence", http.StatusConflict)
-				return
-			}
-			allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+		allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, caseID)
+		if ruleErr != nil {
+			http.Error(w, "record the published rule alleged in this investigation before saving correspondence", http.StatusConflict)
+			return
 		}
+		allegedRuleParagraph := allegedRuleCorrespondenceParagraph(allegedRule)
 		if validationErr := validateResponseDraftContent(kind, body, publicSummary, allegedRuleParagraph); validationErr != nil {
 			http.Error(w, validationErr.Error(), http.StatusBadRequest)
 			return
@@ -274,21 +271,47 @@ func defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRulePar
 	}
 }
 
+func defaultAdminReportedCaseResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph string) map[string]responseDraftView {
+	return map[string]responseDraftView{
+		"response_request": {
+			kind:    "response_request",
+			subject: "Please respond: GMCL case concerning " + teamName + " (" + ref + ")",
+			body: "Dear Club Secretary,\n\nGMCL is reviewing a reported matter concerning " + teamName + ".\n\n" +
+				"What we are asking about:\n\n" + publicSummary + "\n\n" +
+				"Rule being checked:\n\n" + allegedRuleParagraph +
+				"\n\nNo decision has been made. Before GMCL reaches a decision, please tell us:\n" +
+				"- what happened and the club's response to the reported facts;\n" +
+				"- whether the club believes the cited rule applies, and why; and\n" +
+				"- any relevant context or supporting evidence we should consider.\n\n" +
+				"Please respond using this secure link:\n" + responseLinkPlaceholder +
+				"\n\nPlease reply within seven days of this email being delivered. If no response is received, the investigation may continue using the available information, but no adverse decision is made automatically because the club did not reply.\n\n" +
+				"Case reference: " + ref + "\n\nRegards,\nGreater Manchester Cricket League",
+		},
+		"response_reminder": {
+			kind:    "response_reminder",
+			subject: "Reminder: GMCL case response due (" + ref + ")",
+			body: "Dear Club Secretary,\n\nThis is a reminder about GMCL's reported case concerning " + teamName +
+				". Your response for case " + ref + " is due in two days.\n\n" +
+				"No decision has been made. Please use the secure link to respond to the reported facts and cited rule, and provide any context or evidence GMCL should consider:\n" + responseLinkPlaceholder +
+				"\n\nIf you have already responded, no further action is needed. No adverse decision is made automatically if the deadline passes.\n\nRegards,\nGreater Manchester Cricket League",
+		},
+	}
+}
 func adminClubResponseStepsHTML() string {
 	return `<section class="card mb-3 border-primary" id="contact-club"><div class="card-header"><strong>Next action: contact the club for its explanation</strong></div><div class="card-body"><p class="mb-3">No email is sent merely by opening this case. Complete these three steps in order:</p><ol class="mb-0"><li class="mb-2"><strong>Review and save the initial email.</strong> Select <strong>Save initial email</strong>; saving does not contact the club.</li><li class="mb-2"><strong>Review and save the reminder.</strong> Select <strong>Save reminder</strong>; it is prepared now but is not sent now.</li><li><strong>Select Send initial email to club.</strong> This is the only button in this section that contacts the club. The reminder is sent only later if it is still needed.</li></ol></div></section>`
 }
 
 func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf, ref, teamName, publicSummary, sourceType string) {
-	allegedRuleParagraph := ""
-	if sourceType == "ineligible_player" {
-		allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID)
-		if err != nil {
-			fmt.Fprint(w, `<div class="card mb-3 border-warning"><div class="card-body"><strong>Correspondence is waiting for the alleged rule.</strong><p class="small text-muted mb-0">Record the published GMCL rule under investigation before creating the offending-club response request.</p></div></div>`)
-			return
-		}
-		allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+	allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID)
+	if err != nil {
+		fmt.Fprint(w, `<div class="card mb-3 border-warning"><div class="card-body"><strong>Correspondence is waiting for the alleged rule.</strong><p class="small text-muted mb-0">Record the published GMCL rule under investigation before creating the offending-club response request.</p></div></div>`)
+		return
 	}
+	allegedRuleParagraph := allegedRuleCorrespondenceParagraph(allegedRule)
 	defaults := defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph)
+	if sourceType != "ineligible_player" {
+		defaults = defaultAdminReportedCaseResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph)
+	}
 	fmt.Fprint(w, adminClubResponseStepsHTML())
 	if saved := strings.TrimSpace(r.URL.Query().Get("draft_saved")); saved == "response_request" {
 		fmt.Fprint(w, `<div class="alert alert-success"><strong>Initial email saved.</strong> Now save the reminder below.</div>`)
