@@ -45,17 +45,17 @@ type personalWorkQueueItem struct {
 }
 
 type personalWorkDashboard struct {
-	AdminName       string
-	AssignedCases   []personalWorkCase
-	AssignedTotal   int64
-	Responses       []personalWorkResponse
-	ResponseTotal   int64
-	Tasks           []personalWorkTask
-	TaskTotal       int64
-	DecisionQueue   []personalWorkQueueItem
-	DecisionTotal   int64
-	CanApprove      bool
-	CanPublish      bool
+	AdminName     string
+	AssignedCases []personalWorkCase
+	AssignedTotal int64
+	Responses     []personalWorkResponse
+	ResponseTotal int64
+	Tasks         []personalWorkTask
+	TaskTotal     int64
+	DecisionQueue []personalWorkQueueItem
+	DecisionTotal int64
+	CanApprove    bool
+	CanPublish    bool
 }
 
 func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, adminName string) (personalWorkDashboard, error) {

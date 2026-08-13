@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -48,14 +49,14 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 		}},
 	}
 
-	var output strings.Builder
-	writePersonalWorkDashboard(&output, data, loc, now)
-	html := output.String()
+	output := httptest.NewRecorder()
+	writePersonalWorkDashboard(output, data, loc, now)
+	html := output.Body.String()
 	for _, want := range []string{
 		"Good morning, Warren &lt;Exec&gt;",
 		"Responses awaiting review",
 		`href="/admin/cases/1176"`,
-		`href="/admin/cases/tasks#task-42"`,
+		`href="/admin/cases/tasks?mine=1#task-42"`,
 		"Overdue",
 		"Decisions needing my role",
 		`href="/admin/cases/1177"`,
@@ -70,9 +71,9 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 }
 
 func TestWritePersonalWorkDashboardHasClearEmptyStates(t *testing.T) {
-	var output strings.Builder
-	writePersonalWorkDashboard(&output, personalWorkDashboard{AdminName: "Alex"}, time.UTC, time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC))
-	html := output.String()
+	output := httptest.NewRecorder()
+	writePersonalWorkDashboard(output, personalWorkDashboard{AdminName: "Alex"}, time.UTC, time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC))
+	html := output.Body.String()
 	for _, want := range []string{
 		"Good afternoon, Alex",
 		"No new responses assigned to you.",
