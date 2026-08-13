@@ -8,8 +8,8 @@ func TestAdminCaseBackDestinationReturnsOwnerToMyCases(t *testing.T) {
 	if label != "Back to my cases" {
 		t.Fatalf("label=%q want Back to my cases", label)
 	}
-	if destination != "/admin/ineligible?scope=mine&state=all" {
-		t.Fatalf("destination=%q want personal ineligible-player queue", destination)
+	if destination != "/admin#my-cases" {
+		t.Fatalf("destination=%q want personal dashboard case section", destination)
 	}
 }
 

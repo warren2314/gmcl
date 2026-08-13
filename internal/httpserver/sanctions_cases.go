@@ -1270,7 +1270,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 
 func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *int32) (string, string) {
 	if source == "ineligible_player" && assignedAdminID != nil && currentAdminID != nil && *assignedAdminID == *currentAdminID {
-		return "Back to my cases", "/admin/ineligible?scope=mine&state=all"
+		return "Back to my cases", "/admin#my-cases"
 	}
 	return "Back to cases", "/admin/cases"
 }
