@@ -590,12 +590,13 @@ func (s *Server) handleSanctionCaseResponseForm() http.HandlerFunc {
 		raw := r.URL.Query().Get("token")
 		var ref, summary, party string
 		var caseID int64
-		err := s.DB.QueryRow(r.Context(), `SELECT c.id,c.reference,request.allegation_snapshot,COALESCE(p.name,'Club representative')
+		var isTest bool
+		err := s.DB.QueryRow(r.Context(), `SELECT c.id,c.reference,request.allegation_snapshot,COALESCE(p.name,'Club representative'),c.is_test
 			FROM sanction_case_access_tokens tok
 			JOIN sanction_cases c ON c.id=tok.case_id
 			JOIN sanction_response_requests request ON request.access_token_id=tok.id AND request.case_id=tok.case_id AND request.status='pending'
 			LEFT JOIN sanction_case_parties p ON p.id=tok.party_id AND p.case_id=tok.case_id
-			WHERE tok.token_hash=$1 AND tok.purpose='respond' AND tok.revoked_at IS NULL AND tok.expires_at>now()`, tokenHash(raw)).Scan(&caseID, &ref, &summary, &party)
+			WHERE tok.token_hash=$1 AND tok.purpose='respond' AND tok.revoked_at IS NULL AND tok.expires_at>now()`, tokenHash(raw)).Scan(&caseID, &ref, &summary, &party, &isTest)
 		if err != nil {
 			http.Error(w, "case link is invalid or expired", 400)
 			return
@@ -604,6 +605,9 @@ func (s *Server) handleSanctionCaseResponseForm() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		secureResponsePageHead(w, "Respond to "+ref)
 		fmt.Fprintf(w, `<main class="container py-4" style="max-width:760px"><h1 class="h2">Respond to case %s</h1><div class="alert alert-secondary"><strong>%s</strong><br>%s</div>`, escapeHTML(ref), escapeHTML(party), escapeHTML(summary))
+		if isTest {
+			fmt.Fprintf(w, `<div class="alert alert-success"><strong>PRIVATE TEST ? no club has been contacted.</strong><br>Enter exactly <code>%s</code> below, submit it, then return to the test-status page.</div>`, privateLinkTestResponse)
+		}
 		sharedRows, _ := s.DB.Query(r.Context(), portalSharedEvidenceListQuery, caseID)
 		if sharedRows != nil {
 			defer sharedRows.Close()
@@ -621,7 +625,11 @@ func (s *Server) handleSanctionCaseResponseForm() http.HandlerFunc {
 				fmt.Fprintf(w, `<section class="card mb-3"><div class="card-header">Evidence shared for your response</div><ul class="list-group list-group-flush">%s</ul></section>`, shared.String())
 			}
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/sanctions/case/respond" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="token" value="%s"><div class="card-body"><label class="form-label">Your explanation</label><textarea class="form-control mb-3" name="response" rows="8" required maxlength="20000"></textarea><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control mb-3" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt"><label class="form-check"><input class="form-check-input" type="checkbox" name="appeal" value="yes"> <span class="form-check-label">This response is a formal appeal against a published decision</span></label></div><div class="card-footer"><button class="btn btn-danger">Submit response</button></div></form></main>`, csrf, escapeHTML(raw))
+		appealControl := `<label class="form-check"><input class="form-check-input" type="checkbox" name="appeal" value="yes"> <span class="form-check-label">This response is a formal appeal against a published decision</span></label>`
+		if isTest {
+			appealControl = ""
+		}
+		fmt.Fprintf(w, `<form method="POST" action="/sanctions/case/respond" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="token" value="%s"><div class="card-body"><label class="form-label">Your explanation</label><textarea class="form-control mb-3" name="response" rows="8" required maxlength="20000"></textarea><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control mb-3" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt">%s</div><div class="card-footer"><button class="btn btn-danger">Submit response</button></div></form></main>`, csrf, escapeHTML(raw), appealControl)
 		secureResponsePageFooter(w)
 	}
 }
@@ -648,21 +656,26 @@ func (s *Server) handleSanctionCaseResponseSubmit() http.HandlerFunc {
 		defer tx.Rollback(r.Context())
 		var tokenID, caseID int64
 		var partyID *int64
+		var isTest bool
 		var partyName, caseStatus string
-		err = tx.QueryRow(r.Context(), `SELECT tok.id,tok.case_id,request.party_id,COALESCE(p.name,'Club representative'),c.status
+		err = tx.QueryRow(r.Context(), `SELECT tok.id,tok.case_id,request.party_id,COALESCE(p.name,'Club representative'),c.status,c.is_test
 			FROM sanction_case_access_tokens tok
 			JOIN sanction_cases c ON c.id=tok.case_id
 			JOIN sanction_response_requests request ON request.access_token_id=tok.id AND request.case_id=tok.case_id AND request.status='pending'
 			LEFT JOIN sanction_case_parties p ON p.id=request.party_id AND p.case_id=request.case_id
 			WHERE tok.token_hash=$1 AND tok.purpose='respond' AND tok.revoked_at IS NULL AND tok.expires_at>now()
-			FOR UPDATE OF tok,c,request`, tokenHash(raw)).Scan(&tokenID, &caseID, &partyID, &partyName, &caseStatus)
+			FOR UPDATE OF tok,c,request`, tokenHash(raw)).Scan(&tokenID, &caseID, &partyID, &partyName, &caseStatus, &isTest)
 		if err != nil {
 			http.Error(w, "case link is invalid or expired", 400)
 			return
 		}
+		if isTest && response != privateLinkTestResponse {
+			http.Error(w, "enter the exact private-test phrase shown on the page", http.StatusBadRequest)
+			return
+		}
 		eventType := "party_response"
 		nextStatus := "investigating"
-		if r.FormValue("appeal") == "yes" {
+		if r.FormValue("appeal") == "yes" && !isTest {
 			if caseStatus != "published" && caseStatus != "closed" {
 				http.Error(w, "only a published decision can be appealed", 400)
 				return
@@ -701,7 +714,11 @@ func (s *Server) handleSanctionCaseResponseSubmit() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		secureResponsePageHead(w, "Response recorded")
-		fmt.Fprint(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Response recorded</h1><p class="mb-0">Your explanation and evidence are saved in the case history and cannot be edited. Contact GMCL if a correction is needed.</p></div></main>`)
+		message := "Your explanation and evidence are saved in the case history and cannot be edited. Contact GMCL if a correction is needed."
+		if isTest {
+			message = "Private end-to-end test response recorded successfully. Return to the administrator test-status page to see the completed result."
+		}
+		fmt.Fprintf(w, `<main class="container py-5" style="max-width:650px"><div class="alert alert-success"><h1 class="h4">Response recorded</h1><p class="mb-0">%s</p></div></main>`, escapeHTML(message))
 		secureResponsePageFooter(w)
 	}
 }
@@ -886,7 +903,7 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 
 func (s *Server) handleAdminCases() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
+		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
 		if err != nil {
 			http.Error(w, "could not load cases", 500)
 			return
@@ -896,7 +913,7 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions cases")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted mb-0">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 align-self-lg-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><a href="/admin/cases/imports" class="btn btn-primary">Import legacy bans &amp; cards</a><a href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener" class="btn btn-outline-primary">Public register</a><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`)
+		fmt.Fprintf(w, `<main class="container py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted mb-0">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 align-self-lg-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><form method="POST" action="/admin/cases/link-tests" class="d-inline"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-outline-success">Create private link test</button></form><a href="/admin/cases/imports" class="btn btn-primary">Import legacy bans &amp; cards</a><a href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener" class="btn btn-outline-primary">Public register</a><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`, escapeHTML(csrf))
 		for rows.Next() {
 			var id int64
 			var ref, source, status, club, team, assigned string

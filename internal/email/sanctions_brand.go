@@ -62,7 +62,7 @@ func sanctionEmailHTML(subject, body string) string {
 	closeList()
 
 	testBanner := ""
-	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(subject)), "[TEST ONLY") {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(subject)), "[TEST ONLY") || strings.HasPrefix(strings.ToUpper(strings.TrimSpace(subject)), "[PRIVATE LINK TEST]") {
 		testBanner = `<tr><td style="padding:11px 24px;background:#fff0b3;border-bottom:1px solid #e2c65b;color:#604b00;font-weight:bold;text-align:center">TEST EMAIL — NO CLUB HAS BEEN CONTACTED</td></tr>`
 	}
 
