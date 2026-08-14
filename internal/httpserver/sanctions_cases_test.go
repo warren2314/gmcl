@@ -138,6 +138,41 @@ func TestAdminCaseNextStageShowsIndependentApprovalSequence(t *testing.T) {
 		}
 	}
 }
+func TestParseAdminDecisionEffectsIgnoresValuesThatDoNotBelongToCard(t *testing.T) {
+	effects := parseAdminDecisionEffects(url.Values{
+		"effect_type":       {"red_card"},
+		"fine_pounds":       {"25.00"},
+		"points":            {"0"},
+		"rescindable":       {"yes"},
+		"trigger_condition": {"automatic test"},
+	})
+	if len(effects) != 1 {
+		t.Fatalf("got %d effects, want 1", len(effects))
+	}
+	if effects[0].Points != nil || effects[0].AmountPence != nil {
+		t.Fatalf("card retained unrelated manual values: %#v", effects[0])
+	}
+	if effects[0].Rescindable {
+		t.Fatal("red card retained the yellow-card-only remedy")
+	}
+}
+
+func TestParseAdminDecisionEffectsKeepsPointsAdjustmentValue(t *testing.T) {
+	effects := parseAdminDecisionEffects(url.Values{
+		"effect_type": {"points_adjustment"},
+		"points":      {"-5"},
+	})
+	if len(effects) != 1 || effects[0].Points == nil || *effects[0].Points != -5 {
+		t.Fatalf("points adjustment was not parsed: %#v", effects)
+	}
+}
+
+func TestAdminDecisionEffectsHTMLExplainsManualPointsField(t *testing.T) {
+	html := adminDecisionEffectsHTML(nil)
+	if !strings.Contains(html, "Card deductions are calculated automatically from league policy after submission; do not enter them here.") {
+		t.Fatalf("decision effects HTML does not explain the manual points field: %s", html)
+	}
+}
 func TestAdminCaseAssignmentHidesDuplicateSelfAssignment(t *testing.T) {
 	adminID := int32(42)
 	html := adminCaseAssignmentHTML(152, "token", &adminID, "warren2314", &adminID)

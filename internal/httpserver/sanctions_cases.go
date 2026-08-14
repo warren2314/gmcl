@@ -1228,7 +1228,7 @@ func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
 		for _, subject := range subjects {
 			fmt.Fprintf(&out, `<option value="%d">%s</option>`, subject.id, escapeHTML(subject.label))
 		}
-		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League points <span class="text-muted">(adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
+		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League points <span class="text-muted">(points adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"><div class="form-text">Card deductions are calculated automatically from league policy after submission; do not enter them here.</div></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
 		if i == 0 {
 			fmt.Fprint(&out, `</fieldset>`)
 		} else {
@@ -1841,39 +1841,51 @@ func (s *Server) handleAdminCaseNoticeResend() http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleAdminCasePropose() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		_ = r.ParseForm()
-		at := func(name string, index int) string {
-			values := r.Form[name]
-			if index < 0 || index >= len(values) {
-				return ""
-			}
-			return strings.TrimSpace(values[index])
+func parseAdminDecisionEffects(form url.Values) []sanctiondomain.DecisionEffectRequest {
+	at := func(name string, index int) string {
+		values := form[name]
+		if index < 0 || index >= len(values) {
+			return ""
 		}
-		var effects []sanctiondomain.DecisionEffectRequest
-		for index, effectType := range r.Form["effect_type"] {
-			effectType = strings.TrimSpace(effectType)
-			if effectType == "" {
-				continue
-			}
-			effect := sanctiondomain.DecisionEffectRequest{EffectType: effectType, Trigger: at("trigger_condition", index), Rescindable: at("rescindable", index) == "yes"}
-			if value, parseErr := strconv.ParseInt(at("case_subject_id", index), 10, 64); parseErr == nil && value > 0 {
-				effect.CaseSubjectID = &value
-			}
+		return strings.TrimSpace(values[index])
+	}
+	var effects []sanctiondomain.DecisionEffectRequest
+	for index, effectType := range form["effect_type"] {
+		effectType = strings.TrimSpace(effectType)
+		if effectType == "" {
+			continue
+		}
+		effect := sanctiondomain.DecisionEffectRequest{
+			EffectType:  effectType,
+			Trigger:     at("trigger_condition", index),
+			Rescindable: effectType == "yellow_card" && at("rescindable", index) == "yes",
+		}
+		if value, parseErr := strconv.ParseInt(at("case_subject_id", index), 10, 64); parseErr == nil && value > 0 {
+			effect.CaseSubjectID = &value
+		}
+		if effectType == "fine" {
 			if value, parseErr := strconv.ParseFloat(at("fine_pounds", index), 64); parseErr == nil && value > 0 {
 				pence := int64(value*100 + 0.5)
 				effect.AmountPence = &pence
 			}
+		}
+		if effectType == "points_adjustment" {
 			if value, parseErr := strconv.Atoi(at("points", index)); parseErr == nil {
 				effect.Points = &value
 			}
-			if value, parseErr := time.Parse("2006-01-02", at("ends_at", index)); parseErr == nil {
-				effect.EndsAt = &value
-			}
-			effects = append(effects, effect)
 		}
+		if value, parseErr := time.Parse("2006-01-02", at("ends_at", index)); parseErr == nil {
+			effect.EndsAt = &value
+		}
+		effects = append(effects, effect)
+	}
+	return effects
+}
+func (s *Server) handleAdminCasePropose() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		_ = r.ParseForm()
+		effects := parseAdminDecisionEffects(r.Form)
 		_, err := sanctiondomain.NewService(s.DB).ProposeDecisionBundle(r.Context(), sanctiondomain.DecisionBundleRequest{
 			CaseID: id, PublicReason: r.FormValue("public_reason"), PrivateReason: r.FormValue("private_reason"), RuleReference: r.FormValue("rule_reference"),
 			OutcomeSubject: r.FormValue("outcome_subject"), OutcomeFindings: r.FormValue("outcome_findings"), AppealInstructions: r.FormValue("appeal_instructions"),

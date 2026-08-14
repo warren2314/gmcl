@@ -496,7 +496,7 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 	if _, err = tx.Exec(ctx, `UPDATE sanction_cases SET status='decision_proposed',public_summary=$2,private_summary=$3,proposed_by_admin_id=$4,current_revision=$5,closed_at=NULL,updated_at=now() WHERE id=$1`, req.CaseID, req.PublicReason, nullIfBlank(req.PrivateReason), *req.Actor.ID, nextRevision); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'decision_proposed','admin',$2,$3,$4,jsonb_build_object('public_summary',$5,'private_summary',$6),$7,$8)`, req.CaseID, *req.Actor.ID, req.Actor.Label, req.PublicReason, currentPublicSummary, currentPrivateSummary, mapJSON(map[string]any{"decision_revision_id": decisionID, "effects": afterEffects, "public_summary": req.PublicReason, "private_summary": req.PrivateReason}), req.Actor.RequestID); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'decision_proposed','admin',$2,$3,$4,jsonb_build_object('public_summary',$5::text,'private_summary',$6::text),$7,$8)`, req.CaseID, *req.Actor.ID, req.Actor.Label, req.PublicReason, currentPublicSummary, currentPrivateSummary, mapJSON(map[string]any{"decision_revision_id": decisionID, "effects": afterEffects, "public_summary": req.PublicReason, "private_summary": req.PrivateReason}), req.Actor.RequestID); err != nil {
 		return 0, err
 	}
 	if err = tx.Commit(ctx); err != nil {
