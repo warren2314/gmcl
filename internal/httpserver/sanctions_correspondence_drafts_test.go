@@ -91,6 +91,23 @@ func TestDefaultAdminResponseDraftViewsExposeTemplates(t *testing.T) {
 	}
 }
 
+func TestDefaultAdminReportedCaseResponseDraftViewsUseNeutralWording(t *testing.T) {
+	views := defaultAdminReportedCaseResponseDraftViews(
+		"GMCL-2026-0191",
+		"Example CC",
+		"A conduct concern was reported.",
+		"Alleged rule under investigation: Rule 8.2 - Conduct",
+	)
+	request := views["response_request"]
+	for _, required := range []string{"GMCL-2026-0191", "Example CC", "conduct concern", "Rule 8.2", responseLinkPlaceholder, "seven days", "No decision has been made", "club's response to the reported facts"} {
+		if !strings.Contains(request.subject+"\n"+request.body, required) {
+			t.Fatalf("reported-case response request template does not contain %q", required)
+		}
+	}
+	if strings.Contains(strings.ToLower(request.subject+"\n"+request.body), "player eligibility") {
+		t.Fatal("reported-case response request uses eligibility-specific wording")
+	}
+}
 func TestAdminClubResponseStepsExplainWhenEmailIsSent(t *testing.T) {
 	html := adminClubResponseStepsHTML()
 	for _, required := range []string{

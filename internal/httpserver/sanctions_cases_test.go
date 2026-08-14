@@ -87,6 +87,57 @@ func TestAdminCaseDecisionHTMLShowsProposedPunishment(t *testing.T) {
 	}
 }
 
+func TestAdminCaseResponseHTMLShowsReplyProminentlyAndSafely(t *testing.T) {
+	html := adminCaseResponseHTML(1176, `token"value`, adminCaseResponseView{
+		ID:         42,
+		EventType:  "party_response",
+		ActorType:  "captain",
+		ActorLabel: "Club Secretary",
+		Body:       `<script>alert("reply")</script> We had permission.`,
+		ReceivedAt: time.Date(2026, time.August, 13, 19, 30, 0, 0, time.UTC),
+		Unreviewed: true,
+	}, time.UTC)
+	for _, want := range []string{
+		`id="club-response"`,
+		"Club reply received",
+		"Needs review",
+		"secure club portal",
+		`&lt;script&gt;alert(&quot;reply&quot;)&lt;/script&gt; We had permission.`,
+		`action="/admin/cases/1176/response-reviewed"`,
+		`value="token&quot;value"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("response HTML missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `<script>`) {
+		t.Fatalf("response body was not escaped: %s", html)
+	}
+}
+
+func TestAdminCaseResponseHTMLHidesReviewActionAfterReview(t *testing.T) {
+	html := adminCaseResponseHTML(1176, "csrf", adminCaseResponseView{
+		ID:         42,
+		EventType:  "external_response_recorded",
+		ActorType:  "admin",
+		Respondent: "secretary@example.test",
+		Channel:    "email",
+		Body:       "The club response",
+		ReceivedAt: time.Now(),
+	}, time.UTC)
+	if !strings.Contains(html, "Reviewed") || strings.Contains(html, "response-reviewed") {
+		t.Fatalf("reviewed response controls are wrong: %s", html)
+	}
+}
+
+func TestAdminCaseNextStageShowsIndependentApprovalSequence(t *testing.T) {
+	html := adminCaseNextStageHTML(true, false)
+	for _, want := range []string{"Club reply reviewed", "published rule", "findings and sanctions", "Denver", "independent approver", "outcome emails"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("next-stage HTML missing %q: %s", want, html)
+		}
+	}
+}
 func TestAdminCaseAssignmentHidesDuplicateSelfAssignment(t *testing.T) {
 	adminID := int32(42)
 	html := adminCaseAssignmentHTML(152, "token", &adminID, "warren2314", &adminID)

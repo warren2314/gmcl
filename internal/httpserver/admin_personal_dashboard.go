@@ -257,7 +257,7 @@ func writePersonalResponseList(w http.ResponseWriter, items []personalWorkRespon
 		fmt.Fprint(w, `<div class="list-group-item text-muted">No new responses assigned to you.</div>`)
 	}
 	for _, item := range items {
-		fmt.Fprintf(w, `<a class="list-group-item list-group-item-action" href="/admin/cases/%d"><div class="d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge text-bg-danger">Review</span></div><div class="small">%s</div><div class="small text-muted">%s · received %s</div></a>`,
+		fmt.Fprintf(w, `<a class="list-group-item list-group-item-action" href="/admin/cases/%d#club-response"><div class="d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge text-bg-danger">Review reply</span></div><div class="small">%s</div><div class="small text-muted">%s · received %s</div></a>`,
 			item.CaseID, escapeHTML(item.Reference), escapeHTML(defaultString(item.Player, "Player not recorded")), escapeHTML(item.Club), escapeHTML(item.ReceivedAt.In(loc).Format("02 Jan 15:04")))
 	}
 	if total > int64(len(items)) {

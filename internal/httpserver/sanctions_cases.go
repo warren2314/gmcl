@@ -791,15 +791,12 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 				return
 			}
 		}
-		allegedRuleParagraph := ""
-		if sourceType == "ineligible_player" {
-			allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, id)
-			if ruleErr != nil {
-				http.Error(w, "record the published rule alleged in this investigation before requesting a club response", http.StatusConflict)
-				return
-			}
-			allegedRuleParagraph = allegedRuleCorrespondenceParagraph(allegedRule)
+		allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), tx, id)
+		if ruleErr != nil {
+			http.Error(w, "record the published rule alleged in this investigation before requesting a club response", http.StatusConflict)
+			return
 		}
+		allegedRuleParagraph := allegedRuleCorrespondenceParagraph(allegedRule)
 		type savedDraft struct {
 			id            int64
 			subject, body string
@@ -1275,6 +1272,57 @@ func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *in
 	return "Back to cases", "/admin/cases"
 }
 
+type adminCaseResponseView struct {
+	ID         int64
+	EventType  string
+	ActorType  string
+	ActorLabel string
+	Body       string
+	Channel    string
+	Respondent string
+	ReceivedAt time.Time
+	Unreviewed bool
+}
+
+func adminCaseResponseHTML(caseID int64, csrf string, response adminCaseResponseView, loc *time.Location) string {
+	if response.ID == 0 {
+		return ""
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	source := strings.TrimSpace(response.Respondent)
+	if source == "" {
+		source = strings.TrimSpace(response.ActorLabel)
+	}
+	if source == "" {
+		source = strings.ReplaceAll(response.ActorType, "_", " ")
+	}
+	channel := strings.TrimSpace(response.Channel)
+	if channel == "" {
+		channel = map[bool]string{true: "secure club portal", false: "recorded response"}[response.EventType == "party_response"]
+	}
+	badge := `<span class="badge text-bg-success">Reviewed</span>`
+	action := ""
+	border := "border-success"
+	if response.Unreviewed {
+		badge = `<span class="badge text-bg-danger">Needs review</span>`
+		border = "border-danger border-3"
+		action = fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/response-reviewed" class="mt-3"><input type="hidden" name="csrf_token" value="%s"><label class="form-label">Review note (optional)</label><input class="form-control" name="note" maxlength="2000"><button class="btn btn-danger mt-2">Mark reply reviewed and continue</button></form>`, caseID, escapeHTML(csrf))
+	}
+	return fmt.Sprintf(`<section class="card mb-4 %s" id="club-response"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><strong>Club reply received</strong>%s</div><div class="card-body"><dl class="row small mb-3"><dt class="col-sm-3">From</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Via</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Received</dt><dd class="col-sm-9">%s</dd></dl><div class="alert alert-light border mb-0"><div class="fw-semibold mb-2">Their response</div><div style="white-space:pre-wrap">%s</div></div>%s</div></section>`, border, badge, escapeHTML(source), escapeHTML(channel), escapeHTML(response.ReceivedAt.In(loc).Format("02 Jan 2006 15:04")), escapeHTML(response.Body), action)
+}
+
+func adminCaseNextStageHTML(hasResponse, unreviewed bool) string {
+	if !hasResponse {
+		return ""
+	}
+	responseStep := `<li><span class="badge text-bg-success">Complete</span> Club reply reviewed.</li>`
+	if unreviewed {
+		responseStep = `<li><strong>Read the club reply and mark it reviewed.</strong></li>`
+	}
+	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li><li>Denver or another authorised independent approver reviews the decision.</li><li>After approval, issue the locked outcome emails and letters.</li></ol></div></section>`
+}
 func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -1290,13 +1338,18 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		var latestResponseEventID int64
-		hasUnreviewedResponse := s.DB.QueryRow(r.Context(), `SELECT response.id
+		var latestResponse adminCaseResponseView
+		_ = s.DB.QueryRow(r.Context(), `SELECT response.id,response.event_type,response.actor_type,COALESCE(response.actor_label,''),COALESCE(response.reason,''),
+			COALESCE(response.metadata->>'channel',''),COALESCE(response.metadata->>'respondent',''),response.created_at,
+			NOT EXISTS(SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=response.case_id
+				AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=response.id::text)
 			FROM sanction_case_events response
 			WHERE response.id=(SELECT event.id FROM sanction_case_events event WHERE event.case_id=$1
-				AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1)
-			  AND NOT EXISTS(SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=response.case_id
-				AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=response.id::text)`, id).Scan(&latestResponseEventID) == nil
+				AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1)`, id).
+			Scan(&latestResponse.ID, &latestResponse.EventType, &latestResponse.ActorType, &latestResponse.ActorLabel, &latestResponse.Body,
+				&latestResponse.Channel, &latestResponse.Respondent, &latestResponse.ReceivedAt, &latestResponse.Unreviewed)
+		var hasResponseRequest bool
+		_ = s.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='response_request_queued')`, id).Scan(&hasResponseRequest)
 		csrf := middleware.CSRFToken(r)
 		backLabel, backURL := adminCaseBackDestination(source, assignedAdminID, adminActor(r).ID)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1309,21 +1362,28 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if failure := strings.TrimSpace(r.URL.Query().Get("error")); failure != "" {
 			fmt.Fprintf(w, `<div class="alert alert-warning">%s</div>`, escapeHTML(failure))
 		}
+		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc))
+		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed))
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
 		canRequestResponse := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
+		s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf, source)
 		if source == "ineligible_player" {
-			s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf)
 			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
-			if canRequestResponse {
-				s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
-			}
-			s.writeAdminCaseEmailPreviews(w, r, id, ref, team, publicSummary, hasProposed)
 		}
-		if source != "ineligible_player" && canRequestResponse {
+		if canRequestResponse && !hasResponseRequest && latestResponse.ID == 0 {
 			s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
 		}
+		if source == "ineligible_player" {
+			if hasResponseRequest || latestResponse.ID > 0 {
+				fmt.Fprint(w, `<details class="card mb-4"><summary class="card-header"><strong>Completed correspondence and email history</strong></summary><div class="card-body">`)
+				s.writeAdminCaseEmailPreviews(w, r, id, ref, team, publicSummary, hasProposed)
+				fmt.Fprint(w, `</div></details>`)
+			} else {
+				s.writeAdminCaseEmailPreviews(w, r, id, ref, team, publicSummary, hasProposed)
+			}
+		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
-		if !hasProposed && canPropose {
+		if !hasProposed && canPropose && !latestResponse.Unreviewed {
 			fmt.Fprint(w, s.adminDecisionBundleFormHTML(r.Context(), id, csrf, publicSummary))
 		}
 		if status == "triage" && hasProposed {
@@ -1359,9 +1419,6 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		fmt.Fprint(w, `</div><aside class="col-xl-4">`)
 		actor := adminActor(r)
 		s.writeAdminCaseDelegationControls(w, r, id, csrf, assignedAdminID, assignedAdminName, actor.ID)
-		if hasUnreviewedResponse {
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-reviewed" class="card mb-3 border-info"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">New club response</div><div class="card-body"><p class="mb-2">The latest portal or externally recorded response is awaiting review.</p><label class="form-label">Review note (optional)</label><input class="form-control" name="note" maxlength="2000"></div><div class="card-footer"><button class="btn btn-info">Mark response reviewed</button></div></form>`, id, escapeHTML(csrf))
-		}
 		evidenceRows, _ := s.DB.Query(r.Context(), `SELECT evidence.id,evidence.original_name,evidence.media_type,evidence.byte_size,evidence.sha256,evidence.created_at,evidence.visibility,
 			COALESCE((SELECT sharing.action FROM sanction_evidence_sharing_events sharing WHERE sharing.case_id=evidence.case_id AND sharing.evidence_id=evidence.id AND sharing.audience='offending_club' ORDER BY sharing.id DESC LIMIT 1),''),
 			evidence.redacted_at IS NULL,provenance.source_evidence_id,COALESCE(reviewer.username,''),provenance.reviewed_at,allowed.evidence_id IS NOT NULL

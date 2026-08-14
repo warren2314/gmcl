@@ -1833,7 +1833,7 @@ func (s *Server) handleAdminCaseResponseReviewed() http.HandlerFunc {
 			http.Error(w, "could not record response review", http.StatusInternalServerError)
 			return
 		}
-		redirectCaseActivity(w, r, caseID, "Latest club response marked reviewed")
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s#next-stage", caseID, url.QueryEscape("Latest club response marked reviewed")), http.StatusSeeOther)
 	}
 }
 

@@ -55,7 +55,7 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 	for _, want := range []string{
 		"Good morning, Warren &lt;Exec&gt;",
 		"Responses awaiting review",
-		`href="/admin/cases/1176"`,
+		`href="/admin/cases/1176#club-response"`,
 		`href="/admin/cases/tasks?mine=1#task-42"`,
 		`id="my-cases"`,
 		"Overdue",
