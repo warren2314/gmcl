@@ -18,7 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func (s *Server) nativeIneligibleFormFields(r *http.Request) string {
+func (s *Server) nativeIneligibleFormFields(r *http.Request, selectedReportingClubID int32, reporterRole string) string {
 	rawID, _, err := newPublicToken()
 	if err != nil {
 		rawID = fmt.Sprintf("fallback_%d_native_submission", time.Now().UnixNano())
@@ -31,7 +31,11 @@ func (s *Server) nativeIneligibleFormFields(r *http.Request) string {
 			var id int
 			var name string
 			if rows.Scan(&id, &name) == nil {
-				fmt.Fprintf(&clubOptions, `<option value="%d">%s</option>`, id, escapeHTML(name))
+				selected := ""
+				if int32(id) == selectedReportingClubID {
+					selected = " selected"
+				}
+				fmt.Fprintf(&clubOptions, `<option value="%d"%s>%s</option>`, id, selected, escapeHTML(name))
 			}
 		}
 	}
@@ -41,15 +45,15 @@ func (s *Server) nativeIneligibleFormFields(r *http.Request) string {
     <h2 class="h6 mb-1">Ineligible-player report details</h2>
     <p class="small text-muted">These details enter the league's private triage queue. Submitting does not contact the other club or issue a sanction.</p>
     <div class="row g-3">
-      <div class="col-md-6"><label class="form-label">Your role at the club</label><input class="form-control" name="reporter_role" maxlength="200" data-ineligible-required></div>
-      <div class="col-md-6"><label class="form-label">Preferred telephone number</label><input class="form-control" type="tel" name="reporter_phone" maxlength="100" data-ineligible-required></div>
+      <div class="col-md-6"><label class="form-label">Your role at the club or league</label><input class="form-control" name="reporter_role" value="%s" maxlength="200" data-ineligible-required></div>
+      <div class="col-md-6"><label class="form-label">Your preferred telephone number</label><input class="form-control" type="tel" name="reporter_phone" maxlength="100" data-ineligible-required></div>
       <div class="col-md-6"><label class="form-label">Your club</label><select class="form-select" name="reporting_club_id" data-ineligible-required><option value="">Choose your club...</option>%s</select></div>
-      <div class="col-md-6"><label class="form-label">Score or scorecard reference (optional)</label><input class="form-control" name="score" maxlength="500"></div>
-      <div class="col-12"><label class="form-label">Additional information (optional)</label><textarea class="form-control" name="additional_info" rows="3" maxlength="10000"></textarea></div>
-      <div class="col-12"><label class="form-label">Additional evidence or links (optional)</label><textarea class="form-control" name="additional_evidence" rows="3" maxlength="10000"></textarea></div>
+      <div class="col-md-6"><label class="form-label">Score or Play-Cricket scorecard reference (optional)</label><input class="form-control" name="score" maxlength="500"></div>
+      <div class="col-12"><label class="form-label">Additional information (optional)</label><textarea class="form-control" name="additional_info" rows="3" maxlength="10000"></textarea><div class="form-text">Add any context that does not fit in the eligibility reason.</div></div>
+      <div class="col-12"><label class="form-label">Additional evidence or links (optional)</label><textarea class="form-control" name="additional_evidence" rows="3" maxlength="10000"></textarea><div class="form-text">Paste scorecard, registration, permission or other supporting links here.</div></div>
     </div>
   </div>
-</div>`, escapeHTML(rawID), time.Now().UTC().Format(time.RFC3339Nano), clubOptions.String())
+</div>`, escapeHTML(rawID), time.Now().UTC().Format(time.RFC3339Nano), escapeHTML(reporterRole), clubOptions.String())
 }
 
 func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Request, reporterName, reporterEmail, reason string, teamID int, offendingClub, team string) {
@@ -148,7 +152,7 @@ func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Ineligible-player report received")
 	writeCaptainNav(w)
-	fmt.Fprintf(w, `<main class="container py-5" style="max-width:680px"><div class="alert alert-success"><h1 class="h4">Report received for private triage</h1><p>Your report has been safely recorded. No club has been contacted and no sanction has been issued.</p><p>If the league opens an investigation, authorised staff will manage correspondence and the decision through the sanctions workflow. Once an independently approved outcome is available, the reporting club will receive the findings at its official club mailbox.</p><p class="mb-0">Intake reference: <strong>%s</strong></p></div></main>`, escapeHTML(result.Reference))
+	fmt.Fprintf(w, `<main class="container py-5" style="max-width:680px"><div class="alert alert-success"><h1 class="h4">Report received for private triage</h1><p>Your report has been safely recorded. No club has been contacted and no sanction has been issued.</p><p>If the league opens an investigation, authorised staff will manage correspondence and the decision through the sanctions workflow. Once an independently approved outcome is available, the reporting club and the reporter's recorded email address will receive the reporting-side findings.</p><p class="mb-0">Intake reference: <strong>%s</strong></p></div></main>`, escapeHTML(result.Reference))
 	pageFooter(w)
 }
 

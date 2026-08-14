@@ -261,8 +261,11 @@ func prepareNativeSubmission(submission NativeSubmission) (preparedNativeSubmiss
 	}
 	nameAndRole := submission.ReporterName + " — " + submission.ReporterRole
 	raw := map[string]any{
-		"Timestamp":     submission.SubmittedAt.UTC().Format(time.RFC3339Nano),
-		"Email address": submission.ReporterEmail,
+		"Timestamp":      submission.SubmittedAt.UTC().Format(time.RFC3339Nano),
+		"Email address":  submission.ReporterEmail,
+		"reporter name":  submission.ReporterName,
+		"reporter role":  submission.ReporterRole,
+		"reporter phone": submission.ReporterPhone,
 		"Name of defaulting player as shown on scorecard": submission.Player,
 		"Reason you believe the player is ineligible":     submission.Reason,
 		"Additional Info":                 strings.TrimSpace(submission.AdditionalInfo),

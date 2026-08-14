@@ -302,6 +302,10 @@ func adminClubResponseStepsHTML() string {
 }
 
 func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf, ref, teamName, publicSummary, sourceType string) {
+	if responseSummaryIsPlaceholder(publicSummary) {
+		fmt.Fprint(w, "<div class=\"alert alert-danger\"><strong>The allegation wording is not ready.</strong> Use Correct case summary to replace the placeholder with reviewed, reporter-safe facts before preparing or sending the response request.</div>")
+		return
+	}
 	allegedRule, err := loadCaseAllegedRule(r.Context(), s.DB, caseID)
 	if err != nil {
 		fmt.Fprint(w, `<div class="card mb-3 border-warning"><div class="card-body"><strong>Correspondence is waiting for the alleged rule.</strong><p class="small text-muted mb-0">Record the published GMCL rule under investigation before creating the offending-club response request.</p></div></div>`)
@@ -390,6 +394,11 @@ func validResponseDraftBody(body string) bool {
 
 var responseDraftParagraphBreak = regexp.MustCompile(`\n[\t ]*\n+`)
 
+func responseSummaryIsPlaceholder(value string) bool {
+	normalized := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	return strings.EqualFold(normalized, "Report awaiting investigation")
+}
+
 func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRuleParagraph string) error {
 	if !validResponseDraftBody(body) {
 		return fmt.Errorf("the body must contain exactly one %s placeholder", responseLinkPlaceholder)
@@ -399,6 +408,9 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 	case "response_request":
 		if strings.TrimSpace(currentPublicAllegation) == "" {
 			return fmt.Errorf("record the public allegation before saving a response request")
+		}
+		if responseSummaryIsPlaceholder(currentPublicAllegation) {
+			return fmt.Errorf("replace the placeholder with reviewed, reporter-safe allegation facts before saving a response request")
 		}
 		if !containsExactResponseDraftParagraph(body, currentPublicAllegation) {
 			return fmt.Errorf("the response request must contain the current public allegation exactly as a standalone paragraph")

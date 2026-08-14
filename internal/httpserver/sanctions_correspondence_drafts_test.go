@@ -156,3 +156,12 @@ func TestPendingOutcomeEmailTemplatesShowEveryDecisionSection(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseRequestRejectsInvestigationPlaceholder(t *testing.T) {
+	allegation := "Report awaiting investigation"
+	body := allegation + "\n\n" + responseLinkPlaceholder
+	err := validateResponseDraftContent("response_request", body, allegation, "")
+	if err == nil || !strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("placeholder response validation error = %v", err)
+	}
+}

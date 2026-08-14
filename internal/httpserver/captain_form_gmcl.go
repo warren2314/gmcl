@@ -65,7 +65,7 @@ func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToke
 	cfg := s.loadCaptainFormConfigForRender(seasonID)
 
 	fmt.Fprint(w, `<div class="container">
-<div class="d-flex justify-content-between align-items-start gap-3 mb-3"><h2 class="mb-0">`+escapeHTML(cfg.Title)+`</h2><a class="btn btn-outline-danger btn-sm text-nowrap" href="/captain/discipline">My team sanctions</a></div>
+<div class="d-flex justify-content-between align-items-start gap-3 mb-3"><h2 class="mb-0">`+escapeHTML(cfg.Title)+`</h2><div class="d-flex flex-wrap gap-2 justify-content-end"><a class="btn btn-outline-warning btn-sm text-nowrap" href="/captain/sanctions/report?type=ineligible_player">Report an ineligible player</a><a class="btn btn-outline-danger btn-sm text-nowrap" href="/captain/discipline">My team sanctions</a></div></div>
 `+renderCaptainFormIntroHTML(cfg.IntroText)+`
 `)
 	if formVal(draft, "_flash_change_request") == "created" {
