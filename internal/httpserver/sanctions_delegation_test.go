@@ -38,6 +38,10 @@ func TestDelegationHandlersRequireAuthorisedTargetsAndWriteAuditHistory(t *testi
 		"Case owner and help",
 		"Assign the whole investigation",
 		"Give a supporting task to another administrator",
+		"reassignOpenCaseOwnerTasks",
+		"task.task_type='investigation_support'",
+		"task.status IN ('open','in_progress')",
+		"sanction_follow_up_task_events",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("delegation implementation does not contain %q", required)
@@ -45,6 +49,37 @@ func TestDelegationHandlersRequireAuthorisedTargetsAndWriteAuditHistory(t *testi
 	}
 }
 
+func TestCaseAssignmentSuccessReportsMovedOwnerTasks(t *testing.T) {
+	if got := caseAssignmentSuccess("Tom", 0); got != "Case assigned to Tom" {
+		t.Fatalf("no-task message = %q", got)
+	}
+	if got := caseAssignmentSuccess("Tom", 1); !strings.Contains(got, "1 open investigation task moved") {
+		t.Fatalf("single-task message = %q", got)
+	}
+	if got := caseAssignmentSuccess("Tom", 3); !strings.Contains(got, "3 open investigation tasks moved") {
+		t.Fatalf("multi-task message = %q", got)
+	}
+}
+
+func TestCase170OwnerTaskMigrationIsScopedAndAudited(t *testing.T) {
+	raw, err := os.ReadFile("../../migrations/0078_align_case_170_owner_task.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, required := range []string{
+		"task.case_id = 170",
+		"task.task_type = 'investigation_support'",
+		"task.status IN ('open', 'in_progress')",
+		"task.assigned_admin_id IS DISTINCT FROM target_admin_id",
+		"INSERT INTO sanction_follow_up_task_events",
+		"migration-0078-case-170-owner-task",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("case 170 migration missing %q", required)
+		}
+	}
+}
 func TestResponseDraftSelfTestCannotCreateLiveResponseLifecycle(t *testing.T) {
 	raw, err := os.ReadFile("sanctions_correspondence_drafts.go")
 	if err != nil {

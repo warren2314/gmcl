@@ -117,6 +117,44 @@ func (s *Server) resolveInvestigationAdmin(ctx context.Context, adminID int32) (
 	return name, err
 }
 
+func reassignOpenCaseOwnerTasks(ctx context.Context, tx pgx.Tx, caseID int64, previous *int32, targetID, actorID int32, targetName, actorLabel, reason string, requestID any) (int64, error) {
+	if previous == nil || *previous == targetID {
+		return 0, nil
+	}
+	tag, err := tx.Exec(ctx, `WITH candidates AS MATERIALIZED (
+		SELECT task.id,to_jsonb(task) AS before_data
+		FROM sanction_follow_up_tasks task
+		WHERE task.case_id=$1 AND task.assigned_admin_id=$2
+		  AND task.task_type='investigation_support' AND task.status IN ('open','in_progress')
+		FOR UPDATE
+	), updated AS (
+		UPDATE sanction_follow_up_tasks task
+		SET assigned_admin_id=$3,updated_at=now()
+		FROM candidates
+		WHERE task.id=candidates.id
+		RETURNING task.id,to_jsonb(task) AS after_data
+	)
+	INSERT INTO sanction_follow_up_task_events(task_id,actor_admin_id,actor_label,reason,before_data,after_data,request_id)
+	SELECT updated.id,$4,$5,$6,candidates.before_data,updated.after_data,$7
+	FROM updated JOIN candidates ON candidates.id=updated.id`,
+		caseID, *previous, targetID, actorID, actorLabel, "Case ownership changed to "+targetName+": "+reason, requestID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func caseAssignmentSuccess(targetName string, movedTasks int64) string {
+	message := "Case assigned to " + targetName
+	if movedTasks == 1 {
+		return message + "; 1 open investigation task moved with the case"
+	}
+	if movedTasks > 1 {
+		return fmt.Sprintf("%s; %d open investigation tasks moved with the case", message, movedTasks)
+	}
+	return message
+}
+
 func (s *Server) handleAdminCaseAssign() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caseID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -158,11 +196,15 @@ func (s *Server) handleAdminCaseAssign() http.HandlerFunc {
 				VALUES($1,'investigator_assigned','admin',$2,$3,$4,jsonb_build_object('assigned_admin_id',$5::integer),jsonb_build_object('assigned_admin_id',$6::integer,'assigned_admin',$7::text),$8)`,
 				caseID, *actor.ID, actor.Label, reason, previous, targetID, targetName, actor.RequestID)
 		}
+		var movedTasks int64
+		if err == nil {
+			movedTasks, err = reassignOpenCaseOwnerTasks(r.Context(), tx, caseID, previous, targetID, *actor.ID, targetName, actor.Label, reason, actor.RequestID)
+		}
 		if err != nil || tx.Commit(r.Context()) != nil {
 			http.Error(w, "assignment failed", http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", caseID, url.QueryEscape("Case assigned to "+targetName)), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", caseID, url.QueryEscape(caseAssignmentSuccess(targetName, movedTasks))), http.StatusSeeOther)
 	}
 }
 
