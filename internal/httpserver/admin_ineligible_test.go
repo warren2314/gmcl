@@ -40,6 +40,70 @@ func TestParseIneligibleQueueFiltersNormalisesFixtureRangeAndSort(t *testing.T) 
 	}
 }
 
+func TestIneligibleUnreadReplyFilterTargetsOnlyCasesAwaitingReview(t *testing.T) {
+	filter := parseIneligibleQueueFilters(url.Values{
+		"state":        {"all"},
+		"worklist":     {"all"},
+		"reply_status": {"unreviewed"},
+	})
+	if filter.ReplyStatus != "unreviewed" {
+		t.Fatalf("reply status = %q, want unreviewed", filter.ReplyStatus)
+	}
+	query, args := buildIneligibleQueueQuery(filter)
+	for _, want := range []string{
+		"LEFT JOIN LATERAL",
+		"latest_reply.needs_review",
+		"latest_reply.created_at DESC NULLS LAST",
+		"reviewed.metadata->>'response_event_id'=response.id::text",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("unreviewed-reply query missing %q: %s", want, query)
+		}
+	}
+	if len(args) != 0 {
+		t.Fatalf("unreviewed-reply query args = %#v, want none", args)
+	}
+
+	invalid := parseIneligibleQueueFilters(url.Values{"reply_status": {"anything"}})
+	if invalid.ReplyStatus != "" {
+		t.Fatalf("invalid reply filter was accepted: %#v", invalid)
+	}
+}
+
+func TestIneligibleNewRepliesHrefOpensOneCaseOrFilteredReplyList(t *testing.T) {
+	if got := ineligibleNewRepliesHref(ineligibleDashboardCounts{RecentReplies: 1, RecentReplyCaseID: 77}); got != "/admin/cases/77#club-response" {
+		t.Fatalf("single reply href = %q", got)
+	}
+	got := ineligibleNewRepliesHref(ineligibleDashboardCounts{RecentReplies: 3})
+	if !strings.Contains(got, "reply_status=unreviewed") || !strings.HasSuffix(got, "#reports") {
+		t.Fatalf("multiple replies href = %q", got)
+	}
+}
+
+func TestIneligibleCaseNextStepShowsReplyCountStatusAndDirectAnchor(t *testing.T) {
+	caseID := int64(77)
+	received := time.Date(2026, time.August, 14, 8, 15, 0, 0, time.UTC)
+	html := ineligibleCaseNextStepHTML(ineligibleQueueRow{
+		CaseID:           &caseID,
+		CaseReference:    "GMCL-2026-0191",
+		CaseStatus:       "investigating",
+		Assignee:         "Dave",
+		ReplyCount:       2,
+		LatestReplyAt:    &received,
+		ReplyNeedsReview: true,
+	}, time.UTC)
+	for _, want := range []string{
+		`href="/admin/cases/77#club-response"`,
+		"Reply received - needs review",
+		"2 replies total",
+		"Latest 14 Aug 08:15",
+		"Dave",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("reply-aware case action missing %q: %s", want, html)
+		}
+	}
+}
 func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
