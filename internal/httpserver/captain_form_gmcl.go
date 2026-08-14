@@ -46,7 +46,7 @@ func selStr(current, want string) string {
 }
 
 // renderGMCLForm writes the GMCL Captain's Report questionnaire.
-func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any, umpires []umpireRow, fixtureChooser string) {
+func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, submitterRole, defaultDate string, draft map[string]any, umpires []umpireRow, fixtureChooser string, sanctionsReportEnabled bool) {
 	val := func(k string) string { return formVal(draft, k) }
 	rad := func(k string, want string) string {
 		if formVal(draft, k) == want {
@@ -64,8 +64,13 @@ func (s *Server) renderGMCLFormWithChooser(w io.Writer, seasonID int32, csrfToke
 
 	cfg := s.loadCaptainFormConfigForRender(seasonID)
 
+	sanctionsReportAction := ""
+	if sanctionsReportEnabled {
+		sanctionsReportAction = `<a class="btn btn-outline-warning btn-sm text-nowrap" href="/captain/sanctions/report?type=ineligible_player">Report an ineligible player</a>`
+	}
+
 	fmt.Fprint(w, `<div class="container">
-<div class="d-flex justify-content-between align-items-start gap-3 mb-3"><h2 class="mb-0">`+escapeHTML(cfg.Title)+`</h2><div class="d-flex flex-wrap gap-2 justify-content-end"><a class="btn btn-outline-warning btn-sm text-nowrap" href="/captain/sanctions/report?type=ineligible_player">Report an ineligible player</a><a class="btn btn-outline-danger btn-sm text-nowrap" href="/captain/discipline">My team sanctions</a></div></div>
+<div class="d-flex justify-content-between align-items-start gap-3 mb-3"><h2 class="mb-0">`+escapeHTML(cfg.Title)+`</h2><div class="d-flex flex-wrap gap-2 justify-content-end">`+sanctionsReportAction+`<a class="btn btn-outline-danger btn-sm text-nowrap" href="/captain/discipline">My team sanctions</a></div></div>
 `+renderCaptainFormIntroHTML(cfg.IntroText)+`
 `)
 	if formVal(draft, "_flash_change_request") == "created" {
