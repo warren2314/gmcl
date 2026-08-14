@@ -372,3 +372,16 @@ func TestCopyEvidenceRejectsSpoofedImageAndSVG(t *testing.T) {
 		})
 	}
 }
+
+func TestAdminCaseSourceReportShowsRequiredFieldsSafely(t *testing.T) {
+	report := adminCaseSourceReport{IntakeID: 77, OffendingClub: "Offending CC", Team: "3rd XI", FixtureDate: "2026-08-01", Player: "Alex Player", Reason: "Registration <missing>", AdditionalInfo: "Checked list", AdditionalEvidence: "https://example.test/evidence", Score: "Scorecard 123"}
+	html := adminCaseSourceReportHTML(report)
+	for _, want := range []string{"Original report details", "Offending CC", "3rd XI", "2026-08-01", "Alex Player", "Registration &lt;missing&gt;", "Checked list", "https://example.test/evidence", "Scorecard 123", "/admin/ineligible/77"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("source report card missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "Registration <missing>") {
+		t.Fatal("source report content was not escaped")
+	}
+}

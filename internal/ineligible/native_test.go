@@ -114,3 +114,16 @@ func TestPrepareNativeSubmissionFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestPrepareNativeSubmissionRetainsSeparateReporterIdentity(t *testing.T) {
+	prepared, err := prepareNativeSubmission(validNativeSubmission())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"reporter name": "Sam Reporter", "reporter role": "Club secretary", "reporter phone": "07700 900123"}
+	for key, expected := range want {
+		if got := prepared.RawData[key]; got != expected {
+			t.Fatalf("%s = %#v, want %q", key, got, expected)
+		}
+	}
+}

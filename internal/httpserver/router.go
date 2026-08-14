@@ -134,6 +134,8 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 		r.Use(middleware.CSRFMiddleware)
 		r.Get("/captain/form", s.handleCaptainForm())
 		r.Get("/captain/discipline", s.handleCaptainDiscipline())
+		r.With(middleware.RateLimit(20)).Get("/captain/sanctions/report", s.handleSanctionReportForm())
+		r.With(middleware.RateLimit(8)).Post("/captain/sanctions/report", s.handleSanctionReportSubmit())
 		r.Post("/captain/form/autosave", s.handleCaptainAutosave())
 		r.Post("/captain/delegate/invite", s.handleCaptainDelegateInvite())
 		r.Post("/captain/change-request", s.handleCaptainChangeRequest())

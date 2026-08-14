@@ -1451,11 +1451,11 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 			http.Error(w, "no season covers the selected fixture date", http.StatusBadRequest)
 			return
 		}
-		reporterName := sourceStringField(rawJSON, "Your Name & Role at Club/League", "reporter name", "your name", "name")
+		reporterName := sourceStringField(rawJSON, "reporter name", "Your Name & Role at Club/League", "your name", "name")
 		reporterEmail := sourceStringField(rawJSON, "reporter email", "email address", "email")
-		// The current form deliberately combines the reporter's name and role in
-		// one field. Keep that value intact in reporter_name instead of guessing
-		// where a person's name ends and a club role begins.
+		// Google Form imports combine the reporter's name and role, while native
+		// portal submissions retain separate verified name and role fields. Keep the
+		// combined legacy value only when no separate reporter-name field exists.
 		reporterRole := sourceStringField(rawJSON, "reporter role", "role within club", "your role at the club", "role")
 		reporterPhone := sourceStringField(rawJSON, "Your Preferred tel no", "reporter phone", "contact number", "phone number", "telephone", "phone")
 		playCricketMatchID := sourceInt64Field(rawJSON, "play-cricket match id", "play cricket match id")

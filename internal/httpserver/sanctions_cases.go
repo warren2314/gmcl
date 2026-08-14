@@ -379,6 +379,14 @@ func (s *Server) handlePublicSanctionDetail() http.HandlerFunc {
 
 func (s *Server) handleSanctionReportForm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		identity := s.loadSanctionReportIdentity(r)
+		if !requireCaptainReportIdentity(w, r, identity) {
+			return
+		}
+		reportAction := "/sanctions/report"
+		if identity.Authenticated {
+			reportAction = "/captain/sanctions/report"
+		}
 		nativeActive, _, rolloutErr := s.nativeIneligibleRolloutActive(r.Context())
 		if rolloutErr != nil {
 			http.Error(w, "reporting is temporarily unavailable", http.StatusServiceUnavailable)
@@ -396,12 +404,15 @@ func (s *Server) handleSanctionReportForm() http.HandlerFunc {
 		pageHead(w, "Report a sanctions issue")
 		writeCaptainNav(w)
 		csrf := middleware.CSRFToken(r)
+		if identity.Authenticated {
+			fmt.Fprint(w, `<main class="container pt-4" style="max-width:760px"><div class="alert alert-success mb-0"><strong>Captain portal details loaded.</strong> Your verified name, email and reporting club have been filled in below. Check them before submitting.</div></main>`)
+		}
 		if !nativeActive {
 			if privateURL, privateErr := configuredPrivateGoogleFormURL(); privateErr == nil {
 				fmt.Fprintf(w, `<main class="container pt-4" style="max-width:760px"><div class="alert alert-info mb-0">Ineligible-player reports are still collected through the <a href="%s">private Google form</a> during reconciliation.</div></main>`, escapeHTML(privateURL))
 			}
 		}
-		fmt.Fprintf(w, `<main class="container py-4" style="max-width:760px"><h1 class="h2">Report an issue</h1><p class="text-muted">Ineligible-player reports enter a private triage queue and do not contact a club automatically. Other report types continue to use email verification. Reports and evidence are retained as part of the official record.</p><form method="POST" action="/sanctions/report" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-6"><label class="form-label">Your name</label><input class="form-control" name="reporter_name" required maxlength="150"></div><div class="col-md-6"><label class="form-label">Your email</label><input class="form-control" type="email" name="reporter_email" required maxlength="320"></div><div class="col-md-6"><label class="form-label">Report type</label><select class="form-select" id="sanction-report-type" name="source_type" required><option value="discipline">Disciplinary issue</option><option value="ineligible_player">Ineligible player</option><option value="grounds_facilities">Grounds or facilities</option><option value="forfeit">Match forfeit</option><option value="manual">Other</option></select></div><div class="col-md-6"><label class="form-label">Affected team</label><select class="form-select" name="team_id" required><option value="">Choose…</option>`, csrf)
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:760px"><h1 class="h2">Report an issue</h1><p class="text-muted">Ineligible-player reports enter a private triage queue and do not contact a club automatically. Other report types continue to use email verification. Reports and evidence are retained as part of the official record.</p><form method="POST" action="%s" enctype="multipart/form-data" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-6"><label class="form-label">Your name</label><input class="form-control" name="reporter_name" value="%s" required maxlength="150"></div><div class="col-md-6"><label class="form-label">Your email</label><input class="form-control" type="email" name="reporter_email" value="%s" required maxlength="320"></div><div class="col-md-6"><label class="form-label">Report type</label><select class="form-select" id="sanction-report-type" name="source_type" required><option value="discipline">Disciplinary issue</option><option value="ineligible_player">Ineligible player</option><option value="grounds_facilities">Grounds or facilities</option><option value="forfeit">Match forfeit</option><option value="manual">Other</option></select></div><div class="col-md-6"><label class="form-label">Offending club and team</label><select class="form-select" name="team_id" required><option value="">Choose…</option>`, escapeHTML(reportAction), csrf, escapeHTML(identity.Name), escapeHTML(identity.Email))
 		if rows != nil {
 			for rows.Next() {
 				var id int
@@ -411,13 +422,13 @@ func (s *Server) handleSanctionReportForm() http.HandlerFunc {
 				}
 			}
 		}
-		fmt.Fprint(w, `</select></div><div class="col-md-6"><label class="form-label">Match date <span class="ineligible-required-label">(if relevant)</span></label><input class="form-control" type="date" name="match_date" data-ineligible-required></div><div class="col-md-6"><label class="form-label">Affected player <span class="ineligible-required-label">(if relevant)</span></label><input class="form-control" name="player_name" maxlength="200" data-ineligible-required></div>`)
+		fmt.Fprint(w, `</select></div><div class="col-md-6"><label class="form-label">Match date <span class="ineligible-required-label">(if relevant)</span></label><input class="form-control" type="date" name="match_date" data-ineligible-required></div><div class="col-md-6"><label class="form-label"><span id="sanction-player-label">Affected player</span> <span class="ineligible-required-label">(if relevant)</span></label><input class="form-control" name="player_name" maxlength="200" data-ineligible-required></div>`)
 		if nativeActive {
-			fmt.Fprint(w, s.nativeIneligibleFormFields(r))
+			fmt.Fprint(w, s.nativeIneligibleFormFields(r, identity.ReportingClubID, identity.Role))
 		} else {
 			fmt.Fprint(w, `<div id="ineligible-player-fields" hidden></div>`)
 		}
-		fmt.Fprint(w, `<div class="col-12"><label class="form-label">What happened?</label><textarea class="form-control" name="summary" rows="7" required maxlength="10000"></textarea></div><div class="col-12"><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt"></div><div class="col-12 form-check ms-2"><input class="form-check-input" type="checkbox" name="consent" value="yes" required id="consent"><label class="form-check-label" for="consent">I confirm this report is accurate to the best of my knowledge. The league may use the allegation and approved evidence while protecting personal contact details.</label></div></div><div class="card-footer"><button class="btn btn-danger" id="sanction-report-submit">Submit and verify email</button></div></form></main><script>(function(){var select=document.getElementById('sanction-report-type');var section=document.getElementById('ineligible-player-fields');var button=document.getElementById('sanction-report-submit');var labels=document.querySelectorAll('.ineligible-required-label');var requested=new URLSearchParams(window.location.search).get('type');if(requested==='ineligible_player'){select.value=requested;}function update(){var active=select.value==='ineligible_player';section.hidden=!active;document.querySelectorAll('[data-ineligible-required]').forEach(function(field){field.required=active;});labels.forEach(function(label){label.textContent=active?'(required)':'(if relevant)';});button.textContent=active?'Submit for private triage':'Submit and verify email';}select.addEventListener('change',update);update();}());</script>`)
+		fmt.Fprint(w, `<div class="col-12"><label class="form-label" id="sanction-summary-label">What happened?</label><textarea class="form-control" name="summary" rows="7" required maxlength="10000"></textarea></div><div class="col-12"><label class="form-label">Evidence (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept=".pdf,image/jpeg,image/png,image/webp,video/mp4,.mp4,.txt"></div><div class="col-12 form-check ms-2"><input class="form-check-input" type="checkbox" name="consent" value="yes" required id="consent"><label class="form-check-label" for="consent">I confirm this report is accurate to the best of my knowledge. The league may use the allegation and approved evidence while protecting personal contact details.</label></div></div><div class="card-footer"><button class="btn btn-danger" id="sanction-report-submit">Submit and verify email</button></div></form></main><script>(function(){var select=document.getElementById('sanction-report-type');var section=document.getElementById('ineligible-player-fields');var button=document.getElementById('sanction-report-submit');var playerLabel=document.getElementById('sanction-player-label');var summaryLabel=document.getElementById('sanction-summary-label');var labels=document.querySelectorAll('.ineligible-required-label');var requested=new URLSearchParams(window.location.search).get('type');if(requested==='ineligible_player'){select.value=requested;}function update(){var active=select.value==='ineligible_player';section.hidden=!active;document.querySelectorAll('[data-ineligible-required]').forEach(function(field){field.required=active;});labels.forEach(function(label){label.textContent=active?'(required)':'(if relevant)';});playerLabel.textContent=active?'Name of defaulting player as shown on scorecard':'Affected player';summaryLabel.textContent=active?'Reason you believe the player is ineligible':'What happened?';button.textContent=active?'Submit for private triage':'Submit and verify email';}select.addEventListener('change',update);update();}());</script>`)
 		if !nativeActive {
 			fmt.Fprint(w, `<script>(function(){var option=document.querySelector('#sanction-report-type option[value="ineligible_player"]');if(option){option.remove();}}());</script>`)
 		}
@@ -427,6 +438,10 @@ func (s *Server) handleSanctionReportForm() http.HandlerFunc {
 
 func (s *Server) handleSanctionReportSubmit() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		identity := s.loadSanctionReportIdentity(r)
+		if !requireCaptainReportIdentity(w, r, identity) {
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, (10<<20)+(512<<10))
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			http.Error(w, "invalid or oversized submission", 400)
@@ -1379,6 +1394,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="%s" class="btn btn-sm btn-outline-secondary mb-3">%s</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(backURL), escapeHTML(backLabel), escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
 		fmt.Fprint(w, adminCaseReporterHTML(reporter))
+		fmt.Fprint(w, s.loadAdminCaseSourceReportHTML(r.Context(), id))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
