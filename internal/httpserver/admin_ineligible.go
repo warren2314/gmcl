@@ -41,6 +41,7 @@ type ineligibleQueueFilters struct {
 	Player        string
 	Assignee      string
 	CaseStatus    string
+	ReplyStatus   string
 	Age           string
 	Scope         string
 	Worklist      string
@@ -67,6 +68,9 @@ type ineligibleQueueRow struct {
 	WorklistVisibility string
 	WorklistBatchID    int64
 	AttachmentCount    int64
+	ReplyCount         int64
+	LatestReplyAt      *time.Time
+	ReplyNeedsReview   bool
 }
 
 type ineligibleDashboardCounts struct {
@@ -81,6 +85,7 @@ type ineligibleDashboardCounts struct {
 	DenverPointsTasks  int64
 	DeliveryExceptions int64
 	ClosedCases        int64
+	RecentReplyCaseID  int64
 }
 
 type ineligibleSyncHealth struct {
@@ -138,6 +143,7 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		Player:        strings.TrimSpace(values.Get("player")),
 		Assignee:      strings.TrimSpace(values.Get("assignee")),
 		CaseStatus:    strings.TrimSpace(values.Get("case_status")),
+		ReplyStatus:   strings.TrimSpace(values.Get("reply_status")),
 		Age:           strings.TrimSpace(values.Get("age")),
 		Scope:         strings.TrimSpace(values.Get("scope")),
 		Worklist:      strings.TrimSpace(values.Get("worklist")),
@@ -156,6 +162,9 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 	}
 	if !map[string]bool{"": true, "submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true, "approved": true, "published": true, "appealed": true, "closed": true, "rejected": true, "withdrawn": true}[filter.CaseStatus] {
 		filter.CaseStatus = ""
+	}
+	if !map[string]bool{"": true, "unreviewed": true, "received": true}[filter.ReplyStatus] {
+		filter.ReplyStatus = ""
 	}
 	if !map[string]bool{"": true, "2d": true, "7d": true, "14d": true, "30d": true}[filter.Age] {
 		filter.Age = ""
@@ -219,6 +228,7 @@ func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
 		"player":         filter.Player,
 		"assignee":       filter.Assignee,
 		"case_status":    filter.CaseStatus,
+		"reply_status":   filter.ReplyStatus,
 		"age":            filter.Age,
 		"scope":          filter.Scope,
 		"worklist":       filter.Worklist,
@@ -277,6 +287,12 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	if filter.CaseStatus != "" {
 		where = append(where, "c.status="+add(filter.CaseStatus))
 	}
+	switch filter.ReplyStatus {
+	case "unreviewed":
+		where = append(where, "latest_reply.needs_review")
+	case "received":
+		where = append(where, "latest_reply.id IS NOT NULL")
+	}
 	if filter.Age != "" {
 		days := map[string]int{"2d": 2, "7d": 7, "14d": 14, "30d": 30}[filter.Age]
 		where = append(where, fmt.Sprintf("COALESCE(i.external_created_at,i.created_at) < now() - interval '%d days'", days))
@@ -299,13 +315,18 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	case "fixture_oldest":
 		orderBy = "i.fixture_date ASC NULLS LAST,COALESCE(i.external_created_at,i.created_at) ASC,i.id ASC"
 	}
+	if filter.ReplyStatus != "" {
+		orderBy = "latest_reply.created_at DESC NULLS LAST,i.id DESC"
+	}
 	query := `
 		SELECT i.id,i.origin,i.external_key,i.state,COALESCE(i.reporting_club_text,''),
 		       COALESCE(i.offending_club_text,''),COALESCE(i.team_text,''),COALESCE(i.player_text,''),
 		       i.fixture_date,i.external_created_at,c.id,COALESCE(c.reference,''),COALESCE(c.status,''),
 		       COALESCE(a.username,''),
 		       COALESCE(worklist.visibility,'visible'),COALESCE(worklist.batch_id,0),
-		       (SELECT COUNT(*) FROM sanction_intake_attachments attachment WHERE attachment.intake_id=i.id)
+		       (SELECT COUNT(*) FROM sanction_intake_attachments attachment WHERE attachment.intake_id=i.id),
+		       COALESCE(latest_reply.reply_count,0),latest_reply.created_at,
+		       COALESCE(latest_reply.needs_review,false)
 		FROM sanction_intakes i
 		LEFT JOIN LATERAL (
 			SELECT l.case_id
@@ -315,6 +336,19 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 			LIMIT 1
 		) latest_link ON TRUE
 		LEFT JOIN sanction_cases c ON c.id=latest_link.case_id
+		LEFT JOIN LATERAL (
+			SELECT response.id,response.created_at,
+			       (SELECT COUNT(*) FROM sanction_case_events all_replies
+			        WHERE all_replies.case_id=c.id
+			          AND all_replies.event_type IN ('party_response','external_response_recorded')) AS reply_count,
+			       NOT EXISTS(
+			        SELECT 1 FROM sanction_case_events reviewed
+			        WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
+			          AND reviewed.metadata->>'response_event_id'=response.id::text) AS needs_review
+			FROM sanction_case_events response
+			WHERE response.case_id=c.id AND response.event_type IN ('party_response','external_response_recorded')
+			ORDER BY response.id DESC LIMIT 1
+		) latest_reply ON TRUE
 		LEFT JOIN admin_users a ON a.id=c.assigned_admin_id
 		LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=i.id
 		WHERE ` + strings.Join(where, " AND ") + `
@@ -342,7 +376,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queue := []ineligibleQueueRow{}
 		for rows.Next() {
 			var row ineligibleQueueRow
-			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount); err != nil {
+			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount, &row.ReplyCount, &row.LatestReplyAt, &row.ReplyNeedsReview); err != nil {
 				rows.Close()
 				http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
 				return
@@ -387,6 +421,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		importedHref := ineligibleQueueTabURL(filter, "all", "all", "all")
 		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">Report history</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
 		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
+		newRepliesHref := ineligibleNewRepliesHref(counts)
 		for _, card := range []struct {
 			Label string
 			Count int64
@@ -399,7 +434,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			{"Active investigations", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
 			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
-			{"New replies", counts.RecentReplies, "border-info", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"New replies", counts.RecentReplies, "border-info", newRepliesHref},
 			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=decision_proposed"},
 			{"Denver points tasks", counts.DenverPointsTasks, "border-warning", "/admin/cases/tasks"},
 			{"Delivery exceptions", counts.DeliveryExceptions, "border-danger", "/admin/cases"},
@@ -433,7 +468,10 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queueTitle := "Selected reports ready for review"
 		queueHelp := "Open a selected report, check its details, then raise or link its case. New arrivals also stay visible until the next selection."
 		switch {
-		case filter.Scope == "mine" || filter.CaseStatus != "":
+		case filter.ReplyStatus == "unreviewed":
+			queueTitle = "Replies awaiting review"
+			queueHelp = "Each row below has a reply that still needs review. Open case jumps directly to the received reply."
+		case filter.Scope == "mine" || filter.CaseStatus != "" || filter.ReplyStatus != "":
 			queueTitle = "Work matching this view"
 			queueHelp = "Open a report or case to continue from its current step."
 		case filter.Worklist == "all" && filter.State == "all":
@@ -464,15 +502,13 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			if row.FixtureDate != nil {
 				fixture = row.FixtureDate.Format("02 Jan 2006")
 			}
-			caseHTML := `<span class="text-muted">Not mapped</span>`
+			caseHTML := ineligibleCaseNextStepHTML(row, s.LondonLoc)
 			rowClass := ""
 			if row.CaseID != nil {
 				rowClass = ` class="table-success"`
-				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-success" href="/admin/cases/%d">Open case %s</a><div class="small text-success-emphasis mt-1">%s`, *row.CaseID, escapeHTML(row.CaseReference), escapeHTML(plainIneligibleStatus(row.CaseStatus)))
-				if row.Assignee != "" {
-					caseHTML += `; ` + escapeHTML(row.Assignee)
+				if row.ReplyNeedsReview {
+					rowClass = ` class="table-info"`
 				}
-				caseHTML += `</div>`
 			}
 			evidenceHTML := ""
 			if row.AttachmentCount > 0 {
@@ -482,9 +518,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				}
 				evidenceHTML = fmt.Sprintf(`<div class="small mt-1"><span class="badge text-bg-light border">%d evidence %s</span></div>`, row.AttachmentCount, label)
 			}
-			if row.CaseID == nil {
-				caseHTML = fmt.Sprintf(`<a class="btn btn-sm btn-primary" href="/admin/ineligible/%d">Review report</a>`, row.ID)
-			}
+
 			visibilityHTML := ""
 			if row.Origin == "google_form" && row.CaseID == nil {
 				visibilityLabel := "Selected"
@@ -508,6 +542,50 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
 	}
+}
+
+func ineligibleNewRepliesHref(counts ineligibleDashboardCounts) string {
+	if counts.RecentReplies == 1 && counts.RecentReplyCaseID > 0 {
+		return fmt.Sprintf("/admin/cases/%d#club-response", counts.RecentReplyCaseID)
+	}
+	return "/admin/ineligible?scope=all&state=all&worklist=all&reply_status=unreviewed#reports"
+}
+func ineligibleCaseNextStepHTML(row ineligibleQueueRow, loc *time.Location) string {
+	if row.CaseID == nil {
+		return fmt.Sprintf(`<a class="btn btn-sm btn-primary" href="/admin/ineligible/%d">Review report</a>`, row.ID)
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	href := fmt.Sprintf("/admin/cases/%d", *row.CaseID)
+	buttonClass := "btn-success"
+	if row.ReplyNeedsReview {
+		href += "#club-response"
+		buttonClass = "btn-info"
+	}
+	result := fmt.Sprintf(`<a class="btn btn-sm %s" href="%s">Open case %s</a><div class="small text-success-emphasis mt-1">%s`, buttonClass, href, escapeHTML(row.CaseReference), escapeHTML(plainIneligibleStatus(row.CaseStatus)))
+	if row.Assignee != "" {
+		result += `; ` + escapeHTML(row.Assignee)
+	}
+	result += `</div>`
+	if row.ReplyCount == 0 {
+		return result
+	}
+	label := "Reply received"
+	badgeClass := "text-bg-success"
+	if row.ReplyNeedsReview {
+		label = "Reply received - needs review"
+		badgeClass = "text-bg-danger"
+	}
+	replyWord := "replies"
+	if row.ReplyCount == 1 {
+		replyWord = "reply"
+	}
+	received := ""
+	if row.LatestReplyAt != nil {
+		received = "Latest " + row.LatestReplyAt.In(loc).Format("02 Jan 15:04")
+	}
+	return result + fmt.Sprintf(`<div class="mt-2"><span class="badge %s">%s</span> <span class="badge text-bg-light border">%d %s total</span><div class="small text-muted">%s</div></div>`, badgeClass, escapeHTML(label), row.ReplyCount, replyWord, escapeHTML(received))
 }
 
 func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
@@ -541,6 +619,7 @@ func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
 		filter.Player != "" ||
 		filter.Assignee != "" ||
 		filter.CaseStatus != "" ||
+		filter.ReplyStatus != "" ||
 		filter.Age != "" ||
 		filter.Scope != "all" ||
 		filter.Worklist != "visible" ||
@@ -573,6 +652,18 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
 		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('closed','rejected','withdrawn'))
 	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
+	if err == nil && counts.RecentReplies == 1 {
+		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c JOIN LATERAL (
+			SELECT event.id FROM sanction_case_events event
+			WHERE event.case_id=c.id AND event.event_type IN ('party_response','external_response_recorded')
+			ORDER BY event.id DESC LIMIT 1
+		) reply ON TRUE
+		WHERE c.source_type='ineligible_player' AND NOT EXISTS (
+			SELECT 1 FROM sanction_case_events reviewed
+			WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
+			  AND reviewed.metadata->>'response_event_id'=reply.id::text)
+		LIMIT 1`).Scan(&counts.RecentReplyCaseID)
+	}
 	return counts, err
 }
 
@@ -583,7 +674,7 @@ func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHe
 }
 
 func writeIneligibleFixtureDateControls(w io.Writer, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="age" value="%s"><div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.Age), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="reply_status" value="%s"><input type="hidden" name="age" value="%s"><div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.ReplyStatus), escapeHTML(filter.Age), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
 	writeIneligibleDateSortOptions(w, filter.Sort)
 	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Apply dates</button></div>`)
 	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
@@ -595,6 +686,10 @@ func writeIneligibleFixtureDateControls(w io.Writer, filter ineligibleQueueFilte
 func writeIneligibleEmptyQueue(w io.Writer, filter ineligibleQueueFilters, queueTitle string) {
 	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
 		fmt.Fprintf(w, `<tr><td colspan="5" class="text-center text-muted py-5">No reports match these fixture dates. <a href="%s">Clear dates</a> or choose a wider range.</td></tr>`, escapeHTML(ineligibleClearFixtureDatesURL(filter)))
+		return
+	}
+	if filter.ReplyStatus == "unreviewed" {
+		fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-5">No club replies are waiting for review.</td></tr>`)
 		return
 	}
 	emptyMessage := "No reports match this view. Open the manager controls above to clear filters."
@@ -637,6 +732,8 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	writeSelectedOptions(w, filter.Origin, []string{"google_form", "native_form", "starred_player", "tracker_backfill"})
 	fmt.Fprintf(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Reporting club</label><input class="form-control" name="reporting_club" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Offending club</label><input class="form-control" name="offending_club" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Team</label><input class="form-control" name="team" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Player</label><input class="form-control" name="player" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Assignee</label><input class="form-control" name="assignee" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Case status</label><select class="form-select" name="case_status"><option value="">All statuses</option>`, escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee))
 	writeSelectedOptions(w, filter.CaseStatus, []string{"submitted", "triage", "investigating", "response_pending", "decision_proposed", "approved", "published", "appealed", "closed", "rejected", "withdrawn"})
+	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Reply status</label><select class="form-select" name="reply_status"><option value="">All replies</option>`)
+	writeSelectedOptions(w, filter.ReplyStatus, []string{"unreviewed", "received"})
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Older than</label><select class="form-select" name="age"><option value="">Any age</option>`)
 	for _, option := range []struct{ Value, Label string }{{"2d", "2 days"}, {"7d", "7 days"}, {"14d", "14 days"}, {"30d", "30 days"}} {
 		selected := ""
