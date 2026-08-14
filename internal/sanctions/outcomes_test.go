@@ -25,6 +25,23 @@ func TestCanonicalOutcomeRecipientRequiresPlainAddress(t *testing.T) {
 	}
 }
 
+func TestAppendUniqueOutcomeRecipientAddsReporterAndDeduplicates(t *testing.T) {
+	seen := map[string]bool{}
+	recipients, err := appendUniqueOutcomeRecipient(nil, seen, "REPORTER@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipients, err = appendUniqueOutcomeRecipient(recipients, seen, "reporter@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recipients) != 1 || recipients[0] != "reporter@example.test" {
+		t.Fatalf("recipients = %#v, want one canonical reporter address", recipients)
+	}
+	if _, err = appendUniqueOutcomeRecipient(recipients, seen, "Name <reporter@example.test>"); err == nil {
+		t.Fatal("display-name reporter address was accepted")
+	}
+}
 func TestOutcomeContainsPrivateIdentity(t *testing.T) {
 	if !outcomeContainsPrivateIdentity("Findings reported by Example CC", "Example CC") {
 		t.Fatal("reporting-club identity was not detected")

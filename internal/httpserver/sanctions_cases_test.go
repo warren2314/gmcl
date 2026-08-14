@@ -152,6 +152,32 @@ func TestAdminCaseAssignmentHidesDuplicateSelfAssignment(t *testing.T) {
 	}
 }
 
+func TestAdminCaseReporterHTMLShowsPrivateReporterDetailsSafely(t *testing.T) {
+	html := adminCaseReporterHTML(adminCaseReporterView{
+		Name:          `Jane <Reporter>`,
+		Email:         `jane@example.test`,
+		Role:          `Club Secretary`,
+		Phone:         `07000 111222`,
+		ReportingClub: `Example CC`,
+	})
+	for _, want := range []string{
+		`Reported by`,
+		`Private case information`,
+		`Jane &lt;Reporter&gt;`,
+		`mailto:jane@example.test`,
+		`Club Secretary`,
+		`07000 111222`,
+		`Example CC`,
+		`receives the reporting-side final outcome`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("reporter card missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `Jane <Reporter>`) {
+		t.Fatalf("reporter identity was not escaped: %s", html)
+	}
+}
 func TestAdminCaseAssignmentAllowsExplicitReassignment(t *testing.T) {
 	assignedID := int32(7)
 	currentID := int32(42)

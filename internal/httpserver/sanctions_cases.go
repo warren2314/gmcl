@@ -1272,6 +1272,27 @@ func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *in
 	return "Back to cases", "/admin/cases"
 }
 
+type adminCaseReporterView struct {
+	Name, Email, Role, Phone, ReportingClub string
+}
+
+func adminCaseReporterHTML(reporter adminCaseReporterView) string {
+	if strings.TrimSpace(reporter.Name+reporter.Email+reporter.Role+reporter.Phone+reporter.ReportingClub) == "" {
+		return `<section class="card mb-4 border-warning"><div class="card-header"><strong>Reported by</strong></div><div class="card-body text-muted">Reporter details were not captured for this case.</div></section>`
+	}
+	value := func(input string) string {
+		if strings.TrimSpace(input) == "" {
+			return `<span class="text-muted">Not recorded</span>`
+		}
+		return escapeHTML(input)
+	}
+	email := value(reporter.Email)
+	if strings.TrimSpace(reporter.Email) != "" {
+		email = fmt.Sprintf(`<a href="mailto:%s">%s</a>`, escapeHTML(reporter.Email), escapeHTML(reporter.Email))
+	}
+	return fmt.Sprintf(`<section class="card mb-4 border-info"><div class="card-header d-flex justify-content-between gap-2"><strong>Reported by</strong><span class="badge text-bg-light border">Private case information</span></div><div class="card-body"><dl class="row mb-0"><dt class="col-sm-3">Name</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Role</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Email</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Telephone</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Reporting club</dt><dd class="col-sm-9">%s</dd></dl><p class="small text-muted mb-0">When an email address is recorded, this reporter receives the reporting-side final outcome communication.</p></div></section>`, value(reporter.Name), value(reporter.Role), email, value(reporter.Phone), value(reporter.ReportingClub))
+}
+
 type adminCaseResponseView struct {
 	ID         int64
 	EventType  string
@@ -1327,13 +1348,14 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		var ref, source, status, publicSummary, privateSummary, club, team string
+		var reporter adminCaseReporterView
 		var proposer, approver, assignedAdminID *int32
 		var assignedAdminName string
 		var hasProposed, isTest bool
-		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
+		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
 			SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed'
 			  AND NOT EXISTS(SELECT 1 FROM sanction_decision_revisions newer WHERE newer.supersedes_id=d.id)
-		),c.is_test FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest)
+		),c.is_test FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1356,6 +1378,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		pageHead(w, "Case "+ref)
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="%s" class="btn btn-sm btn-outline-secondary mb-3">%s</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(backURL), escapeHTML(backLabel), escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
+		fmt.Fprint(w, adminCaseReporterHTML(reporter))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
@@ -2004,6 +2027,9 @@ func (s *Server) handleAdminCaseAssignSelf() http.HandlerFunc {
 		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'investigator_assigned','admin',$2,$3,'Investigation assigned',jsonb_build_object('assigned_admin_id',$4::integer),jsonb_build_object('assigned_admin_id',$2::bigint),$5)`, id, *actor.ID, actor.Label, previous, actor.RequestID)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE sanction_cases SET assigned_admin_id=$2,status=CASE WHEN status IN ('submitted','triage') THEN 'investigating' ELSE status END,updated_at=now() WHERE id=$1`, id, *actor.ID)
+		}
+		if err == nil {
+			_, err = reassignOpenCaseOwnerTasks(r.Context(), tx, id, previous, *actor.ID, *actor.ID, actor.Label, actor.Label, "Investigation assigned", actor.RequestID)
 		}
 		if err != nil {
 			slog.Error("assign sanction case", "case_id", id, "admin_id", *actor.ID, "error", err)

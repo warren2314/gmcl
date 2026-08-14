@@ -1182,6 +1182,12 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	snapshots := []snapshot{{kind: kindOffending, audience: "offending_club", recipients: offendingRecipients}}
 	var reportingRecipients []string
 	reportingRecipientSeen := map[string]bool{}
+	if strings.TrimSpace(reporterEmail) != "" {
+		reportingRecipients, err = appendUniqueOutcomeRecipient(reportingRecipients, reportingRecipientSeen, reporterEmail)
+		if err != nil {
+			return fmt.Errorf("reporter email is invalid: %w", err)
+		}
+	}
 	for _, club := range reportingClubs {
 		if offendingClubID != nil && club.id == *offendingClubID {
 			continue
@@ -1361,6 +1367,21 @@ func outcomeEffectSubject(effect approvedOutcomeEffect) string {
 		return player
 	}
 	return strings.TrimSpace(effect.teamName)
+}
+
+func appendUniqueOutcomeRecipient(recipients []string, seen map[string]bool, value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return recipients, nil
+	}
+	canonical, err := canonicalOutcomeRecipient(value)
+	if err != nil {
+		return recipients, err
+	}
+	if !seen[canonical] {
+		seen[canonical] = true
+		recipients = append(recipients, canonical)
+	}
+	return recipients, nil
 }
 
 func canonicalOutcomeRecipient(value string) (string, error) {
