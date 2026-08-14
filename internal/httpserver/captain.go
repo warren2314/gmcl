@@ -821,7 +821,8 @@ func (s *Server) handleCaptainForm() http.HandlerFunc {
 			"week_id":        sess.WeekID,
 			"submitter_role": sess.SubmitterRole,
 		})
-		s.renderGMCLFormWithChooser(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft, umpires, fixtureChooser)
+		sanctionsReportEnabled, _, _ := s.nativeIneligibleRolloutActive(ctx)
+		s.renderGMCLFormWithChooser(w, sess.SeasonID, csrfToken, clubName, teamName, captainName, captainEmail, submitterName, submitterEmail, sess.SubmitterRole, today, draft, umpires, fixtureChooser, sanctionsReportEnabled)
 	}
 }
 

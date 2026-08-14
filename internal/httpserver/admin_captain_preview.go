@@ -222,6 +222,6 @@ func (s *Server) handleAdminCaptainPreview() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		umpires := s.loadUmpires(ctx)
 		s.renderGMCLFormWithChooser(w, seasonID, csrfToken, clubName, teamName, captainName, captainEmail,
-			captainName, captainEmail, "captain", now.Format("2006-01-02"), draft, umpires, fixtureChooser)
+			captainName, captainEmail, "captain", now.Format("2006-01-02"), draft, umpires, fixtureChooser, false)
 	}
 }
