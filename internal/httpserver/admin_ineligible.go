@@ -53,6 +53,7 @@ type ineligibleQueueFilters struct {
 type ineligibleQueueRow struct {
 	ID                 int64
 	Origin             string
+	IsTraining         bool
 	ExternalKey        string
 	State              string
 	ReportingClubText  string
@@ -319,7 +320,7 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 		orderBy = "latest_reply.created_at DESC NULLS LAST,i.id DESC"
 	}
 	query := `
-		SELECT i.id,i.origin,i.external_key,i.state,COALESCE(i.reporting_club_text,''),
+		SELECT i.id,i.origin,i.external_key,i.state,i.is_training,COALESCE(i.reporting_club_text,''),
 		       COALESCE(i.offending_club_text,''),COALESCE(i.team_text,''),COALESCE(i.player_text,''),
 		       i.fixture_date,i.external_created_at,c.id,COALESCE(c.reference,''),COALESCE(c.status,''),
 		       COALESCE(a.username,''),
@@ -376,7 +377,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		queue := []ineligibleQueueRow{}
 		for rows.Next() {
 			var row ineligibleQueueRow
-			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount, &row.ReplyCount, &row.LatestReplyAt, &row.ReplyNeedsReview); err != nil {
+			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.IsTraining, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount, &row.ReplyCount, &row.LatestReplyAt, &row.ReplyNeedsReview); err != nil {
 				rows.Close()
 				http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
 				return
@@ -396,7 +397,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ineligible-player work")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a></div></div>`)
 		writeIneligibleFlash(w, r)
 		var nextReportID int64
 		if filter.Worklist == "visible" {
@@ -504,6 +505,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			}
 			caseHTML := ineligibleCaseNextStepHTML(row, s.LondonLoc)
 			rowClass := ""
+			if row.IsTraining {
+				rowClass = ` class="table-warning"`
+			}
 			if row.CaseID != nil {
 				rowClass = ` class="table-success"`
 				if row.ReplyNeedsReview {
@@ -533,6 +537,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				if filter.Worklist != "visible" || row.WorklistBatchID == 0 {
 					visibilityHTML = fmt.Sprintf(` <span class="badge %s">%s</span>`, visibilityClass, escapeHTML(visibilityLabel))
 				}
+			}
+			if row.IsTraining {
+				visibilityHTML += ` <span class="badge text-bg-warning">Training - real email enabled</span>`
 			}
 			fmt.Fprintf(w, `<tr%s><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s</div>%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s%s</td><td data-label="Next step">%s</td></tr>`, rowClass, row.ID, escapeHTML(row.PlayerText), escapeHTML(row.OffendingClubText), escapeHTML(row.TeamText), escapeHTML(row.ReportingClubText), evidenceHTML, escapeHTML(fixture), escapeHTML(received), escapeHTML(strings.ReplaceAll(row.Origin, "_", " ")), ineligibleStateBadge(row.State), visibilityHTML, caseHTML)
 		}
@@ -629,28 +636,33 @@ func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
 func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleDashboardCounts, error) {
 	var counts ineligibleDashboardCounts
 	err := s.DB.QueryRow(ctx, `
+		WITH live_intakes AS (SELECT * FROM sanction_intakes WHERE NOT is_training),
+		live_cases AS (
+			SELECT c.* FROM sanction_cases c WHERE NOT c.is_test
+			AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
+		)
 		SELECT
-		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
-		 (SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM sanction_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('submitted','triage','investigating','response_pending')),
-		 (SELECT COUNT(*) FROM sanction_cases c JOIN LATERAL (
+		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
+		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM live_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('submitted','triage','investigating','response_pending')),
+		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
 		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND latest.status='pending' AND latest.due_at>=now()),
-		 (SELECT COUNT(*) FROM sanction_cases c JOIN LATERAL (
+		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
 		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND c.status NOT IN ('closed','rejected','withdrawn','published')
 			AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired')),
-		 (SELECT COUNT(*) FROM sanction_cases c JOIN LATERAL (
+		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT e.id,e.created_at FROM sanction_case_events e WHERE e.case_id=c.id AND e.event_type IN ('party_response','external_response_recorded') ORDER BY e.id DESC LIMIT 1
 		 ) reply ON TRUE WHERE c.source_type='ineligible_player' AND NOT EXISTS (
 			SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
 			  AND reviewed.metadata->>'response_event_id'=reply.id::text)),
-		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('decision_proposed','approved')),
-		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE c.source_type='ineligible_player' AND t.task_type='play_cricket_points' AND t.status IN ('open','in_progress') AND LOWER(COALESCE(a.username,''))='denverthornton'),
-		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN sanction_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
+		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('decision_proposed','approved')),
+		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE c.source_type='ineligible_player' AND t.task_type='play_cricket_points' AND t.status IN ('open','in_progress') AND LOWER(COALESCE(a.username,''))='denverthornton'),
+		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN live_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
 			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
-		 (SELECT COUNT(*) FROM sanction_cases WHERE source_type='ineligible_player' AND status IN ('closed','rejected','withdrawn'))
+		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('closed','rejected','withdrawn'))
 	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	if err == nil && counts.RecentReplies == 1 {
 		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c JOIN LATERAL (
@@ -658,7 +670,8 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 			WHERE event.case_id=c.id AND event.event_type IN ('party_response','external_response_recorded')
 			ORDER BY event.id DESC LIMIT 1
 		) reply ON TRUE
-		WHERE c.source_type='ineligible_player' AND NOT EXISTS (
+		WHERE c.source_type='ineligible_player' AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
+		  AND NOT EXISTS (
 			SELECT 1 FROM sanction_case_events reviewed
 			WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
 			  AND reviewed.metadata->>'response_event_id'=reply.id::text)
@@ -888,15 +901,16 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 		}
 		var origin, externalKey, state, reportingText, offendingText, teamText, playerText, exception string
 		var fixtureDate, externalCreatedAt *time.Time
+		var isTraining bool
 		var revision int
 		var rawJSON []byte
 		err = s.DB.QueryRow(r.Context(), `
-			SELECT i.origin,i.external_key,i.state,COALESCE(i.reporting_club_text,''),COALESCE(i.offending_club_text,''),
+			SELECT i.origin,i.external_key,i.state,i.is_training,COALESCE(i.reporting_club_text,''),COALESCE(i.offending_club_text,''),
 			       COALESCE(i.team_text,''),COALESCE(i.player_text,''),i.fixture_date,i.external_created_at,
 			       COALESCE(i.exception_message,''),COALESCE(rev.revision,0),COALESCE(rev.raw_data,'{}'::jsonb)
 			FROM sanction_intakes i
 			LEFT JOIN LATERAL (SELECT r.revision,r.raw_data FROM sanction_intake_revisions r WHERE r.intake_id=i.id ORDER BY r.revision DESC LIMIT 1) rev ON TRUE
-			WHERE i.id=$1`, intakeID).Scan(&origin, &externalKey, &state, &reportingText, &offendingText, &teamText, &playerText, &fixtureDate, &externalCreatedAt, &exception, &revision, &rawJSON)
+			WHERE i.id=$1`, intakeID).Scan(&origin, &externalKey, &state, &isTraining, &reportingText, &offendingText, &teamText, &playerText, &fixtureDate, &externalCreatedAt, &exception, &revision, &rawJSON)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -921,6 +935,9 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1180px"><a class="btn btn-sm btn-outline-secondary mb-3" href="/admin/ineligible">Back to intake queue</a>`)
 		writeIneligibleFlash(w, r)
 		fmt.Fprintf(w, `<div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-4"><div><h1 class="h2 mb-1">Intake %d</h1><p class="text-muted mb-0">%s / %s / revision %d</p></div><div>%s</div></div>`, intakeID, escapeHTML(strings.ReplaceAll(origin, "_", " ")), escapeHTML(externalKey), revision, ineligibleStateBadge(state))
+		if isTraining {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Training report - real email enabled.</strong> It is excluded from live workload totals. Raising the case opens the normal investigation, Denver approval and email workflow. <a class="alert-link" href="/admin/ineligible/training/new">Create another training report</a>.</div>`)
+		}
 		if exception != "" {
 			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Import exception:</strong> %s</div>`, escapeHTML(exception))
 		}
@@ -1407,11 +1424,12 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 			http.Error(w, "could not create case", http.StatusInternalServerError)
 			return
 		}
+		var isTraining bool
 		defer tx.Rollback(r.Context())
 		var state, origin, externalKey, reportingText, offendingText string
 		var revisionID int64
 		var rawJSON []byte
-		err = tx.QueryRow(r.Context(), `SELECT i.state,i.origin,i.external_key,COALESCE(i.reporting_club_text,''),COALESCE(i.offending_club_text,''),rev.id,rev.raw_data FROM sanction_intakes i JOIN LATERAL (SELECT id,raw_data FROM sanction_intake_revisions WHERE intake_id=i.id ORDER BY revision DESC LIMIT 1) rev ON TRUE WHERE i.id=$1 FOR UPDATE OF i`, intakeID).Scan(&state, &origin, &externalKey, &reportingText, &offendingText, &revisionID, &rawJSON)
+		err = tx.QueryRow(r.Context(), `SELECT i.state,i.origin,i.external_key,i.is_training,COALESCE(i.reporting_club_text,''),COALESCE(i.offending_club_text,''),rev.id,rev.raw_data FROM sanction_intakes i JOIN LATERAL (SELECT id,raw_data FROM sanction_intake_revisions WHERE intake_id=i.id ORDER BY revision DESC LIMIT 1) rev ON TRUE WHERE i.id=$1 FOR UPDATE OF i`, intakeID).Scan(&state, &origin, &externalKey, &isTraining, &reportingText, &offendingText, &revisionID, &rawJSON)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1486,6 +1504,9 @@ func (s *Server) handleAdminIneligibleCreateCase() http.HandlerFunc {
 		}
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,metadata,request_id) VALUES($1,'ineligible_intake_case_created','admin',$2,$3,$4,jsonb_build_object('reference',$5::text,'team_id',$6::bigint,'reporting_club_id',$7::integer,'assigned_admin_id',$8::integer),jsonb_build_object('intake_id',$9::bigint,'origin',$10::text,'external_key',$11::text),$12)`, caseID, *actor.ID, actor.Label, "Investigation created from private intake and assigned to "+assignee, reference, teamID, reportingClubID, assigneeID, intakeID, origin, externalKey, actor.RequestID)
+		}
+		if err == nil && isTraining {
+			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,after_data,metadata,request_id) VALUES($1,'case_training_designated','admin',$2,$3,'Created from a staff-authorised ineligible-player training report with real email enabled',jsonb_build_object('training_case',TRUE,'real_email_enabled',TRUE),jsonb_build_object('intake_id',$4::bigint),$5)`, caseID, *actor.ID, actor.Label, intakeID, actor.RequestID)
 		}
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'case_created',$2,$3,$4,jsonb_build_object('state',$5::text),jsonb_build_object('state','linked','case_id',$6::bigint,'reference',$7::text,'relationship',$8::text,'offending_club_id',$9::integer,'reporting_club_id',$10::integer,'team_id',$11::bigint),$12)`, intakeID, *actor.ID, actor.Label, "Created "+reference+" without sending correspondence", state, caseID, reference, relationship, clubID, reportingClubID, teamID, actor.RequestID)

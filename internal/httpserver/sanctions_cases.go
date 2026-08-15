@@ -477,7 +477,7 @@ func (s *Server) handleSanctionReportSubmit() http.HandlerFunc {
 				s.redirectToPrivateGoogleForm(w, r)
 				return
 			}
-			s.stageNativeIneligibleReport(w, r, name, emailAddr, summary, teamID, offendingClub, teamName)
+			s.stageNativeIneligibleReport(w, r, name, emailAddr, summary, teamID, offendingClub, teamName, false)
 			return
 		}
 		var matchDate any
@@ -915,7 +915,7 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 
 func (s *Server) handleAdminCases() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(c.player_name,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
+		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(c.player_name,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated') ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
 		if err != nil {
 			http.Error(w, "could not load cases", 500)
 			return
@@ -1384,11 +1384,11 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		var reporter adminCaseReporterView
 		var proposer, approver, assignedAdminID *int32
 		var assignedAdminName string
-		var hasProposed, isTest bool
+		var hasProposed, isTest, isTraining bool
 		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
 			SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed'
 			  AND NOT EXISTS(SELECT 1 FROM sanction_decision_revisions newer WHERE newer.supersedes_id=d.id)
-		),c.is_test FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest)
+		),c.is_test,EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1415,6 +1415,9 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		fmt.Fprint(w, s.loadAdminCaseSourceReportHTML(r.Context(), id))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
+		}
+		if isTraining {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Training case - real email enabled.</strong> This case is excluded from live workload totals, but response requests and approved outcomes use the normal recipients and delivery system. Check recipients before each send.</div>`)
 		}
 		if failure := strings.TrimSpace(r.URL.Query().Get("error")); failure != "" {
 			fmt.Fprintf(w, `<div class="alert alert-warning">%s</div>`, escapeHTML(failure))
@@ -1627,6 +1630,9 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 			recipientText: "Verified " + strings.ReplaceAll(audience, "_", " ") + " recipient is added when queued",
 			status:        "template - decision pending",
 		})
+		if audience == "offending_club" {
+			previews[len(previews)-1].recipientText = "Verified offending-club recipient plus " + sanctiondomain.PlayCricketHelpCopyRecipient
+		}
 	}
 	if hasProposed {
 		service := sanctiondomain.NewService(s.DB)

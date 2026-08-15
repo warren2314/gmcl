@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const PlayCricketHelpCopyRecipient = "playcrickethelp@gtrmcrcricket.co.uk"
+
 var (
 	ErrSeparationOfDuties = errors.New("the proposer cannot approve their own decision")
 	ErrNotApprovable      = errors.New("case is not awaiting approval")
@@ -1194,6 +1196,14 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	}
 	if len(offendingRecipients) == 0 {
 		return errors.New("offending club official mailbox must be verified before approval")
+	}
+	offendingRecipientSeen := make(map[string]bool, len(offendingRecipients)+1)
+	for _, recipient := range offendingRecipients {
+		offendingRecipientSeen[recipient] = true
+	}
+	offendingRecipients, err = appendUniqueOutcomeRecipient(offendingRecipients, offendingRecipientSeen, PlayCricketHelpCopyRecipient)
+	if err != nil {
+		return fmt.Errorf("Play-Cricket Help copy recipient is invalid: %w", err)
 	}
 	snapshots := []snapshot{{kind: kindOffending, audience: "offending_club", recipients: offendingRecipients}}
 	var reportingRecipients []string
