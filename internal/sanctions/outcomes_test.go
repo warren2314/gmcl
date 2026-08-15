@@ -127,3 +127,13 @@ func TestContainsPrivateIdentityCoversContextualReporterRolePhrases(t *testing.T
 		t.Fatal("ordinary offending-club role wording created a false identity disclosure")
 	}
 }
+
+func TestApprovedEffectSummaryOmitsDatesWithoutExplicitEndDate(t *testing.T) {
+	starts := time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC)
+	got := approvedEffectSummary([]approvedOutcomeEffect{{
+		typeName: "player_ban", playerName: "Example Player", startsAt: &starts,
+	}})
+	if strings.Contains(got, "effective") || strings.Contains(got, "August 2026") {
+		t.Fatalf("summary contains dates without an explicit end date: %q", got)
+	}
+}
