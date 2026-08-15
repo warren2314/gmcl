@@ -259,6 +259,7 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Admin user management
 		r.With(s.requireAdminRole("super_admin")).Get("/users", s.handleAdminUsers())
+		r.With(s.requireAdminRole("super_admin")).Get("/users/{id}/work-preview", s.handleAdminUserWorkPreview())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/invite", s.handleAdminUserInvite())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/role", s.handleAdminUserRoleUpdate())
 		r.With(s.requireAdminRole("super_admin")).Post("/users/{id}/permissions", s.handleAdminUserPermissionsUpdate())

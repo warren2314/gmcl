@@ -506,6 +506,9 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 }
 
 func validateDecisionEffectFields(effect DecisionEffectRequest) error {
+	if effect.EndsAt != nil && effect.EffectType != "player_ban" && effect.EffectType != "team_ban" && effect.EffectType != "suspended_red" {
+		return fmt.Errorf("%s cannot carry an end date; end dates are only for bans and suspended red cards", strings.ReplaceAll(effect.EffectType, "_", " "))
+	}
 	switch effect.EffectType {
 	case "fine":
 		if effect.AmountPence == nil || *effect.AmountPence <= 0 {
@@ -1345,10 +1348,11 @@ func approvedEffectSummary(effects []approvedOutcomeEffect) string {
 			}
 			label += fmt.Sprintf(" (%d %s)", *effect.points, pointsKind)
 		}
-		if effect.startsAt != nil {
+		showDates := effect.typeName == "player_ban" || effect.typeName == "team_ban" || effect.typeName == "suspended_red"
+		if showDates && effect.startsAt != nil {
 			label += "; effective " + effect.startsAt.Format("2 January 2006")
 		}
-		if effect.endsAt != nil {
+		if showDates && effect.endsAt != nil {
 			label += " to " + effect.endsAt.Format("2 January 2006")
 		}
 		lines = append(lines, "- "+label)

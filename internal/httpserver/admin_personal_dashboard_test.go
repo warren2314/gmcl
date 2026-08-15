@@ -59,6 +59,9 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 		`href="/admin/cases/tasks?mine=1#task-42"`,
 		`id="my-cases"`,
 		"Overdue",
+		"Decisions needing my role",
+		"Approval / issue queue",
+		`href="/admin/cases/1177"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard output missing %q", want)
@@ -66,11 +69,6 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 	}
 	if strings.Contains(html, "Warren <Exec>") {
 		t.Fatal("administrator name was not escaped")
-	}
-	for _, hidden := range []string{"Decisions needing my role", "Approval / issue queue", `href="/admin/cases/1177"`} {
-		if strings.Contains(html, hidden) {
-			t.Fatalf("dashboard output includes hidden historic decision content %q", hidden)
-		}
 	}
 }
 

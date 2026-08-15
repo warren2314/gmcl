@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"cricket-ground-feedback/internal/middleware"
+	"github.com/go-chi/chi/v5"
 )
 
 type personalWorkCase struct {
@@ -211,6 +215,39 @@ func (s *Server) writeAdminPersonalWork(w http.ResponseWriter, r *http.Request) 
 	writePersonalWorkDashboard(w, data, s.LondonLoc, time.Now())
 }
 
+func (s *Server) handleAdminUserWorkPreview() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 32)
+		if err != nil || id < 1 {
+			http.NotFound(w, r)
+			return
+		}
+		var username string
+		var active bool
+		if err = s.DB.QueryRow(r.Context(), `SELECT username,is_active FROM admin_users WHERE id=$1`, id).Scan(&username, &active); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := s.loadPersonalWorkDashboard(r.Context(), int32(id), username)
+		if err != nil {
+			http.Error(w, "work preview unavailable", http.StatusInternalServerError)
+			return
+		}
+		csrf := middleware.CSRFToken(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pageHead(w, "Work preview for "+username)
+		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
+		fmt.Fprintf(w, `<main class="container py-4"><div class="d-flex flex-wrap justify-content-between gap-2 mb-3"><div><h1 class="h2">Work preview for %s</h1><p class="text-muted mb-0">This is the personal sanctions work section generated for this administrator.</p></div><a class="btn btn-outline-secondary align-self-start" href="/admin/users">Back to users</a></div>`, escapeHTML(username))
+		if !active {
+			fmt.Fprint(w, `<div class="alert alert-warning">This administrator account is inactive.</div>`)
+		}
+		fmt.Fprint(w, `<div class="alert alert-info"><strong>Read-only preview.</strong> Nothing here logs you in as this person or changes their work. Links are disabled in preview mode.</div><div class="pe-none" aria-disabled="true">`)
+		writePersonalWorkDashboard(w, data, s.LondonLoc, time.Now())
+		fmt.Fprint(w, `</div></main>`)
+		pageFooter(w)
+	}
+}
+
 func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboard, loc *time.Location, now time.Time) {
 	if loc == nil {
 		loc = time.Local
@@ -226,23 +263,31 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 	if name == "" {
 		name = "administrator"
 	}
-	urgentTotal := data.ResponseTotal + data.TaskTotal
+	urgentTotal := data.ResponseTotal + data.TaskTotal + data.DecisionTotal
+	decisionCard := ""
+	if data.CanApprove || data.CanPublish {
+		decisionCard = personalWorkCountCard("Approval / issue queue", data.DecisionTotal, "#my-decisions", map[bool]string{true: "danger", false: "secondary"}[data.DecisionTotal > 0])
+	}
 	fmt.Fprintf(w, `<section class="card mb-4 border-primary" aria-labelledby="my-work-heading">
 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
 <div><strong id="my-work-heading">My work</strong><div class="small text-muted">%s, %s. Open an item below to go straight to the work.</div></div>
 <span class="badge %s">%d need attention</span>
 </div><div class="card-body">
 <div class="row g-2 mb-3">
-%s%s%s
+%s%s%s%s
 </div>`, escapeHTML(greeting), escapeHTML(name), map[bool]string{true: "text-bg-danger", false: "text-bg-success"}[urgentTotal > 0], urgentTotal,
 		personalWorkCountCard("My cases", data.AssignedTotal, "/admin/ineligible?scope=mine&state=all", "primary"),
 		personalWorkCountCard("Responses to review", data.ResponseTotal, "#my-responses", map[bool]string{true: "danger", false: "secondary"}[data.ResponseTotal > 0]),
-		personalWorkCountCard("My tasks", data.TaskTotal, "#my-tasks", map[bool]string{true: "warning", false: "secondary"}[data.TaskTotal > 0]))
+		personalWorkCountCard("My tasks", data.TaskTotal, "#my-tasks", map[bool]string{true: "warning", false: "secondary"}[data.TaskTotal > 0]),
+		decisionCard)
 
 	fmt.Fprint(w, `<div class="row g-3">`)
 	writePersonalResponseList(w, data.Responses, data.ResponseTotal, loc)
 	writePersonalTaskList(w, data.Tasks, data.TaskTotal, loc, localNow)
 	writePersonalCaseList(w, data.AssignedCases, data.AssignedTotal, loc)
+	if data.CanApprove || data.CanPublish {
+		writePersonalDecisionList(w, data.DecisionQueue, data.DecisionTotal)
+	}
 	fmt.Fprint(w, `</div></div></section>`)
 }
 
