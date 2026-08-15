@@ -29,16 +29,16 @@ func (s *Service) OutcomeDraft(ctx context.Context, caseID int64, audience strin
 		return OutcomeDraft{}, errors.New("invalid outcome audience")
 	}
 	var draft OutcomeDraft
-	var reference, sourceType, offendingClub, subject, findings, appeal string
+	var reference, sourceType, offendingClub, offendingTeam, subject, findings, appeal string
 	var offendingClubID *int32
 	var rule *string
 	var status string
-	err := s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.status,c.club_id,COALESCE(off.name,''),
+	err := s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.status,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),
 		COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference
 		FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id
-		LEFT JOIN clubs off ON off.id=c.club_id
+		LEFT JOIN clubs off ON off.id=c.club_id LEFT JOIN teams team ON team.id=c.team_id
 		WHERE c.id=$1 AND d.status='proposed' ORDER BY d.revision DESC LIMIT 1`, caseID).
-		Scan(&draft.DecisionID, &reference, &sourceType, &status, &offendingClubID, &offendingClub, &subject, &findings, &appeal, &rule)
+		Scan(&draft.DecisionID, &reference, &sourceType, &status, &offendingClubID, &offendingClub, &offendingTeam, &subject, &findings, &appeal, &rule)
 	if err != nil {
 		return OutcomeDraft{}, err
 	}
@@ -68,10 +68,10 @@ func (s *Service) OutcomeDraft(ctx context.Context, caseID int64, audience strin
 		ruleText = strings.TrimSpace(*rule)
 	}
 	rendered := renderOutcomeCommunications(outcomeRenderData{
-		reference: reference, sourceType: sourceType, offendingClub: offendingClub,
+		reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam,
 		reportingClub: strings.Join(reportingNames, ", "), subject: subject,
 		findings: findings, appeal: appeal, rule: ruleText,
-		effectSummary: approvedEffectSummary(effects), combined: combined, noAction: noAction,
+		effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, nil, ""), combined: combined, noAction: noAction,
 	})
 	draft.Audience = audience
 	draft.Subject = rendered.subject
