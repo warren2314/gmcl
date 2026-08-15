@@ -187,13 +187,16 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 	defer tx.Rollback(ctx)
 
 	var source, status, reference, currentPublicSummary, currentPrivateSummary string
-	var seasonID, weekID, caseClubID, caseTeamID *int32
+	var seasonID, weekID, caseClubID, caseTeamID, assignedAdminID *int32
 	var casePlayer *string
 	var matchDate *time.Time
-	if err = tx.QueryRow(ctx, `SELECT c.source_type,c.status,c.reference,c.season_id,c.week_id,c.club_id,c.team_id,c.player_name,c.match_date,COALESCE(c.public_summary,''),COALESCE(c.private_summary,'')
+	if err = tx.QueryRow(ctx, `SELECT c.source_type,c.status,c.reference,c.season_id,c.week_id,c.club_id,c.team_id,c.assigned_admin_id,c.player_name,c.match_date,COALESCE(c.public_summary,''),COALESCE(c.private_summary,'')
 		FROM sanction_cases c WHERE c.id=$1 FOR UPDATE OF c`, req.CaseID).
-		Scan(&source, &status, &reference, &seasonID, &weekID, &caseClubID, &caseTeamID, &casePlayer, &matchDate, &currentPublicSummary, &currentPrivateSummary); err != nil {
+		Scan(&source, &status, &reference, &seasonID, &weekID, &caseClubID, &caseTeamID, &assignedAdminID, &casePlayer, &matchDate, &currentPublicSummary, &currentPrivateSummary); err != nil {
 		return 0, err
+	}
+	if assignedAdminID == nil || *assignedAdminID != *req.Actor.ID {
+		return 0, errors.New("only the assigned case owner can decide and submit the sanctions, points and fines")
 	}
 	_ = source
 	_ = weekID
@@ -801,7 +804,17 @@ func loadLedgerState(ctx context.Context, tx pgx.Tx, teamID, clubID, seasonID in
 	return st, nil
 }
 
+type ApprovalOptions struct {
+	EmergencyReason      string
+	AdditionalRecipients []string
+}
+
 func (s *Service) ApproveCase(ctx context.Context, caseID int64, approver Actor, emergencyReason string) error {
+	return s.ApproveCaseWithOptions(ctx, caseID, approver, ApprovalOptions{EmergencyReason: emergencyReason})
+}
+
+func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, approver Actor, options ApprovalOptions) error {
+	emergencyReason := options.EmergencyReason
 	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return err
@@ -955,7 +968,7 @@ func (s *Service) ApproveCase(ctx context.Context, caseID int64, approver Actor,
 	}
 	_ = teamID
 	_ = clubID
-	if err = lockApprovedOutcomeCorrespondence(ctx, tx, caseID, approvedID, approver); err != nil {
+	if err = lockApprovedOutcomeCorrespondence(ctx, tx, caseID, approvedID, approver, options.AdditionalRecipients); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1052,7 +1065,7 @@ func renderOutcomeCommunications(data outcomeRenderData) renderedOutcomes {
 	return renderedOutcomes{subject: data.subject, offending: offending, reporting: reporting, official: official}
 }
 
-func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, decisionID int64, approver Actor) error {
+func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, decisionID int64, approver Actor, additionalRecipients []string) error {
 	var reference, sourceType, subject, findings, appeal, publicReason, casePublicSummary string
 	var ruleReference *string
 	var offendingClubID, reportingClubID *int32
@@ -1111,7 +1124,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	}
 	var effects []approvedOutcomeEffect
 	hasFine := false
-	hasLeaguePoints := false
+	hasAnyPoints := false
 	for rows.Next() {
 		var effect approvedOutcomeEffect
 		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt); err != nil {
@@ -1119,7 +1132,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 			return err
 		}
 		hasFine = hasFine || effect.typeName == "fine"
-		hasLeaguePoints = hasLeaguePoints || (effect.typeName == "points_adjustment" && effect.points != nil && *effect.points != 0)
+		hasAnyPoints = hasAnyPoints || (effect.points != nil && *effect.points != 0)
 		effects = append(effects, effect)
 	}
 	if err = rows.Err(); err != nil {
@@ -1221,7 +1234,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	officialRoles := map[string]bool{}
 	officialRows, err := tx.Query(ctx, `SELECT recipient_role,lower(email) FROM sanction_recipient_directory WHERE active AND (
 		recipient_role IN ('executive','discipline')
-		OR (recipient_role='play_cricket' AND EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type='points_adjustment' AND COALESCE(points,0)<>0))
+		OR (recipient_role='play_cricket' AND EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND COALESCE(points,0)<>0))
 		OR (recipient_role='finance' AND EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type='fine'))
 	) ORDER BY recipient_role,lower(email)`, decisionID)
 	if err != nil {
@@ -1249,11 +1262,21 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 			return fmt.Errorf("an active %s recipient is required before outcome approval", requiredRole)
 		}
 	}
-	if hasLeaguePoints && !officialRoles["play_cricket"] {
-		return errors.New("an active Play-Cricket recipient is required for a league-points outcome")
+	if hasAnyPoints && !officialRoles["play_cricket"] {
+		return errors.New("an active Play-Cricket recipient is required for a card or points outcome")
 	}
 	if hasFine && !officialRoles["finance"] {
 		return errors.New("an active finance recipient is required for a fine outcome")
+	}
+	officialRecipientSeen := make(map[string]bool, len(officialRecipients)+len(additionalRecipients))
+	for _, recipient := range officialRecipients {
+		officialRecipientSeen[recipient] = true
+	}
+	for _, recipient := range additionalRecipients {
+		officialRecipients, err = appendUniqueOutcomeRecipient(officialRecipients, officialRecipientSeen, recipient)
+		if err != nil {
+			return fmt.Errorf("additional outcome recipient is invalid: %w", err)
+		}
 	}
 	kindOfficial := "outcome_official"
 	if noAction {
@@ -1262,25 +1285,29 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	snapshots = append(snapshots, snapshot{kind: kindOfficial, audience: "official", recipients: officialRecipients})
 
 	for _, item := range snapshots {
-		var draftID int64
+		var draftID *int64
+		expectedBody := map[string]string{
+			"offending_club": rendered.offending,
+			"reporting_club": rendered.reporting,
+			"official":       rendered.official,
+		}[item.audience]
 		var draftCreatorID *int32
 		if err = tx.QueryRow(ctx, `SELECT id,subject,body,created_by_admin_id FROM sanction_correspondence_revisions
 			WHERE case_id=$1 AND decision_revision_id=$2 AND message_kind=$3 AND audience=$4 AND status='draft'
 			ORDER BY revision DESC,id DESC LIMIT 1`, caseID, *proposedDraftDecisionID, item.kind, item.audience).
 			Scan(&draftID, &item.subject, &item.body, &draftCreatorID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("a current saved %s outcome draft is required before approval", strings.ReplaceAll(item.audience, "_", " "))
+				item.subject = rendered.subject
+				item.body = expectedBody
+				draftCreatorID = approver.ID
+				draftID = nil
+			} else {
+				return err
 			}
-			return err
 		}
 		if err = validateOutcomeDraftCompleteness(item.audience, item.body); err != nil {
 			return fmt.Errorf("saved %s draft is incomplete: %w", strings.ReplaceAll(item.audience, "_", " "), err)
 		}
-		expectedBody := map[string]string{
-			"offending_club": rendered.offending,
-			"reporting_club": rendered.reporting,
-			"official":       rendered.official,
-		}[item.audience]
 		if !outcomeDraftMatchesGenerated(item.subject, item.body, rendered.subject, expectedBody) {
 			return fmt.Errorf("saved %s draft no longer equals the deterministic audience-safe outcome; save the generated replacement before approval", strings.ReplaceAll(item.audience, "_", " "))
 		}

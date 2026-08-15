@@ -38,6 +38,55 @@ type caseHawkRuleCandidate struct {
 	MatchReason   string `json:"match_reason,omitempty"`
 	matchScore    int
 }
+type hawkAppealGuidance struct {
+	Status       string
+	Instructions string
+	Explanation  string
+}
+
+func hawkAppealGuidanceForRule(rule caseAllegedRule) hawkAppealGuidance {
+	reference := strings.TrimSpace(rule.Reference)
+	ruleLabel := "the recorded rule"
+	if reference != "" {
+		ruleLabel = "Rule " + reference
+	}
+	text := strings.ToLower(strings.Join([]string{rule.Heading, rule.Text}, "\n"))
+	nonAppealableMarkers := []string{
+		"not appealable", "non-appealable", "non appealable", "no right of appeal",
+		"cannot be appealed", "may not be appealed", "appeal is not permitted",
+		"appeals are not permitted", "no appeal shall", "no appeal may",
+	}
+	if containsAnyText(text, nonAppealableMarkers...) {
+		return hawkAppealGuidance{
+			Status:       "non_appealable",
+			Instructions: "This decision is not appealable under " + ruleLabel + ".",
+			Explanation:  ruleLabel + " contains published wording that excludes an appeal.",
+		}
+	}
+	if containsAnyText(text, "right of appeal", "may appeal", "is appealable", "an appeal may", "appeal must be submitted") {
+		return hawkAppealGuidance{
+			Status:       "appealable",
+			Instructions: "Any appeal must be submitted to the league in accordance with " + ruleLabel + " and the current GMCL regulations.",
+			Explanation:  ruleLabel + " contains published appeal wording.",
+		}
+	}
+	return hawkAppealGuidance{
+		Status:       "review_required",
+		Instructions: "Appealability must be confirmed against " + ruleLabel + " before the outcome is issued.",
+		Explanation:  "HawkAI found no explicit appeal or non-appeal wording in " + ruleLabel + "; a human must confirm it.",
+	}
+}
+
+func validateHawkAppealInstructions(guidance hawkAppealGuidance, instructions string) error {
+	normalized := strings.ToLower(strings.Join(strings.Fields(instructions), " "))
+	if guidance.Status == "non_appealable" && !(strings.Contains(normalized, "not appeal") || strings.Contains(normalized, "non-appeal")) {
+		return errors.New("HawkAI found this rule is non-appealable; use the non-appeal instructions shown on the decision form")
+	}
+	if guidance.Status == "review_required" && containsAnyText(normalized, "any appeal must", "may appeal", "right of appeal", "is appealable") {
+		return errors.New("HawkAI could not confirm an appeal right in the published rule; confirm the rule before stating that an appeal is available")
+	}
+	return nil
+}
 
 type caseHawkRuleSuggestion struct {
 	SuggestedRuleReference string                  `json:"suggested_rule_reference"`

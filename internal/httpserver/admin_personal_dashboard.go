@@ -241,6 +241,9 @@ func (s *Server) handleAdminUserWorkPreview() http.HandlerFunc {
 		if !active {
 			fmt.Fprint(w, `<div class="alert alert-warning">This administrator account is inactive.</div>`)
 		}
+		if !data.CanApprove {
+			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Approval access missing.</strong> Decisions awaiting independent approval will not appear in this administrator's queue. A super administrator can review this under <a href="/admin/users/%d/sanctions-permissions">Sanctions access</a>.</div>`, id)
+		}
 		fmt.Fprint(w, `<div class="alert alert-info"><strong>Read-only preview.</strong> Nothing here logs you in as this person or changes their work. Links are disabled in preview mode.</div><div class="pe-none" aria-disabled="true">`)
 		writePersonalWorkDashboard(w, data, s.LondonLoc, time.Now())
 		fmt.Fprint(w, `</div></main>`)

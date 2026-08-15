@@ -1252,9 +1252,12 @@ func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
 
 func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, csrf, publicSummary string) string {
 	allegedRuleReference := ""
-	if allegedRule, ruleErr := loadCaseAllegedRule(ctx, s.DB, caseID); ruleErr == nil {
+	allegedRule := caseAllegedRule{}
+	if loadedRule, ruleErr := loadCaseAllegedRule(ctx, s.DB, caseID); ruleErr == nil {
+		allegedRule = loadedRule
 		allegedRuleReference = allegedRule.Reference
 	}
+	appealGuidance := hawkAppealGuidanceForRule(allegedRule)
 	var subjects []adminDecisionSubject
 	rows, err := s.DB.Query(ctx, `SELECT cs.id,cs.subject_type,COALESCE(t.name,''),COALESCE(cs.player_name,''),cs.is_primary
 		FROM sanction_case_subjects cs LEFT JOIN teams t ON t.id=cs.team_id
@@ -1289,7 +1292,10 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
 	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
 	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">The complete decision is submitted together. A different authorised administrator must approve it before anything is issued.</span><button class="btn btn-primary align-self-start align-self-md-auto">Submit decision for approval</button></div></form></section>`)
-	return out.String()
+	html := out.String()
+	html = strings.Replace(html, "Any appeal must be submitted to the league in accordance with the current GMCL regulations.", escapeHTML(appealGuidance.Instructions), 1)
+	html = strings.Replace(html, `</textarea></div><div class="col-12"><label class="form-label">Private rationale`, `</textarea><div class="form-text"><strong>HawkAI published-rule check:</strong> `+escapeHTML(appealGuidance.Explanation)+`</div></div><div class="col-12"><label class="form-label">Private rationale`, 1)
+	return html
 }
 
 func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *int32) (string, string) {
@@ -1434,8 +1440,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			}
 		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
-		if !hasProposed && canPropose && !latestResponse.Unreviewed {
+		if !hasProposed && canPropose && !latestResponse.Unreviewed && sameAdminAssignment(assignedAdminID, adminActor(r).ID) {
 			fmt.Fprint(w, s.adminDecisionBundleFormHTML(r.Context(), id, csrf, publicSummary))
+		} else if !hasProposed && canPropose && !latestResponse.Unreviewed {
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Case owner action required.</strong> Only the assigned case owner can decide the sanctions, card points, league-points deductions and fines after checking the previous system.</div>`)
 		}
 		if status == "triage" && hasProposed {
 			fmt.Fprint(w, `<div class="alert alert-info">This is a shadow-mode calculated candidate. Change the source to manual mode before a future run; this candidate remains available for reconciliation but cannot be published.</div>`)
@@ -1509,7 +1517,12 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, `</ul></section>`)
 		}
 		if status == "decision_proposed" {
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>The proposer cannot approve this decision. Pre-approval PDFs are visibly watermarked; approval generates and locks the final audience-safe email and unwatermarked PDF from the reviewed wording.</p><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Approve decision and lock outcomes</button></div></form>`, id, csrf)
+			actor := adminActor(r)
+			if actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") {
+				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>Review the email versions above. One approval action saves and locks the exact emails and PDFs; it does not send them until the separate issue step.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text mb-3">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, id, csrf)
+			} else {
+				fmt.Fprint(w, `<div class="alert alert-warning"><strong>Awaiting an authorised independent approver.</strong> You can review the decision and exact email formatting above, but your account does not currently have sanctions approval access.</div>`)
+			}
 		}
 		if status == "decision_proposed" || (status == "triage" && hasProposed) {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/reject" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Reject calculated proposal</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-secondary">Reject proposal</button></div></form>`, id, csrf)
@@ -1899,10 +1912,18 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		_ = r.ParseForm()
+		appealInstructions := r.FormValue("appeal_instructions")
+		if allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), s.DB, id); ruleErr == nil {
+			guidance := hawkAppealGuidanceForRule(allegedRule)
+			if err := validateHawkAppealInstructions(guidance, appealInstructions); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 		effects := parseAdminDecisionEffects(r.Form)
 		_, err := sanctiondomain.NewService(s.DB).ProposeDecisionBundle(r.Context(), sanctiondomain.DecisionBundleRequest{
 			CaseID: id, PublicReason: r.FormValue("public_reason"), PrivateReason: r.FormValue("private_reason"), RuleReference: r.FormValue("rule_reference"),
-			OutcomeSubject: r.FormValue("outcome_subject"), OutcomeFindings: r.FormValue("outcome_findings"), AppealInstructions: r.FormValue("appeal_instructions"),
+			OutcomeSubject: r.FormValue("outcome_subject"), OutcomeFindings: r.FormValue("outcome_findings"), AppealInstructions: appealInstructions,
 			Effects: effects, Actor: adminActor(r),
 		})
 		if err != nil {
@@ -1911,6 +1932,12 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d", id), 303)
 	}
+}
+
+func splitAdditionalOutcomeRecipients(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
 }
 
 func (s *Server) handleAdminCaseApprove() http.HandlerFunc {
@@ -1925,7 +1952,10 @@ func (s *Server) handleAdminCaseApprove() http.HandlerFunc {
 				return
 			}
 		}
-		err := sanctiondomain.NewService(s.DB).ApproveCase(r.Context(), id, adminActor(r), emergency)
+		err := sanctiondomain.NewService(s.DB).ApproveCaseWithOptions(r.Context(), id, adminActor(r), sanctiondomain.ApprovalOptions{
+			EmergencyReason:      emergency,
+			AdditionalRecipients: splitAdditionalOutcomeRecipients(r.FormValue("additional_recipients")),
+		})
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return

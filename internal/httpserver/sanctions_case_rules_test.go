@@ -1,6 +1,9 @@
 package httpserver
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeRuleReference(t *testing.T) {
 	for input, want := range map[string]string{
@@ -73,5 +76,36 @@ func TestCaseAllegedRuleFormValuesUsesHawkSuggestionOnlyForNewReview(t *testing.
 	}
 	if reason == "" {
 		t.Fatal("new suggested rule should include review guidance")
+	}
+}
+func TestHawkAppealGuidanceChecksPublishedRuleBeforeClaimingAppeal(t *testing.T) {
+	tests := []struct {
+		name, text, status, instructionPart string
+	}{
+		{"non-appealable", "The decision is final and no right of appeal exists.", "non_appealable", "not appealable"},
+		{"appealable", "The club may appeal within seven days.", "appealable", "Any appeal"},
+		{"review required", "A fine may be imposed.", "review_required", "must be confirmed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			guidance := hawkAppealGuidanceForRule(caseAllegedRule{Reference: "8.3.2.5", Text: tt.text})
+			if guidance.Status != tt.status || !strings.Contains(guidance.Instructions, tt.instructionPart) {
+				t.Fatalf("guidance = %#v, want status %q containing %q", guidance, tt.status, tt.instructionPart)
+			}
+		})
+	}
+}
+
+func TestHawkAppealValidationRejectsUnsupportedAppealClaim(t *testing.T) {
+	guidance := hawkAppealGuidanceForRule(caseAllegedRule{Reference: "8.3.2.5", Text: "A fine may be imposed."})
+	if err := validateHawkAppealInstructions(guidance, "Any appeal must be submitted within seven days."); err == nil {
+		t.Fatal("unsupported appeal claim was accepted")
+	}
+}
+
+func TestSplitAdditionalOutcomeRecipients(t *testing.T) {
+	got := splitAdditionalOutcomeRecipients("stuart@example.org; gary@example.org\nother@example.org")
+	if len(got) != 3 || got[0] != "stuart@example.org" || got[2] != "other@example.org" {
+		t.Fatalf("recipients = %#v", got)
 	}
 }

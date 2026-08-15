@@ -220,7 +220,7 @@ func (s *Server) handleAdminCaseResponseDraftPreview() http.HandlerFunc {
 
 func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf string) {
 	service := sanctions.NewService(s.DB)
-	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Outcome correspondence drafts</div><div class="card-body"><p class="small text-muted">Save each required audience version before independent approval. Every save appends a revision; preview and save do not send email.</p>`)
+	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Emails Denver will approve</div><div class="card-body"><p class="small text-muted">These are the exact audience versions under review. The approval button saves and locks them together; previewing does not send anything.</p>`)
 	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
 		draft, err := service.OutcomeDraft(r.Context(), caseID, audience)
 		if err != nil {
@@ -232,8 +232,11 @@ func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Requ
 			badge = fmt.Sprintf(`<span class="badge text-bg-success">saved revision %d</span>`, draft.Revision)
 		}
 		readonly := ` readonly aria-readonly="true"`
-		explanation := `<div class="alert alert-info py-2 mt-2 mb-0">This audience-safe version is generated from the proposed subject, findings, rule determination, effects and appeal instructions. Edit those decision fields before proposing; the rendered correspondence is read-only so it cannot contradict the decision or introduce private case material.</div>`
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/outcome-drafts/%s" class="border rounded p-3 mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="d-flex justify-content-between"><strong>%s</strong>%s</div>%s<label class="form-label mt-2">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"%s><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required%s>%s</textarea><div class="d-flex gap-2 mt-2"><button class="btn btn-sm btn-primary">Save new immutable revision</button><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=%s">Preview PDF</a></div></form>`, caseID, audience, escapeHTML(csrf), escapeHTML(strings.ReplaceAll(audience, "_", " ")), badge, explanation, escapeHTML(draft.Subject), readonly, readonly, escapeHTML(draft.Body), caseID, audience)
+		if !draft.Exists {
+			badge = `<span class="badge text-bg-secondary">saved when approved</span>`
+		}
+		explanation := ""
+		fmt.Fprintf(w, `<section class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>%s</strong>%s</div>%s<label class="form-label mt-2">Subject</label><input class="form-control" value="%s"%s><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" rows="12"%s>%s</textarea><div class="mt-2"><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=%s">Preview PDF</a></div></section>`, escapeHTML(strings.ReplaceAll(audience, "_", " ")), badge, explanation, escapeHTML(draft.Subject), readonly, readonly, escapeHTML(draft.Body), caseID, audience)
 	}
 	fmt.Fprint(w, `</div></section>`)
 }
