@@ -72,6 +72,31 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 	}
 }
 
+func TestWritePersonalWorkDashboardShowsCase194OnlyInTrainingSection(t *testing.T) {
+	data := personalWorkDashboard{
+		AdminName: "denver",
+		TestTotal: 1,
+		TestCases: []personalWorkQueueItem{{
+			CaseID: 194, Reference: "GMCL-2026-001193", Action: "Review decision",
+			Player: "Warren Phillips", Club: "Example CC",
+		}},
+	}
+	output := httptest.NewRecorder()
+	writePersonalWorkDashboard(output, data, time.UTC, time.Date(2026, time.August, 15, 10, 0, 0, 0, time.UTC))
+	html := output.Body.String()
+	for _, want := range []string{
+		`id="test-cases"`,
+		"Test cases - training only",
+		"Case 194 - GMCL-2026-001193",
+		`href="/admin/cases/194"`,
+		"0 need attention",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("training dashboard output missing %q", want)
+		}
+	}
+}
+
 func TestWritePersonalWorkDashboardHasClearEmptyStates(t *testing.T) {
 	output := httptest.NewRecorder()
 	writePersonalWorkDashboard(output, personalWorkDashboard{AdminName: "Alex"}, time.UTC, time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC))
