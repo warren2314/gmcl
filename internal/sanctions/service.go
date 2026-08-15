@@ -1348,7 +1348,7 @@ func approvedEffectSummary(effects []approvedOutcomeEffect) string {
 			}
 			label += fmt.Sprintf(" (%d %s)", *effect.points, pointsKind)
 		}
-		showDates := effect.typeName == "player_ban" || effect.typeName == "team_ban" || effect.typeName == "suspended_red"
+		showDates := effect.endsAt != nil && (effect.typeName == "player_ban" || effect.typeName == "team_ban" || effect.typeName == "suspended_red")
 		if showDates && effect.startsAt != nil {
 			label += "; effective " + effect.startsAt.Format("2 January 2006")
 		}
