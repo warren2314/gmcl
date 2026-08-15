@@ -1291,7 +1291,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	var out strings.Builder
 	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
 	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
-	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">The complete decision is submitted together. A different authorised administrator must approve it before anything is issued.</span><button class="btn btn-primary align-self-start align-self-md-auto">Submit decision for approval</button></div></form></section>`)
+	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before anything is sent to Denver.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)
 	html := out.String()
 	html = strings.Replace(html, "Any appeal must be submitted to the league in accordance with the current GMCL regulations.", escapeHTML(appealGuidance.Instructions), 1)
 	html = strings.Replace(html, `</textarea></div><div class="col-12"><label class="form-label">Private rationale`, `</textarea><div class="form-text"><strong>HawkAI published-rule check:</strong> `+escapeHTML(appealGuidance.Explanation)+`</div></div><div class="col-12"><label class="form-label">Private rationale`, 1)
@@ -1384,11 +1384,17 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		var reporter adminCaseReporterView
 		var proposer, approver, assignedAdminID *int32
 		var assignedAdminName string
-		var hasProposed, isTest, isTraining bool
+		var hasProposed, isTest, isTraining, ownerReviewRequired, sentForApproval bool
 		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
 			SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed'
 			  AND NOT EXISTS(SELECT 1 FROM sanction_decision_revisions newer WHERE newer.supersedes_id=d.id)
-		),c.is_test,EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining)
+		),c.is_test,
+		EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated'),
+		EXISTS(SELECT 1 FROM sanction_case_events review WHERE review.case_id=c.id AND review.event_type='decision_owner_review_required'
+			AND review.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1)),
+		EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=c.id AND sent.event_type='decision_sent_for_approval'
+			AND sent.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1))
+		FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining, &ownerReviewRequired, &sentForApproval)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1455,6 +1461,16 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, adminCaseDecisionHTML(decision, effects))
 			if status == "decision_proposed" || (status == "triage" && hasProposed) {
 				s.writeAdminOutcomeDraftForms(w, r, id, csrf)
+				if ownerReviewRequired && !sentForApproval {
+					currentActor := adminActor(r)
+					if sameAdminAssignment(assignedAdminID, currentActor.ID) && proposer != nil && currentActor.ID != nil && *proposer == *currentActor.ID {
+						fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">I have reviewed all three - send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
+					} else {
+						fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
+					}
+				} else if ownerReviewRequired {
+					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The three email versions have been sent to Denver for independent approval.</div>`)
+				}
 			} else if map[string]bool{"approved": true, "published": true, "appealed": true, "closed": true}[status] {
 				fmt.Fprintf(w, `<div class="d-flex flex-wrap gap-2 mb-4"><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=offending_club">View offending-club PDF</a><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=reporting_club">View reporting-club PDF</a><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=official">View league-official PDF</a></div>`, id, id, id)
 			}
@@ -1519,7 +1535,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			}
 			fmt.Fprint(w, `</ul></section>`)
 		}
-		if status == "decision_proposed" {
+		if status == "decision_proposed" && (!ownerReviewRequired || sentForApproval) {
 			actor := adminActor(r)
 			if actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") {
 				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>Review the email versions above. One approval action saves and locks the exact emails and PDFs; it does not send them until the separate issue step.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text mb-3">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, id, csrf)
@@ -1527,7 +1543,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				fmt.Fprint(w, `<div class="alert alert-warning"><strong>Awaiting an authorised independent approver.</strong> You can review the decision and exact email formatting above, but your account does not currently have sanctions approval access.</div>`)
 			}
 		}
-		if status == "decision_proposed" || (status == "triage" && hasProposed) {
+		if (status == "decision_proposed" && (!ownerReviewRequired || sentForApproval)) || (status == "triage" && hasProposed) {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/reject" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Reject calculated proposal</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-secondary">Reject proposal</button></div></form>`, id, csrf)
 		}
 		if status == "approved" {
@@ -1936,7 +1952,22 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d", id), 303)
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Decision saved. Review the complete offending-club, reporting-club and official versions below, then send them to Denver.")), http.StatusSeeOther)
+	}
+}
+
+func (s *Server) handleAdminCaseSendForApproval() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || id < 1 {
+			http.Error(w, "invalid case", http.StatusBadRequest)
+			return
+		}
+		if err = sanctiondomain.NewService(s.DB).SubmitDecisionForApproval(r.Context(), id, adminActor(r)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Owner review recorded. The complete decision and all three email versions are now in Denver's approval queue.")), http.StatusSeeOther)
 	}
 }
 

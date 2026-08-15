@@ -504,6 +504,9 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'decision_proposed','admin',$2,$3,$4,jsonb_build_object('public_summary',$5::text,'private_summary',$6::text),$7,$8)`, req.CaseID, *req.Actor.ID, req.Actor.Label, req.PublicReason, currentPublicSummary, currentPrivateSummary, mapJSON(map[string]any{"decision_revision_id": decisionID, "effects": afterEffects, "public_summary": req.PublicReason, "private_summary": req.PrivateReason}), req.Actor.RequestID); err != nil {
 		return 0, err
 	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'decision_owner_review_required','admin',$2,$3,'Case owner must review all audience emails before independent approval',jsonb_build_object('decision_revision_id',$4::bigint),$5)`, req.CaseID, *req.Actor.ID, req.Actor.Label, decisionID, req.Actor.RequestID); err != nil {
+		return 0, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return 0, err
 	}
@@ -811,6 +814,48 @@ type ApprovalOptions struct {
 	AdditionalRecipients []string
 }
 
+// SubmitDecisionForApproval records the case owner's confirmation that they
+// have reviewed the complete offending-club, reporting-club and official
+// versions. Older proposals created before this checkpoint remain compatible.
+func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, actor Actor) error {
+	if caseID < 1 || actor.ID == nil {
+		return errors.New("case and authenticated case owner are required")
+	}
+	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status string
+	var assignedAdminID, proposerID *int32
+	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id,proposed_by_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID, &proposerID); err != nil {
+		return err
+	}
+	if status != "decision_proposed" || assignedAdminID == nil || proposerID == nil || *assignedAdminID != *actor.ID || *proposerID != *actor.ID {
+		return errors.New("only the assigned case owner who prepared this decision can send it for approval")
+	}
+	var decisionID int64
+	if err = tx.QueryRow(ctx, `SELECT id FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC,id DESC LIMIT 1`, caseID).Scan(&decisionID); err != nil {
+		return err
+	}
+	var reviewRequired, alreadySent bool
+	if err = tx.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_owner_review_required' AND metadata->>'decision_revision_id'=$2::text),
+		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_sent_for_approval' AND metadata->>'decision_revision_id'=$2::text)`, caseID, decisionID).Scan(&reviewRequired, &alreadySent); err != nil {
+		return err
+	}
+	if !reviewRequired {
+		return errors.New("this decision predates the owner-review checkpoint and is already available to the approver")
+	}
+	if alreadySent {
+		return tx.Commit(ctx)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'decision_sent_for_approval','admin',$2,$3,'Case owner reviewed all three complete audience versions and sent the decision for independent approval',jsonb_build_object('decision_revision_id',$4::bigint),$5)`, caseID, *actor.ID, actor.Label, decisionID, actor.RequestID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Service) ApproveCase(ctx context.Context, caseID int64, approver Actor, emergencyReason string) error {
 	return s.ApproveCaseWithOptions(ctx, caseID, approver, ApprovalOptions{EmergencyReason: emergencyReason})
 }
@@ -863,6 +908,17 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	if err = tx.QueryRow(ctx, `SELECT id,revision,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC LIMIT 1`, caseID).
 		Scan(&proposedID, &revision, &publicReason, &privateReason, &ruleRelease, &ruleRef, &policyID); err != nil {
 		return err
+	}
+	var ownerReviewPending bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sanction_case_events required
+		WHERE required.case_id=$1 AND required.event_type='decision_owner_review_required' AND required.metadata->>'decision_revision_id'=$2::text
+		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=required.case_id AND sent.event_type='decision_sent_for_approval' AND sent.metadata->>'decision_revision_id'=required.metadata->>'decision_revision_id')
+	)`, caseID, proposedID).Scan(&ownerReviewPending); err != nil {
+		return err
+	}
+	if ownerReviewPending {
+		return errors.New("the case owner must review all three complete email versions and send the decision for approval first")
 	}
 	var approvedID int64
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,emergency_override,outcome_subject,outcome_findings,appeal_instructions)

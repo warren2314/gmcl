@@ -24,3 +24,18 @@ func TestParseScorecardPlayersObject(t *testing.T) {
 		t.Fatal("object-form players not parsed")
 	}
 }
+
+func TestParseScorecardResultAndPoints(t *testing.T) {
+	body := []byte(`{"match_details":[{"match_id":"123","home_team_id":"10","away_team_id":"20","result":"W","result_description":"Beta CC - 2nd XI - Win 20pts","result_applied_to":"20","points":[{"team_id":"10","game_points":"0","bonus_points_batting":"3"},{"team_id":"20","game_points":"20","bonus_points_bowling":"1"}],"players":[]} ]}`)
+	r, err := ParseScorecardJSON(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := r.MatchDetails[0]
+	if m.ResultDescription != "Beta CC - 2nd XI - Win 20pts" || m.ResultAppliedTo != "20" {
+		t.Fatalf("result fields not parsed: %#v", m)
+	}
+	if len(m.Points) != 2 || m.Points[1].GamePoints != "20" || m.Points[1].BonusPointsBowling != "1" {
+		t.Fatalf("points breakdown not parsed: %#v", m.Points)
+	}
+}
