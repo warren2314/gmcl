@@ -58,6 +58,8 @@ type personalWorkDashboard struct {
 	TaskTotal     int64
 	DecisionQueue []personalWorkQueueItem
 	DecisionTotal int64
+	TestCases     []personalWorkQueueItem
+	TestTotal     int64
 	CanApprove    bool
 	CanPublish    bool
 }
@@ -144,6 +146,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		FROM sanction_follow_up_tasks task
 		JOIN sanction_cases cases ON cases.id=task.case_id
 		WHERE task.assigned_admin_id=$1 AND task.status IN ('open','in_progress')
+		  AND NOT cases.is_test
 		ORDER BY task.due_at NULLS LAST,task.id LIMIT 6`, adminID)
 	if err != nil {
 		return data, err
@@ -199,6 +202,39 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		}
 		queueRows.Close()
 	}
+	testClauses := []string{"(cases.assigned_admin_id=$1 AND cases.status NOT IN ('published','closed','rejected','withdrawn'))"}
+	testClauses = append(testClauses, queueClauses...)
+	testRows, err := s.DB.Query(ctx, `SELECT cases.id,cases.reference,cases.status,
+		COALESCE(club.name,''),COALESCE(cases.player_name,''),cases.updated_at,
+		cases.assigned_admin_id=$1,COUNT(*) OVER()
+		FROM sanction_cases cases LEFT JOIN clubs club ON club.id=cases.club_id
+		WHERE cases.is_test AND (`+strings.Join(testClauses, " OR ")+`)
+		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT 12`, adminID)
+	if err != nil {
+		return data, err
+	}
+	for testRows.Next() {
+		var item personalWorkQueueItem
+		var status string
+		var owned bool
+		if err = testRows.Scan(&item.CaseID, &item.Reference, &status, &item.Club, &item.Player, &item.UpdatedAt, &owned, &data.TestTotal); err != nil {
+			testRows.Close()
+			return data, err
+		}
+		if owned {
+			item.Action = "Owned case - " + caseStatusLabel(status)
+		} else if status == "decision_proposed" {
+			item.Action = "Review decision"
+		} else {
+			item.Action = "Issue approved outcome"
+		}
+		data.TestCases = append(data.TestCases, item)
+	}
+	if err = testRows.Err(); err != nil {
+		testRows.Close()
+		return data, err
+	}
+	testRows.Close()
 	return data, nil
 }
 
@@ -290,6 +326,21 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 	writePersonalCaseList(w, data.AssignedCases, data.AssignedTotal, loc)
 	if data.CanApprove || data.CanPublish {
 		writePersonalDecisionList(w, data.DecisionQueue, data.DecisionTotal)
+	}
+	fmt.Fprint(w, `</div></div></section>`)
+	writePersonalTestCaseList(w, data.TestCases, data.TestTotal)
+}
+
+func writePersonalTestCaseList(w http.ResponseWriter, items []personalWorkQueueItem, total int64) {
+	if total == 0 {
+		return
+	}
+	fmt.Fprintf(w, `<section class="card mb-4 border-warning" id="test-cases"><div class="card-header d-flex justify-content-between"><strong>Test cases - training only</strong><span class="badge text-bg-warning">%d test</span></div><div class="card-body"><p class="small text-muted">These cases are deliberately excluded from live-work totals and cannot be mistaken for live league work.</p><div class="list-group">`, total)
+	for _, item := range items {
+		fmt.Fprintf(w, `<a class="list-group-item list-group-item-action" href="/admin/cases/%d"><div class="d-flex justify-content-between gap-2"><strong>Case %d - %s</strong><span class="badge text-bg-warning">%s</span></div><div class="small">%s - %s</div></a>`, item.CaseID, item.CaseID, escapeHTML(item.Reference), escapeHTML(item.Action), escapeHTML(defaultString(item.Player, "Player not recorded")), escapeHTML(item.Club))
+	}
+	if total > int64(len(items)) {
+		fmt.Fprintf(w, `<div class="list-group-item text-muted">Showing %d of %d relevant test cases.</div>`, len(items), total)
 	}
 	fmt.Fprint(w, `</div></div></section>`)
 }
