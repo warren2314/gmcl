@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,5 +43,36 @@ func TestScorecardCollectionMessage(t *testing.T) {
 	}
 	if got := scorecardCollectionMessage(errors.New("upstream unavailable")); got == "" {
 		t.Fatal("upstream error should produce a message")
+	}
+}
+
+func TestScorecardResultHTMLShowsOutcomeBeneficiaryAndPoints(t *testing.T) {
+	match := leagueapi.ScorecardMatch{
+		HomeClubName: "Alpha CC", HomeTeamName: "2nd XI", HomeTeamID: "10",
+		AwayClubName: "Beta CC", AwayTeamName: "3rd XI", AwayTeamID: "20",
+		Result: "W", ResultDescription: "Beta CC - 3rd XI - Win 20pts", ResultAppliedTo: "20",
+		Points: []leagueapi.ScorecardPoints{
+			{TeamID: "10", GamePoints: "0", BonusPointsBatting: "3"},
+			{TeamID: "20", GamePoints: "20", BonusPointsBowling: "1", PenaltyPoints: "0"},
+		},
+	}
+	html := scorecardResultHTML(match)
+	for _, want := range []string{
+		"Recorded match result",
+		"Beta CC - 3rd XI - Win 20pts",
+		"Result applied to: <strong>Beta CC - 3rd XI</strong>",
+		"Alpha CC - 2nd XI",
+		"game 20; bowling bonus 1; penalty 0",
+		"whether the offending team benefited",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("result HTML missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestScorecardResultHTMLOmitsEmptyResult(t *testing.T) {
+	if got := scorecardResultHTML(leagueapi.ScorecardMatch{}); got != "" {
+		t.Fatalf("empty result should not render a result panel: %s", got)
 	}
 }

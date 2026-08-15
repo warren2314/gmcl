@@ -37,21 +37,40 @@ type ScorecardResponse struct {
 }
 
 type ScorecardMatch struct {
-	ID              int64        `json:"id"`
-	MatchID         string       `json:"match_id"`
-	LastUpdated     string       `json:"last_updated"`
-	CompetitionName string       `json:"competition_name"`
-	CompetitionType string       `json:"competition_type"`
-	MatchDate       string       `json:"match_date"`
-	HomeTeamName    string       `json:"home_team_name"`
-	HomeTeamID      string       `json:"home_team_id"`
-	HomeClubName    string       `json:"home_club_name"`
-	HomeClubID      string       `json:"home_club_id"`
-	AwayTeamName    string       `json:"away_team_name"`
-	AwayTeamID      string       `json:"away_team_id"`
-	AwayClubName    string       `json:"away_club_name"`
-	AwayClubID      string       `json:"away_club_id"`
-	Players         PlayerSheets `json:"players"`
+	ID                int64             `json:"id"`
+	MatchID           string            `json:"match_id"`
+	LastUpdated       string            `json:"last_updated"`
+	CompetitionName   string            `json:"competition_name"`
+	CompetitionType   string            `json:"competition_type"`
+	MatchDate         string            `json:"match_date"`
+	HomeTeamName      string            `json:"home_team_name"`
+	HomeTeamID        string            `json:"home_team_id"`
+	HomeClubName      string            `json:"home_club_name"`
+	HomeClubID        string            `json:"home_club_id"`
+	AwayTeamName      string            `json:"away_team_name"`
+	AwayTeamID        string            `json:"away_team_id"`
+	AwayClubName      string            `json:"away_club_name"`
+	AwayClubID        string            `json:"away_club_id"`
+	Result            string            `json:"result"`
+	ResultDescription string            `json:"result_description"`
+	ResultAppliedTo   string            `json:"result_applied_to"`
+	Points            []ScorecardPoints `json:"points"`
+	Players           PlayerSheets      `json:"players"`
+}
+
+// ScorecardPoints is Play-Cricket's recorded points breakdown for one team.
+// Values remain strings because the upstream API uses blank strings for
+// categories that do not apply.
+type ScorecardPoints struct {
+	TeamID                    string `json:"team_id"`
+	GamePoints                string `json:"game_points"`
+	PenaltyPoints             string `json:"penalty_points"`
+	BonusPointsTogether       string `json:"bonus_points_together"`
+	BonusPointsBatting        string `json:"bonus_points_batting"`
+	BonusPointsBowling        string `json:"bonus_points_bowling"`
+	BonusPointsSecondTogether string `json:"bonus_points_2nd_innings_together"`
+	BonusPointsSecondBatting  string `json:"bonus_points_2nd_innings_batting"`
+	BonusPointsSecondBowling  string `json:"bonus_points_2nd_innings_bowling"`
 }
 
 type ScorecardPlayer struct {

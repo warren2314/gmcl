@@ -222,6 +222,82 @@ func scorecardCollectionMessage(err error) string {
 	}
 }
 
+func scorecardTeamLabel(match leagueapi.ScorecardMatch, teamID string) string {
+	teamID = strings.TrimSpace(teamID)
+	club, team := "", ""
+	if teamID != "" && teamID == strings.TrimSpace(match.HomeTeamID) {
+		club, team = match.HomeClubName, match.HomeTeamName
+	} else if teamID != "" && teamID == strings.TrimSpace(match.AwayTeamID) {
+		club, team = match.AwayClubName, match.AwayTeamName
+	}
+	club, team = strings.TrimSpace(club), strings.TrimSpace(team)
+	if club != "" && team != "" {
+		return club + " - " + team
+	}
+	if club != "" {
+		return club
+	}
+	if team != "" {
+		return team
+	}
+	return teamID
+}
+
+func scorecardPointsDescription(points leagueapi.ScorecardPoints) string {
+	parts := make([]string, 0, 8)
+	for _, item := range []struct{ label, value string }{
+		{"game", points.GamePoints},
+		{"batting bonus", points.BonusPointsBatting},
+		{"bowling bonus", points.BonusPointsBowling},
+		{"combined bonus", points.BonusPointsTogether},
+		{"second-innings batting bonus", points.BonusPointsSecondBatting},
+		{"second-innings bowling bonus", points.BonusPointsSecondBowling},
+		{"second-innings combined bonus", points.BonusPointsSecondTogether},
+		{"penalty", points.PenaltyPoints},
+	} {
+		if value := strings.TrimSpace(item.value); value != "" {
+			parts = append(parts, item.label+" "+value)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func scorecardResultHTML(match leagueapi.ScorecardMatch) string {
+	description := strings.TrimSpace(match.ResultDescription)
+	if description == "" {
+		description = strings.TrimSpace(match.Result)
+	}
+	if description == "" && len(match.Points) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	fmt.Fprint(&out, `<div class="border-start border-4 border-primary bg-light rounded p-3 mb-3"><div class="fw-semibold">Recorded match result</div>`)
+	if description != "" {
+		fmt.Fprintf(&out, `<div class="fs-6">%s</div>`, escapeHTML(description))
+	}
+	if applied := scorecardTeamLabel(match, match.ResultAppliedTo); strings.TrimSpace(applied) != "" {
+		fmt.Fprintf(&out, `<div class="small mt-1">Result applied to: <strong>%s</strong></div>`, escapeHTML(applied))
+	}
+	pointRows := 0
+	for _, points := range match.Points {
+		detail := scorecardPointsDescription(points)
+		if detail == "" {
+			continue
+		}
+		if pointRows == 0 {
+			fmt.Fprint(&out, `<div class="small fw-semibold mt-2">Play-Cricket points awarded</div><ul class="small mb-0">`)
+		}
+		label := scorecardTeamLabel(match, points.TeamID)
+		fmt.Fprintf(&out, `<li><strong>%s:</strong> %s</li>`, escapeHTML(label), escapeHTML(detail))
+		pointRows++
+	}
+	if pointRows > 0 {
+		fmt.Fprint(&out, `</ul><div class="small text-muted mt-1">Use the recorded allocation to check whether the offending team benefited before entering any league-points adjustment.</div>`)
+	}
+	fmt.Fprint(&out, `</div>`)
+	return out.String()
+}
+
 func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.Context, caseID int64, csrf string) {
 	rows, err := s.DB.Query(ctx, `SELECT snapshot.play_cricket_match_id,snapshot.fetched_at,snapshot.source_sha256,snapshot.snapshot_payload,evidence.id
 		FROM sanction_case_scorecard_evidence snapshot JOIN sanction_case_evidence evidence ON evidence.id=snapshot.evidence_id
@@ -252,7 +328,8 @@ func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.
 		fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><strong>Match %d</strong><a href="/admin/cases/%d/evidence/%d">Download original JSON</a></div><div class="small text-muted mb-2">Fetched %s &middot; SHA-256 %s</div>`, item.matchID, caseID, item.evidenceID, escapeHTML(item.fetched.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(item.digest[:minInt(12, len(item.digest))]))
 		if parseErr == nil && len(parsed.MatchDetails) > 0 {
 			match := parsed.MatchDetails[0]
-			fmt.Fprintf(w, `<div class="small mb-2"><strong>%s</strong> v <strong>%s</strong> &middot; %s</div><div class="row g-3">`, escapeHTML(match.HomeTeamName), escapeHTML(match.AwayTeamName), escapeHTML(match.MatchDate))
+			fmt.Fprintf(w, `<div class="small mb-2"><strong>%s</strong> v <strong>%s</strong> &middot; %s</div>`, escapeHTML(match.HomeTeamName), escapeHTML(match.AwayTeamName), escapeHTML(match.MatchDate))
+			fmt.Fprintf(w, `%s<div class="row g-3">`, scorecardResultHTML(match))
 			for _, side := range []struct {
 				name    string
 				players []leagueapi.ScorecardPlayer

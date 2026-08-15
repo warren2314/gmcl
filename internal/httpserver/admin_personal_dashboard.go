@@ -170,7 +170,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 
 	queueClauses := make([]string, 0, 2)
 	if data.CanApprove {
-		queueClauses = append(queueClauses, "(cases.status='decision_proposed' AND cases.proposed_by_admin_id IS DISTINCT FROM $1)")
+		queueClauses = append(queueClauses, "(cases.status='decision_proposed' AND cases.proposed_by_admin_id IS DISTINCT FROM $1 AND NOT EXISTS(SELECT 1 FROM sanction_case_events required WHERE required.case_id=cases.id AND required.event_type='decision_owner_review_required' AND NOT EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=required.case_id AND sent.event_type='decision_sent_for_approval' AND sent.metadata->>'decision_revision_id'=required.metadata->>'decision_revision_id')))")
 	}
 	if data.CanPublish {
 		queueClauses = append(queueClauses, "(cases.status='approved' AND $1::integer IS NOT NULL)")
