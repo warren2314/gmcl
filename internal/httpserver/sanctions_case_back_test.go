@@ -4,12 +4,14 @@ import "testing"
 
 func TestAdminCaseBackDestinationReturnsOwnerToMyCases(t *testing.T) {
 	adminID := int32(27)
-	label, destination := adminCaseBackDestination("ineligible_player", &adminID, &adminID)
-	if label != "Back to my cases" {
-		t.Fatalf("label=%q want Back to my cases", label)
-	}
-	if destination != "/admin/dashboard#my-cases" {
-		t.Fatalf("destination=%q want personal dashboard case section", destination)
+	for _, source := range []string{"ineligible_player", "manual", "discipline"} {
+		label, destination := adminCaseBackDestination(source, &adminID, &adminID)
+		if label != "Back to my cases" {
+			t.Fatalf("source=%q label=%q want Back to my cases", source, label)
+		}
+		if destination != "/admin/dashboard#my-cases" {
+			t.Fatalf("source=%q destination=%q want personal dashboard case section", source, destination)
+		}
 	}
 }
 
@@ -21,9 +23,9 @@ func TestAdminCaseBackDestinationDoesNotExposeAnotherOwnersQueue(t *testing.T) {
 		assigned *int32
 		current  *int32
 	}{
-		"another investigator": {source: "ineligible_player", assigned: &ownerID, current: &currentID},
-		"unassigned":           {source: "ineligible_player", assigned: nil, current: &currentID},
-		"ordinary case":        {source: "manual", assigned: &currentID, current: &currentID},
+		"another investigator":  {source: "ineligible_player", assigned: &ownerID, current: &currentID},
+		"unassigned":            {source: "ineligible_player", assigned: nil, current: &currentID},
+		"missing current admin": {source: "manual", assigned: &ownerID, current: nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			label, destination := adminCaseBackDestination(testCase.source, testCase.assigned, testCase.current)
@@ -31,5 +33,19 @@ func TestAdminCaseBackDestinationDoesNotExposeAnotherOwnersQueue(t *testing.T) {
 				t.Fatalf("got (%q,%q), want general case list", label, destination)
 			}
 		})
+	}
+}
+
+func TestAdminCaseListSubjectPrefersPlayerAndKeepsContext(t *testing.T) {
+	primary, context := adminCaseListSubject("  Alex Player ", "Example CC", "3rd XI")
+	if primary != "Alex Player" || context != "Example CC / 3rd XI" {
+		t.Fatalf("got (%q,%q), want player with club/team context", primary, context)
+	}
+}
+
+func TestAdminCaseListSubjectFallsBackToClubAndTeam(t *testing.T) {
+	primary, context := adminCaseListSubject("", "Example CC", "3rd XI")
+	if primary != "Example CC" || context != "3rd XI" {
+		t.Fatalf("got (%q,%q), want club and team fallback", primary, context)
 	}
 }

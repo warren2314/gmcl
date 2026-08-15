@@ -915,7 +915,7 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 
 func (s *Server) handleAdminCases() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
+		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(c.player_name,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
 		if err != nil {
 			http.Error(w, "could not load cases", 500)
 			return
@@ -925,12 +925,13 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Sanctions cases")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted mb-0">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 align-self-lg-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><form method="POST" action="/admin/cases/link-tests" class="d-inline"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-outline-success">Create private link test</button></form><a href="/admin/cases/imports" class="btn btn-primary">Import legacy bans &amp; cards</a><a href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener" class="btn btn-outline-primary">Public register</a><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle"><thead><tr><th>Reference</th><th>Source</th><th>Club / team</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`, escapeHTML(csrf))
+		fmt.Fprintf(w, `<main class="container py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3"><div><h1 class="h2">Sanctions cases</h1><p class="text-muted mb-0">Investigation, two-stage approval, publication and immutable history.</p></div><div class="d-grid d-sm-flex flex-wrap gap-2 align-self-lg-start"><a href="/admin/cases/new" class="btn btn-danger">Add card, ban, fine or points decision</a><form method="POST" action="/admin/cases/link-tests" class="d-inline"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-outline-success">Create private link test</button></form><a href="/admin/cases/imports" class="btn btn-primary">Import legacy bans &amp; cards</a><a href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener" class="btn btn-outline-primary">Public register</a><a href="/admin/cases/automation" class="btn btn-outline-secondary">Automation</a><a href="/admin/cases/recipients" class="btn btn-outline-secondary">Recipients</a></div></div><div class="alert alert-info"><strong>Manual sanctions use the case workflow:</strong> create the case, propose its effect and reason, then have a separately authorised admin approve it before publication. Every step is retained in the immutable timeline.</div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle"><thead><tr><th>Reference</th><th>Source</th><th>Player</th><th>Status</th><th>Assigned</th><th>Opened</th></tr></thead><tbody>`, escapeHTML(csrf))
 		for rows.Next() {
 			var id int64
-			var ref, source, status, club, team, assigned string
+			var ref, source, status, player, club, team, assigned string
 			var created time.Time
-			if rows.Scan(&id, &ref, &source, &status, &club, &team, &created, &assigned) == nil {
+			if rows.Scan(&id, &ref, &source, &status, &player, &club, &team, &created, &assigned) == nil {
+				club, team = adminCaseListSubject(player, club, team)
 				fmt.Fprintf(w, `<tr><td data-label="Reference"><a href="/admin/cases/%d"><strong>%s</strong></a></td><td data-label="Source">%s</td><td data-label="Club / team">%s — %s</td><td data-label="Status">%s</td><td data-label="Assigned">%s</td><td data-label="Opened">%s</td></tr>`, id, escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(assigned), created.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
 			}
 		}
@@ -939,8 +940,19 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 	}
 }
 
+func adminCaseListSubject(player, club, team string) (string, string) {
+	player = strings.TrimSpace(player)
+	club = strings.TrimSpace(club)
+	team = strings.TrimSpace(team)
+	if player == "" {
+		return club, team
+	}
+	context := strings.Trim(club+" / "+team, " / ")
+	return player, context
+}
 func (s *Server) handleAdminCaseNew() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+
 		rows, err := s.DB.Query(r.Context(), `SELECT t.id,cl.name,t.name FROM teams t JOIN clubs cl ON cl.id=t.club_id WHERE t.active ORDER BY cl.name,t.name`)
 		if err != nil {
 			http.Error(w, "could not load teams", 500)
@@ -1281,7 +1293,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 }
 
 func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *int32) (string, string) {
-	if source == "ineligible_player" && assignedAdminID != nil && currentAdminID != nil && *assignedAdminID == *currentAdminID {
+	if assignedAdminID != nil && currentAdminID != nil && *assignedAdminID == *currentAdminID {
 		return "Back to my cases", "/admin/dashboard#my-cases"
 	}
 	return "Back to cases", "/admin/cases"
@@ -1874,8 +1886,10 @@ func parseAdminDecisionEffects(form url.Values) []sanctiondomain.DecisionEffectR
 				effect.Points = &value
 			}
 		}
-		if value, parseErr := time.Parse("2006-01-02", at("ends_at", index)); parseErr == nil {
-			effect.EndsAt = &value
+		if effectType == "player_ban" || effectType == "team_ban" || effectType == "suspended_red" {
+			if value, parseErr := time.Parse("2006-01-02", at("ends_at", index)); parseErr == nil {
+				effect.EndsAt = &value
+			}
 		}
 		effects = append(effects, effect)
 	}

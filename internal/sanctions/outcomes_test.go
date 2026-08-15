@@ -1,6 +1,10 @@
 package sanctions
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestApprovedEffectSummaryUsesMappedTeamForTeamEffects(t *testing.T) {
 	points := -2
@@ -11,6 +15,28 @@ func TestApprovedEffectSummaryUsesMappedTeamForTeamEffects(t *testing.T) {
 	want := "- Points adjustment - Second XI (-2 league-table points)"
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestApprovedEffectSummaryOmitsBanStyleDatesForCards(t *testing.T) {
+	starts := time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC)
+	ends := time.Date(2026, time.August, 14, 0, 0, 0, 0, time.UTC)
+	got := approvedEffectSummary([]approvedOutcomeEffect{{
+		typeName: "red_card", playerName: "Warren Phillips", startsAt: &starts, endsAt: &ends,
+	}})
+	if strings.Contains(got, "effective") || strings.Contains(got, "14 August") {
+		t.Fatalf("card summary contains misleading ban-style dates: %q", got)
+	}
+}
+
+func TestApprovedEffectSummaryKeepsDatesForBans(t *testing.T) {
+	starts := time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC)
+	ends := time.Date(2026, time.August, 14, 0, 0, 0, 0, time.UTC)
+	got := approvedEffectSummary([]approvedOutcomeEffect{{
+		typeName: "player_ban", playerName: "Example Player", startsAt: &starts, endsAt: &ends,
+	}})
+	if !strings.Contains(got, "effective 2 August 2026 to 14 August 2026") {
+		t.Fatalf("ban summary lost its date range: %q", got)
 	}
 }
 
