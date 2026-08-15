@@ -41,12 +41,14 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 		reference:     "GMCL-2026-0042",
 		sourceType:    "ineligible_player",
 		offendingClub: "Offending CC",
+		offendingTeam: "4th XI",
 		reportingClub: "Reporting CC",
 		subject:       "Case outcome",
 		findings:      "The player was not eligible for the fixture.",
 		rule:          "Rule 3.5",
 		effectSummary: "- Warning - Example Player",
 		appeal:        "Appeal within seven days.",
+		signatoryName: "Denver Thornton",
 	})
 	for audience, body := range map[string]string{
 		"offending_club": rendered.offending,
@@ -56,6 +58,14 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 		if err := validateOutcomeDraftCompleteness(audience, body); err != nil {
 			t.Errorf("generated %s draft is incomplete: %v", audience, err)
 		}
+	}
+	for _, want := range []string{"Dear Club Official,", "The League officials have approved the decision for case GMCL-2026-0042", "Offending team:\nOffending 4th XI", "Regards,\n\nDenver Thornton\n\nGMCL Disciplinary Officer"} {
+		if !strings.Contains(rendered.offending, want) {
+			t.Fatalf("offending-club version is missing %q:\n%s", want, rendered.offending)
+		}
+	}
+	if !strings.Contains(rendered.official, "Offending team: Offending 4th XI") {
+		t.Fatalf("official version does not identify the specific team:\n%s", rendered.official)
 	}
 }
 

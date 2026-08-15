@@ -1461,14 +1461,13 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, adminCaseDecisionHTML(decision, effects))
 			if status == "decision_proposed" || (status == "triage" && hasProposed) {
 				s.writeAdminOutcomeDraftForms(w, r, id, csrf)
-				if ownerReviewRequired && !sentForApproval {
-					currentActor := adminActor(r)
-					if sameAdminAssignment(assignedAdminID, currentActor.ID) && proposer != nil && currentActor.ID != nil && *proposer == *currentActor.ID {
-						fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">I have reviewed all three - send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
-					} else {
-						fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
-					}
-				} else if ownerReviewRequired {
+				currentActor := adminActor(r)
+				ownerCanSend := !sentForApproval && sameAdminAssignment(assignedAdminID, currentActor.ID) && proposer != nil && currentActor.ID != nil && *proposer == *currentActor.ID
+				if ownerCanSend {
+					fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Save all three and send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
+				} else if ownerReviewRequired && !sentForApproval {
+					fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
+				} else if sentForApproval {
 					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The three email versions have been sent to Denver for independent approval.</div>`)
 				}
 			} else if map[string]bool{"approved": true, "published": true, "appealed": true, "closed": true}[status] {
@@ -1963,7 +1962,20 @@ func (s *Server) handleAdminCaseSendForApproval() http.HandlerFunc {
 			http.Error(w, "invalid case", http.StatusBadRequest)
 			return
 		}
-		if err = sanctiondomain.NewService(s.DB).SubmitDecisionForApproval(r.Context(), id, adminActor(r)); err != nil {
+		service := sanctiondomain.NewService(s.DB)
+		actor := adminActor(r)
+		for _, audience := range []string{"offending_club", "reporting_club", "official"} {
+			draft, draftErr := service.OutcomeDraft(r.Context(), id, audience)
+			if draftErr != nil {
+				http.Error(w, draftErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if _, draftErr = service.SaveOutcomeDraft(r.Context(), id, audience, draft.Subject, draft.Body, actor); draftErr != nil {
+				http.Error(w, draftErr.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if err = service.SubmitDecisionForApproval(r.Context(), id, actor); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
