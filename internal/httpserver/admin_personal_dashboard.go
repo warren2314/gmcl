@@ -87,6 +87,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		LEFT JOIN clubs club ON club.id=cases.club_id
 		LEFT JOIN teams team ON team.id=cases.team_id
 		WHERE cases.assigned_admin_id=$1 AND NOT cases.is_test
+		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
 		  AND cases.status NOT IN ('published','closed','rejected','withdrawn')
 		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT 6`, adminID)
 	if err != nil {
@@ -118,6 +119,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 			ORDER BY event.id DESC LIMIT 1
 		) response ON TRUE
 		WHERE cases.assigned_admin_id=$1 AND NOT cases.is_test
+		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
 		  AND NOT EXISTS(
 			SELECT 1 FROM sanction_case_events reviewed
 			WHERE reviewed.case_id=cases.id AND reviewed.event_type='response_reviewed'
@@ -147,6 +149,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		JOIN sanction_cases cases ON cases.id=task.case_id
 		WHERE task.assigned_admin_id=$1 AND task.status IN ('open','in_progress')
 		  AND NOT cases.is_test
+		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
 		ORDER BY task.due_at NULLS LAST,task.id LIMIT 6`, adminID)
 	if err != nil {
 		return data, err
@@ -176,7 +179,9 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		queueRows, queryErr := s.DB.Query(ctx, `SELECT cases.id,cases.reference,cases.status,
 			COALESCE(club.name,''),COALESCE(cases.player_name,''),cases.updated_at,COUNT(*) OVER()
 			FROM sanction_cases cases LEFT JOIN clubs club ON club.id=cases.club_id
-			WHERE NOT cases.is_test AND (`+strings.Join(queueClauses, " OR ")+`)
+			WHERE NOT cases.is_test
+			  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
+			  AND (`+strings.Join(queueClauses, " OR ")+`)
 			ORDER BY CASE cases.status WHEN 'decision_proposed' THEN 0 ELSE 1 END,
 			         cases.updated_at,cases.id LIMIT 6`, adminID)
 		if queryErr != nil {
@@ -208,7 +213,10 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		COALESCE(club.name,''),COALESCE(cases.player_name,''),cases.updated_at,
 		cases.assigned_admin_id=$1,COUNT(*) OVER()
 		FROM sanction_cases cases LEFT JOIN clubs club ON club.id=cases.club_id
-		WHERE cases.is_test AND (`+strings.Join(testClauses, " OR ")+`)
+		WHERE (cases.is_test OR EXISTS(
+			SELECT 1 FROM sanction_case_events event
+			WHERE event.case_id=cases.id AND event.event_type='case_training_designated'
+		)) AND (`+strings.Join(testClauses, " OR ")+`)
 		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT 12`, adminID)
 	if err != nil {
 		return data, err
