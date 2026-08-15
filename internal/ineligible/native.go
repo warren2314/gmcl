@@ -51,6 +51,7 @@ type NativeSubmission struct {
 	AdditionalEvidence string
 	Score              string
 	Evidence           *NativeEvidence
+	Training           bool
 }
 
 // NativeStageResult identifies the private intake record. Disposition is new,
@@ -74,6 +75,7 @@ type preparedNativeSubmission struct {
 	RawData         map[string]any
 	RawSHA256       string
 	HeaderSHA256    string
+	Training        bool
 }
 
 // StageNative appends a native website report to the same intake/revision
@@ -115,14 +117,15 @@ func (s *PGStore) StageNative(ctx context.Context, submission NativeSubmission) 
 	var intakeID int64
 	var latestRevision int
 	var latestSHA, currentState string
+	var existingTraining bool
 	err = tx.QueryRow(ctx, `
-		SELECT i.id,i.latest_revision,i.state,
+		SELECT i.id,i.latest_revision,i.state,i.is_training,
 		       COALESCE((SELECT r.raw_sha256 FROM sanction_intake_revisions r
 		                 WHERE r.intake_id=i.id ORDER BY r.revision DESC LIMIT 1),'')
 		FROM sanction_intakes i
 		WHERE i.origin='native_form' AND i.external_key=$1
 		FOR UPDATE
-	`, prepared.ExternalKey).Scan(&intakeID, &latestRevision, &currentState, &latestSHA)
+	`, prepared.ExternalKey).Scan(&intakeID, &latestRevision, &currentState, &existingTraining, &latestSHA)
 
 	disposition := "unchanged"
 	switch {
@@ -131,12 +134,12 @@ func (s *PGStore) StageNative(ctx context.Context, submission NativeSubmission) 
 			INSERT INTO sanction_intakes(
 				origin,external_key,source_reference,external_created_at,state,
 				reporting_club_text,offending_club_text,team_text,player_text,
-				fixture_date,latest_revision
-			) VALUES('native_form',$1,$2,$3,'new',$4,$5,$6,$7,$8,1)
+				fixture_date,latest_revision,is_training
+			) VALUES('native_form',$1,$2,$3,'new',$4,$5,$6,$7,$8,1,$9)
 			RETURNING id
 		`, prepared.ExternalKey, prepared.SourceReference, prepared.ExternalCreated,
 			prepared.ReportingClub, prepared.OffendingClub, prepared.Team,
-			prepared.Player, prepared.FixtureDate).Scan(&intakeID)
+			prepared.Player, prepared.FixtureDate, prepared.Training).Scan(&intakeID)
 		if err == nil {
 			_, err = tx.Exec(ctx, `
 				INSERT INTO sanction_intake_revisions(
@@ -147,6 +150,8 @@ func (s *PGStore) StageNative(ctx context.Context, submission NativeSubmission) 
 		disposition = "new"
 	case err != nil:
 		return NativeStageResult{}, err
+	case existingTraining != prepared.Training:
+		return NativeStageResult{}, fmt.Errorf("native submission training classification cannot change")
 	case latestSHA != prepared.RawSHA256:
 		nextRevision := latestRevision + 1
 		resolvedChange := currentState == "linked" || currentState == "duplicate" || currentState == "ignored"
@@ -280,6 +285,7 @@ func prepareNativeSubmission(submission NativeSubmission) (preparedNativeSubmiss
 		"Score":                           strings.TrimSpace(submission.Score),
 		"_native_submission_id":           submission.SubmissionID,
 		"_native_team_id":                 submission.TeamID,
+		"_training_case":                  submission.Training,
 	}
 
 	// The content checksum omits only the random storage key, retaining the
@@ -312,5 +318,6 @@ func prepareNativeSubmission(submission NativeSubmission) (preparedNativeSubmiss
 		RawData:         raw,
 		RawSHA256:       hex.EncodeToString(contentDigest[:]),
 		HeaderSHA256:    headerSHA256(schema.Headers),
+		Training:        submission.Training,
 	}, nil
 }

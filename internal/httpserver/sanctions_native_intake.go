@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,7 +57,7 @@ func (s *Server) nativeIneligibleFormFields(r *http.Request, selectedReportingCl
 </div>`, escapeHTML(rawID), time.Now().UTC().Format(time.RFC3339Nano), escapeHTML(reporterRole), clubOptions.String())
 }
 
-func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Request, reporterName, reporterEmail, reason string, teamID int, offendingClub, team string) {
+func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Request, reporterName, reporterEmail, reason string, teamID int, offendingClub, team string, training bool) {
 	submittedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(r.FormValue("submission_timestamp")))
 	now := time.Now().UTC()
 	if err != nil || submittedAt.Before(now.Add(-90*24*time.Hour)) || submittedAt.After(now.Add(5*time.Minute)) {
@@ -141,6 +142,7 @@ func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Requ
 		AdditionalEvidence: additionalEvidence,
 		Score:              score,
 		Evidence:           evidence,
+		Training:           training,
 	})
 	if err != nil {
 		slog.Error("stage native ineligible-player intake", "error", err, "request_id", requestID(r))
@@ -148,6 +150,11 @@ func (s *Server) stageNativeIneligibleReport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	keepEvidence = result.Disposition != "unchanged"
+	if training {
+		values := url.Values{"success": []string{"Training report " + result.Reference + " was recorded. No email has been sent yet."}}
+		http.Redirect(w, r, fmt.Sprintf("/admin/ineligible/%d?%s", result.IntakeID, values.Encode()), http.StatusSeeOther)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pageHead(w, "Ineligible-player report received")
