@@ -328,3 +328,17 @@ func TestIneligibleSelectionPostRedirectsEmptySelection(t *testing.T) {
 		t.Fatalf("redirect error = %q, want friendly selection message", location.Query().Get("error"))
 	}
 }
+
+func TestIneligibleImportDispositionBadgeUsesClearLabels(t *testing.T) {
+	for disposition, want := range map[string]string{
+		"new":        "New in this import",
+		"changed":    "Updated in this import",
+		"exception":  "Needs attention",
+		"unchanged":  "Previously imported",
+		"older_open": "Older open report",
+	} {
+		if got := ineligibleImportDispositionBadge(disposition); !strings.Contains(got, want) {
+			t.Fatalf("badge for %q = %q, want label %q", disposition, got, want)
+		}
+	}
+}

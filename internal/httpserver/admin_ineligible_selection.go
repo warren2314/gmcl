@@ -41,7 +41,7 @@ func (s *Server) handleAdminIneligibleSelection() http.HandlerFunc {
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Choose the reports to progress</h1><p class="text-muted mb-0">The import reads every row in the configured Google response sheet. This page shows open reports that have not already been linked or resolved. Cell colours are not imported.</p></div><a class="btn btn-outline-secondary align-self-lg-start" href="/admin/ineligible">Cancel - keep current queue</a></div>`)
 		writeIneligibleFlash(w, r)
 		summary := summarizeIneligibleSelectionRun(run)
-		fmt.Fprintf(w, `<section class="alert alert-info"><strong>Import %d:</strong> %d source rows read, %d added, %d changed and %d need attention.<div class="small mt-1"><strong>%d open reports from this import are available to select.</strong> %d source rows were already linked, resolved, ignored or marked duplicate.`, run.RunID, run.RowsSeen, run.RowsNew, run.RowsChanged, run.RowsErrored, summary.Selectable, summary.AlreadyHandled)
+		fmt.Fprintf(w, `<section class="alert alert-info"><strong>Import %d:</strong> %d source rows read, %d added, %d changed and %d need attention.<div class="small mt-1"><strong>%d open reports confirmed by this import are available to select.</strong> New and updated reports are shown first. %d source rows were already linked, resolved, ignored or marked duplicate.`, run.RunID, run.RowsSeen, run.RowsNew, run.RowsChanged, run.RowsErrored, summary.Selectable, summary.AlreadyHandled)
 		if summary.ObservedNotCurrent > 0 {
 			fmt.Fprintf(w, ` %d open reports changed after this import and are shown disabled.`, summary.ObservedNotCurrent)
 		}
@@ -105,13 +105,29 @@ func (s *Server) handleAdminIneligibleSelection() http.HandlerFunc {
 			if item.VisibilityBatchID == 0 {
 				worklistStatus = "Not yet chosen"
 			}
-			fmt.Fprintf(w, `<tr data-selection-row data-fixture-date="%s" data-original-order="%d"><td data-label="Progress"><input class="form-check-input" type="checkbox" name="selected_intake_id" value="%d" aria-label="Progress %s"%s%s></td><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s; spreadsheet row %d</div>%s%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s</td><td data-label="Current status">%s<div class="small text-muted mt-1">%s</div></td></tr>`, escapeHTML(fixtureISO), sourceOrder, item.IntakeID, escapeHTML(item.Player), checked, checkboxDisabled, item.IntakeID, escapeHTML(item.Player), escapeHTML(item.OffendingClub), escapeHTML(item.Team), escapeHTML(item.ReportingClub), item.SourceRowNumber, evidence, selectionHelp, escapeHTML(fixture), escapeHTML(received), ineligibleStateBadge(item.State), escapeHTML(worklistStatus))
+			importStatus := ineligibleImportDispositionBadge(item.ImportDisposition)
+			fmt.Fprintf(w, `<tr data-selection-row data-fixture-date="%s" data-original-order="%d"><td data-label="Progress"><input class="form-check-input" type="checkbox" name="selected_intake_id" value="%d" aria-label="Progress %s"%s%s></td><td data-label="Report"><a href="/admin/ineligible/%d"><strong>%s</strong></a><div class="small text-muted">%s / %s</div><div class="small text-muted">Reported by %s; spreadsheet row %d</div>%s%s</td><td data-label="Fixture">%s</td><td data-label="Received">%s</td><td data-label="Current status">%s %s<div class="small text-muted mt-1">%s</div></td></tr>`, escapeHTML(fixtureISO), sourceOrder, item.IntakeID, escapeHTML(item.Player), checked, checkboxDisabled, item.IntakeID, escapeHTML(item.Player), escapeHTML(item.OffendingClub), escapeHTML(item.Team), escapeHTML(item.ReportingClub), item.SourceRowNumber, evidence, selectionHelp, escapeHTML(fixture), escapeHTML(received), ineligibleStateBadge(item.State), importStatus, escapeHTML(worklistStatus))
 		}
 		fmt.Fprintf(w, `</tbody></table></div></section><section class="card border-primary"><div class="card-body"><label class="form-label fw-semibold" for="selection-reason">Handover label</label><input class="form-control" id="selection-reason" name="reason" required minlength="3" maxlength="200" placeholder="For example: Dave handover - 11 Aug 2026"><div class="form-text">Saved with your name, the exact import and every selected or deferred report.</div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><span class="small text-muted align-self-sm-center">This action creates no cases, emails or sanctions.</span><button class="btn btn-primary"%s>Save selection and show work queue</button></div></section></form>`, disabled)
 		writeIneligibleSelectionScript(w)
 		fmt.Fprint(w, `</main>`)
 		pageFooter(w)
 	}
+}
+
+func ineligibleImportDispositionBadge(disposition string) string {
+	labels := map[string]string{
+		"new":        "New in this import",
+		"changed":    "Updated in this import",
+		"exception":  "Needs attention",
+		"unchanged":  "Previously imported",
+		"older_open": "Older open report",
+	}
+	label := labels[disposition]
+	if label == "" {
+		label = "Previously imported"
+	}
+	return `<span class="badge text-bg-light border">` + escapeHTML(label) + `</span>`
 }
 
 func ineligibleSelectionFixtureDate(value *time.Time) (string, string) {

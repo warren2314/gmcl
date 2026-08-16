@@ -56,12 +56,11 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 		"Good morning, Warren &lt;Exec&gt;",
 		"Responses awaiting review",
 		`href="/admin/cases/1176#club-response"`,
-		`href="/admin/cases/tasks?mine=1#task-42"`,
 		`id="my-cases"`,
-		"Overdue",
 		"Decisions needing my role",
 		"Approval / issue queue",
 		`href="/admin/cases/1177"`,
+		"2 need attention",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard output missing %q", want)
@@ -69,6 +68,11 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 	}
 	if strings.Contains(html, "Warren <Exec>") {
 		t.Fatal("administrator name was not escaped")
+	}
+	for _, unwanted := range []string{"My tasks", "Tasks assigned to me", "supporting tasks", `id="my-tasks"`} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("dashboard output unexpectedly contains %q", unwanted)
+		}
 	}
 }
 
@@ -104,13 +108,15 @@ func TestWritePersonalWorkDashboardHasClearEmptyStates(t *testing.T) {
 	for _, want := range []string{
 		"Good afternoon, Alex",
 		"No new responses assigned to you.",
-		"No open supporting tasks assigned to you.",
 		"No active cases are assigned to you.",
 		"0 need attention",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("empty dashboard output missing %q", want)
 		}
+	}
+	if strings.Contains(html, "Tasks assigned to me") || strings.Contains(html, "My tasks") {
+		t.Fatal("empty dashboard still renders the removed task section")
 	}
 }
 
