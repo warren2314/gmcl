@@ -29,6 +29,7 @@ type WorklistCandidate struct {
 	IntakeID          int64
 	RevisionID        int64
 	SourceRowNumber   int
+	ImportDisposition string
 	State             string
 	ReportingClub     string
 	OffendingClub     string
@@ -118,7 +119,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 		SELECT run.id
 		FROM sanction_intake_sync_runs run
 		WHERE run.origin='google_form'
-		ORDER BY run.id DESC LIMIT 1
+		ORDER BY run.started_at DESC,run.id DESC LIMIT 1
 	`).Scan(&latestRunID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return WorklistRun{}, ErrWorklistRunNotReady
@@ -156,6 +157,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 	rowsQuery := `
 		SELECT intake.id,latest.id,COALESCE(observed.id,0),
 		       COALESCE(observed.source_row_number,latest.source_row_number,0),
+		       COALESCE(observed.apply_disposition,'older_open'),
 		       intake.state,COALESCE(intake.reporting_club_text,''),COALESCE(intake.offending_club_text,''),
 		       COALESCE(intake.team_text,''),COALESCE(intake.player_text,''),intake.fixture_date,
 		       intake.external_created_at,
@@ -171,7 +173,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 			ORDER BY revision.revision DESC LIMIT 1
 		) latest ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT manifest.id,manifest.source_row_number,manifest.revision_id
+			SELECT manifest.id,manifest.source_row_number,manifest.revision_id,manifest.apply_disposition
 			FROM sanction_intake_sync_run_rows manifest
 			WHERE manifest.sync_run_id=$1 AND manifest.resolution_status='resolved'
 			  AND manifest.intake_id=intake.id
@@ -184,7 +186,13 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 			SELECT 1 FROM sanction_intake_effective_case_links link
 			WHERE link.intake_id=intake.id AND link.relationship<>'duplicate'
 		  )
-		ORDER BY COALESCE(observed.source_row_number,latest.source_row_number,2147483647),intake.id`
+		ORDER BY CASE COALESCE(observed.apply_disposition,'older_open')
+			WHEN 'new' THEN 0
+			WHEN 'changed' THEN 1
+			WHEN 'exception' THEN 2
+			WHEN 'unchanged' THEN 3
+			ELSE 4
+		END,COALESCE(observed.source_row_number,latest.source_row_number,0) DESC,intake.id DESC`
 	if lockCandidates {
 		rowsQuery += ` FOR UPDATE OF intake`
 	}
@@ -195,7 +203,7 @@ func loadWorklistRun(ctx context.Context, query worklistQuerier, runID int64, lo
 	defer rows.Close()
 	for rows.Next() {
 		var item WorklistCandidate
-		if err = rows.Scan(&item.IntakeID, &item.RevisionID, &item.ManifestRowID, &item.SourceRowNumber,
+		if err = rows.Scan(&item.IntakeID, &item.RevisionID, &item.ManifestRowID, &item.SourceRowNumber, &item.ImportDisposition,
 			&item.State, &item.ReportingClub, &item.OffendingClub, &item.Team, &item.Player,
 			&item.FixtureDate, &item.ReceivedAt, &item.EvidenceCount, &item.ExceptionMessage, &item.CurrentVisibility,
 			&item.VisibilityBatchID, &item.Selectable); err != nil {

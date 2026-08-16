@@ -432,7 +432,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			{"Visible queue", counts.NewIntakes, "border-primary", "/admin/ineligible?scope=all&state=open&worklist=visible"},
 			{"Not yet selected", counts.AwaitingSelection, "border-warning", "/admin/ineligible/selection"},
 			{"Hidden reports", counts.HiddenReports, "border-secondary", "/admin/ineligible?scope=all&state=open&worklist=deferred"},
-			{"Active investigations", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"Under investigation", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
 			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"New replies", counts.RecentReplies, "border-info", newRepliesHref},
@@ -645,7 +645,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
 		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
 		 (SELECT COUNT(*) FROM live_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('submitted','triage','investigating','response_pending')),
+		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status='investigating'),
 		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
 		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND latest.status='pending' AND latest.due_at>=now()),

@@ -310,7 +310,7 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 	if name == "" {
 		name = "administrator"
 	}
-	urgentTotal := data.ResponseTotal + data.TaskTotal + data.DecisionTotal
+	urgentTotal := data.ResponseTotal + data.DecisionTotal
 	decisionCard := ""
 	if data.CanApprove || data.CanPublish {
 		decisionCard = personalWorkCountCard("Approval / issue queue", data.DecisionTotal, "#my-decisions", map[bool]string{true: "danger", false: "secondary"}[data.DecisionTotal > 0])
@@ -321,16 +321,14 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 <span class="badge %s">%d need attention</span>
 </div><div class="card-body">
 <div class="row g-2 mb-3">
-%s%s%s%s
+%s%s%s
 </div>`, escapeHTML(greeting), escapeHTML(name), map[bool]string{true: "text-bg-danger", false: "text-bg-success"}[urgentTotal > 0], urgentTotal,
 		personalWorkCountCard("My cases", data.AssignedTotal, "/admin/ineligible?scope=mine&state=all", "primary"),
 		personalWorkCountCard("Responses to review", data.ResponseTotal, "#my-responses", map[bool]string{true: "danger", false: "secondary"}[data.ResponseTotal > 0]),
-		personalWorkCountCard("My tasks", data.TaskTotal, "#my-tasks", map[bool]string{true: "warning", false: "secondary"}[data.TaskTotal > 0]),
 		decisionCard)
 
 	fmt.Fprint(w, `<div class="row g-3">`)
 	writePersonalResponseList(w, data.Responses, data.ResponseTotal, loc)
-	writePersonalTaskList(w, data.Tasks, data.TaskTotal, loc, localNow)
 	writePersonalCaseList(w, data.AssignedCases, data.AssignedTotal, loc)
 	if data.CanApprove || data.CanPublish {
 		writePersonalDecisionList(w, data.DecisionQueue, data.DecisionTotal)
