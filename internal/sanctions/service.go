@@ -840,8 +840,8 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	}
 	var reviewRequired, alreadySent bool
 	if err = tx.QueryRow(ctx, `SELECT
-		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_owner_review_required' AND metadata->>'decision_revision_id'=$2::text),
-		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_sent_for_approval' AND metadata->>'decision_revision_id'=$2::text)`, caseID, decisionID).Scan(&reviewRequired, &alreadySent); err != nil {
+		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_owner_review_required' AND (metadata->>'decision_revision_id')::bigint=$2),
+		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_sent_for_approval' AND (metadata->>'decision_revision_id')::bigint=$2)`, caseID, decisionID).Scan(&reviewRequired, &alreadySent); err != nil {
 		return err
 	}
 	if !reviewRequired {
@@ -914,7 +914,7 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	var ownerReviewPending bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM sanction_case_events required
-		WHERE required.case_id=$1 AND required.event_type='decision_owner_review_required' AND required.metadata->>'decision_revision_id'=$2::text
+		WHERE required.case_id=$1 AND required.event_type='decision_owner_review_required' AND (required.metadata->>'decision_revision_id')::bigint=$2
 		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=required.case_id AND sent.event_type='decision_sent_for_approval' AND sent.metadata->>'decision_revision_id'=required.metadata->>'decision_revision_id')
 	)`, caseID, proposedID).Scan(&ownerReviewPending); err != nil {
 		return err
