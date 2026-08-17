@@ -57,6 +57,7 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 		"Responses awaiting review",
 		`href="/admin/cases/1176#club-response"`,
 		`id="my-cases"`,
+		`href="/admin/cases/mine/ineligible"`,
 		"Decisions needing my role",
 		"Approval / issue queue",
 		`href="/admin/cases/1177"`,
@@ -68,6 +69,9 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 	}
 	if strings.Contains(html, "Warren <Exec>") {
 		t.Fatal("administrator name was not escaped")
+	}
+	if strings.Contains(html, `/admin/ineligible?scope=mine`) {
+		t.Fatal("My cases still links to the report-history queue")
 	}
 	for _, unwanted := range []string{"My tasks", "Tasks assigned to me", "supporting tasks", `id="my-tasks"`} {
 		if strings.Contains(html, unwanted) {

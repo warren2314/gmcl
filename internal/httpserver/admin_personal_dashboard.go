@@ -323,7 +323,7 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 <div class="row g-2 mb-3">
 %s%s%s
 </div>`, escapeHTML(greeting), escapeHTML(name), map[bool]string{true: "text-bg-danger", false: "text-bg-success"}[urgentTotal > 0], urgentTotal,
-		personalWorkCountCard("My cases", data.AssignedTotal, "/admin/ineligible?scope=mine&state=all", "primary"),
+		personalWorkCountCard("My cases", data.AssignedTotal, "/admin/cases/mine/ineligible", "primary"),
 		personalWorkCountCard("Responses to review", data.ResponseTotal, "#my-responses", map[bool]string{true: "danger", false: "secondary"}[data.ResponseTotal > 0]),
 		decisionCard)
 
@@ -405,7 +405,7 @@ func writePersonalCaseList(w http.ResponseWriter, items []personalWorkCase, tota
 			item.ID, escapeHTML(item.Reference), escapeHTML(caseStatusLabel(item.Status)), escapeHTML(defaultString(item.Player, "Player not recorded")), escapeHTML(defaultString(item.Club, item.Team)), escapeHTML(item.UpdatedAt.In(loc).Format("02 Jan 15:04")))
 	}
 	if total > int64(len(items)) {
-		fmt.Fprint(w, `<a class="list-group-item text-center" href="/admin/ineligible?scope=mine&amp;state=all">View all my cases</a>`)
+		fmt.Fprint(w, `<a class="list-group-item text-center" href="/admin/cases/mine/ineligible">View all my cases</a>`)
 	}
 	fmt.Fprint(w, `</div></div></div>`)
 }
