@@ -480,3 +480,31 @@ func TestBackfillRowCountsAreUniqueAndPendingOnly(t *testing.T) {
 		t.Fatalf("counts = pending %d, verified %d, suggested %d, needs help %d", pending, verified, suggested, needsHelp)
 	}
 }
+
+func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
+	tests := map[string]string{
+		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
+		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status IN ('decision_proposed','approved')",
+		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('closed','rejected','withdrawn')",
+	}
+	for group, want := range tests {
+		if got := ineligibleCaseGroupPredicate(group, "cases"); got != want {
+			t.Fatalf("predicate for %s = %q, want %q", group, got, want)
+		}
+	}
+	raw, err := os.ReadFile("admin_ineligible.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, want := range []string{
+		`/admin/cases?group=investigating#cases`,
+		`/admin/cases?group=awaiting_decision#cases`,
+		`/admin/cases?group=closed#cases`,
+		`Review %d row(s) needing attention`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("ineligible dashboard source missing %q", want)
+		}
+	}
+}

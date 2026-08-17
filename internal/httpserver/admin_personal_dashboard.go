@@ -328,8 +328,8 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 		decisionCard)
 
 	fmt.Fprint(w, `<div class="row g-3">`)
-	writePersonalResponseList(w, data.Responses, data.ResponseTotal, loc)
 	writePersonalCaseList(w, data.AssignedCases, data.AssignedTotal, loc)
+	writePersonalResponseList(w, data.Responses, data.ResponseTotal, loc)
 	if data.CanApprove || data.CanPublish {
 		writePersonalDecisionList(w, data.DecisionQueue, data.DecisionTotal)
 	}
@@ -411,7 +411,7 @@ func writePersonalCaseList(w http.ResponseWriter, items []personalWorkCase, tota
 }
 
 func writePersonalDecisionList(w http.ResponseWriter, items []personalWorkQueueItem, total int64) {
-	fmt.Fprint(w, `<div class="col-12 col-xl-6" id="my-decisions"><div class="border rounded h-100"><div class="p-3 border-bottom"><strong>Decisions needing my role</strong></div><div class="list-group list-group-flush">`)
+	fmt.Fprint(w, `<div class="col-12" id="my-decisions"><div class="border rounded h-100"><div class="p-3 border-bottom"><strong>Decisions needing my role</strong></div><div class="list-group list-group-flush">`)
 	if len(items) == 0 {
 		fmt.Fprint(w, `<div class="list-group-item text-muted">No decisions currently need your approval or issue permission.</div>`)
 	}

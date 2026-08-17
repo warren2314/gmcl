@@ -441,14 +441,14 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			{"Visible queue", counts.NewIntakes, "border-primary", "/admin/ineligible?scope=all&state=open&worklist=visible"},
 			{"Not yet selected", counts.AwaitingSelection, "border-warning", "/admin/ineligible/selection"},
 			{"Hidden reports", counts.HiddenReports, "border-secondary", "/admin/ineligible?scope=all&state=open&worklist=deferred"},
-			{"Under investigation", counts.ActiveCases, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+			{"Under investigation", counts.ActiveCases, "border-primary", "/admin/cases?group=investigating#cases"},
 			{"Responses due", counts.ResponsesDue, "border-warning", "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
 			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"New replies", counts.RecentReplies, "border-info", newRepliesHref},
-			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/ineligible?scope=all&state=all&case_status=decision_proposed"},
+			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/cases?group=awaiting_decision#cases"},
 			{"Denver points tasks", counts.DenverPointsTasks, "border-warning", "/admin/cases/tasks"},
 			{"Delivery exceptions", counts.DeliveryExceptions, "border-danger", "/admin/cases"},
-			{"Closed cases", counts.ClosedCases, "border-success", "/admin/ineligible?scope=all&state=all&case_status=closed"},
+			{"Closed cases", counts.ClosedCases, "border-success", "/admin/cases?group=closed#cases"},
 		} {
 			fmt.Fprintf(w, `<div class="col"><a class="border rounded d-block h-100 %s text-decoration-none text-body p-2" href="%s"><div class="h4 mb-0">%d</div><div class="small text-muted">%s</div></a></div>`, card.Class, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
 		}
@@ -464,8 +464,12 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			} else if syncHealth.Status == "running" {
 				alertClass = "alert-info"
 			}
-			fmt.Fprintf(w, `<section class="alert %s d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3"><div><strong>Latest %s import: %s</strong><div class="small">Run %d; seen %d, new %d, changed %d, errors %d. Completed: %s.</div>`, alertClass, escapeHTML(strings.ReplaceAll(syncHealth.Origin, "_", " ")), escapeHTML(syncHealth.Status), syncHealth.ID, syncHealth.RowsSeen, syncHealth.RowsNew, syncHealth.RowsChanged, syncHealth.RowsErrored, escapeHTML(completed))
-			fmt.Fprintf(w, `<div class="small mt-1"><a href="/admin/ineligible/selection?run_id=%d">Choose reports from this import</a></div>`, syncHealth.ID)
+			fmt.Fprintf(w, `<section class="alert %s d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3"><div><strong>Latest %s import: %s</strong><div class="small">Run %d checked %d spreadsheet rows: %d report(s) added, %d updated and %d needing attention. Completed: %s.</div>`, alertClass, escapeHTML(strings.ReplaceAll(syncHealth.Origin, "_", " ")), escapeHTML(syncHealth.Status), syncHealth.ID, syncHealth.RowsSeen, syncHealth.RowsNew, syncHealth.RowsChanged, syncHealth.RowsErrored, escapeHTML(completed))
+			fmt.Fprintf(w, `<div class="small mt-1"><a href="/admin/ineligible/selection?run_id=%d"><strong>Review this import</strong> (new and updated reports appear first)</a>`, syncHealth.ID)
+			if syncHealth.RowsErrored > 0 {
+				fmt.Fprintf(w, ` &middot; <a href="/admin/ineligible?scope=all&amp;state=exception&amp;worklist=all&amp;sort=newest#reports">Review %d row(s) needing attention</a>`, syncHealth.RowsErrored)
+			}
+			fmt.Fprint(w, `</div>`)
 			if syncHealth.Error != "" {
 				fmt.Fprintf(w, `<div class="small mt-1">%s</div>`, escapeHTML(syncHealth.Error))
 			}
@@ -654,7 +658,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
 		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
 		 (SELECT COUNT(*) FROM live_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status='investigating'),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("investigating", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
 		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND latest.status='pending' AND latest.due_at>=now()),
@@ -667,11 +671,11 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 ) reply ON TRUE WHERE c.source_type='ineligible_player' AND NOT EXISTS (
 			SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
 			  AND reviewed.metadata->>'response_event_id'=reply.id::text)),
-		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('decision_proposed','approved')),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("awaiting_decision", "cases")+`),
 		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE c.source_type='ineligible_player' AND t.task_type='play_cricket_points' AND t.status IN ('open','in_progress') AND LOWER(COALESCE(a.username,''))='denverthornton'),
 		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN live_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
 			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
-		 (SELECT COUNT(*) FROM live_cases WHERE source_type='ineligible_player' AND status IN ('closed','rejected','withdrawn'))
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("closed", "cases")+`)
 	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	if err == nil && counts.RecentReplies == 1 {
 		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c JOIN LATERAL (
@@ -689,6 +693,21 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 	return counts, err
 }
 
+func ineligibleCaseGroupPredicate(group, alias string) string {
+	if alias == "" {
+		alias = "cases"
+	}
+	switch group {
+	case "investigating":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='investigating'"
+	case "awaiting_decision":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status IN ('decision_proposed','approved')"
+	case "closed":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status IN ('closed','rejected','withdrawn')"
+	default:
+		return "TRUE"
+	}
+}
 func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHealth, bool) {
 	var result ineligibleSyncHealth
 	err := s.DB.QueryRow(ctx, `SELECT id,origin,status,rows_seen,rows_new,rows_changed,rows_errored,COALESCE(error_message,''),started_at,completed_at FROM sanction_intake_sync_runs WHERE origin='google_form' ORDER BY started_at DESC,id DESC LIMIT 1`).Scan(&result.ID, &result.Origin, &result.Status, &result.RowsSeen, &result.RowsNew, &result.RowsChanged, &result.RowsErrored, &result.Error, &result.StartedAt, &result.CompletedAt)

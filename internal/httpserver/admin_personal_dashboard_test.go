@@ -74,6 +74,15 @@ func TestWritePersonalWorkDashboardShowsDirectUserActions(t *testing.T) {
 			t.Fatalf("dashboard output unexpectedly contains %q", unwanted)
 		}
 	}
+	caseIndex := strings.Index(html, `id="my-cases"`)
+	responseIndex := strings.Index(html, `id="my-responses"`)
+	decisionIndex := strings.Index(html, `id="my-decisions"`)
+	if caseIndex < 0 || responseIndex < 0 || decisionIndex < 0 || !(caseIndex < responseIndex && responseIndex < decisionIndex) {
+		t.Fatalf("dashboard panels are not ordered cases, responses, decisions: cases=%d responses=%d decisions=%d", caseIndex, responseIndex, decisionIndex)
+	}
+	if !strings.Contains(html, `<div class="col-12" id="my-decisions">`) {
+		t.Fatal("decision queue should sit below the two primary investigator panels")
+	}
 }
 
 func TestWritePersonalWorkDashboardShowsCase194OnlyInTrainingSection(t *testing.T) {
