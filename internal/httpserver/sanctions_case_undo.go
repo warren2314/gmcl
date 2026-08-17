@@ -21,7 +21,7 @@ func adminUndoCaseOpeningHTML(caseID int64, csrf, source, status string, isTest 
 	}[status] {
 		return ""
 	}
-	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/undo-opening" class="card mb-3 border-warning"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Opened this case by mistake?</div><div class="card-body"><p class="small">Return the original report to <strong>pending review</strong> and remove this case from active work. Nothing is deleted.</p><label class="form-label">Reason</label><textarea class="form-control" name="reason" required minlength="5" maxlength="1000" rows="2" placeholder="For example: Opened the wrong report"></textarea><div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" id="confirm-undo-opening" required><label class="form-check-label" for="confirm-undo-opening">I understand the case will be retired and the report returned to pending review.</label></div><div class="form-text mt-2">This is blocked if a club email was delivered, a response received, or a decision recorded.</div></div><div class="card-footer"><button class="btn btn-outline-warning">Undo opening and return report</button></div></form>`, caseID, escapeHTML(csrf))
+	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/undo-opening" class="card mb-3 border-warning"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Withdraw mistaken case</div><div class="card-body"><p class="small">Withdraw this case and remove its original report from the selected-review queue. Nothing is deleted; both records remain in the audit history.</p><label class="form-label">Reason</label><textarea class="form-control" name="reason" required minlength="5" maxlength="1000" rows="2" placeholder="For example: Opened the wrong report"></textarea><div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" id="confirm-undo-opening" required><label class="form-check-label" for="confirm-undo-opening">I understand the case will be withdrawn and the report retired from active work.</label></div><div class="form-text mt-2">This is blocked if a club email was delivered, a response received, or a decision recorded.</div></div><div class="card-footer"><button class="btn btn-outline-warning">Withdraw case and retire report</button></div></form>`, caseID, escapeHTML(csrf))
 }
 
 func (s *Server) handleAdminCaseUndoOpening() http.HandlerFunc {
@@ -61,7 +61,7 @@ func (s *Server) handleAdminCaseUndoOpening() http.HandlerFunc {
 			return
 		}
 		if source != "ineligible_player" || isTest || !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
-			http.Error(w, "this case cannot be returned to the intake queue", http.StatusConflict)
+			http.Error(w, "this case cannot be withdrawn through this control", http.StatusConflict)
 			return
 		}
 
@@ -106,7 +106,7 @@ func (s *Server) handleAdminCaseUndoOpening() http.HandlerFunc {
 			return
 		}
 		if committed {
-			http.Error(w, "this case has already progressed or contacted a club and cannot be returned to pending", http.StatusConflict)
+			http.Error(w, "this case has already progressed or contacted a club and cannot be withdrawn through this control", http.StatusConflict)
 			return
 		}
 
@@ -130,22 +130,22 @@ func (s *Server) handleAdminCaseUndoOpening() http.HandlerFunc {
 				VALUES($1,'case_opening_undone','admin',$2,$3,$4,$5,jsonb_build_object('status',$6::text),jsonb_build_object('status','withdrawn'),jsonb_build_object('intake_id',$7::bigint,'link_id',$8::bigint,'cancelled_response_requests',$9::bigint,'revoked_outbox_messages',$10::bigint))`, caseID, *actor.ID, actor.Label, reason, actor.RequestID, status, intakeID, linkID, cancelledRequests, revokedMessages)
 		}
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `UPDATE sanction_intakes SET state='reviewing',exception_message=NULL,updated_at=now() WHERE id=$1`, intakeID)
+			_, err = tx.Exec(r.Context(), `UPDATE sanction_intakes SET state='ignored',exception_message=NULL,updated_at=now() WHERE id=$1`, intakeID)
 		}
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_intake_events(intake_id,event_type,actor_admin_id,actor_label,reason,before_data,after_data,request_id)
-				VALUES($1,'case_opening_undone',$2,$3,$4,jsonb_build_object('state','linked','case_id',$5::bigint,'reference',$6::text),jsonb_build_object('state','reviewing','retired_case_id',$5::bigint),$7)`, intakeID, *actor.ID, actor.Label, reason, caseID, reference, actor.RequestID)
+				VALUES($1,'case_opening_undone',$2,$3,$4,jsonb_build_object('state','linked','case_id',$5::bigint,'reference',$6::text),jsonb_build_object('state','ignored','retired_case_id',$5::bigint),$7)`, intakeID, *actor.ID, actor.Label, reason, caseID, reference, actor.RequestID)
 		}
 		if err != nil {
 			slog.Error("undo ineligible case opening", "case_id", caseID, "intake_id", intakeID, "error", err)
-			http.Error(w, "could not return the report to pending review", http.StatusInternalServerError)
+			http.Error(w, "could not retire the withdrawn report", http.StatusInternalServerError)
 			return
 		}
 		if err = tx.Commit(r.Context()); err != nil {
-			http.Error(w, "could not return the report to pending review", http.StatusInternalServerError)
+			http.Error(w, "could not retire the withdrawn report", http.StatusInternalServerError)
 			return
 		}
-		message := url.QueryEscape(reference + " retired; report returned to pending review")
+		message := url.QueryEscape(reference + " withdrawn; source report retired from active work")
 		http.Redirect(w, r, fmt.Sprintf("/admin/ineligible/%d?success=%s", intakeID, message), http.StatusSeeOther)
 	}
 }

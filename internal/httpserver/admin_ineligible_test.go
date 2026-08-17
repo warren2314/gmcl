@@ -75,12 +75,15 @@ func TestIneligibleQueueHidesWithdrawnCasesUnlessExplicitlyRequested(t *testing.
 	if !strings.Contains(query, "(c.id IS NULL OR c.status != 'withdrawn')") {
 		t.Fatalf("default queue does not exclude withdrawn cases: %s", query)
 	}
+	if !strings.Contains(query, "historical_case.status='withdrawn'") {
+		t.Fatalf("default queue does not exclude source reports from withdrawn cases: %s", query)
+	}
 	if len(args) != 0 {
 		t.Fatalf("default queue args = %#v, want none", args)
 	}
 
 	query, args = buildIneligibleQueueQuery(ineligibleQueueFilters{State: "all", Worklist: "all", Scope: "all", CaseStatus: "withdrawn"})
-	if strings.Contains(query, "(c.id IS NULL OR c.status != 'withdrawn')") || !strings.Contains(query, "c.status=$1") {
+	if strings.Contains(query, "(c.id IS NULL OR c.status != 'withdrawn')") || strings.Contains(query, "historical_case.status='withdrawn'") || !strings.Contains(query, "c.status=$1") {
 		t.Fatalf("explicit withdrawn filter was not honoured: %s", query)
 	}
 	if len(args) != 1 || args[0] != "withdrawn" {

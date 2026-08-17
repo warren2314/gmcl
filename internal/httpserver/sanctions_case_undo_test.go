@@ -7,7 +7,7 @@ import (
 
 func TestAdminUndoCaseOpeningHTML(t *testing.T) {
 	html := adminUndoCaseOpeningHTML(42, `token"value`, "ineligible_player", "investigating", false)
-	for _, want := range []string{"/admin/cases/42/undo-opening", "Undo opening and return report", "pending review", "token&quot;value"} {
+	for _, want := range []string{"/admin/cases/42/undo-opening", "Withdraw case and retire report", "selected-review queue", "token&quot;value"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected %q in %s", want, html)
 		}
