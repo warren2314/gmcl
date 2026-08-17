@@ -481,6 +481,49 @@ func TestBackfillRowCountsAreUniqueAndPendingOnly(t *testing.T) {
 	}
 }
 
+func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
+	history := map[string]string{
+		"Initial Exec Comments (Please put Dates & Names)":         "legacy comment",
+		"Investigation Required (Yes/No)?":                         "Yes",
+		"Responsible Officer?":                                     "Old officer",
+		"Email Sent Date":                                          "01/01/2024",
+		"Offending Club Response Received? (Yes/No)":               "Yes",
+		"Offending Club Response Date?":                            "02/01/2024",
+		"Offending Club Response Text":                             "  Club response  ",
+		"Ready for Final Decision ":                                "Yes",
+		"POINTS deduction":                                         "  12  ",
+		"Cards":                                                    "Red",
+		"Outcome Comms Shared with reporting and offending clubs?": "Yes",
+		"Case Closed? (Yes/No)":                                    "Yes",
+	}
+	want := []v8DecisionHistoryField{
+		{Label: "Offending Club Response Text", Value: "Club response"},
+		{Label: "POINTS deduction", Value: "12"},
+		{Label: "Cards", Value: "Red"},
+	}
+	if got := v8DecisionHistoryFields(history); !reflect.DeepEqual(got, want) {
+		t.Fatalf("decision history fields = %#v, want %#v", got, want)
+	}
+	var out bytes.Buffer
+	writeIneligibleManualHistory(&out, ineligibleBackfillRowView{ManualHistory: history})
+	html := out.String()
+	for _, wanted := range []string{"Decision-relevant V8 history", "Offending Club Response Text", "POINTS deduction", "Cards"} {
+		if !strings.Contains(html, wanted) {
+			t.Fatalf("rendered V8 history missing %q: %s", wanted, html)
+		}
+	}
+	for _, obsolete := range []string{"Initial Exec Comments", "Responsible Officer", "Email Sent Date", "Case Closed"} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("rendered V8 history still contains obsolete field %q: %s", obsolete, html)
+		}
+	}
+	out.Reset()
+	writeIneligibleManualHistory(&out, ineligibleBackfillRowView{ManualHistory: map[string]string{"Case Closed? (Yes/No)": "Yes"}})
+	if out.Len() != 0 {
+		t.Fatalf("obsolete-only history rendered an empty panel: %s", out.String())
+	}
+}
+
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
