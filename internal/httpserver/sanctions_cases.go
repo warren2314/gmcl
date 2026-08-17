@@ -916,7 +916,7 @@ func (s *Server) handleAdminCaseRequestResponse() http.HandlerFunc {
 func (s *Server) handleAdminCases() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		group := strings.TrimSpace(r.URL.Query().Get("group"))
-		predicate := "TRUE"
+		predicate := "c.status != 'withdrawn'"
 		title := "Sanctions cases"
 		if group == "investigating" || group == "awaiting_decision" || group == "closed" {
 			predicate = ineligibleCaseGroupPredicate(group, "c")
@@ -1564,8 +1564,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if status == "approved" || status == "published" || status == "appealed" {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
 		}
-		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
+		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] {
 			fmt.Fprint(w, adminCloseCaseNoActionHTML(id, csrf, status, hasProposed, assignedAdminID, actor.ID))
+		}
+		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Add a private investigation note"></textarea><div class="form-text">Saved notes cannot be edited later. Add a correction if something changes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save note</button></div></form>`, id, escapeHTML(csrf))
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Record external club response</div><div class="card-body"><div class="row g-2"><div class="col-md-5"><label class="form-label">Channel</label><select class="form-select" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select></div><div class="col-md-7"><label class="form-label">Respondent / mailbox</label><input class="form-control" name="respondent" maxlength="300"></div><div class="col-12"><label class="form-label">Response</label><textarea class="form-control" name="response" rows="4" maxlength="20000" required></textarea></div><div class="col-12"><label class="form-label">Attachment (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"></div></div></div><div class="card-footer"><button class="btn btn-outline-success">Record response</button></div></form>`, id, escapeHTML(csrf))
 		}

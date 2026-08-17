@@ -70,6 +70,24 @@ func TestIneligibleUnreadReplyFilterTargetsOnlyCasesAwaitingReview(t *testing.T)
 	}
 }
 
+func TestIneligibleQueueHidesWithdrawnCasesUnlessExplicitlyRequested(t *testing.T) {
+	query, args := buildIneligibleQueueQuery(ineligibleQueueFilters{State: "all", Worklist: "all", Scope: "all"})
+	if !strings.Contains(query, "(c.id IS NULL OR c.status != 'withdrawn')") {
+		t.Fatalf("default queue does not exclude withdrawn cases: %s", query)
+	}
+	if len(args) != 0 {
+		t.Fatalf("default queue args = %#v, want none", args)
+	}
+
+	query, args = buildIneligibleQueueQuery(ineligibleQueueFilters{State: "all", Worklist: "all", Scope: "all", CaseStatus: "withdrawn"})
+	if strings.Contains(query, "(c.id IS NULL OR c.status != 'withdrawn')") || !strings.Contains(query, "c.status=$1") {
+		t.Fatalf("explicit withdrawn filter was not honoured: %s", query)
+	}
+	if len(args) != 1 || args[0] != "withdrawn" {
+		t.Fatalf("explicit withdrawn args = %#v", args)
+	}
+}
+
 func TestIneligibleNewRepliesHrefOpensOneCaseOrFilteredReplyList(t *testing.T) {
 	if got := ineligibleNewRepliesHref(ineligibleDashboardCounts{RecentReplies: 1, RecentReplyCaseID: 77}); got != "/admin/cases/77#club-response" {
 		t.Fatalf("single reply href = %q", got)

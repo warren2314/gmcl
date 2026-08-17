@@ -292,6 +292,10 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	}
 	if filter.CaseStatus != "" {
 		where = append(where, "c.status="+add(filter.CaseStatus))
+	} else {
+		// Withdrawn cases remain available via the explicit status filter, but
+		// should not reappear in normal work queues or report history.
+		where = append(where, "(c.id IS NULL OR c.status != 'withdrawn')")
 	}
 	switch filter.ReplyStatus {
 	case "unreviewed":

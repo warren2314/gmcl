@@ -19,13 +19,23 @@ func TestAdminCloseCaseNoActionHTML(t *testing.T) {
 		assigned    *int32
 		actor       *int32
 	}{
-		{status: "decision_proposed", assigned: &owner, actor: &owner},
-		{status: "investigating", hasProposed: true, assigned: &owner, actor: &owner},
+		{status: "approved", assigned: &owner, actor: &owner},
 		{status: "investigating", assigned: &other, actor: &owner},
 		{status: "investigating", assigned: nil, actor: &owner},
 	} {
 		if got := adminCloseCaseNoActionHTML(42, "csrf", test.status, test.hasProposed, test.assigned, test.actor); got != "" {
 			t.Fatalf("unexpected close control for %+v: %s", test, got)
+		}
+	}
+	for _, test := range []struct {
+		status      string
+		hasProposed bool
+	}{
+		{status: "decision_proposed", hasProposed: true},
+		{status: "investigating", hasProposed: true},
+	} {
+		if got := adminCloseCaseNoActionHTML(42, "csrf", test.status, test.hasProposed, &owner, &owner); got == "" {
+			t.Fatalf("missing close control for %+v", test)
 		}
 	}
 }

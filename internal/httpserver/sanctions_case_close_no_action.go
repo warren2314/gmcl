@@ -13,7 +13,7 @@ import (
 )
 
 func adminCloseCaseNoActionHTML(caseID int64, csrf, status string, hasProposed bool, assignedAdminID, currentAdminID *int32) string {
-	if hasProposed || !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] || !sameAdminAssignment(assignedAdminID, currentAdminID) {
+	if !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] || !sameAdminAssignment(assignedAdminID, currentAdminID) {
 		return ""
 	}
 	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/close-no-action" class="card mb-3 border-success"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Close with no action</strong></div><div class="card-body"><p class="small">Use this when the investigation is complete and no sanction or outcome letter is required. The case goes straight to <strong>Closed</strong>; its history and evidence remain available.</p><label class="form-label">Reason for taking no action</label><textarea class="form-control" name="reason" required minlength="5" maxlength="2000" rows="3"></textarea><div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" id="confirm-close-no-action" required><label class="form-check-label" for="confirm-close-no-action">I confirm that no sanction, approval request or outcome letter is required.</label></div><div class="form-text mt-2">Any pending response link, reminder, unsent email or open follow-up task will be cancelled.</div></div><div class="card-footer"><button class="btn btn-outline-success">Close case with no action</button></div></form>`, caseID, escapeHTML(csrf))
@@ -62,8 +62,8 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if hasDecision || !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
-			http.Error(w, "this case already has a decision or is not open for no-action closure", http.StatusConflict)
+		if !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] {
+			http.Error(w, "this case is not open for no-action closure", http.StatusConflict)
 			return
 		}
 		if !sameAdminAssignment(assignedAdminID, actor.ID) {
