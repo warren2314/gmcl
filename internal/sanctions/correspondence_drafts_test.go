@@ -44,6 +44,7 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 		offendingTeam: "4th XI",
 		reportingClub: "Reporting CC",
 		subject:       "Case outcome",
+		offenceDate:   "9 August 2026",
 		findings:      "The player was not eligible for the fixture.",
 		rule:          "Rule 3.5",
 		effectSummary: "- Warning - Example Player",
@@ -58,6 +59,9 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 		if err := validateOutcomeDraftCompleteness(audience, body); err != nil {
 			t.Errorf("generated %s draft is incomplete: %v", audience, err)
 		}
+		if !strings.Contains(body, "Offence date:") || !strings.Contains(body, "9 August 2026") {
+			t.Errorf("generated %s draft does not contain the offence date: %s", audience, body)
+		}
 	}
 	for _, want := range []string{"Dear Club Official,", "The League officials have approved the decision for case GMCL-2026-0042", "Offending team:\nOffending 4th XI", "Regards,\n\nDenver Thornton\n\nGMCL Disciplinary Officer"} {
 		if !strings.Contains(rendered.offending, want) {
@@ -70,18 +74,20 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 }
 
 func TestOutcomeDraftCompletenessRejectsMissingEmptyDuplicateAndReorderedSections(t *testing.T) {
-	offending := "Dear Club Secretary,\n\nFindings:\nConfirmed finding.\n\nRule determination:\nRule 3.5\n\nDecision and sanctions:\nWarning.\n\nAppeal instructions:\nAppeal within seven days.\n\nRegards,\nGMCL"
+	offending := "Dear Club Secretary,\n\nOffence date:\n9 August 2026\n\nFindings:\nConfirmed finding.\n\nRule determination:\nRule 3.5\n\nDecision and sanctions:\nWarning.\n\nAppeal instructions:\nAppeal within seven days.\n\nRegards,\nGMCL"
 	offendingEmptyFindings := strings.Replace(offending, "Findings:\nConfirmed finding.", "Findings:", 1)
 	offendingEmptyAppeal := strings.Replace(offending, "Appeal instructions:\nAppeal within seven days.", "Appeal instructions:", 1)
 	offendingReordered := strings.Replace(offending,
 		"Findings:\nConfirmed finding.\n\nRule determination:\nRule 3.5",
 		"Rule determination:\nRule 3.5\n\nFindings:\nConfirmed finding.", 1)
-	official := "Approved league outcome record\n\nCase: GMCL-2026-0042\nSource: ineligible_player\nOffending club: Offending CC\nReporting club: Reporting CC\n\nFindings:\nConfirmed finding.\n\nRule determination:\nRule 3.5\n\nDecision and sanctions:\nWarning.\n\nAppeal instructions:\nAppeal within seven days."
+	official := "Approved league outcome record\n\nCase: GMCL-2026-0042\nSource: ineligible_player\nOffence date: 9 August 2026\nOffending club: Offending CC\nReporting club: Reporting CC\n\nFindings:\nConfirmed finding.\n\nRule determination:\nRule 3.5\n\nDecision and sanctions:\nWarning.\n\nAppeal instructions:\nAppeal within seven days."
 
 	tests := []struct {
 		name, audience, body string
 	}{
 		{"missing section", "offending_club", strings.Replace(offending, "Rule determination:", "Rule:", 1)},
+		{"missing offence date", "offending_club", strings.Replace(offending, "Offence date:\n9 August 2026\n\n", "", 1)},
+		{"empty offence date", "offending_club", strings.Replace(offending, "Offence date:\n9 August 2026", "Offence date:", 1)},
 		{"empty findings", "offending_club", offendingEmptyFindings},
 		{"signature is not appeal content", "offending_club", offendingEmptyAppeal},
 		{"duplicate section", "offending_club", offending + "\n\nFindings:\nAnother finding."},
@@ -120,6 +126,7 @@ func TestAudienceOutcomeSnapshotsRejectAnyDecisionBearingMutation(t *testing.T) 
 		offendingClub: "Offending CC",
 		reportingClub: "Reporting CC",
 		subject:       "GMCL case outcome GMCL-2026-0042",
+		offenceDate:   "8 August 2026",
 		findings:      "The player was ineligible for the fixture.",
 		rule:          "Rule 3.5",
 		effectSummary: "- Points adjustment - First XI (-4 league-table points); effective 8 August 2026",

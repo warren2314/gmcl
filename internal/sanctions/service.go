@@ -814,6 +814,15 @@ type ApprovalOptions struct {
 	AdditionalRecipients []string
 }
 
+const decisionApprovalRecipient = "cricketdirector@gtrmcrcricket.co.uk"
+
+func decisionApprovalNotification(caseID, decisionID int64) (recipient, idempotencyKey, subject, body string) {
+	return decisionApprovalRecipient,
+		fmt.Sprintf("case:%d:decision-approval-request:%d", caseID, decisionID),
+		"GMCL sanctions awaiting approval",
+		"A sanctions decision is awaiting your approval. Please sign in to GMCL Admin, open the Awaiting decision queue, and review the proposed sanctions before approving or rejecting them."
+}
+
 // SubmitDecisionForApproval records the case owner's confirmation that they
 // have reviewed the complete offending-club, reporting-club and official
 // versions. Older proposals created before this checkpoint remain compatible.
@@ -853,6 +862,11 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 		return tx.Commit(ctx)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'decision_sent_for_approval','admin',$2,$3,'Case owner reviewed all three complete audience versions and sent the decision for independent approval',jsonb_build_object('decision_revision_id',$4::bigint),$5)`, caseID, *actor.ID, actor.Label, decisionID, actor.RequestID); err != nil {
+		return err
+	}
+	recipient, idempotencyKey, subject, body := decisionApprovalNotification(caseID, decisionID)
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_notification_outbox(case_id,decision_revision_id,message_kind,idempotency_key,recipient,subject,body)
+		VALUES($1,$2,'decision_approval_request',$3,$4,$5,$6) ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKey, recipient, subject, body); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1047,7 +1061,8 @@ type approvedOutcomeEffect struct {
 
 type outcomeRenderData struct {
 	reference, sourceType, offendingClub, offendingTeam, reportingClub string
-	subject, findings, appeal, rule, effectSummary, signatoryName      string
+	subject, offenceDate, findings, appeal, rule, effectSummary        string
+	signatoryName                                                      string
 	combined, noAction                                                 bool
 }
 
@@ -1104,6 +1119,9 @@ func loadReportingOutcomeClubs(ctx context.Context, queryer reportingOutcomeClub
 }
 
 func renderOutcomeCommunications(data outcomeRenderData) renderedOutcomes {
+	if strings.TrimSpace(data.offenceDate) == "" {
+		data.offenceDate = "Not recorded"
+	}
 	if strings.TrimSpace(data.rule) == "" {
 		data.rule = "No specific rule reference recorded."
 	}
@@ -1118,13 +1136,20 @@ func renderOutcomeCommunications(data outcomeRenderData) renderedOutcomes {
 	}
 	team := outcomeTeamLabel(data.offendingClub, data.offendingTeam)
 	signatory := defaultOutcomeValue(data.signatoryName, "Greater Manchester Cricket League")
-	offending := fmt.Sprintf("Dear Club Official,\n\nThe League officials have approved the decision for case %s, which is set out below.\n\nOffending team:\n%s\n\nFindings:\n%s\n\nRule determination:\n%s\n\nDecision and sanctions:\n%s\n\nAppeal instructions:\n%s\n\nRegards,\n\n%s\n\nGMCL Disciplinary Officer", data.reference, team, data.findings, data.rule, data.effectSummary, data.appeal, signatory)
+	offending := fmt.Sprintf("Dear Club Official,\n\nThe League officials have approved the decision for case %s, which is set out below.\n\nOffence date:\n%s\n\nOffending team:\n%s\n\nFindings:\n%s\n\nRule determination:\n%s\n\nDecision and sanctions:\n%s\n\nAppeal instructions:\n%s\n\nRegards,\n\n%s\n\nGMCL Disciplinary Officer", data.reference, data.offenceDate, team, data.findings, data.rule, data.effectSummary, data.appeal, signatory)
 	if data.combined {
 		offending = strings.Replace(offending, "Dear Club Official,", "Dear Club Official,\n\nThis notice serves as the combined offending-club and reporting-club outcome for your club.", 1)
 	}
-	reporting := fmt.Sprintf("Dear Club Secretary,\n\nThe GMCL has completed its investigation into the ineligible-player report recorded as case %s.\n\nConfirmed findings:\n%s\n\nRule determination:\n%s\n\nFinal outcome:\n%s\n\nRegards,\nGreater Manchester Cricket League", data.reference, data.findings, data.rule, data.effectSummary)
-	official := fmt.Sprintf("Approved league outcome record\n\nCase: %s\nSource: %s\nOffending club: %s\nOffending team: %s\nReporting club: %s\n\nFindings:\n%s\n\nRule determination:\n%s\n\nDecision and sanctions:\n%s\n\nAppeal instructions:\n%s", data.reference, data.sourceType, defaultOutcomeValue(data.offendingClub, "Unresolved"), team, defaultOutcomeValue(data.reportingClub, "League-origin / none"), data.findings, data.rule, data.effectSummary, data.appeal)
+	reporting := fmt.Sprintf("Dear Club Secretary,\n\nThe GMCL has completed its investigation into the ineligible-player report recorded as case %s.\n\nOffence date:\n%s\n\nConfirmed findings:\n%s\n\nRule determination:\n%s\n\nFinal outcome:\n%s\n\nRegards,\nGreater Manchester Cricket League", data.reference, data.offenceDate, data.findings, data.rule, data.effectSummary)
+	official := fmt.Sprintf("Approved league outcome record\n\nCase: %s\nSource: %s\nOffence date: %s\nOffending club: %s\nOffending team: %s\nReporting club: %s\n\nFindings:\n%s\n\nRule determination:\n%s\n\nDecision and sanctions:\n%s\n\nAppeal instructions:\n%s", data.reference, data.sourceType, data.offenceDate, defaultOutcomeValue(data.offendingClub, "Unresolved"), team, defaultOutcomeValue(data.reportingClub, "League-origin / none"), data.findings, data.rule, data.effectSummary, data.appeal)
 	return renderedOutcomes{subject: data.subject, offending: offending, reporting: reporting, official: official}
+}
+
+func formatOutcomeOffenceDate(matchDate *time.Time) string {
+	if matchDate == nil {
+		return "Not recorded"
+	}
+	return matchDate.Format("2 January 2006")
 }
 
 func outcomeTeamLabel(club, team string) string {
@@ -1167,16 +1192,17 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	var proposerID *int32
 	var proposedDraftDecisionID *int64
 	var documentDate time.Time
+	var matchDate *time.Time
 	var leagueOrigin bool
 	if err := tx.QueryRow(ctx, `SELECT c.reference,c.source_type,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),c.reporting_club_id,COALESCE(rep.name,''),
-		COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.public_reason,d.rule_reference,d.proposed_by_admin_id,d.supersedes_id,
+		COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),c.match_date,COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.public_reason,d.rule_reference,d.proposed_by_admin_id,d.supersedes_id,
 		COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),
 		COALESCE(c.public_summary,''),
 		COALESCE((SELECT effective_at FROM sanction_decision_revisions proposed WHERE proposed.id=d.supersedes_id),d.effective_at),
 		EXISTS(SELECT 1 FROM sanction_case_parties party WHERE party.case_id=c.id AND party.party_type='league' AND party.relationship='league' AND party.name='GMCL Official')
 		FROM sanction_cases c JOIN sanction_decision_revisions d ON d.id=$2
 		LEFT JOIN clubs off ON off.id=c.club_id LEFT JOIN teams team ON team.id=c.team_id LEFT JOIN clubs rep ON rep.id=c.reporting_club_id WHERE c.id=$1`, caseID, decisionID).
-		Scan(&reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &findings, &appeal, &publicReason, &ruleReference, &proposerID, &proposedDraftDecisionID, &reporterName, &reporterEmail, &reporterRole, &reporterPhone, &casePublicSummary, &documentDate, &leagueOrigin); err != nil {
+		Scan(&reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &matchDate, &findings, &appeal, &publicReason, &ruleReference, &proposerID, &proposedDraftDecisionID, &reporterName, &reporterEmail, &reporterRole, &reporterPhone, &casePublicSummary, &documentDate, &leagueOrigin); err != nil {
 		return err
 	}
 	if proposedDraftDecisionID == nil {
@@ -1253,7 +1279,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 			}
 		}
 	}
-	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, findings: findings, appeal: appeal, rule: rule, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, tx, approver.ID, approver.Label), combined: combined, noAction: noAction})
+	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: rule, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, tx, approver.ID, approver.Label), combined: combined, noAction: noAction})
 	if ContainsPrivateIdentity(rendered.subject+"\n"+rendered.offending, approvalPrivacyValues...) {
 		return errors.New("offending-club outcome contains reporter or reporting-club identity; redact it before approval")
 	}
@@ -1744,14 +1770,16 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 	var approvedByAdminID *int32
 	var rule *string
 	var documentDate time.Time
+	var matchDate *time.Time
 	if err = s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),c.reporting_club_id,COALESCE(rep.name,''),COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference,d.approved_by_admin_id,
+		c.match_date,
 		COALESCE((SELECT effective_at FROM sanction_decision_revisions proposed WHERE proposed.id=d.supersedes_id),d.effective_at)
 		FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id
 		LEFT JOIN clubs off ON off.id=c.club_id LEFT JOIN teams team ON team.id=c.team_id LEFT JOIN clubs rep ON rep.id=c.reporting_club_id
 		WHERE c.id=$1 AND d.id=(SELECT current_decision.id FROM sanction_decision_revisions current_decision
 			WHERE current_decision.case_id=c.id ORDER BY current_decision.revision DESC,current_decision.id DESC LIMIT 1)
 		  AND d.status IN ('proposed','approved')`, caseID).
-		Scan(&decisionID, &reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &findings, &appeal, &rule, &approvedByAdminID, &documentDate); err != nil {
+		Scan(&decisionID, &reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &findings, &appeal, &rule, &approvedByAdminID, &matchDate, &documentDate); err != nil {
 		return nil, "", err
 	}
 	var savedSubject, savedBody string
@@ -1807,7 +1835,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 			break
 		}
 	}
-	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, findings: findings, appeal: appeal, rule: ruleText, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, approvedByAdminID, ""), combined: combined, noAction: noAction})
+	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: ruleText, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, approvedByAdminID, ""), combined: combined, noAction: noAction})
 	body := rendered.offending
 	if audience == "reporting_club" {
 		body = rendered.reporting

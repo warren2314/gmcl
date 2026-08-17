@@ -172,6 +172,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/assign-self", s.handleAdminCaseAssignSelf())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/assign", s.handleAdminCaseAssign())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/undo-opening", s.handleAdminCaseUndoOpening())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/close-no-action", s.handleAdminCaseCloseNoAction())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/tasks", s.handleAdminCaseSupportTaskCreate())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/response-drafts/response_request/test", s.handleAdminCaseResponseDraftTest())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/{id}/evidence/{evidenceID}", s.handleAdminCaseEvidenceDownload())

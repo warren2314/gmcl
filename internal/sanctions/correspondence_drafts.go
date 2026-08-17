@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -30,15 +31,16 @@ func (s *Service) OutcomeDraft(ctx context.Context, caseID int64, audience strin
 	}
 	var draft OutcomeDraft
 	var reference, sourceType, offendingClub, offendingTeam, subject, findings, appeal string
+	var matchDate *time.Time
 	var offendingClubID *int32
 	var rule *string
 	var status string
 	err := s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.status,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),
-		COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference
+		COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),c.match_date,COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference
 		FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id
 		LEFT JOIN clubs off ON off.id=c.club_id LEFT JOIN teams team ON team.id=c.team_id
 		WHERE c.id=$1 AND d.status='proposed' ORDER BY d.revision DESC LIMIT 1`, caseID).
-		Scan(&draft.DecisionID, &reference, &sourceType, &status, &offendingClubID, &offendingClub, &offendingTeam, &subject, &findings, &appeal, &rule)
+		Scan(&draft.DecisionID, &reference, &sourceType, &status, &offendingClubID, &offendingClub, &offendingTeam, &subject, &matchDate, &findings, &appeal, &rule)
 	if err != nil {
 		return OutcomeDraft{}, err
 	}
@@ -69,7 +71,7 @@ func (s *Service) OutcomeDraft(ctx context.Context, caseID int64, audience strin
 	}
 	rendered := renderOutcomeCommunications(outcomeRenderData{
 		reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam,
-		reportingClub: strings.Join(reportingNames, ", "), subject: subject,
+		reportingClub: strings.Join(reportingNames, ", "), subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate),
 		findings: findings, appeal: appeal, rule: ruleText,
 		effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, nil, ""), combined: combined, noAction: noAction,
 	})
@@ -232,12 +234,14 @@ func canonicalOutcomeBody(body string) string {
 func validateOutcomeDraftCompleteness(audience, body string) error {
 	requirements := map[string][]outcomeRequiredSection{
 		"offending_club": {
+			{label: "Offence date:"},
 			{label: "Findings:"},
 			{label: "Rule determination:"},
 			{label: "Decision and sanctions:"},
 			{label: "Appeal instructions:"},
 		},
 		"reporting_club": {
+			{label: "Offence date:"},
 			{label: "Confirmed findings:"},
 			{label: "Rule determination:"},
 			{label: "Final outcome:"},
@@ -245,6 +249,7 @@ func validateOutcomeDraftCompleteness(audience, body string) error {
 		"official": {
 			{label: "Case:", inline: true},
 			{label: "Source:", inline: true},
+			{label: "Offence date:", inline: true},
 			{label: "Offending club:", inline: true},
 			{label: "Reporting club:", inline: true},
 			{label: "Findings:"},
