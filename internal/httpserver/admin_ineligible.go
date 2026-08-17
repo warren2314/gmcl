@@ -713,7 +713,7 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 	case "awaiting_decision":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status IN ('decision_proposed','approved')"
 	case "closed":
-		return alias + ".source_type='ineligible_player' AND " + alias + ".status='closed'"
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status IN ('published','closed')"
 	default:
 		return "TRUE"
 	}
