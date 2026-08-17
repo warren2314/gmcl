@@ -182,6 +182,11 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 	if filter.Scope != "mine" && filter.Scope != "all" {
 		filter.Scope = "all"
 	}
+	// Hidden reports are deliberately unlinked, so they cannot also be assigned
+	// cases. Treat that contradictory combination as the all-reports hidden view.
+	if filter.Scope == "mine" && filter.Worklist == "deferred" {
+		filter.Scope = "all"
+	}
 	if filter.Sort == "" {
 		filter.Sort = "newest"
 	}
@@ -304,8 +309,12 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	if filter.FixtureTo != "" {
 		where = append(where, "i.fixture_date <= "+add(filter.FixtureTo)+"::date")
 	}
-	if filter.Scope == "mine" && adminID != nil {
-		where = append(where, "c.assigned_admin_id="+add(*adminID))
+	if filter.Scope == "mine" {
+		if adminID == nil {
+			where = append(where, "FALSE")
+		} else {
+			where = append(where, "c.assigned_admin_id="+add(*adminID))
+		}
 	}
 	orderBy := "COALESCE(i.external_created_at,i.created_at) DESC,i.id DESC"
 	switch filter.Sort {
@@ -730,8 +739,23 @@ func writeIneligibleDateSortOptions(w io.Writer, selectedValue string) {
 	}
 }
 
+func ineligibleClearFiltersURL(filter ineligibleQueueFilters) string {
+	values := url.Values{"scope": {"all"}, "state": {"open"}, "worklist": {"visible"}}
+	if filter.Scope == "mine" {
+		values.Set("scope", "mine")
+		values.Set("state", "all")
+	}
+	return "/admin/ineligible?" + values.Encode()
+}
+
 func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="scope" value="%s"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to selected reports.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.Scope), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), escapeHTML(plainIneligibleWorklist(filter.Worklist)))
+	mineSelected, allSelected := "", ""
+	if filter.Scope == "mine" {
+		mineSelected = " selected"
+	} else {
+		allSelected = " selected"
+	}
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to this queue's default view.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Ownership</label><select class="form-select" name="scope"><option value="mine"%s>My assigned cases</option><option value="all"%s>All reports</option></select></div><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), escapeHTML(plainIneligibleWorklist(filter.Worklist)), mineSelected, allSelected)
 	for _, option := range []struct{ Value, Label string }{{"visible", "Selected reports"}, {"deferred", "Hidden reports"}, {"all", "All imported reports"}} {
 		selected := ""
 		if filter.Worklist == option.Value {
@@ -757,7 +781,7 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	}
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Order</label><select class="form-select" name="sort">`)
 	writeIneligibleDateSortOptions(w, filter.Sort)
-	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="/admin/ineligible?scope=%s&amp;worklist=visible">Clear</a></div></div></form>`, escapeHTML(filter.Scope))
+	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="%s">Clear</a></div></div></form>`, escapeHTML(ineligibleClearFiltersURL(filter)))
 }
 
 func writeSelectedOptions(w http.ResponseWriter, selected string, values []string) {
@@ -843,8 +867,13 @@ func writeIneligibleFlash(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminIneligibleCount() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		sess, err := getAdminSessionFromRequest(r)
+		if err != nil || sess == nil {
+			http.Error(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
 		var count int64
-		if err := s.DB.QueryRow(r.Context(), `SELECT COUNT(*) FROM sanction_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))`).Scan(&count); err != nil {
+		if err := s.DB.QueryRow(r.Context(), personalIneligibleCasesCountQuery(), sess.AdminID).Scan(&count); err != nil {
 			http.Error(w, "count unavailable", http.StatusInternalServerError)
 			return
 		}

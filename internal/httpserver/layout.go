@@ -163,7 +163,8 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
             Sanctions
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item d-flex justify-content-between align-items-center gap-2" href="/admin/ineligible?scope=mine&amp;state=all&amp;worklist=visible">My ineligible-player cases <span id="ineligibleIntakeNavCount" class="badge text-bg-danger" hidden></span></a></li>
+            <li><a class="dropdown-item d-flex justify-content-between align-items-center gap-2" href="/admin/cases/mine/ineligible">My ineligible-player cases <span id="ineligibleIntakeNavCount" class="badge text-bg-danger" hidden></span></a></li>
+            <li><a class="dropdown-item" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible">Ineligible-player reports</a></li>
             <li><a class="dropdown-item" href="/admin/ineligible/rollout">Ineligible rollout gate</a></li>
             <li><a class="dropdown-item" href="/admin/cases">Case dashboard</a></li>
             <li><a class="dropdown-item" href="/admin/cases/new">Add card, ban, fine or points decision</a></li>
