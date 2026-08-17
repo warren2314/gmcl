@@ -441,20 +441,13 @@ func writeIneligibleBackfillRow(w io.Writer, csrf, defaultReviewer string, runID
 }
 
 func writeIneligibleManualHistory(w io.Writer, row ineligibleBackfillRowView) {
-	order := []string{
-		"Initial Exec Comments (Please put Dates & Names)", "Investigation Required (Yes/No)?",
-		"Responsible Officer?", "Email Sent Date", "Offending Club Response Received? (Yes/No)",
-		"Offending Club Response Date?", "Offending Club Response Text", "Ready for Final Decision ",
-		"POINTS deduction", "Cards", "Outcome Comms Shared with reporting and offending clubs?",
-		"Case Closed? (Yes/No)",
+	fields := v8DecisionHistoryFields(row.ManualHistory)
+	if len(fields) == 0 {
+		return
 	}
-	fmt.Fprint(w, `<details class="mt-3"><summary class="fw-semibold">Manual tracker history (verbatim)</summary><dl class="row mt-3 mb-0">`)
-	for _, key := range order {
-		value := strings.TrimSpace(row.ManualHistory[key])
-		if value == "" {
-			continue
-		}
-		fmt.Fprintf(w, `<dt class="col-lg-4">%s</dt><dd class="col-lg-8" style="white-space:pre-wrap">%s</dd>`, escapeHTML(strings.TrimSpace(key)), escapeHTML(value))
+	fmt.Fprint(w, `<details class="mt-3"><summary class="fw-semibold">Decision-relevant V8 history</summary><dl class="row mt-3 mb-0">`)
+	for _, field := range fields {
+		fmt.Fprintf(w, `<dt class="col-lg-4">%s</dt><dd class="col-lg-8" style="white-space:pre-wrap">%s</dd>`, escapeHTML(field.Label), escapeHTML(field.Value))
 	}
 	fmt.Fprint(w, `</dl></details>`)
 }
