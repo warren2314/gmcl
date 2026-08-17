@@ -23,7 +23,7 @@ func TestAdminNavigationExposesSanctionsWorkflow(t *testing.T) {
 	var out bytes.Buffer
 	writeAdminNav(&out, "csrf", "/admin/cases/imports", "super_admin")
 	html := out.String()
-	for _, want := range []string{"admin-navbar", "Sanctions", "My ineligible-player cases", "/admin/ineligible?scope=mine&amp;state=all&amp;worklist=visible", "Add card, ban, fine or points decision", "Import legacy bans &amp; cards", "Follow-up tasks", "View public register", "/admin/api/rules/chat", "GMCLRulesAssistantConfig", "/static/rules-assistant.js"} {
+	for _, want := range []string{"admin-navbar", "Sanctions", "My ineligible-player cases", "/admin/cases/mine/ineligible", "Ineligible-player reports", "/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible", "Add card, ban, fine or points decision", "Import legacy bans &amp; cards", "Follow-up tasks", "View public register", "/admin/api/rules/chat", "GMCLRulesAssistantConfig", "/static/rules-assistant.js"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin navigation missing %q", want)
 		}

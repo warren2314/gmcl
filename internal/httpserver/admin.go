@@ -109,7 +109,7 @@ func (s *Server) adminRouter() http.Handler {
 		// Sanctions
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible", s.handleAdminIneligibleDashboard())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/rollout", s.handleAdminIneligibleRollout())
-		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/count", s.handleAdminIneligibleCount())
+		r.With(s.requireAnyAdminPermission("sanctions_triage", "sanctions_investigate", "sanctions_approve")).Get("/ineligible/count", s.handleAdminIneligibleCount())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/sync", s.handleAdminIneligibleSync())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/selection", s.handleAdminIneligibleSelection())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/selection", s.handleAdminIneligibleSelectionPost())
@@ -128,6 +128,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/create-case", s.handleAdminIneligibleCreateCase())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/link-case", s.handleAdminIneligibleLinkCase())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/duplicate", s.handleAdminIneligibleDuplicate())
+		r.With(s.requireAnyAdminPermission("sanctions_triage", "sanctions_investigate", "sanctions_approve")).Get("/cases/mine/ineligible", s.handleAdminPersonalIneligibleCases())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/{id}/ignore", s.handleAdminIneligibleIgnore())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/cases", s.handleAdminCases())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/link-tests", s.handleAdminPrivateLinkTestCreate())
