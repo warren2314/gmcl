@@ -73,7 +73,7 @@ func (s *Service) OutcomeDraft(ctx context.Context, caseID int64, audience strin
 		reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam,
 		reportingClub: strings.Join(reportingNames, ", "), subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate),
 		findings: findings, appeal: appeal, rule: ruleText,
-		effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, nil, ""), combined: combined, noAction: noAction,
+		effectSummary: approvedEffectSummary(effects), signatoryName: outcomeLetterSignatoryName, combined: combined, noAction: noAction,
 	})
 	draft.Audience = audience
 	draft.Subject = rendered.subject

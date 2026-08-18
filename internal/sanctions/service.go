@@ -815,6 +815,18 @@ type ApprovalOptions struct {
 }
 
 const decisionApprovalRecipient = "cricketdirector@gtrmcrcricket.co.uk"
+const outcomeLetterSignatoryName = "Denver Thornton"
+
+// CanSubmitDecisionForApproval keeps the owner-review checkpoint tied to the
+// current case owner. The person who prepared an earlier proposal may differ
+// after a legitimate reassignment, but the current owner must still be able to
+// review the complete correspondence and send it to the independent approver.
+func CanSubmitDecisionForApproval(status string, assignedAdminID, actorID *int32) bool {
+	return status == "decision_proposed" &&
+		assignedAdminID != nil &&
+		actorID != nil &&
+		*assignedAdminID == *actorID
+}
 
 func decisionApprovalNotification(caseID, decisionID int64) (recipient, idempotencyKey, subject, body string) {
 	return decisionApprovalRecipient,
@@ -836,12 +848,12 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	}
 	defer tx.Rollback(ctx)
 	var status string
-	var assignedAdminID, proposerID *int32
-	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id,proposed_by_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID, &proposerID); err != nil {
+	var assignedAdminID *int32
+	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID); err != nil {
 		return err
 	}
-	if status != "decision_proposed" || assignedAdminID == nil || proposerID == nil || *assignedAdminID != *actor.ID || *proposerID != *actor.ID {
-		return errors.New("only the assigned case owner who prepared this decision can send it for approval")
+	if !CanSubmitDecisionForApproval(status, assignedAdminID, actor.ID) {
+		return errors.New("only the assigned case owner can send this decision for approval")
 	}
 	var decisionID int64
 	if err = tx.QueryRow(ctx, `SELECT id FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC,id DESC LIMIT 1`, caseID).Scan(&decisionID); err != nil {
@@ -1163,26 +1175,6 @@ func outcomeTeamLabel(club, team string) string {
 	return defaultOutcomeValue(club+team, "Unresolved")
 }
 
-type outcomeSignatoryQueryer interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}
-
-func loadOutcomeSignatoryName(ctx context.Context, q outcomeSignatoryQueryer, approverID *int32, fallback string) string {
-	var name string
-	if approverID != nil {
-		if q.QueryRow(ctx, `SELECT COALESCE(NULLIF(trim(directory.name),''),NULLIF(trim(admin.username),''),'')
-			FROM admin_users admin LEFT JOIN sanction_recipient_directory directory
-			ON lower(directory.email)=lower(admin.email) AND directory.recipient_role='discipline' AND directory.active
-			WHERE admin.id=$1`, *approverID).Scan(&name) == nil && strings.TrimSpace(name) != "" {
-			return strings.TrimSpace(name)
-		}
-	}
-	if q.QueryRow(ctx, `SELECT name FROM sanction_recipient_directory WHERE recipient_role='discipline' AND active ORDER BY id LIMIT 1`).Scan(&name) == nil && strings.TrimSpace(name) != "" {
-		return strings.TrimSpace(name)
-	}
-	return strings.TrimSpace(fallback)
-}
-
 func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, decisionID int64, approver Actor, additionalRecipients []string) error {
 	var reference, sourceType, subject, findings, appeal, publicReason, casePublicSummary string
 	var ruleReference *string
@@ -1279,7 +1271,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 			}
 		}
 	}
-	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: rule, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, tx, approver.ID, approver.Label), combined: combined, noAction: noAction})
+	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: rule, effectSummary: approvedEffectSummary(effects), signatoryName: outcomeLetterSignatoryName, combined: combined, noAction: noAction})
 	if ContainsPrivateIdentity(rendered.subject+"\n"+rendered.offending, approvalPrivacyValues...) {
 		return errors.New("offending-club outcome contains reporter or reporting-club identity; redact it before approval")
 	}
@@ -1767,11 +1759,10 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 	var decisionID int64
 	var reference, sourceType, offendingClub, offendingTeam, reportingClub, subject, findings, appeal string
 	var offendingClubID, reportingClubID *int32
-	var approvedByAdminID *int32
 	var rule *string
 	var documentDate time.Time
 	var matchDate *time.Time
-	if err = s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),c.reporting_club_id,COALESCE(rep.name,''),COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference,d.approved_by_admin_id,
+	if err = s.DB.QueryRow(ctx, `SELECT d.id,c.reference,c.source_type,c.club_id,COALESCE(off.name,''),COALESCE(team.name,''),c.reporting_club_id,COALESCE(rep.name,''),COALESCE(d.outcome_subject,'GMCL case outcome '||c.reference),COALESCE(d.outcome_findings,d.public_reason),COALESCE(d.appeal_instructions,''),d.rule_reference,
 		c.match_date,
 		COALESCE((SELECT effective_at FROM sanction_decision_revisions proposed WHERE proposed.id=d.supersedes_id),d.effective_at)
 		FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id
@@ -1779,7 +1770,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 		WHERE c.id=$1 AND d.id=(SELECT current_decision.id FROM sanction_decision_revisions current_decision
 			WHERE current_decision.case_id=c.id ORDER BY current_decision.revision DESC,current_decision.id DESC LIMIT 1)
 		  AND d.status IN ('proposed','approved')`, caseID).
-		Scan(&decisionID, &reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &findings, &appeal, &rule, &approvedByAdminID, &matchDate, &documentDate); err != nil {
+		Scan(&decisionID, &reference, &sourceType, &offendingClubID, &offendingClub, &offendingTeam, &reportingClubID, &reportingClub, &subject, &findings, &appeal, &rule, &matchDate, &documentDate); err != nil {
 		return nil, "", err
 	}
 	var savedSubject, savedBody string
@@ -1835,7 +1826,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 			break
 		}
 	}
-	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: ruleText, effectSummary: approvedEffectSummary(effects), signatoryName: loadOutcomeSignatoryName(ctx, s.DB, approvedByAdminID, ""), combined: combined, noAction: noAction})
+	rendered := renderOutcomeCommunications(outcomeRenderData{reference: reference, sourceType: sourceType, offendingClub: offendingClub, offendingTeam: offendingTeam, reportingClub: reportingClub, subject: subject, offenceDate: formatOutcomeOffenceDate(matchDate), findings: findings, appeal: appeal, rule: ruleText, effectSummary: approvedEffectSummary(effects), signatoryName: outcomeLetterSignatoryName, combined: combined, noAction: noAction})
 	body := rendered.offending
 	if audience == "reporting_club" {
 		body = rendered.reporting

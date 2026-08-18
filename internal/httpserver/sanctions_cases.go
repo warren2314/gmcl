@@ -1394,10 +1394,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		var ref, source, status, publicSummary, privateSummary, club, team string
 		var reporter adminCaseReporterView
-		var proposer, approver, assignedAdminID *int32
+		var assignedAdminID *int32
 		var assignedAdminName string
 		var hasProposed, isTest, isTraining, ownerReviewRequired, sentForApproval bool
-		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.proposed_by_admin_id,c.approved_by_admin_id,c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
+		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
 			SELECT 1 FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed'
 			  AND NOT EXISTS(SELECT 1 FROM sanction_decision_revisions newer WHERE newer.supersedes_id=d.id)
 		),c.is_test,
@@ -1406,7 +1406,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			AND review.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1)),
 		EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=c.id AND sent.event_type='decision_sent_for_approval'
 			AND sent.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1))
-		FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &proposer, &approver, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining, &ownerReviewRequired, &sentForApproval)
+		FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining, &ownerReviewRequired, &sentForApproval)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1474,7 +1474,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			if status == "decision_proposed" || (status == "triage" && hasProposed) {
 				s.writeAdminOutcomeDraftForms(w, r, id, csrf)
 				currentActor := adminActor(r)
-				ownerCanSend := !sentForApproval && sameAdminAssignment(assignedAdminID, currentActor.ID) && proposer != nil && currentActor.ID != nil && *proposer == *currentActor.ID
+				ownerCanSend := !sentForApproval && sanctiondomain.CanSubmitDecisionForApproval(status, assignedAdminID, currentActor.ID)
 				if ownerCanSend {
 					fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Save all three and send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
 				} else if ownerReviewRequired && !sentForApproval {

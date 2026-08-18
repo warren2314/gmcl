@@ -49,7 +49,7 @@ func TestRenderedOutcomeDraftsContainEveryRequiredSection(t *testing.T) {
 		rule:          "Rule 3.5",
 		effectSummary: "- Warning - Example Player",
 		appeal:        "Appeal within seven days.",
-		signatoryName: "Denver Thornton",
+		signatoryName: outcomeLetterSignatoryName,
 	})
 	for audience, body := range map[string]string{
 		"offending_club": rendered.offending,
