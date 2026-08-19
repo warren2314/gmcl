@@ -290,12 +290,20 @@ func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
 				if err == nil {
 					_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,after_data)
 						SELECT case_id,'response_requested','system','Sanctions outbox',
-						       'Initial response request delivered; seven-day response window activated and one day-five reminder queued',
+						       'Initial response request delivered; seven-day response window activated and a day-five reminder scheduled (not sent)',
 						       jsonb_build_object('response_request_id',$1::bigint,'initial_outbox_id',$2::bigint,
 						                          'reminder_outbox_id',$3::bigint,'delivered_at',$4::timestamptz,
 						                          'reminder_due_at',$5::timestamptz,'due_at',$6::timestamptz)
 						FROM sanction_response_requests WHERE id=$1`, responseRequestID, m.id, reminderOutboxID, deliveredAt, reminderAt, dueAt)
 				}
+			}
+
+			if err == nil && m.kind == "response_reminder" {
+				_, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_label,reason,after_data)
+					SELECT case_id,'response_reminder_sent','system','Sanctions outbox',
+					       'Day-five club response reminder delivered',
+					       jsonb_build_object('outbox_id',id,'delivered_at',now())
+					FROM sanction_notification_outbox WHERE id=$1`, m.id)
 			}
 
 			if err == nil {

@@ -101,6 +101,9 @@ func TestOutboxWorkerLocksAndActivatesQueuedResponseRequest(t *testing.T) {
 		"SET status='pending',delivered_at=$2,reminder_due_at=$3,due_at=$4,reminder_queued_at=$2",
 		"JOIN sanction_correspondence_revisions reminder ON reminder.id=request.reminder_correspondence_revision_id",
 		"shouldActivateResponseWindow(responseRequestStatus)",
+		"day-five reminder scheduled (not sent)",
+		"response_reminder_sent",
+		"Day-five club response reminder delivered",
 	} {
 		if !strings.Contains(normalized, required) {
 			t.Errorf("outbox delivery flow is missing %q", required)
