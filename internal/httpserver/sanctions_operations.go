@@ -592,7 +592,29 @@ func (s *Server) handleAdminSanctionRecipients() http.HandlerFunc {
 				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(role), escapeHTML(name), escapeHTML(emailAddr), status)
 			}
 		}
-		fmt.Fprint(w, `</tbody></table><hr class="my-5"><h2 class="h3">Official club mailboxes</h2><p class="text-muted">Response requests and club outcomes are blocked until an administrator verifies the exact official mailbox. Suggested aliases are never active automatically.</p>`)
+		fmt.Fprint(w, `</tbody></table>`)
+		authorityRows, authorityErr := s.DB.Query(r.Context(), `SELECT authority.email,authority.match_status,
+			COALESCE((SELECT string_agg(club.name, ', ' ORDER BY club.name) FROM clubs club
+				WHERE club.id=ANY(authority.candidate_club_ids)),'')
+			FROM sanction_club_mailbox_authority authority
+			WHERE authority.match_status<>'matched' ORDER BY authority.email`)
+		if authorityErr == nil {
+			defer authorityRows.Close()
+			fmt.Fprint(w, `<section class="card border-warning my-5"><div class="card-header"><strong>Authoritative mailboxes needing admin review</strong></div><div class="card-body"><p class="mb-0">These supplied ineligible-player addresses could not be matched uniquely. Select the club in the verification form below and enter the exact listed address; delivery remains blocked until then.</p></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Email</th><th>Reason</th><th>Possible clubs</th></tr></thead><tbody>`)
+			unresolved := 0
+			for authorityRows.Next() {
+				var emailAddress, status, candidates string
+				if authorityRows.Scan(&emailAddress, &status, &candidates) == nil {
+					unresolved++
+					fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(emailAddress), escapeHTML(status), escapeHTML(candidates))
+				}
+			}
+			if unresolved == 0 {
+				fmt.Fprint(w, `<tr><td colspan="3" class="text-success">All authoritative mailboxes are matched.</td></tr>`)
+			}
+			fmt.Fprint(w, `</tbody></table></div></section>`)
+		}
+		fmt.Fprint(w, `<hr class="my-5"><h2 class="h3">Official club mailboxes</h2><p class="text-muted">Response requests and club outcomes are blocked until an administrator verifies the exact official mailbox. Suggested aliases are never active automatically.</p>`)
 		clubRows, clubErr := s.DB.Query(r.Context(), `SELECT c.id,c.name,COALESCE(contact.email,''),COALESCE(contact.active,FALSE),contact.verified_at
 			FROM clubs c LEFT JOIN LATERAL (SELECT email,active,verified_at FROM sanction_club_contacts WHERE club_id=c.id ORDER BY active DESC,verified_at DESC NULLS LAST,id DESC LIMIT 1) contact ON TRUE
 			ORDER BY c.name`)
@@ -714,6 +736,13 @@ func (s *Server) handleAdminSanctionClubContactPost() http.HandlerFunc {
 			after, _ := json.Marshal(map[string]any{"club_id": clubID, "club": clubName, "email": emailAddress, "active": true, "verified": true})
 			_, err = tx.Exec(r.Context(), `INSERT INTO sanction_configuration_events(configuration_type,configuration_key,actor_admin_id,reason,before_data,after_data,request_id)
 				VALUES('club_contact',$1,$2,$3,$4,$5,$6)`, fmt.Sprintf("club:%d", clubID), *actor.ID, reason, before, after, actor.RequestID)
+		}
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `UPDATE sanction_club_mailbox_authority
+				SET club_id=$1,match_status='matched',candidate_club_ids=ARRAY[$1::integer],
+					matched_at=now(),reviewed_by_admin_id=$2,review_note=$3
+				WHERE LOWER(BTRIM(email))=LOWER(BTRIM($4))`,
+				clubID, *actor.ID, reason, emailAddress)
 		}
 		if err != nil || tx.Commit(r.Context()) != nil {
 			http.Error(w, "club contact update failed", http.StatusInternalServerError)
