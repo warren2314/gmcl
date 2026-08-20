@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sanctiondomain "cricket-ground-feedback/internal/sanctions"
 )
 
 func TestSanctionsSearchPatternsTreatAndAsAmpersand(t *testing.T) {
@@ -70,14 +72,18 @@ func TestAdminCaseDecisionHTMLShowsProposedPunishment(t *testing.T) {
 		CountsForTotting:   true,
 		Explanation:        "Yellow card 3 converts to red card 2 with a 2-point deduction.",
 		YellowBalanceAfter: "0",
+		TeamRedCountBefore: "1",
 		TeamRedCountAfter:  "2",
 	}})
 	for _, want := range []string{
 		"Proposed punishment",
 		"Red card",
 		"2 points",
-		"Yellow balance after",
-		"Team red count after",
+		"Card-system points to deduct",
+		"Team yellow balance if approved",
+		"Red cards added by this case",
+		"Approved team red cards before this case",
+		"Team red-card total if approved",
 		"Counts towards card totting",
 		"Penalty rule 3",
 	} {
@@ -167,9 +173,48 @@ func TestParseAdminDecisionEffectsKeepsPointsAdjustmentValue(t *testing.T) {
 	}
 }
 
+func TestAdminCaseDecisionHTMLShowsDeductionAsPositiveAmount(t *testing.T) {
+	points := -6
+	html := adminCaseDecisionHTML(adminCaseDecision{Status: "proposed"}, []adminCaseEffect{{
+		EffectType: "points_adjustment",
+		Status:     "pending",
+		Points:     &points,
+	}})
+	for _, want := range []string{"League-table points to deduct", "6 points"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("points-adjustment HTML does not contain %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "-6 points") {
+		t.Fatalf("points deduction should be displayed as an amount to deduct, not a negative total: %s", html)
+	}
+}
+
+func TestAdminCaseCardPreviewHTMLExplainsCountAndPointsBeforeSave(t *testing.T) {
+	html := adminCaseCardPreviewHTML(sanctiondomain.CaseCardPreview{
+		Before: sanctiondomain.LedgerState{TeamRedCount: 1},
+		DirectRed: sanctiondomain.Calculation{
+			TeamRedCountAfter: 2,
+			PointsDeduction:   2,
+		},
+	})
+	for _, want := range []string{
+		"Approved team red cards now",
+		"Red cards added by this case",
+		"Team red-card total if approved",
+		"Automatic card-system points to deduct",
+		"2 points",
+		"-6",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("card preview HTML does not contain %q: %s", want, html)
+		}
+	}
+}
+
 func TestAdminDecisionEffectsHTMLExplainsManualPointsField(t *testing.T) {
 	html := adminDecisionEffectsHTML(nil)
-	if !strings.Contains(html, "Card deductions are calculated automatically from league policy after submission; do not enter them here.") {
+	if !strings.Contains(html, "For a deduction, enter a negative number, for example -6. This is separate from the automatic card-system points shown above.") {
 		t.Fatalf("decision effects HTML does not explain the manual points field: %s", html)
 	}
 }

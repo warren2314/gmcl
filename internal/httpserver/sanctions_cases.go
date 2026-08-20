@@ -1067,6 +1067,7 @@ type adminCaseEffect struct {
 	CountsForTotting   bool
 	Explanation        string
 	YellowBalanceAfter string
+	TeamRedCountBefore string
 	TeamRedCountAfter  string
 }
 
@@ -1087,6 +1088,7 @@ func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (admin
 		       COALESCE(trigger_condition,''),counts_for_totting,
 		       COALESCE(NULLIF(public_details->>'explanation',''),public_details->>'calculation_explanation',''),
 		       COALESCE(public_details->>'yellow_balance_after',''),
+		       COALESCE(public_details->>'team_red_count_before',''),
 		       COALESCE(public_details->>'team_red_count_after','')
 		FROM sanction_effect_revisions e
 		WHERE decision_revision_id=$1
@@ -1099,7 +1101,7 @@ func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (admin
 	effects := make([]adminCaseEffect, 0, 1)
 	for rows.Next() {
 		var effect adminCaseEffect
-		if err := rows.Scan(&effect.EffectType, &effect.Status, &effect.PlayerName, &effect.AmountPence, &effect.Points, &effect.StartsAt, &effect.EndsAt, &effect.TriggerCondition, &effect.CountsForTotting, &effect.Explanation, &effect.YellowBalanceAfter, &effect.TeamRedCountAfter); err != nil {
+		if err := rows.Scan(&effect.EffectType, &effect.Status, &effect.PlayerName, &effect.AmountPence, &effect.Points, &effect.StartsAt, &effect.EndsAt, &effect.TriggerCondition, &effect.CountsForTotting, &effect.Explanation, &effect.YellowBalanceAfter, &effect.TeamRedCountBefore, &effect.TeamRedCountAfter); err != nil {
 			return adminCaseDecision{}, nil, false
 		}
 		effects = append(effects, effect)
@@ -1142,17 +1144,27 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Fine</dt><dd class="col-sm-7">£%.2f</dd>`, float64(*effect.AmountPence)/100)
 		}
 		if effect.Points != nil {
-			label := "Points adjustment"
+			label := "League-table points to add"
+			displayPoints := *effect.Points
 			if effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red" {
-				label = "Card-system deduction"
+				label = "Card-system points to deduct"
+			} else if displayPoints < 0 {
+				label = "League-table points to deduct"
+				displayPoints = -displayPoints
 			}
-			fmt.Fprintf(&out, `<dt class="col-sm-5">%s</dt><dd class="col-sm-7">%d point%s</dd>`, label, *effect.Points, pluralSuffix(*effect.Points))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">%s</dt><dd class="col-sm-7">%d point%s</dd>`, label, displayPoints, pluralSuffix(displayPoints))
 		}
 		if effect.YellowBalanceAfter != "" {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Yellow balance after</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.YellowBalanceAfter))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Team yellow balance if approved</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.YellowBalanceAfter))
+		}
+		if effect.EffectType == "red_card" {
+			fmt.Fprint(&out, `<dt class="col-sm-5">Red cards added by this case</dt><dd class="col-sm-7">1</dd>`)
+		}
+		if effect.TeamRedCountBefore != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Approved team red cards before this case</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountBefore))
 		}
 		if effect.TeamRedCountAfter != "" {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Team red count after</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountAfter))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Team red-card total if approved</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountAfter))
 		}
 		if effect.StartsAt != nil {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, effect.StartsAt.Format("02 Jan 2006"))
@@ -1252,13 +1264,28 @@ func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
 		for _, subject := range subjects {
 			fmt.Fprintf(&out, `<option value="%d">%s</option>`, subject.id, escapeHTML(subject.label))
 		}
-		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League points <span class="text-muted">(points adjustment only)</span></label><input class="form-control" name="points" type="number" step="1"><div class="form-text">Card deductions are calculated automatically from league policy after submission; do not enter them here.</div></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
+		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League-table points change <span class="text-muted">(points-adjustment effect only)</span></label><input class="form-control" name="points" type="number" step="1" placeholder="e.g. -6"><div class="form-text">For a deduction, enter a negative number, for example -6. This is separate from the automatic card-system points shown above.</div></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
 		if i == 0 {
 			fmt.Fprint(&out, `</fieldset>`)
 		} else {
 			fmt.Fprint(&out, `</div></details>`)
 		}
 	}
+	return out.String()
+}
+
+func adminCaseCardPreviewHTML(preview sanctiondomain.CaseCardPreview) string {
+	calculation := preview.DirectRed
+	if calculation.Suppressed {
+		return `<div class="alert alert-warning mb-0"><strong>Direct-red check:</strong> ` + escapeHTML(calculation.Explanation) + `</div>`
+	}
+	var out strings.Builder
+	fmt.Fprint(&out, `<aside class="alert alert-info mb-0"><h4 class="h6 alert-heading">If you add one direct red card</h4><p class="mb-2">A Direct red card effect adds one new card. It does not set or replace the team's total.</p><dl class="row mb-0">`)
+	fmt.Fprintf(&out, `<dt class="col-sm-7">Approved team red cards now</dt><dd class="col-sm-5">%d</dd>`, preview.Before.TeamRedCount)
+	fmt.Fprint(&out, `<dt class="col-sm-7">Red cards added by this case</dt><dd class="col-sm-5">1</dd>`)
+	fmt.Fprintf(&out, `<dt class="col-sm-7">Team red-card total if approved</dt><dd class="col-sm-5">%d</dd>`, calculation.TeamRedCountAfter)
+	fmt.Fprintf(&out, `<dt class="col-sm-7">Automatic card-system points to deduct</dt><dd class="col-sm-5">%d point%s</dd>`, calculation.PointsDeduction, pluralSuffix(calculation.PointsDeduction))
+	fmt.Fprint(&out, `</dl><hr><p class="mb-0 small"><strong>Separate league-table deduction:</strong> add a League-table points adjustment effect and enter a negative number, for example <strong>-6</strong>.</p></aside>`)
 	return out.String()
 }
 
@@ -1299,11 +1326,15 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 				subjects = append(subjects, item)
 			}
 		}
+		rows.Close()
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
+	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add one effect for each new sanction. One Direct red card adds one card; it does not set the team's total. Automatic card-system points and a separate league-table points adjustment are shown independently.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
 	if review, ok := s.loadScorecardPointsReview(ctx, caseID); ok {
 		fmt.Fprint(&out, scorecardPointsReviewHTML(review))
+	}
+	if preview, previewErr := sanctiondomain.NewService(s.DB).PreviewCaseDirectRed(ctx, caseID); previewErr == nil {
+		fmt.Fprint(&out, adminCaseCardPreviewHTML(preview))
 	}
 	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
 	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before anything is sent to Denver.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)

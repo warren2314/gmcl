@@ -512,6 +512,7 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 			publicDetails["explanation"] = calc.Explanation
 			publicDetails["calculation_explanation"] = calc.Explanation
 			publicDetails["yellow_balance_after"] = calc.YellowBalanceAfter
+			publicDetails["team_red_count_before"] = state.TeamRedCount
 			publicDetails["team_red_count_after"] = calc.TeamRedCountAfter
 			publicDetails["create_board_review_task"] = calc.CreateBoardReviewTask
 			privateDetails["consumed_yellows"] = calc.ConsumedYellowCount
@@ -666,6 +667,7 @@ func (s *Service) proposeDecisionLegacy(ctx context.Context, req DecisionRequest
 		countsForTotting = req.EffectType == "yellow_card" || req.EffectType == "red_card"
 		publicDetails["calculation_explanation"] = calculated.Explanation
 		publicDetails["yellow_balance_after"] = calculated.YellowBalanceAfter
+		publicDetails["team_red_count_before"] = state.TeamRedCount
 		publicDetails["team_red_count_after"] = calculated.TeamRedCountAfter
 		publicDetails["create_board_review_task"] = calculated.CreateBoardReviewTask
 		privateDetails["consumed_yellows"] = calculated.ConsumedYellowCount
@@ -808,7 +810,8 @@ func (s *Service) ProposeCardCase(ctx context.Context, req CardCaseRequest) (Pro
 		VALUES($1,$2,'pending','team',$3,$4,$5,$6,$7,$8)`, decisionID, calc.EffectType, req.TeamID,
 		nullIfZero(calc.PointsDeduction), effectiveDate, mapJSON(map[string]any{
 			"explanation": calc.Explanation, "yellow_balance_after": calc.YellowBalanceAfter,
-			"team_red_count_after": calc.TeamRedCountAfter, "create_board_review_task": calc.CreateBoardReviewTask,
+			"team_red_count_before": state.TeamRedCount, "team_red_count_after": calc.TeamRedCountAfter,
+			"create_board_review_task": calc.CreateBoardReviewTask,
 		}), mapJSON(map[string]any{"legacy_reason": req.LegacyReason, "consumed_yellows": calc.ConsumedYellowCount, "rescindable": req.CardRequest.Rescindable}), counts); err != nil {
 		return ProposedCase{}, err
 	}
@@ -819,29 +822,107 @@ func (s *Service) ProposeCardCase(ctx context.Context, req CardCaseRequest) (Pro
 	return ProposedCase{CaseID: caseID, Reference: reference, DecisionID: decisionID, PolicyID: policyID, Calculation: calc, AutomationMode: mode}, nil
 }
 
+func authoritativeCardBalance(ledgerBalance int, hasLedgerEntries bool, legacyBalance int) int {
+	if hasLedgerEntries {
+		return ledgerBalance
+	}
+	return legacyBalance
+}
+
 func loadLedgerState(ctx context.Context, tx pgx.Tx, teamID, clubID, seasonID int32, matchDate *time.Time) (LedgerState, error) {
-	var st LedgerState
-	// New-model balances come only from append-only ledger deltas. Legacy rows
-	// supply the opening balance until the historical import is reconciled.
+	var ledgerYellow, legacyYellow, ledgerTeamRed, legacyTeamRed, ledgerClubRed, legacyClubRed int
+	var hasLedgerYellow, hasLedgerTeamRed, hasLedgerClubRed bool
+	// The append-only ledger is authoritative once it contains that card type.
+	// Legacy rows are only an opening-balance fallback. Adding both sources
+	// double-counts historical imports whose old projection could not be linked
+	// by week/date, as happened for Woodhouses 3rd XI.
 	err := tx.QueryRow(ctx, `
 		WITH legacy AS (
-		  SELECT colour::text AS effect_type,status::text AS status,season_id,club_id,offence_date
+		  SELECT colour::text AS effect_type,status::text AS status,season_id
 		  FROM sanctions WHERE team_id=$1 AND case_id IS NULL AND status IN ('active','served')
 		)
 		SELECT
-		 COALESCE((SELECT SUM(yellow_delta) FROM sanction_card_ledger_entries WHERE team_id=$1),0)
-		 +(SELECT COUNT(*) FROM legacy WHERE effect_type='yellow' AND status='active'),
-		 COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE team_id=$1 AND season_id=$3),0)
-		 +(SELECT COUNT(*) FROM legacy WHERE effect_type='red' AND season_id=$3),
-		 COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE club_id=$2 AND season_id=$3),0)
-		 +(SELECT COUNT(*) FROM sanctions WHERE club_id=$2 AND season_id=$3 AND colour='red' AND case_id IS NULL AND status IN ('active','served'))`, teamID, clubID, seasonID).Scan(&st.YellowBalance, &st.TeamRedCount, &st.ClubRedCount)
+		 COALESCE((SELECT SUM(yellow_delta) FROM sanction_card_ledger_entries WHERE team_id=$1),0)::integer,
+		 EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE team_id=$1 AND yellow_delta<>0),
+		 (SELECT COUNT(*)::integer FROM legacy WHERE effect_type='yellow' AND status='active'),
+		 COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE team_id=$1 AND season_id=$3),0)::integer,
+		 EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE team_id=$1 AND season_id=$3 AND red_delta<>0),
+		 (SELECT COUNT(*)::integer FROM legacy WHERE effect_type='red' AND season_id=$3),
+		 COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE club_id=$2 AND season_id=$3),0)::integer,
+		 EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE club_id=$2 AND season_id=$3 AND red_delta<>0),
+		 (SELECT COUNT(*)::integer FROM sanctions WHERE club_id=$2 AND season_id=$3 AND colour='red' AND case_id IS NULL AND status IN ('active','served'))`,
+		teamID, clubID, seasonID).Scan(
+		&ledgerYellow, &hasLedgerYellow, &legacyYellow,
+		&ledgerTeamRed, &hasLedgerTeamRed, &legacyTeamRed,
+		&ledgerClubRed, &hasLedgerClubRed, &legacyClubRed,
+	)
 	if err != nil {
-		return st, fmt.Errorf("load card ledger: %w", err)
+		return LedgerState{}, fmt.Errorf("load card ledger: %w", err)
+	}
+	st := LedgerState{
+		YellowBalance: authoritativeCardBalance(ledgerYellow, hasLedgerYellow, legacyYellow),
+		TeamRedCount:  authoritativeCardBalance(ledgerTeamRed, hasLedgerTeamRed, legacyTeamRed),
+		ClubRedCount:  authoritativeCardBalance(ledgerClubRed, hasLedgerClubRed, legacyClubRed),
 	}
 	if matchDate != nil {
-		_ = tx.QueryRow(ctx, `SELECT COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE team_id=$1 AND match_date=$2::date),0) + (SELECT COUNT(*) FROM sanctions WHERE team_id=$1 AND case_id IS NULL AND colour='red' AND status IN ('active','served') AND offence_date=$2::date)`, teamID, *matchDate).Scan(&st.MatchRedCount)
+		var ledgerMatchRed, legacyMatchRed int
+		var hasLedgerMatchRed bool
+		if err = tx.QueryRow(ctx, `SELECT
+			COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE team_id=$1 AND match_date=$2::date),0)::integer,
+			EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE team_id=$1 AND match_date=$2::date AND red_delta<>0),
+			(SELECT COUNT(*)::integer FROM sanctions WHERE team_id=$1 AND case_id IS NULL AND colour='red' AND status IN ('active','served') AND offence_date=$2::date)`,
+			teamID, *matchDate).Scan(&ledgerMatchRed, &hasLedgerMatchRed, &legacyMatchRed); err != nil {
+			return LedgerState{}, fmt.Errorf("load match card ledger: %w", err)
+		}
+		st.MatchRedCount = authoritativeCardBalance(ledgerMatchRed, hasLedgerMatchRed, legacyMatchRed)
 	}
 	return st, nil
+}
+
+type CaseCardPreview struct {
+	Before    LedgerState
+	DirectRed Calculation
+}
+
+// PreviewCaseDirectRed gives the decision form the same authoritative balance
+// and policy calculation that submission will use.
+func (s *Service) PreviewCaseDirectRed(ctx context.Context, caseID int64) (CaseCardPreview, error) {
+	if caseID < 1 {
+		return CaseCardPreview{}, errors.New("case is required")
+	}
+	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return CaseCardPreview{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var teamID, clubID, seasonID int32
+	var matchDate *time.Time
+	if err = tx.QueryRow(ctx, `SELECT team_id,club_id,season_id,match_date FROM sanction_cases WHERE id=$1`, caseID).
+		Scan(&teamID, &clubID, &seasonID, &matchDate); err != nil {
+		return CaseCardPreview{}, err
+	}
+	effectiveDate := time.Now().UTC()
+	if matchDate != nil {
+		effectiveDate = *matchDate
+	}
+	var policy Policy
+	if err = tx.QueryRow(ctx, `SELECT yellow_threshold,max_reds_per_match,club_board_red_threshold
+		FROM sanction_policy_versions
+		WHERE effective_from<=$1::date AND (effective_to IS NULL OR effective_to>=$1::date)
+		ORDER BY effective_from DESC LIMIT 1`, effectiveDate).
+		Scan(&policy.YellowThreshold, &policy.MaxRedsPerMatch, &policy.ClubBoardRedThreshold); err != nil {
+		return CaseCardPreview{}, err
+	}
+	state, err := loadLedgerState(ctx, tx, teamID, clubID, seasonID, matchDate)
+	if err != nil {
+		return CaseCardPreview{}, err
+	}
+	calculation, err := Calculate(policy, state, CardRequest{Kind: "direct_red"})
+	if err != nil {
+		return CaseCardPreview{}, err
+	}
+	return CaseCardPreview{Before: state, DirectRed: calculation}, nil
 }
 
 type ApprovalOptions struct {

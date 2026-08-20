@@ -107,7 +107,7 @@ func Calculate(policy Policy, state LedgerState, request CardRequest) (Calculati
 	case "direct_red":
 		result = makeRed("red_card")
 		if !result.Suppressed {
-			result.Explanation = fmt.Sprintf("Direct red card %d carries a %d-point card-system deduction.", result.TeamRedCountAfter, result.PointsDeduction)
+			result.Explanation = fmt.Sprintf("This case adds 1 direct red card. Approved team red cards before this case: %d. Team red-card total if approved: %d. Automatic card-system points to deduct: %d.", state.TeamRedCount, result.TeamRedCountAfter, result.PointsDeduction)
 		}
 		return result, nil
 	case "suspended_red":
