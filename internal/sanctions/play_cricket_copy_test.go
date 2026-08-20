@@ -18,3 +18,23 @@ func TestPlayCricketHelpCopyRecipientIsCanonicalAndDeduplicated(t *testing.T) {
 		t.Fatalf("offending-club recipients = %#v", recipients)
 	}
 }
+
+func TestIneligibleOutcomeDoesNotEmailJoepRoutes(t *testing.T) {
+	if shouldCopyPlayCricketHelpOnOffendingOutcome("ineligible_player") {
+		t.Fatal("ineligible-player offending-club outcome still copies Play-Cricket Help")
+	}
+	if !shouldCopyPlayCricketHelpOnOffendingOutcome("manual") {
+		t.Fatal("unrelated sanction outcome unexpectedly lost the configured copy")
+	}
+	for _, recipient := range []string{joepIneligibleOutcomeRecipient, PlayCricketHelpCopyRecipient} {
+		if shouldIncludeReporterOutcomeRecipient("ineligible_player", recipient) {
+			t.Fatalf("ineligible-player reporting outcome still includes %s", recipient)
+		}
+		if !shouldIncludeReporterOutcomeRecipient("manual", recipient) {
+			t.Fatalf("unrelated sanction outcome unexpectedly excludes %s", recipient)
+		}
+	}
+	if !shouldIncludeReporterOutcomeRecipient("ineligible_player", "club-reporter@example.test") {
+		t.Fatal("unrelated ineligible-player reporter was excluded")
+	}
+}

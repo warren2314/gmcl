@@ -18,6 +18,22 @@ import (
 )
 
 const PlayCricketHelpCopyRecipient = "playcrickethelp@gtrmcrcricket.co.uk"
+const joepIneligibleOutcomeRecipient = "joep@gtrmcrcricket.co.uk"
+
+func shouldCopyPlayCricketHelpOnOffendingOutcome(sourceType string) bool {
+	return strings.TrimSpace(sourceType) != "ineligible_player"
+}
+
+func shouldIncludeReporterOutcomeRecipient(sourceType, recipient string) bool {
+	if strings.TrimSpace(sourceType) != "ineligible_player" {
+		return true
+	}
+	canonical, err := canonicalOutcomeRecipient(recipient)
+	if err != nil {
+		return true
+	}
+	return canonical != joepIneligibleOutcomeRecipient && canonical != PlayCricketHelpCopyRecipient
+}
 
 var (
 	ErrSeparationOfDuties = errors.New("the proposer cannot approve their own decision")
@@ -1504,18 +1520,20 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	if len(offendingRecipients) == 0 {
 		return errors.New("offending club official mailbox must be verified before approval")
 	}
-	offendingRecipientSeen := make(map[string]bool, len(offendingRecipients)+1)
-	for _, recipient := range offendingRecipients {
-		offendingRecipientSeen[recipient] = true
-	}
-	offendingRecipients, err = appendUniqueOutcomeRecipient(offendingRecipients, offendingRecipientSeen, PlayCricketHelpCopyRecipient)
-	if err != nil {
-		return fmt.Errorf("Play-Cricket Help copy recipient is invalid: %w", err)
+	if shouldCopyPlayCricketHelpOnOffendingOutcome(sourceType) {
+		offendingRecipientSeen := make(map[string]bool, len(offendingRecipients)+1)
+		for _, recipient := range offendingRecipients {
+			offendingRecipientSeen[recipient] = true
+		}
+		offendingRecipients, err = appendUniqueOutcomeRecipient(offendingRecipients, offendingRecipientSeen, PlayCricketHelpCopyRecipient)
+		if err != nil {
+			return fmt.Errorf("Play-Cricket Help copy recipient is invalid: %w", err)
+		}
 	}
 	snapshots := []snapshot{{kind: kindOffending, audience: "offending_club", recipients: offendingRecipients}}
 	var reportingRecipients []string
 	reportingRecipientSeen := map[string]bool{}
-	if strings.TrimSpace(reporterEmail) != "" {
+	if strings.TrimSpace(reporterEmail) != "" && shouldIncludeReporterOutcomeRecipient(sourceType, reporterEmail) {
 		reportingRecipients, err = appendUniqueOutcomeRecipient(reportingRecipients, reportingRecipientSeen, reporterEmail)
 		if err != nil {
 			return fmt.Errorf("reporter email is invalid: %w", err)

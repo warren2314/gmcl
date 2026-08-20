@@ -1710,9 +1710,6 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 			recipientText: "Verified " + strings.ReplaceAll(audience, "_", " ") + " recipient is added when queued",
 			status:        "template - decision pending",
 		})
-		if audience == "offending_club" {
-			previews[len(previews)-1].recipientText = "Verified offending-club recipient plus " + sanctiondomain.PlayCricketHelpCopyRecipient
-		}
 	}
 	if hasProposed {
 		service := sanctiondomain.NewService(s.DB)
