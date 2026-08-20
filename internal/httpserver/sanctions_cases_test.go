@@ -204,6 +204,25 @@ func TestAdminCaseAssignmentHidesDuplicateSelfAssignment(t *testing.T) {
 	}
 }
 
+func TestAdminAmendProposedDecisionHTMLExplainsSafeRecalculation(t *testing.T) {
+	html := adminAmendProposedDecisionHTML(175, `token<unsafe>`)
+	for _, want := range []string{
+		`action="/admin/cases/175/amend-decision"`,
+		`name="reason" required`,
+		`stay in the audit history as corrected`,
+		`existing approved card history`,
+		`Reopen and amend decision`,
+		`value="token&lt;unsafe&gt;"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("amendment form missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `value="token<unsafe>"`) {
+		t.Fatalf("CSRF value was not escaped: %s", html)
+	}
+}
+
 func TestAdminCaseReporterHTMLShowsPrivateReporterDetailsSafely(t *testing.T) {
 	html := adminCaseReporterHTML(adminCaseReporterView{
 		Name:          `Jane <Reporter>`,

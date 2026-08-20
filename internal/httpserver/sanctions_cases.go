@@ -1122,7 +1122,7 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 	case "overturned":
 		title = "Overturned punishment"
 	case "corrected":
-		title = "Superseded approved decision"
+		title = "Corrected decision"
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `<section class="card border-primary mb-4"><div class="card-header d-flex justify-content-between align-items-center"><strong>%s</strong><span class="badge text-bg-primary">%s</span></div><div class="card-body">`, escapeHTML(title), escapeHTML(decision.Status))
@@ -1402,6 +1402,10 @@ func adminCaseNextStageHTML(hasResponse, unreviewed bool) string {
 	}
 	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li><li>Denver or another authorised independent approver reviews the decision.</li><li>After approval, issue the locked outcome emails and letters.</li></ol></div></section>`
 }
+func adminAmendProposedDecisionHTML(caseID int64, csrf string) string {
+	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/amend-decision" class="card mb-4 border-warning"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Need to change the proposal?</strong></div><div class="card-body"><p>The current proposal and its pending effects will stay in the audit history as corrected. The case will return to the editable decision form, and any replacement card sanction will be recalculated from the team's existing approved card history.</p><label class="form-label">Reason for amendment</label><textarea class="form-control" name="reason" required rows="2" maxlength="2000" placeholder="For example: Entered two red cards but this case should add one; the other is already recorded."></textarea></div><div class="card-footer"><button class="btn btn-outline-warning">Reopen and amend decision</button></div></form>`, caseID, escapeHTML(csrf))
+}
+
 func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -1491,6 +1495,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				ownerCanSend := !sentForApproval && sanctiondomain.CanSubmitDecisionForApproval(status, assignedAdminID, currentActor.ID)
 				if ownerCanSend {
 					fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Save all three and send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
+					fmt.Fprint(w, adminAmendProposedDecisionHTML(id, csrf))
 				} else if ownerReviewRequired && !sentForApproval {
 					fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
 				} else if sentForApproval {
@@ -2025,6 +2030,25 @@ func (s *Server) handleAdminCaseSendForApproval() http.HandlerFunc {
 			return
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Owner review recorded. The complete decision and all three email versions are now in Denver's approval queue.")), http.StatusSeeOther)
+	}
+}
+
+func (s *Server) handleAdminCaseAmendDecision() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil || id < 1 {
+			http.Error(w, "invalid case", http.StatusBadRequest)
+			return
+		}
+		if err = r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if err = sanctiondomain.NewService(s.DB).AmendProposedDecision(r.Context(), id, adminActor(r), r.FormValue("reason")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Proposal reopened. Amend the decision below; card sanctions will be recalculated from the existing approved card history.")), http.StatusSeeOther)
 	}
 }
 

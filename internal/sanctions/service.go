@@ -863,6 +863,12 @@ func CanSubmitDecisionForApproval(status string, assignedAdminID, actorID *int32
 		*assignedAdminID == *actorID
 }
 
+// CanAmendProposedDecision keeps corrections with the assigned case owner and
+// prevents the proposal changing after it has entered independent approval.
+func CanAmendProposedDecision(status string, assignedAdminID, actorID *int32, sentForApproval bool) bool {
+	return !sentForApproval && CanSubmitDecisionForApproval(status, assignedAdminID, actorID)
+}
+
 func decisionApprovalNotification(caseID, decisionID int64) (recipient, idempotencyKey, subject, body string) {
 	return decisionApprovalRecipient,
 		fmt.Sprintf("case:%d:decision-approval-request:%d", caseID, decisionID),
@@ -914,6 +920,82 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	recipient, idempotencyKey, subject, body := decisionApprovalNotification(caseID, decisionID)
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_notification_outbox(case_id,decision_revision_id,message_kind,idempotency_key,recipient,subject,body)
 		VALUES($1,$2,'decision_approval_request',$3,$4,$5,$6) ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKey, recipient, subject, body); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// AmendProposedDecision preserves the mistaken proposal as a corrected
+// revision, cancels its pending effects, and returns the case to the decision
+// form. Card calculations on the replacement proposal therefore use only the
+// effective ledger, never the cancelled proposal.
+func (s *Service) AmendProposedDecision(ctx context.Context, caseID int64, actor Actor, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if caseID < 1 || actor.ID == nil || reason == "" {
+		return errors.New("case, authenticated case owner, and amendment reason are required")
+	}
+	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var status string
+	var assignedAdminID *int32
+	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID); err != nil {
+		return err
+	}
+	if !CanSubmitDecisionForApproval(status, assignedAdminID, actor.ID) {
+		return errors.New("only the assigned case owner can amend a proposed decision")
+	}
+
+	var proposedID int64
+	var revision int
+	if err = tx.QueryRow(ctx, `SELECT id,revision FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC,id DESC LIMIT 1`, caseID).Scan(&proposedID, &revision); err != nil {
+		return err
+	}
+	var sentForApproval bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sanction_case_events
+		WHERE case_id=$1 AND event_type='decision_sent_for_approval'
+		  AND (metadata->>'decision_revision_id')::bigint=$2
+	)`, caseID, proposedID).Scan(&sentForApproval); err != nil {
+		return err
+	}
+	if !CanAmendProposedDecision(status, assignedAdminID, actor.ID, sentForApproval) {
+		return errors.New("this decision has already been sent for independent approval; the approver must reject it before changes can be made")
+	}
+
+	var correctionID int64
+	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(
+		case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,
+		policy_version_id,proposed_by_admin_id,correction_reason,outcome_subject,outcome_findings,appeal_instructions
+	)
+	SELECT case_id,$2,id,'corrected',public_reason,private_reason,rule_release_id,rule_reference,
+		policy_version_id,proposed_by_admin_id,$3,outcome_subject,outcome_findings,appeal_instructions
+	FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, proposedID, revision+1, reason).Scan(&correctionID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(
+		decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+	)
+	SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+	FROM sanction_effect_revisions WHERE decision_revision_id=$1`, proposedID, correctionID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sanction_cases
+		SET status='investigating',current_revision=$2,proposed_by_admin_id=NULL,closed_at=NULL,updated_at=now()
+		WHERE id=$1`, caseID, revision+1); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(
+		case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id
+	) VALUES(
+		$1,'decision_proposal_amended','admin',$2,$3,$4,
+		jsonb_build_object('superseded_decision_revision_id',$5::bigint,'correction_decision_revision_id',$6::bigint),$7
+	)`, caseID, *actor.ID, actor.Label, reason, proposedID, correctionID, actor.RequestID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

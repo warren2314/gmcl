@@ -153,6 +153,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/outcome-drafts/{audience}", s.handleAdminCaseOutcomeDraftSave())
 		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/propose", s.handleAdminCasePropose())
 		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/send-for-approval", s.handleAdminCaseSendForApproval())
+		r.With(s.requireAdminPermission("sanctions_propose")).Post("/cases/{id}/amend-decision", s.handleAdminCaseAmendDecision())
 		r.With(s.requireAdminPermission("sanctions_approve")).Post("/cases/{id}/approve", s.handleAdminCaseApprove())
 		r.With(s.requireAdminPermission("sanctions_approve")).Post("/cases/{id}/reject", s.handleAdminCaseReject())
 		r.With(s.requireAnyAdminPermission("sanctions_investigate", "sanctions_approve")).Post("/cases/{id}/reopen-source-change", s.handleAdminCaseReopenSourceChange())

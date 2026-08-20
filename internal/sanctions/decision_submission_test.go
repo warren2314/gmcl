@@ -28,6 +28,34 @@ func TestCanSubmitDecisionForApprovalUsesCurrentOwner(t *testing.T) {
 	}
 }
 
+func TestCanAmendProposedDecisionStopsAtIndependentApproval(t *testing.T) {
+	ownerID := int32(17)
+	otherID := int32(23)
+
+	if !CanAmendProposedDecision("decision_proposed", &ownerID, &ownerID, false) {
+		t.Fatal("current case owner cannot amend the proposal before independent approval")
+	}
+	for _, test := range []struct {
+		name     string
+		status   string
+		assigned *int32
+		actor    *int32
+		sent     bool
+	}{
+		{name: "already sent", status: "decision_proposed", assigned: &ownerID, actor: &ownerID, sent: true},
+		{name: "wrong status", status: "investigating", assigned: &ownerID, actor: &ownerID},
+		{name: "different administrator", status: "decision_proposed", assigned: &ownerID, actor: &otherID},
+		{name: "unassigned", status: "decision_proposed", actor: &ownerID},
+		{name: "unauthenticated", status: "decision_proposed", assigned: &ownerID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if CanAmendProposedDecision(test.status, test.assigned, test.actor, test.sent) {
+				t.Fatal("proposal amendment was allowed outside the owner review stage")
+			}
+		})
+	}
+}
+
 func TestOutcomeLetterSignatoryIsDenver(t *testing.T) {
 	if outcomeLetterSignatoryName != "Denver Thornton" {
 		t.Fatalf("outcome letter signatory = %q, want Denver Thornton", outcomeLetterSignatoryName)
