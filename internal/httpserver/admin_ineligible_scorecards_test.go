@@ -76,3 +76,40 @@ func TestScorecardResultHTMLOmitsEmptyResult(t *testing.T) {
 		t.Fatalf("empty result should not render a result panel: %s", got)
 	}
 }
+
+func TestScorecardPointsReviewRequiresExplicitDecisionCheck(t *testing.T) {
+	match := leagueapi.ScorecardMatch{
+		HomeClubName: "Glodwick CC", HomeTeamName: "3rd XI", HomeTeamID: "235",
+		AwayClubName: "Example CC", AwayTeamName: "3rd XI", AwayTeamID: "999",
+		Points: []leagueapi.ScorecardPoints{
+			{TeamID: "235", GamePoints: "5", PenaltyPoints: "0"},
+			{TeamID: "999", GamePoints: "0"},
+		},
+	}
+	review, ok := scorecardPointsReviewForTeam(match, "235")
+	if !ok {
+		t.Fatal("positive offending-team points did not require a review")
+	}
+	html := scorecardPointsReviewHTML(review)
+	for _, want := range []string{
+		"Glodwick CC - 3rd XI",
+		"game 5; penalty 0",
+		"A red-card deduction does not remove these match points.",
+		`name="league_points_reviewed"`,
+		"required",
+		"League-table points adjustment",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("points review HTML missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestScorecardPointsReviewIgnoresTeamWithNoAward(t *testing.T) {
+	match := leagueapi.ScorecardMatch{Points: []leagueapi.ScorecardPoints{{
+		TeamID: "235", GamePoints: "0", BonusPointsBatting: "0", PenaltyPoints: "1",
+	}}}
+	if _, ok := scorecardPointsReviewForTeam(match, "235"); ok {
+		t.Fatal("zero awarded points should not require the forfeiture review")
+	}
+}

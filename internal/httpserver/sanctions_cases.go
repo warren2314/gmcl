@@ -1302,6 +1302,9 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `<section class="card mb-4"><div class="card-header">Prepare decision for approval</div><form method="POST" action="/admin/cases/%d/propose"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><div class="row g-3 mb-4"><div class="col-md-6"><label class="form-label">Final rule determination or explicit not-applicable determination</label><input class="form-control" name="rule_reference" value="%s" required><div class="form-text">Prefilled from the alleged rule. Change it if the investigation establishes a different rule or no breach.</div></div><div class="col-md-6"><label class="form-label">Outcome email / letter subject</label><input class="form-control" name="outcome_subject" placeholder="GMCL ineligible-player case outcome"></div><div class="col-12"><label class="form-label">Approved public reason</label><textarea class="form-control" name="public_reason" required rows="4">%s</textarea><div class="form-text">Public-register wording. Do not include correspondence, private evidence, or reporter details.</div></div><div class="col-12"><label class="form-label">Findings for club outcome letters</label><textarea class="form-control" name="outcome_findings" required rows="4">%s</textarea><div class="form-text">This is sent to both clubs. It must be safe for the reporting club and must not quote the offending club's response.</div></div><div class="col-12"><label class="form-label">Appeal instructions</label><textarea class="form-control" name="appeal_instructions" rows="2">Any appeal must be submitted to the league in accordance with the current GMCL regulations.</textarea></div><div class="col-12"><label class="form-label">Private rationale</label><textarea class="form-control" name="private_reason" rows="4"></textarea></div></div><h3 class="h6">Decision effects</h3><p class="small text-muted">Add up to five subject-specific effects. Card-system points are calculated by policy; only a separate points adjustment creates Denver's Play-Cricket task. Enter a fine or league-points value only on its matching effect; mixed values are rejected.</p><div class="vstack gap-3">`, caseID, escapeHTML(csrf), escapeHTML(allegedRuleReference), escapeHTML(publicSummary), escapeHTML(publicSummary))
+	if review, ok := s.loadScorecardPointsReview(ctx, caseID); ok {
+		fmt.Fprint(&out, scorecardPointsReviewHTML(review))
+	}
 	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
 	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before anything is sent to Denver.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)
 	html := out.String()
@@ -1315,6 +1318,16 @@ func adminCaseBackDestination(source string, assignedAdminID, currentAdminID *in
 		return "Back to my cases", "/admin/dashboard#my-cases"
 	}
 	return "Back to cases", "/admin/cases"
+}
+
+func adminCaseFailureHTML(failure string, blockingCaseID int64) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, `<div class="alert alert-warning"><div>%s</div>`, escapeHTML(failure))
+	if blockingCaseID > 0 {
+		fmt.Fprintf(&out, `<a class="btn btn-sm btn-outline-dark mt-2" href="/admin/cases/%d">Open blocking card proposal</a>`, blockingCaseID)
+	}
+	fmt.Fprint(&out, `</div>`)
+	return out.String()
 }
 
 type adminCaseReporterView struct {
@@ -1438,7 +1451,8 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Training case - real email enabled.</strong> This case is excluded from live workload totals, but response requests and approved outcomes use the normal recipients and delivery system. Check recipients before each send.</div>`)
 		}
 		if failure := strings.TrimSpace(r.URL.Query().Get("error")); failure != "" {
-			fmt.Fprintf(w, `<div class="alert alert-warning">%s</div>`, escapeHTML(failure))
+			blockingCaseID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("blocking_case")), 10, 64)
+			fmt.Fprint(w, adminCaseFailureHTML(failure, blockingCaseID))
 		}
 		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc))
 		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed))
@@ -1948,11 +1962,22 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		_ = r.ParseForm()
+		redirectError := func(message string, blockingCaseID int64) {
+			query := url.Values{"error": {message}}
+			if blockingCaseID > 0 {
+				query.Set("blocking_case", strconv.FormatInt(blockingCaseID, 10))
+			}
+			http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?%s", id, query.Encode()), http.StatusSeeOther)
+		}
+		if _, reviewRequired := s.loadScorecardPointsReview(r.Context(), id); reviewRequired && r.FormValue("league_points_reviewed") != "yes" {
+			redirectError("Check the recorded Play-Cricket match points and confirm whether a separate league-table points adjustment is required before saving the decision.", 0)
+			return
+		}
 		appealInstructions := r.FormValue("appeal_instructions")
 		if allegedRule, ruleErr := loadCaseAllegedRule(r.Context(), s.DB, id); ruleErr == nil {
 			guidance := hawkAppealGuidanceForRule(allegedRule)
 			if err := validateHawkAppealInstructions(guidance, appealInstructions); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				redirectError(err.Error(), 0)
 				return
 			}
 		}
@@ -1963,7 +1988,12 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 			Effects: effects, Actor: adminActor(r),
 		})
 		if err != nil {
-			http.Error(w, err.Error(), 400)
+			var conflict *sanctiondomain.UnresolvedCardProposalError
+			if errors.As(err, &conflict) {
+				redirectError(conflict.Error(), conflict.CaseID)
+				return
+			}
+			redirectError(err.Error(), 0)
 			return
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Decision saved. Review the complete offending-club, reporting-club and official versions below, then send them to Denver.")), http.StatusSeeOther)

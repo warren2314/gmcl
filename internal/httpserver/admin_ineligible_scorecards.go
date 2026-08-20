@@ -298,6 +298,84 @@ func scorecardResultHTML(match leagueapi.ScorecardMatch) string {
 	return out.String()
 }
 
+type scorecardPointsReview struct {
+	TeamLabel string
+	Detail    string
+}
+
+func scorecardAwardedPointsValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		// An unfamiliar non-empty upstream value still needs a human review.
+		return true
+	}
+	return parsed > 0
+}
+
+func scorecardPointsReviewForTeam(match leagueapi.ScorecardMatch, teamID string) (scorecardPointsReview, bool) {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return scorecardPointsReview{}, false
+	}
+	for _, points := range match.Points {
+		if strings.TrimSpace(points.TeamID) != teamID {
+			continue
+		}
+		awarded := []string{
+			points.GamePoints,
+			points.BonusPointsBatting,
+			points.BonusPointsBowling,
+			points.BonusPointsTogether,
+			points.BonusPointsSecondBatting,
+			points.BonusPointsSecondBowling,
+			points.BonusPointsSecondTogether,
+		}
+		hasAward := false
+		for _, value := range awarded {
+			hasAward = hasAward || scorecardAwardedPointsValue(value)
+		}
+		if !hasAward {
+			return scorecardPointsReview{}, false
+		}
+		return scorecardPointsReview{
+			TeamLabel: scorecardTeamLabel(match, teamID),
+			Detail:    scorecardPointsDescription(points),
+		}, true
+	}
+	return scorecardPointsReview{}, false
+}
+
+func scorecardPointsReviewHTML(review scorecardPointsReview) string {
+	return fmt.Sprintf(`<div class="alert alert-warning border-warning"><h3 class="h6">Check the match points before saving</h3><p class="mb-2">Play-Cricket records points for <strong>%s</strong>: %s.</p><p class="mb-2"><strong>A red-card deduction does not remove these match points.</strong> If the regulations require the offending team to lose points earned from this fixture, add a separate <em>League-table points adjustment</em> effect with a negative value.</p><div class="form-check"><input class="form-check-input" type="checkbox" name="league_points_reviewed" value="yes" id="league-points-reviewed" required><label class="form-check-label" for="league-points-reviewed">I checked the recorded match points and added the required league-table adjustment, or confirmed that none applies.</label></div></div>`, escapeHTML(review.TeamLabel), escapeHTML(review.Detail))
+}
+
+func (s *Server) loadScorecardPointsReview(ctx context.Context, caseID int64) (scorecardPointsReview, bool) {
+	var teamID string
+	var raw []byte
+	err := s.DB.QueryRow(ctx, `SELECT COALESCE(team.play_cricket_team_id,''),snapshot.snapshot_payload
+		FROM sanction_cases c
+		JOIN teams team ON team.id=c.team_id
+		JOIN LATERAL (
+			SELECT evidence.snapshot_payload
+			FROM sanction_case_scorecard_evidence evidence
+			WHERE evidence.case_id=c.id
+			ORDER BY evidence.id DESC LIMIT 1
+		) snapshot ON TRUE
+		WHERE c.id=$1 AND c.source_type='ineligible_player'`, caseID).Scan(&teamID, &raw)
+	if err != nil {
+		return scorecardPointsReview{}, false
+	}
+	parsed, err := leagueapi.ParseScorecardJSON(raw)
+	if err != nil || len(parsed.MatchDetails) == 0 {
+		return scorecardPointsReview{}, false
+	}
+	return scorecardPointsReviewForTeam(parsed.MatchDetails[0], teamID)
+}
+
 func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.Context, caseID int64, csrf string) {
 	rows, err := s.DB.Query(ctx, `SELECT snapshot.play_cricket_match_id,snapshot.fetched_at,snapshot.source_sha256,snapshot.snapshot_payload,evidence.id
 		FROM sanction_case_scorecard_evidence snapshot JOIN sanction_case_evidence evidence ON evidence.id=snapshot.evidence_id

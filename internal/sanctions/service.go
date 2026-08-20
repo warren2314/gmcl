@@ -25,6 +25,29 @@ var (
 	ErrNotPublishable     = errors.New("case is not approved for publication")
 )
 
+// UnresolvedCardProposalError identifies the earlier proposal that must be
+// resolved before another card can be calculated for the same team. Card
+// deductions depend on the team's ordered ledger balance, so callers should
+// direct the administrator to the blocking case rather than bypassing it.
+type UnresolvedCardProposalError struct {
+	TeamID        int32
+	TeamLabel     string
+	CaseID        int64
+	CaseReference string
+}
+
+func (e *UnresolvedCardProposalError) Error() string {
+	team := strings.TrimSpace(e.TeamLabel)
+	if team == "" {
+		team = fmt.Sprintf("team %d", e.TeamID)
+	}
+	proposal := strings.TrimSpace(e.CaseReference)
+	if proposal == "" {
+		proposal = fmt.Sprintf("case %d", e.CaseID)
+	}
+	return fmt.Sprintf("%s already has unresolved card proposal %s; open that case and approve, reject, or correct it before calculating another card", team, proposal)
+}
+
 type Actor struct {
 	Type      string
 	ID        *int32
@@ -350,18 +373,30 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(83001,$1)`, id); err != nil {
 			return 0, err
 		}
-		var open bool
-		_ = tx.QueryRow(ctx, `SELECT EXISTS(
-			SELECT 1 FROM sanction_cases c
+		var blockingCaseID int64
+		var blockingReference string
+		conflictErr := tx.QueryRow(ctx, `SELECT c.id,c.reference FROM sanction_cases c
 			JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed'
 			JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
 			LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 			WHERE c.id<>$2 AND c.status IN ('decision_proposed','triage')
 			  AND e.effect_type IN ('yellow_card','red_card','suspended_red')
 			  AND COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1
-		)`, id, req.CaseID).Scan(&open)
-		if open {
-			return 0, fmt.Errorf("team %d already has an unresolved card proposal", id)
+			ORDER BY c.id LIMIT 1`, id, req.CaseID).Scan(&blockingCaseID, &blockingReference)
+		if conflictErr != nil && !errors.Is(conflictErr, pgx.ErrNoRows) {
+			return 0, conflictErr
+		}
+		if conflictErr == nil {
+			var clubName, teamName string
+			_ = tx.QueryRow(ctx, `SELECT COALESCE(cl.name,''),COALESCE(t.name,'') FROM teams t JOIN clubs cl ON cl.id=t.club_id WHERE t.id=$1`, id).Scan(&clubName, &teamName)
+			teamLabel := strings.TrimSpace(strings.Join([]string{clubName, teamName}, " - "))
+			teamLabel = strings.Trim(teamLabel, " -")
+			return 0, &UnresolvedCardProposalError{
+				TeamID:        int32(id),
+				TeamLabel:     teamLabel,
+				CaseID:        blockingCaseID,
+				CaseReference: blockingReference,
+			}
 		}
 	}
 

@@ -173,6 +173,23 @@ func TestAdminDecisionEffectsHTMLExplainsManualPointsField(t *testing.T) {
 		t.Fatalf("decision effects HTML does not explain the manual points field: %s", html)
 	}
 }
+
+func TestAdminCaseFailureHTMLLinksBlockingProposal(t *testing.T) {
+	html := adminCaseFailureHTML(`Woodhouses <3> already has an unresolved card proposal`, 174)
+	for _, want := range []string{
+		`Woodhouses &lt;3&gt; already has an unresolved card proposal`,
+		`href="/admin/cases/174"`,
+		`Open blocking card proposal`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("case failure HTML missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `Woodhouses <3>`) {
+		t.Fatalf("case failure was not escaped: %s", html)
+	}
+}
+
 func TestAdminCaseAssignmentHidesDuplicateSelfAssignment(t *testing.T) {
 	adminID := int32(42)
 	html := adminCaseAssignmentHTML(152, "token", &adminID, "warren2314", &adminID)
