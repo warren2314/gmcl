@@ -39,3 +39,22 @@ func TestAdminCloseCaseNoActionHTML(t *testing.T) {
 		}
 	}
 }
+
+func TestCloseCaseNoActionErrorMessageIdentifiesFailedStage(t *testing.T) {
+	message := closeCaseNoActionErrorMessage("cancel_response_request", "request-123")
+	for _, want := range []string{"case was not changed", "response window", "request-123"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected %q in %q", want, message)
+		}
+	}
+}
+
+func TestCloseCaseNoActionErrorMessageDoesNotRequireRequestID(t *testing.T) {
+	message := closeCaseNoActionErrorMessage("unexpected", " ")
+	if !strings.Contains(message, "case was not changed") {
+		t.Fatalf("unexpected message %q", message)
+	}
+	if strings.Contains(message, "support reference") {
+		t.Fatalf("unexpected empty support reference in %q", message)
+	}
+}
