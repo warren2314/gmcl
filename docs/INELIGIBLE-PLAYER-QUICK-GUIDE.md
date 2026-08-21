@@ -160,7 +160,7 @@ Open **Case owner and help** on the case page.
 1. Review the club response and any new evidence.
 2. Complete **Prepare decision for approval** and click **Submit decision for approval**.
 3. A different authorised administrator checks the proposal and clicks **Approve decision and lock outcomes**.
-4. After the final previews, click **Issue approved outcomes**.
+4. Denver completes **Final sign-off and issue outcomes** after the independent approval.
 
 Stop and ask the casework lead for help if details conflict, **Selection is blocked**, a needs-attention warning cannot be resolved, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
 
@@ -171,7 +171,7 @@ Stop and ask the casework lead for help if details conflict, **Selection is bloc
 - **Send TEST copy to me** contacts only your administrator address and cannot open a club response window.
 - **Send initial email to club** is the deliberate live-send action.
 - A decision requires approval by a different authorised administrator.
-- Outcomes are not sent until **Issue approved outcomes** is selected.
+- Outcomes are not sent until Denver selects **Final sign-off and issue outcomes**.
 
 ## Board flow: controlled intake to outcome
 
@@ -194,7 +194,7 @@ flowchart TD
     L --> O["Investigate and contact the club"]
     O --> P["Prepare a decision"]
     P --> Q["Independent approval"]
-    Q --> R["Issue approved outcomes"]
+    Q --> R["Denver: final sign-off and issue outcomes"]
 ```
 
 The board control is simple: every source row is accounted for, only open and unlinked work is offered for selection, progressed reports remain auditable, and only an independently approved decision can produce an outcome.

@@ -1337,7 +1337,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 		fmt.Fprint(&out, adminCaseCardPreviewHTML(preview))
 	}
 	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
-	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before anything is sent to Denver.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)
+	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before sending them for independent approval.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)
 	html := out.String()
 	html = strings.Replace(html, "Any appeal must be submitted to the league in accordance with the current GMCL regulations.", escapeHTML(appealGuidance.Instructions), 1)
 	html = strings.Replace(html, `</textarea></div><div class="col-12"><label class="form-label">Private rationale`, `</textarea><div class="form-text"><strong>HawkAI published-rule check:</strong> `+escapeHTML(appealGuidance.Explanation)+`</div></div><div class="col-12"><label class="form-label">Private rationale`, 1)
@@ -1431,8 +1431,21 @@ func adminCaseNextStageHTML(hasResponse, unreviewed bool) string {
 	if unreviewed {
 		responseStep = `<li><strong>Read the club reply and mark it reviewed.</strong></li>`
 	}
-	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li><li>Denver or another authorised independent approver reviews the decision.</li><li>After approval, issue the locked outcome emails and letters.</li></ol></div></section>`
+	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li><li>A different authorised administrator, such as Dave or Warren, independently approves or rejects it.</li><li>Denver gives final sign-off and issues the locked outcome emails and letters.</li></ol></div></section>`
 }
+
+func (s *Server) isActiveSanctionRecipientAdmin(ctx context.Context, adminID int32, recipientRole string) bool {
+	var allowed bool
+	_ = s.DB.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM admin_users admin
+		JOIN sanction_recipient_directory recipient
+		  ON LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email))
+		WHERE admin.id=$1 AND admin.is_active
+		  AND recipient.active AND recipient.recipient_role=$2
+	)`, adminID, recipientRole).Scan(&allowed)
+	return allowed
+}
+
 func adminAmendProposedDecisionHTML(caseID int64, csrf string) string {
 	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/amend-decision" class="card mb-4 border-warning"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Need to change the proposal?</strong></div><div class="card-body"><p>The current proposal and its pending effects will stay in the audit history as corrected. The case will return to the editable decision form, and any replacement card sanction will be recalculated from the team's existing approved card history.</p><label class="form-label">Reason for amendment</label><textarea class="form-control" name="reason" required rows="2" maxlength="2000" placeholder="For example: Entered two red cards but this case should add one; the other is already recorded."></textarea></div><div class="card-footer"><button class="btn btn-outline-warning">Reopen and amend decision</button></div></form>`, caseID, escapeHTML(csrf))
 }
@@ -1525,12 +1538,12 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				currentActor := adminActor(r)
 				ownerCanSend := !sentForApproval && sanctiondomain.CanSubmitDecisionForApproval(status, assignedAdminID, currentActor.ID)
 				if ownerCanSend {
-					fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Save all three and send to Denver for approval</button></div></form>`, id, escapeHTML(csrf))
+					fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Save all three and send for independent approval</button></div></form>`, id, escapeHTML(csrf))
 					fmt.Fprint(w, adminAmendProposedDecisionHTML(id, csrf))
 				} else if ownerReviewRequired && !sentForApproval {
 					fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
 				} else if sentForApproval {
-					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The three email versions have been sent to Denver for independent approval.</div>`)
+					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The three email versions are awaiting another authorised administrator's independent approval.</div>`)
 				}
 			} else if map[string]bool{"approved": true, "published": true, "appealed": true, "closed": true}[status] {
 				fmt.Fprintf(w, `<div class="d-flex flex-wrap gap-2 mb-4"><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=offending_club">View offending-club PDF</a><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=reporting_club">View reporting-club PDF</a><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=official">View league-official PDF</a></div>`, id, id, id)
@@ -1609,7 +1622,18 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		if status == "approved" {
 			s.writeAdminIneligibleReopenControl(w, r, id, source, status, csrf)
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/publish" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-body"><p>This queues the exact locked email and PDF for the offending club, reporting club and required league officials. A no-action decision is delivered and closed without public-register publication.</p><button class="btn btn-danger">Issue approved outcomes</button></div></form>`, id, csrf)
+			actor := adminActor(r)
+			canIssue := actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_publish")
+			if source == "ineligible_player" {
+				canIssue = canIssue && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
+			}
+			if canIssue {
+				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/publish" class="card mb-3 border-danger"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Denver final sign-off</strong></div><div class="card-body"><p>This queues the exact locked email and PDF for the offending club, reporting club and required league officials. A no-action decision is delivered and closed without public-register publication.</p><button class="btn btn-danger">Final sign-off and issue outcomes</button></div></form>`, id, csrf)
+			} else if source == "ineligible_player" {
+				fmt.Fprint(w, `<div class="alert alert-info"><strong>Independent approval complete.</strong> Awaiting Denver's final sign-off before the locked outcomes are issued.</div>`)
+			} else {
+				fmt.Fprint(w, `<div class="alert alert-info"><strong>Independent approval complete.</strong> Awaiting an authorised publisher to issue the locked outcomes.</div>`)
+			}
 		}
 		if status == "approved" || status == "published" || status == "appealed" {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
@@ -2029,7 +2053,7 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 			redirectError(err.Error(), 0)
 			return
 		}
-		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Decision saved. Review the complete offending-club, reporting-club and official versions below, then send them to Denver.")), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Decision saved. Review the complete offending-club, reporting-club and official versions below, then send them for independent approval.")), http.StatusSeeOther)
 	}
 }
 
@@ -2057,7 +2081,7 @@ func (s *Server) handleAdminCaseSendForApproval() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Owner review recorded. The complete decision and all three email versions are now in Denver's approval queue.")), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", id, urlQueryEscape("Owner review recorded. The complete decision and all three email versions are now in the independent approval queue.")), http.StatusSeeOther)
 	}
 }
 

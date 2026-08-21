@@ -75,18 +75,18 @@ type ineligibleQueueRow struct {
 }
 
 type ineligibleDashboardCounts struct {
-	NewIntakes         int64
-	AwaitingSelection  int64
-	HiddenReports      int64
-	ActiveCases        int64
-	ResponsesDue       int64
-	ResponsesOverdue   int64
-	RecentReplies      int64
-	AwaitingDecision   int64
-	DenverPointsTasks  int64
-	DeliveryExceptions int64
-	ClosedCases        int64
-	RecentReplyCaseID  int64
+	NewIntakes             int64
+	AwaitingSelection      int64
+	HiddenReports          int64
+	ActiveCases            int64
+	ResponsesDue           int64
+	ResponsesOverdue       int64
+	RecentReplies          int64
+	AwaitingDecision       int64
+	PlayCricketPointsTasks int64
+	DeliveryExceptions     int64
+	ClosedCases            int64
+	RecentReplyCaseID      int64
 }
 
 type ineligibleSyncHealth struct {
@@ -456,7 +456,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			{"Responses overdue", counts.ResponsesOverdue, "border-danger", "/admin/ineligible?scope=all&state=all&case_status=investigating"},
 			{"New replies", counts.RecentReplies, "border-info", newRepliesHref},
 			{"Awaiting decision", counts.AwaitingDecision, "border-primary", "/admin/cases?group=awaiting_decision#cases"},
-			{"Denver points tasks", counts.DenverPointsTasks, "border-warning", "/admin/cases/tasks"},
+			{"League points awaiting Denver", counts.PlayCricketPointsTasks, "border-warning", "/admin/cases/tasks"},
 			{"Delivery exceptions", counts.DeliveryExceptions, "border-danger", "/admin/cases"},
 			{"Closed cases", counts.ClosedCases, "border-success", "/admin/cases?group=closed#cases"},
 		} {
@@ -682,11 +682,11 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 			SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
 			  AND reviewed.metadata->>'response_event_id'=reply.id::text)),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("awaiting_decision", "cases")+`),
-		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE c.source_type='ineligible_player' AND t.task_type='play_cricket_points' AND t.status IN ('open','in_progress') AND LOWER(COALESCE(a.username,''))='denverthornton'),
+		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id WHERE c.source_type='ineligible_player' AND t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')),
 		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN live_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
 			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("closed", "cases")+`)
-	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.DenverPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
+	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.PlayCricketPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	if err == nil && counts.RecentReplies == 1 {
 		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c JOIN LATERAL (
 			SELECT event.id FROM sanction_case_events event
@@ -994,7 +994,7 @@ func (s *Server) handleAdminIneligibleDetail() http.HandlerFunc {
 		writeIneligibleFlash(w, r)
 		fmt.Fprintf(w, `<div class="d-flex flex-column flex-md-row justify-content-between gap-2 mb-4"><div><h1 class="h2 mb-1">Intake %d</h1><p class="text-muted mb-0">%s / %s / revision %d</p></div><div>%s</div></div>`, intakeID, escapeHTML(strings.ReplaceAll(origin, "_", " ")), escapeHTML(externalKey), revision, ineligibleStateBadge(state))
 		if isTraining {
-			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Training report - real email enabled.</strong> It is excluded from live workload totals. Raising the case opens the normal investigation, Denver approval and email workflow. <a class="alert-link" href="/admin/ineligible/training/new">Create another training report</a>.</div>`)
+			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Training report - real email enabled.</strong> It is excluded from live workload totals. Raising the case opens the normal investigation, peer approval and Denver final-issue workflow. <a class="alert-link" href="/admin/ineligible/training/new">Create another training report</a>.</div>`)
 		}
 		if exception != "" {
 			fmt.Fprintf(w, `<div class="alert alert-warning"><strong>Import exception:</strong> %s</div>`, escapeHTML(exception))

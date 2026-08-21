@@ -220,7 +220,7 @@ func (s *Server) handleAdminCaseResponseDraftPreview() http.HandlerFunc {
 
 func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf string) {
 	service := sanctions.NewService(s.DB)
-	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Emails Denver will approve</div><div class="card-body"><p class="small text-muted">These are the exact audience versions under review. The approval button saves and locks them together; previewing does not send anything.</p>`)
+	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Emails awaiting independent approval</div><div class="card-body"><p class="small text-muted">These are the exact audience versions under review. Dave or Warren can approve another administrator's work; the approval button saves and locks them together but does not send anything. Denver issues them at final sign-off.</p>`)
 	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
 		draft, err := service.OutcomeDraft(r.Context(), caseID, audience)
 		if err != nil {

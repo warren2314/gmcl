@@ -138,12 +138,13 @@ func TestAdminCaseResponseHTMLHidesReviewActionAfterReview(t *testing.T) {
 
 func TestAdminCaseNextStageShowsIndependentApprovalSequence(t *testing.T) {
 	html := adminCaseNextStageHTML(true, false)
-	for _, want := range []string{"Club reply reviewed", "published rule", "findings and sanctions", "Denver", "independent approver", "outcome emails"} {
+	for _, want := range []string{"Club reply reviewed", "published rule", "findings and sanctions", "Dave or Warren", "independently approves", "Denver gives final sign-off", "outcome emails"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("next-stage HTML missing %q: %s", want, html)
 		}
 	}
 }
+
 func TestParseAdminDecisionEffectsIgnoresValuesThatDoNotBelongToCard(t *testing.T) {
 	effects := parseAdminDecisionEffects(url.Values{
 		"effect_type":       {"red_card"},

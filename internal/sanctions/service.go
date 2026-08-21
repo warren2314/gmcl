@@ -946,7 +946,6 @@ type ApprovalOptions struct {
 	AdditionalRecipients []string
 }
 
-const decisionApprovalRecipient = "cricketdirector@gtrmcrcricket.co.uk"
 const outcomeLetterSignatoryName = "Denver Thornton"
 
 // CanSubmitDecisionForApproval keeps the owner-review checkpoint tied to the
@@ -966,9 +965,8 @@ func CanAmendProposedDecision(status string, assignedAdminID, actorID *int32, se
 	return !sentForApproval && CanSubmitDecisionForApproval(status, assignedAdminID, actorID)
 }
 
-func decisionApprovalNotification(caseID, decisionID int64) (recipient, idempotencyKey, subject, body string) {
-	return decisionApprovalRecipient,
-		fmt.Sprintf("case:%d:decision-approval-request:%d", caseID, decisionID),
+func decisionApprovalNotification(caseID, decisionID int64) (idempotencyKeyPrefix, subject, body string) {
+	return fmt.Sprintf("case:%d:decision-approval-request:%d:recipient:", caseID, decisionID),
 		"GMCL sanctions awaiting approval",
 		"A sanctions decision is awaiting your approval. Please sign in to GMCL Admin, open the Awaiting decision queue, and review the proposed sanctions before approving or rejecting them."
 }
@@ -1014,9 +1012,21 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'decision_sent_for_approval','admin',$2,$3,'Case owner reviewed all three complete audience versions and sent the decision for independent approval',jsonb_build_object('decision_revision_id',$4::bigint),$5)`, caseID, *actor.ID, actor.Label, decisionID, actor.RequestID); err != nil {
 		return err
 	}
-	recipient, idempotencyKey, subject, body := decisionApprovalNotification(caseID, decisionID)
+	idempotencyKeyPrefix, subject, body := decisionApprovalNotification(caseID, decisionID)
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_notification_outbox(case_id,decision_revision_id,message_kind,idempotency_key,recipient,subject,body)
-		VALUES($1,$2,'decision_approval_request',$3,$4,$5,$6) ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKey, recipient, subject, body); err != nil {
+		SELECT $1,$2,'decision_approval_request',$3||LOWER(BTRIM(admin.email)),LOWER(BTRIM(admin.email)),$4,$5
+		FROM admin_users admin
+		WHERE admin.is_active AND admin.id<>$6
+		  AND (COALESCE(admin.role,'admin')='super_admin' OR EXISTS(
+			SELECT 1 FROM admin_user_permissions permission
+			WHERE permission.admin_user_id=admin.id AND permission.permission='sanctions_approve'
+		  ))
+		  AND NOT EXISTS(
+			SELECT 1 FROM sanction_recipient_directory recipient
+			WHERE recipient.active AND recipient.recipient_role='play_cricket'
+			  AND LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email))
+		  )
+		ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKeyPrefix, subject, body, *actor.ID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1203,13 +1213,19 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	// Create operational tasks from approved effects.
 	var hasLeaguePoints bool
 	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type='points_adjustment' AND COALESCE(points,0)<>0)`, approvedID).Scan(&hasLeaguePoints)
-	var denverID *int32
+	var playCricketAdminID *int32
 	if hasLeaguePoints {
 		var id int32
-		if err = tx.QueryRow(ctx, `SELECT id FROM admin_users WHERE LOWER(username)='denverthornton' AND is_active ORDER BY id LIMIT 1`).Scan(&id); err != nil {
-			return errors.New("active Denver administrator account is required before approving league-points work")
+		err = tx.QueryRow(ctx, `SELECT admin.id
+			FROM sanction_recipient_directory recipient
+			JOIN admin_users admin ON LOWER(BTRIM(admin.email))=LOWER(BTRIM(recipient.email))
+			WHERE recipient.recipient_role='play_cricket' AND recipient.active AND admin.is_active
+			ORDER BY recipient.id,admin.id LIMIT 1`).Scan(&id)
+		if err == nil {
+			playCricketAdminID = &id
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
 		}
-		denverID = &id
 	}
 	if hasLeaguePoints {
 		if _, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,assigned_admin_id,due_at,current_note)
@@ -1218,7 +1234,7 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 			FROM sanction_effect_revisions e
 			LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 			LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
-			WHERE e.decision_revision_id=$2 AND e.effect_type='points_adjustment' AND COALESCE(e.points,0)<>0`, caseID, approvedID, *denverID); err != nil {
+			WHERE e.decision_revision_id=$2 AND e.effect_type='points_adjustment' AND COALESCE(e.points,0)<>0`, caseID, approvedID, playCricketAdminID); err != nil {
 			return err
 		}
 	}
@@ -2075,6 +2091,22 @@ func (s *Service) PublishCase(ctx context.Context, caseID int64, actor Actor) er
 		return ErrNotPublishable
 	}
 	if sourceType == "ineligible_player" {
+		if actor.Type != "admin" || actor.ID == nil {
+			return errors.New("Denver's final sign-off is required before issuing an ineligible-player outcome")
+		}
+		var isFinalSignOffAdmin bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM admin_users admin
+			JOIN sanction_recipient_directory recipient
+			  ON LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email))
+			WHERE admin.id=$1 AND admin.is_active
+			  AND recipient.active AND recipient.recipient_role='play_cricket'
+		)`, *actor.ID).Scan(&isFinalSignOffAdmin); err != nil {
+			return err
+		}
+		if !isFinalSignOffAdmin {
+			return errors.New("only Denver's active Play-Cricket account can give final sign-off and issue this ineligible-player outcome")
+		}
 		if err = EnsureIneligibleLinkedIntakesCurrent(ctx, tx, caseID); err != nil {
 			return err
 		}

@@ -746,7 +746,7 @@ def build_document():
             "Saving either draft does not send an email. A TEST copy goes only to your administrator address and cannot open a club response window.",
             "Send initial email to club is the deliberate live-send action.",
             "A decision requires approval by a different authorised administrator.",
-            "Outcomes are not sent until Issue approved outcomes is selected.",
+            "Outcomes are not sent until Denver selects Final sign-off and issue outcomes.",
         ],
         ordered=False,
     )
@@ -812,7 +812,7 @@ def build_document():
     add_callout(
         doc,
         "3  CASE CONTROL",
-        "Investigate and contact the club  ->  prepare a decision  ->  independent approval  ->  issue approved outcomes.",
+        "Investigate and contact the club  ->  Dave or Warren independently approves another administrator's work  ->  Denver gives final sign-off and issues the outcome.",
         kind="success",
     )
     doc.core_properties.title = "GMCL Ineligible-player Work - Quick Guide"
