@@ -280,7 +280,7 @@ func (s *Service) ReopenApprovedIneligibleCase(ctx context.Context, caseID int64
 	for _, task := range tasks {
 		var after []byte
 		if err = tx.QueryRow(ctx, `UPDATE sanction_follow_up_tasks task
-			SET status='cancelled',current_note=CONCAT_WS(E'\n',NULLIF(task.current_note,''),$2),updated_at=now()
+			SET status='cancelled',current_note=CONCAT_WS(E'\n',NULLIF(task.current_note,''),$2::text),updated_at=now()
 			WHERE task.id=$1 AND task.status='open' RETURNING to_jsonb(task)`, task.id, "Cancelled because the approved case was reopened after a source revision change: "+reason).Scan(&after); err != nil {
 			return err
 		}

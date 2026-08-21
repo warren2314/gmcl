@@ -1,8 +1,13 @@
 package httpserver
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"cricket-ground-feedback/internal/db"
 )
 
 func TestAdminCloseCaseNoActionHTML(t *testing.T) {
@@ -56,5 +61,53 @@ func TestCloseCaseNoActionErrorMessageDoesNotRequireRequestID(t *testing.T) {
 	}
 	if strings.Contains(message, "support reference") {
 		t.Fatalf("unexpected empty support reference in %q", message)
+	}
+}
+
+func TestCloseCaseFollowUpCancellationBindsNoteAsText(t *testing.T) {
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("TEST_DB_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := db.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect test database: %v", err)
+	}
+	defer pool.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var caseID int64
+	if err = tx.QueryRow(ctx, `INSERT INTO sanction_cases(source_type,status,public_summary)
+		VALUES('manual','investigating','Follow-up cancellation parameter test') RETURNING id`).Scan(&caseID); err != nil {
+		t.Fatalf("insert case: %v", err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,current_note)
+		VALUES($1,'investigation_support','Existing note')`, caseID); err != nil {
+		t.Fatalf("insert follow-up task: %v", err)
+	}
+
+	note := "Cancelled because the case was closed with no action: duplicate identity confirmed"
+	result, err := tx.Exec(ctx, cancelOpenCaseFollowUpTasksSQL, caseID, note)
+	if err != nil {
+		t.Fatalf("cancel follow-up task with bound note: %v", err)
+	}
+	if got := result.RowsAffected(); got != 1 {
+		t.Fatalf("cancelled tasks = %d, want 1", got)
+	}
+	var status, currentNote string
+	if err = tx.QueryRow(ctx, `SELECT status,current_note FROM sanction_follow_up_tasks WHERE case_id=$1`, caseID).Scan(&status, &currentNote); err != nil {
+		t.Fatalf("load cancelled task: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", status)
+	}
+	if want := "Existing note\n" + note; currentNote != want {
+		t.Fatalf("current note = %q, want %q", currentNote, want)
 	}
 }

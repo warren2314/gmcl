@@ -52,6 +52,10 @@ func (s *Server) failAdminCaseCloseNoAction(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?error=%s", caseID, url.QueryEscape(closeCaseNoActionErrorMessage(stage, rid))), http.StatusSeeOther)
 }
 
+const cancelOpenCaseFollowUpTasksSQL = `UPDATE sanction_follow_up_tasks
+	SET status='cancelled',current_note=CONCAT_WS(E'\n',NULLIF(current_note,''),$2::text),updated_at=now()
+	WHERE case_id=$1 AND status IN ('open','in_progress')`
+
 func adminCloseCaseNoActionHTML(caseID int64, csrf, status string, hasProposed bool, assignedAdminID, currentAdminID *int32) string {
 	if !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] || !sameAdminAssignment(assignedAdminID, currentAdminID) {
 		return ""
@@ -137,7 +141,7 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 			return
 		}
 		revokedMessages = result.RowsAffected()
-		result, err = tx.Exec(r.Context(), `UPDATE sanction_follow_up_tasks SET status='cancelled',current_note=CONCAT_WS(E'\n',NULLIF(current_note,''),$2),updated_at=now() WHERE case_id=$1 AND status IN ('open','in_progress')`, caseID, "Cancelled because the case was closed with no action: "+reason)
+		result, err = tx.Exec(r.Context(), cancelOpenCaseFollowUpTasksSQL, caseID, "Cancelled because the case was closed with no action: "+reason)
 		if err != nil {
 			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "cancel_follow_up_tasks", err)
 			return
