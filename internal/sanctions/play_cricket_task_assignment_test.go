@@ -48,3 +48,19 @@ func TestIneligibleFinalIssueRequiresPlayCricketSignOffAccount(t *testing.T) {
 		}
 	}
 }
+
+func TestIneligibleApprovalKeepsFinalSignOffAccountSeparate(t *testing.T) {
+	source, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalSource := string(source)
+	for _, required := range []string{
+		"the final sign-off account cannot also approve the decision",
+		"Dave or Warren must approve it first",
+	} {
+		if !strings.Contains(approvalSource, required) {
+			t.Fatalf("ineligible-player approval guard is missing %q", required)
+		}
+	}
+}

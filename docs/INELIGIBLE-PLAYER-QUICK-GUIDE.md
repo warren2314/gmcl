@@ -159,8 +159,8 @@ Open **Case owner and help** on the case page.
 
 1. Review the club response and any new evidence.
 2. Complete **Prepare decision for approval** and click **Submit decision for approval**.
-3. A different authorised administrator checks the proposal and clicks **Approve decision and lock outcomes**.
-4. Denver completes **Final sign-off and issue outcomes** after the independent approval.
+3. Dave or Warren checks the proposal and clicks **Approve decision and lock outcomes**. Either may approve a proposal they prepared because this step only locks the outcome and cannot issue it.
+4. Denver completes the separate **Final sign-off and issue outcomes** step before anything is sent.
 
 Stop and ask the casework lead for help if details conflict, **Selection is blocked**, a needs-attention warning cannot be resolved, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
 
@@ -170,7 +170,7 @@ Stop and ask the casework lead for help if details conflict, **Selection is bloc
 - Saving either email draft does not send an email.
 - **Send TEST copy to me** contacts only your administrator address and cannot open a club response window.
 - **Send initial email to club** is the deliberate live-send action.
-- A decision requires approval by a different authorised administrator.
+- Dave or Warren must approve and lock the decision; this may be the person who prepared it because Denver still provides the separate final sign-off.
 - Outcomes are not sent until Denver selects **Final sign-off and issue outcomes**.
 
 ## Board flow: controlled intake to outcome

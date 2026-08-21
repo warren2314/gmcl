@@ -848,7 +848,7 @@ def build_document():
     page_break(doc)
 
     # Step 8 decision
-    add_step_header(doc, 8, "Propose and approve the decision", "Record findings, rule and effects with independent approval", "10-20 minutes")
+    add_step_header(doc, 8, "Propose and approve the decision", "Record findings, rule and effects before Denver's separate final sign-off", "10-20 minutes")
     add_heading(doc, "The proposer records", 2)
     add_list(doc, [
         "Confirmed findings in audience-safe wording.",
@@ -862,17 +862,17 @@ def build_document():
         ("Rule", "Rule 3.5 - Starred players"),
         ("Effect", "Warning (dummy example)"),
         ("Proposed by", "A. Investigator"),
-        ("Required next action", "Independent approval by another authorised staff member"),
+        ("Required next action", "Approval and locking by Dave or Warren"),
     ])
     add_heading(doc, "The approver checks", 2)
     add_list(doc, [
-        "The proposer and approver are different people.",
+        "Dave or Warren may approve a proposal they prepared because this step cannot issue it.",
         "The latest intake revision has been reviewed.",
         "The findings match the evidence and response.",
         "Each effect applies to the correct player, team or match.",
         "All recipient groups and email/PDF previews are correct and privacy-safe.",
     ])
-    add_callout(doc, "Technical term", "Independent approval is sometimes called separation of duties. It means the person who proposes the outcome cannot approve their own work.", kind="plain")
+    add_callout(doc, "Separate final sign-off", "Approval locks the exact outcome but does not send it. Denver must complete the separate final sign-off before the outcome is issued.", kind="plain")
     page_break(doc)
 
     # Step 9 outcomes
@@ -904,7 +904,7 @@ def build_document():
         "Offending club: Riverside CC | Reporting club: Northbridge CC",
         "Findings, rule determination, decision, sanctions and appeal instructions follow in the approved record.",
     ], warning="Play-Cricket recipients are added for league-table points; finance recipients are added for fines.")
-    add_callout(doc, "No action", "A no-action decision uses the same independent approval and audience previews. It closes without appearing on the public register.", kind="success")
+    add_callout(doc, "No action", "A no-action decision uses the same approval, Denver final sign-off and audience previews. It closes without appearing on the public register.", kind="success")
     page_break(doc)
 
     # Completion and corrections
@@ -921,7 +921,7 @@ def build_document():
     add_list(doc, [
         "Read the newer intake revision and enter a clear reopening reason.",
         "The old approved record stays visible; the system adds a correction record instead of deleting history.",
-        "Merge the new revision, investigate again, propose a new decision and obtain independent approval again.",
+        "Merge the new revision, investigate again, propose a new decision, approve it and obtain Denver's final sign-off again.",
     ], ordered=True)
     add_callout(doc, "Why history is kept", "A reliable case record shows what was known and decided at each point in time. Keeping history protects clubs, staff and the league.", kind="plain")
     page_break(doc)
@@ -938,7 +938,7 @@ def build_document():
         ("Source history", "Provenance", "Where information came from, when it was collected and which version was used."),
         ("Personal details removed", "Redacted", "A safe copy with private information removed before sharing."),
         ("Waiting to send", "Outbox", "An approved email held for the delivery service."),
-        ("Different person approves", "Separation of duties", "The proposer cannot approve their own decision."),
+        ("Denver signs off separately", "Separation of duties", "The approver locks the outcome; Denver independently gives final sign-off and issues it."),
         ("Stop safely when uncertain", "Fail closed", "The system pauses and asks a person to resolve the problem instead of guessing."),
     ]
     add_data_table(doc, ["Use on screen", "Technical term", "Meaning"], glossary, [2600, 2100, 4660], first_col_bold=True, font_size=8.8)
@@ -952,7 +952,7 @@ def build_document():
         ("The scorecard cannot be found", "Check the Play-Cricket team ID and fixture date. The system will not choose between multiple matches."),
         ("I cannot send the first email", "Read the disabled-button message. Record the alleged rule, save both email drafts, verify the official mailbox and confirm outbound email is enabled."),
         ("I cannot propose a decision", "Close or expire the response window and merge the newest linked intake revision."),
-        ("I cannot approve", "The approver must be authorised and must not be the proposer."),
+        ("I cannot approve", "The account must be authorised for sanctions approval. Dave or Warren may approve a proposal they prepared; Denver issues it separately."),
         ("I cannot publish", "Check privacy warnings, recipient mailboxes and approved email/PDF snapshots."),
         ("An imported report is missing", "Clear date/search filters, then open Report history. Case-raised, duplicate and ignored reports are not offered in the chooser."),
         ("A verified Excel row is missing", "Open Show verified history; verified rows are hidden from the working list by design."),

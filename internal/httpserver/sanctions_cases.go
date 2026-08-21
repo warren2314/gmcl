@@ -1423,7 +1423,7 @@ func adminCaseResponseHTML(caseID int64, csrf string, response adminCaseResponse
 	return fmt.Sprintf(`<section class="card mb-4 %s" id="club-response"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><strong>Club reply received</strong>%s</div><div class="card-body"><dl class="row small mb-3"><dt class="col-sm-3">From</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Via</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Received</dt><dd class="col-sm-9">%s</dd></dl><div class="alert alert-light border mb-0"><div class="fw-semibold mb-2">Their response</div><div style="white-space:pre-wrap">%s</div></div>%s</div></section>`, border, badge, escapeHTML(source), escapeHTML(channel), escapeHTML(response.ReceivedAt.In(loc).Format("02 Jan 2006 15:04")), escapeHTML(response.Body), action)
 }
 
-func adminCaseNextStageHTML(hasResponse, unreviewed bool) string {
+func adminCaseNextStageHTML(hasResponse, unreviewed bool, sourceType string) string {
 	if !hasResponse {
 		return ""
 	}
@@ -1431,7 +1431,18 @@ func adminCaseNextStageHTML(hasResponse, unreviewed bool) string {
 	if unreviewed {
 		responseStep = `<li><strong>Read the club reply and mark it reviewed.</strong></li>`
 	}
-	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li><li>A different authorised administrator, such as Dave or Warren, independently approves or rejects it.</li><li>Denver gives final sign-off and issues the locked outcome emails and letters.</li></ol></div></section>`
+	approvalSteps := `<li>A different authorised administrator independently approves or rejects it.</li><li>An authorised publisher issues the locked outcome.</li>`
+	if sourceType == "ineligible_player" {
+		approvalSteps = `<li>An authorised administrator, such as Dave or Warren, approves or rejects it. They may approve a proposal they prepared because they still cannot issue it.</li><li>Denver gives the separate final sign-off and issues the locked outcome emails and letters.</li>`
+	}
+	return `<section class="card mb-4 border-primary" id="next-stage"><div class="card-header"><strong>Next stage: review, decide and issue</strong></div><div class="card-body"><ol class="mb-0">` + responseStep + `<li>Confirm or revise the published rule being applied.</li><li>Set out the findings and sanctions, then submit the complete decision.</li>` + approvalSteps + `</ol></div></section>`
+}
+
+func adminCaseApprovalFormHTML(caseID int64, csrf, sourceType string) string {
+	if sourceType == "ineligible_player" {
+		return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Decision approval</div><div class="card-body"><p>Review the email versions above. Dave or Warren can approve and lock them even if they prepared the proposal. This does not send anything: Denver must separately give final sign-off and issue the outcomes.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, caseID, escapeHTML(csrf))
+	}
+	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>Review the email versions above. One approval action saves and locks the exact emails and PDFs; it does not send them until the separate issue step.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text mb-3">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, caseID, escapeHTML(csrf))
 }
 
 func (s *Server) isActiveSanctionRecipientAdmin(ctx context.Context, adminID int32, recipientRole string) bool {
@@ -1503,7 +1514,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, adminCaseFailureHTML(failure, blockingCaseID))
 		}
 		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc))
-		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed))
+		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed, source))
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
 		canRequestResponse := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 		s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf, source)
@@ -1611,8 +1622,11 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		}
 		if status == "decision_proposed" && (!ownerReviewRequired || sentForApproval) {
 			actor := adminActor(r)
-			if actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") {
-				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>Review the email versions above. One approval action saves and locks the exact emails and PDFs; it does not send them until the separate issue step.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text mb-3">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, id, csrf)
+			isFinalSignOffAdmin := source == "ineligible_player" && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
+			if actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") && !isFinalSignOffAdmin {
+				fmt.Fprint(w, adminCaseApprovalFormHTML(id, csrf, source))
+			} else if isFinalSignOffAdmin {
+				fmt.Fprint(w, `<div class="alert alert-info"><strong>Awaiting decision approval from Dave or Warren.</strong> Denver's account provides the separate final sign-off after the decision and exact emails have been approved and locked.</div>`)
 			} else {
 				fmt.Fprint(w, `<div class="alert alert-warning"><strong>Awaiting an authorised independent approver.</strong> You can review the decision and exact email formatting above, but your account does not currently have sanctions approval access.</div>`)
 			}

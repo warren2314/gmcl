@@ -965,6 +965,19 @@ func CanAmendProposedDecision(status string, assignedAdminID, actorID *int32, se
 	return !sentForApproval && CanSubmitDecisionForApproval(status, assignedAdminID, actorID)
 }
 
+// violatesDecisionApprovalSeparation keeps ordinary sanctions subject to a
+// different-person approval. Ineligible-player cases have an additional,
+// mandatory final sign-off by the configured Play-Cricket administrator, so
+// Dave or Warren may approve and lock a proposal they prepared without being
+// able to issue it themselves.
+func violatesDecisionApprovalSeparation(sourceType string, proposerID, approverID *int32, emergency bool) bool {
+	return sourceType != "ineligible_player" &&
+		!emergency &&
+		proposerID != nil &&
+		approverID != nil &&
+		*proposerID == *approverID
+}
+
 func decisionApprovalNotification(caseID, decisionID int64) (idempotencyKeyPrefix, subject, body string) {
 	return fmt.Sprintf("case:%d:decision-approval-request:%d:recipient:", caseID, decisionID),
 		"GMCL sanctions awaiting approval",
@@ -1143,7 +1156,22 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 			return errors.New("deterministic automatic approval is not enabled")
 		}
 	}
-	if proposer != nil && approver.ID != nil && *proposer == *approver.ID && (sourceType == "ineligible_player" || !emergency) {
+	if sourceType == "ineligible_player" && approver.ID != nil {
+		var isFinalSignOffAdmin bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM admin_users admin
+			JOIN sanction_recipient_directory recipient
+			  ON LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email))
+			WHERE admin.id=$1 AND admin.is_active
+			  AND recipient.active AND recipient.recipient_role='play_cricket'
+		)`, *approver.ID).Scan(&isFinalSignOffAdmin); err != nil {
+			return err
+		}
+		if isFinalSignOffAdmin {
+			return errors.New("the final sign-off account cannot also approve the decision; Dave or Warren must approve it first")
+		}
+	}
+	if violatesDecisionApprovalSeparation(sourceType, proposer, approver.ID, emergency) {
 		return ErrSeparationOfDuties
 	}
 	if status != "decision_proposed" && status != "triage" {

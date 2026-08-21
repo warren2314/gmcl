@@ -61,3 +61,20 @@ func TestOutcomeLetterSignatoryIsDenver(t *testing.T) {
 		t.Fatalf("outcome letter signatory = %q, want Denver Thornton", outcomeLetterSignatoryName)
 	}
 }
+
+func TestIneligibleDecisionApproverMayHavePreparedProposal(t *testing.T) {
+	adminID := int32(17)
+	if violatesDecisionApprovalSeparation("ineligible_player", &adminID, &adminID, false) {
+		t.Fatal("ineligible-player proposal was blocked even though Denver still provides mandatory final sign-off")
+	}
+}
+
+func TestOrdinaryDecisionStillRequiresDifferentApprover(t *testing.T) {
+	adminID := int32(17)
+	if !violatesDecisionApprovalSeparation("manual", &adminID, &adminID, false) {
+		t.Fatal("ordinary sanction allowed its proposer to approve without an emergency override")
+	}
+	if violatesDecisionApprovalSeparation("manual", &adminID, &adminID, true) {
+		t.Fatal("ordinary sanction rejected an explicitly authorised emergency override")
+	}
+}

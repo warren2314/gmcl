@@ -137,11 +137,48 @@ func TestAdminCaseResponseHTMLHidesReviewActionAfterReview(t *testing.T) {
 }
 
 func TestAdminCaseNextStageShowsIndependentApprovalSequence(t *testing.T) {
-	html := adminCaseNextStageHTML(true, false)
-	for _, want := range []string{"Club reply reviewed", "published rule", "findings and sanctions", "Dave or Warren", "independently approves", "Denver gives final sign-off", "outcome emails"} {
+	html := adminCaseNextStageHTML(true, false, "ineligible_player")
+	for _, want := range []string{"Club reply reviewed", "published rule", "findings and sanctions", "Dave or Warren", "may approve a proposal they prepared", "Denver gives the separate final sign-off", "outcome emails"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("next-stage HTML missing %q: %s", want, html)
 		}
+	}
+}
+
+func TestOrdinaryCaseNextStageKeepsDifferentApprover(t *testing.T) {
+	html := adminCaseNextStageHTML(true, false, "manual")
+	for _, want := range []string{"different authorised administrator", "independently approves", "authorised publisher"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("ordinary next-stage HTML missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "may approve a proposal they prepared") {
+		t.Fatalf("ordinary next-stage HTML incorrectly permits self-approval: %s", html)
+	}
+}
+
+func TestIneligibleApprovalFormExplainsTwoStageAuthority(t *testing.T) {
+	html := adminCaseApprovalFormHTML(175, `token"value`, "ineligible_player")
+	for _, want := range []string{
+		`action="/admin/cases/175/approve"`,
+		`value="token&quot;value"`,
+		"Dave or Warren",
+		"even if they prepared the proposal",
+		"Denver must separately give final sign-off",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("ineligible approval form missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "Emergency override") {
+		t.Fatalf("ineligible approval form still asks for a redundant emergency override: %s", html)
+	}
+}
+
+func TestOrdinaryApprovalFormKeepsSeparationOverride(t *testing.T) {
+	html := adminCaseApprovalFormHTML(42, "csrf", "manual")
+	if !strings.Contains(html, "Independent approval") || !strings.Contains(html, "Emergency override reason") {
+		t.Fatalf("ordinary approval form lost its separation-of-duties controls: %s", html)
 	}
 }
 

@@ -63,9 +63,12 @@ is removed and its handler returns HTTP 410.
 ## Approval and automation
 
 Ordinary admins need explicit `sanctions_*` permissions. Super-admins grant
-these from the Admin Users page. The proposer and approver must differ. A
-same-user emergency approval is restricted to a super-admin, requires a reason,
-and is flagged in the immutable timeline.
+these from the Admin Users page. For ordinary sanctions, the proposer and
+approver must differ. A same-user emergency approval is restricted to a
+super-admin, requires a reason, and is flagged in the immutable timeline.
+Ineligible-player cases instead permit Dave or Warren to approve a proposal
+they prepared because Denver's separate final sign-off is mandatory before the
+locked outcome can be issued.
 
 The scheduled captain-report source behaves as follows:
 

@@ -280,9 +280,10 @@ Decision composition remains editable through the proposed subject, findings,
 rule determination, atomic effect bundle and appeal instructions. From those
 fields the service renders deterministic audience-safe email and PDF drafts;
 the rendered wording itself is read-only so it cannot contradict the decision
-or acquire private case text. A different authorised administrator, such as
-Dave or Warren, approves and locks the exact email/PDF bytes and checksums.
-Denver then gives the separate final sign-off that issues those locked outcomes.
+or acquire private case text. An authorised administrator, such as Dave or
+Warren, approves and locks the exact email/PDF bytes and checksums. That person
+may also have prepared the proposal because they cannot issue it. Denver then
+gives the mandatory separate final sign-off that issues those locked outcomes.
 
 Outcome delivery is deliberately separate by audience:
 
@@ -298,7 +299,7 @@ Outcome delivery is deliberately separate by audience:
 - Executive and discipline recipients always receive the official outcome,
   with Play-Cricket added for league-table points and finance for fines.
 
-No-action decisions use the same independent approval and notifications, then
+No-action decisions use the same approval and notifications, then
 close unpublished after Denver's final issue step. Only a separate
 `points_adjustment` effect creates a two-day reminder for Denver to apply that
 approved league-table change in Play-Cricket; it is not another approval.
@@ -308,9 +309,10 @@ reuse its decision or PDF. Before any outcome may have been delivered and
 before follow-up work starts, an authorised administrator can use the audited
 reopen command. It preserves the old approved snapshots, appends compensating
 effect/card records, cancels untouched tasks, revokes unsent outbox items and
-requires the new source revision to be merged before a fresh proposal and
-independent approval. Delivery uncertainty, publication or started external
-work blocks this shortcut and requires the normal correction process.
+requires the new source revision to be merged before a fresh proposal,
+approval and Denver final sign-off. Delivery uncertainty, publication or
+started external work blocks this shortcut and requires the normal correction
+process.
 
 ## 2026 tracker backfill
 
