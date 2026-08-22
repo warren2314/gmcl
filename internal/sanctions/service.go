@@ -2317,6 +2317,9 @@ func (s *Service) RejectProposedCase(ctx context.Context, caseID int64, actor Ac
 		return err
 	}
 	emergency := isSelfSignedIneligibleDecision(sourceType, proposedBy, actor.ID)
+	if violatesDecisionApprovalSeparation(sourceType, proposedBy, actor.ID, emergency) {
+		return ErrSeparationOfDuties
+	}
 	var rejectedID int64
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,emergency_override,correction_reason,outcome_subject,outcome_findings,appeal_instructions)
 		SELECT case_id,$2,id,'rejected',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,$5,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`,
@@ -2361,6 +2364,9 @@ func (s *Service) OverturnCase(ctx context.Context, caseID int64, actor Actor, r
 		return err
 	}
 	emergency := isSelfSignedIneligibleDecision(sourceType, proposedBy, actor.ID)
+	if violatesDecisionApprovalSeparation(sourceType, proposedBy, actor.ID, emergency) {
+		return ErrSeparationOfDuties
+	}
 	var overturnedID int64
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,emergency_override,correction_reason,outcome_subject,outcome_findings,appeal_instructions)
 		SELECT case_id,$2,id,'overturned',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,$5,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, priorID, priorRevision+1, *actor.ID, emergency, reason).Scan(&overturnedID); err != nil {
