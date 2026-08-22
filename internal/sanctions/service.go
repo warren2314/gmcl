@@ -1797,6 +1797,9 @@ func appendUniqueOutcomeRecipient(recipients []string, seen map[string]bool, val
 	if err != nil {
 		return recipients, err
 	}
+	if canonical == joepIneligibleOutcomeRecipient {
+		return recipients, nil
+	}
 	if !seen[canonical] {
 		seen[canonical] = true
 		recipients = append(recipients, canonical)
@@ -2276,7 +2279,7 @@ func (s *Service) publishCaseLegacy(ctx context.Context, caseID int64, actor Act
 		WITH recipients AS (
 		  SELECT cap.email FROM sanction_cases c JOIN captains cap ON cap.team_id=c.team_id AND cap.active_from<=CURRENT_DATE AND (cap.active_to IS NULL OR cap.active_to>=CURRENT_DATE) WHERE c.id=$1
 		  UNION
-		  SELECT rd.email FROM sanction_recipient_directory rd WHERE rd.active AND (
+		  SELECT rd.email FROM sanction_recipient_directory rd WHERE rd.active AND lower(rd.email) <> lower($3) AND (
 		    rd.recipient_role IN ('executive','discipline')
 		    OR (rd.recipient_role='finance' AND EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND effect_type='fine'))
 		    OR (rd.recipient_role='play_cricket' AND EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND COALESCE(points,0)<>0))
@@ -2286,7 +2289,7 @@ func (s *Service) publishCaseLegacy(ctx context.Context, caseID int64, actor Act
 		       'GMCL sanction decision '||c.reference,
 		       c.public_summary||E'\n\nCase reference: '||c.reference
 		FROM sanction_cases c CROSS JOIN recipients r CROSS JOIN policy
-		WHERE c.id=$1 ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID)
+		WHERE c.id=$1 ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, joepIneligibleOutcomeRecipient)
 	if err != nil {
 		return err
 	}

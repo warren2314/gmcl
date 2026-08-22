@@ -26,15 +26,21 @@ func TestIneligibleOutcomeDoesNotEmailJoepRoutes(t *testing.T) {
 	if !shouldCopyPlayCricketHelpOnOffendingOutcome("manual") {
 		t.Fatal("unrelated sanction outcome unexpectedly lost the configured copy")
 	}
-	for _, recipient := range []string{joepIneligibleOutcomeRecipient, PlayCricketHelpCopyRecipient} {
+	for _, recipient := range []string{joepIneligibleOutcomeRecipient} {
 		if shouldIncludeReporterOutcomeRecipient("ineligible_player", recipient) {
 			t.Fatalf("ineligible-player reporting outcome still includes %s", recipient)
 		}
-		if !shouldIncludeReporterOutcomeRecipient("manual", recipient) {
-			t.Fatalf("unrelated sanction outcome unexpectedly excludes %s", recipient)
+		if shouldIncludeReporterOutcomeRecipient("manual", recipient) {
+			t.Fatalf("manual reporting outcome unexpectedly includes %s", recipient)
 		}
 	}
-	if !shouldIncludeReporterOutcomeRecipient("ineligible_player", "club-reporter@example.test") {
-		t.Fatal("unrelated ineligible-player reporter was excluded")
+	if !shouldIncludeReporterOutcomeRecipient("manual", PlayCricketHelpCopyRecipient) {
+		t.Fatal("unrelated sanction outcome unexpectedly excludes Play-Cricket copy")
+	}
+	if shouldIncludeReporterOutcomeRecipient("ineligible_player", PlayCricketHelpCopyRecipient) {
+		t.Fatal("ineligible-player reporting outcome unexpectedly includes Play-Cricket copy")
+	}
+	if !shouldIncludeReporterOutcomeRecipient("manual", "club-reporter@example.test") {
+		t.Fatal("unrelated manual reporter was excluded")
 	}
 }
