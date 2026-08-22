@@ -146,14 +146,17 @@ func (s *Service) ReopenApprovedIneligibleCase(ctx context.Context, caseID int64
 
 	var approvedDecisionID int64
 	var approvedRevision int
+	var proposedBy *int32
+	var approvedBy *int32
 	var latestDecisionStatus string
-	if err = tx.QueryRow(ctx, `SELECT id,revision,status FROM sanction_decision_revisions WHERE case_id=$1 ORDER BY revision DESC,id DESC LIMIT 1 FOR UPDATE`, caseID).
-		Scan(&approvedDecisionID, &approvedRevision, &latestDecisionStatus); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT id,revision,status,proposed_by_admin_id,approved_by_admin_id FROM sanction_decision_revisions WHERE case_id=$1 ORDER BY revision DESC,id DESC LIMIT 1 FOR UPDATE`, caseID).
+		Scan(&approvedDecisionID, &approvedRevision, &latestDecisionStatus, &proposedBy, &approvedBy); err != nil {
 		return err
 	}
 	if latestDecisionStatus != "approved" {
 		return ErrIneligibleReopenNotAllowed
 	}
+	emergency := isSelfSignedIneligibleDecision(sourceType, proposedBy, approvedBy)
 
 	rows, err := tx.Query(ctx, `SELECT outbox.id,outbox.processed_at,outbox.revoked_at,
 		EXISTS(SELECT 1 FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=outbox.id AND attempt.status IN ('sending','sent','bounced','complained'))
@@ -246,15 +249,16 @@ func (s *Service) ReopenApprovedIneligibleCase(ctx context.Context, caseID int64
 	legacyRows.Close()
 
 	var correctionDecisionID int64
+		
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(
 		case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,
 		policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,emergency_override,
 		outcome_subject,outcome_findings,appeal_instructions
 	)
 	SELECT case_id,$2,id,'corrected',public_reason,private_reason,rule_release_id,rule_reference,
-		policy_version_id,proposed_by_admin_id,approved_by_admin_id,$3,FALSE,
+		policy_version_id,proposed_by_admin_id,approved_by_admin_id,$3,$4,
 		outcome_subject,outcome_findings,appeal_instructions
-	FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, approvedDecisionID, approvedRevision+1, reason).
+	FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, approvedDecisionID, approvedRevision+1, reason, emergency).
 		Scan(&correctionDecisionID); err != nil {
 		return err
 	}

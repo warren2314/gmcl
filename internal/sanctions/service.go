@@ -978,6 +978,13 @@ func violatesDecisionApprovalSeparation(sourceType string, proposerID, approverI
 		*proposerID == *approverID
 }
 
+func isSelfSignedIneligibleDecision(sourceType string, proposerID, approverID *int32) bool {
+	return sourceType == "ineligible_player" &&
+		proposerID != nil &&
+		approverID != nil &&
+		*proposerID == *approverID
+}
+
 func decisionApprovalNotification(caseID, decisionID int64) (idempotencyKeyPrefix, subject, body string) {
 	return fmt.Sprintf("case:%d:decision-approval-request:%d:recipient:", caseID, decisionID),
 		"GMCL sanctions awaiting approval",
@@ -1199,6 +1206,9 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	}
 	if ownerReviewPending {
 		return errors.New("the case owner must review all three complete email versions and send the decision for approval first")
+	}
+	if isSelfSignedIneligibleDecision(sourceType, proposer, approver.ID) {
+		emergency = true
 	}
 	var approvedID int64
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,emergency_override,outcome_subject,outcome_findings,appeal_instructions)
@@ -2293,7 +2303,8 @@ func (s *Service) RejectProposedCase(ctx context.Context, caseID int64, actor Ac
 	}
 	defer tx.Rollback(ctx)
 	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status); err != nil {
+	var sourceType string
+	if err = tx.QueryRow(ctx, `SELECT status,source_type FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &sourceType); err != nil {
 		return err
 	}
 	if status != "decision_proposed" && status != "triage" {
@@ -2301,11 +2312,15 @@ func (s *Service) RejectProposedCase(ctx context.Context, caseID int64, actor Ac
 	}
 	var priorID int64
 	var revision int
-	if err = tx.QueryRow(ctx, `SELECT id,revision FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC LIMIT 1`, caseID).Scan(&priorID, &revision); err != nil {
+	var proposedBy *int32
+	if err = tx.QueryRow(ctx, `SELECT id,revision,proposed_by_admin_id FROM sanction_decision_revisions WHERE case_id=$1 AND status='proposed' ORDER BY revision DESC LIMIT 1`, caseID).Scan(&priorID, &revision, &proposedBy); err != nil {
 		return err
 	}
+	emergency := isSelfSignedIneligibleDecision(sourceType, proposedBy, actor.ID)
 	var rejectedID int64
-	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,outcome_subject,outcome_findings,appeal_instructions) SELECT case_id,$2,id,'rejected',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, priorID, revision+1, *actor.ID, reason).Scan(&rejectedID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,emergency_override,correction_reason,outcome_subject,outcome_findings,appeal_instructions)
+		SELECT case_id,$2,id,'rejected',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,$5,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`,
+		priorID, revision+1, *actor.ID, emergency, reason).Scan(&rejectedID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id) SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id FROM sanction_effect_revisions WHERE decision_revision_id=$1`, priorID, rejectedID); err != nil {
@@ -2332,7 +2347,8 @@ func (s *Service) OverturnCase(ctx context.Context, caseID int64, actor Actor, r
 	}
 	defer tx.Rollback(ctx)
 	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status); err != nil {
+	var sourceType string
+	if err = tx.QueryRow(ctx, `SELECT status,source_type FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &sourceType); err != nil {
 		return err
 	}
 	if status != "approved" && status != "published" && status != "appealed" && status != "closed" {
@@ -2340,12 +2356,14 @@ func (s *Service) OverturnCase(ctx context.Context, caseID int64, actor Actor, r
 	}
 	var priorID int64
 	var priorRevision int
-	if err = tx.QueryRow(ctx, `SELECT id,revision FROM sanction_decision_revisions WHERE case_id=$1 AND status='approved' ORDER BY revision DESC LIMIT 1`, caseID).Scan(&priorID, &priorRevision); err != nil {
+	var proposedBy *int32
+	if err = tx.QueryRow(ctx, `SELECT id,revision,proposed_by_admin_id FROM sanction_decision_revisions WHERE case_id=$1 AND status='approved' ORDER BY revision DESC LIMIT 1`, caseID).Scan(&priorID, &priorRevision, &proposedBy); err != nil {
 		return err
 	}
+	emergency := isSelfSignedIneligibleDecision(sourceType, proposedBy, actor.ID)
 	var overturnedID int64
-	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,outcome_subject,outcome_findings,appeal_instructions)
-		SELECT case_id,$2,id,'overturned',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, priorID, priorRevision+1, *actor.ID, reason).Scan(&overturnedID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,approved_by_admin_id,emergency_override,correction_reason,outcome_subject,outcome_findings,appeal_instructions)
+		SELECT case_id,$2,id,'overturned',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,$5,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, priorID, priorRevision+1, *actor.ID, emergency, reason).Scan(&overturnedID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id)
