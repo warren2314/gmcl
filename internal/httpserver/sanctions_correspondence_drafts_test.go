@@ -28,7 +28,7 @@ func TestResponseRequestDraftRequiresCurrentAllegationLinkAndSevenDayWindow(t *t
 	for name, invalid := range map[string]string{
 		"missing link":         strings.ReplaceAll(body, responseLinkPlaceholder, "https://example.invalid"),
 		"missing window":       strings.ReplaceAll(body, "seven days", "the stated period"),
-		"stale allegation":     strings.ReplaceAll(body, allegation, allegation+" Previous wording."),
+		"changed allegation":   strings.ReplaceAll(body, "active registration restriction", "expired registration restriction"),
 		"duplicate allegation": strings.Replace(body, allegation, allegation+"\n\n"+allegation, 1),
 		"missing alleged rule": strings.ReplaceAll(body, rule+"\n\n", ""),
 	} {
@@ -37,6 +37,19 @@ func TestResponseRequestDraftRequiresCurrentAllegationLinkAndSevenDayWindow(t *t
 				t.Fatal("invalid response request was accepted")
 			}
 		})
+	}
+}
+
+func TestResponseRequestAllowsSeveralOffenceDatesAroundRecordedAllegation(t *testing.T) {
+	allegation := "A List A player appeared for Micklehurst Second XI on 2 August 2026."
+	rule := "Alleged rule under investigation: Rule 3.5 - Player eligibility"
+	body := "Dear Club Secretary,\n\nWhat we are asking about:\n\n" + allegation +
+		" The same player also appeared for the Second XI on 9 August 2026 and 16 August 2026.\n\n" +
+		rule + "\n\nPlease respond using this secure link:\n" + responseLinkPlaceholder +
+		"\n\nPlease reply within seven days. No decision has been made."
+
+	if err := validateResponseDraftContent("response_request", body, allegation, rule); err != nil {
+		t.Fatalf("request covering three offence dates was rejected: %v", err)
 	}
 }
 

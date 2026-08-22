@@ -350,7 +350,7 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 			stepTitle = "2. Review and save the reminder"
 			buttonText = "Save reminder"
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required>%s</textarea><div class="form-text">Keep exactly one %s placeholder. Saving this wording does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-primary">%s</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), stepTitle, badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, buttonText, preview)
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required>%s</textarea><div class="form-text">Keep exactly one %s placeholder. You may add other fixture dates and occurrence details around the recorded allegation. Saving this wording does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-primary">%s</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), stepTitle, badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, buttonText, preview)
 		if kind == "response_request" && view.exists && !sanctionsEmailDisabled() && (sourceType != "ineligible_player" || ineligibleOutboundEmailEnabled()) {
 			actor := adminActor(r)
 			adminEmail := ""
@@ -415,8 +415,8 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 		if responseSummaryIsPlaceholder(currentPublicAllegation) {
 			return fmt.Errorf("replace the placeholder with reviewed, reporter-safe allegation facts before saving a response request")
 		}
-		if !containsExactResponseDraftParagraph(body, currentPublicAllegation) {
-			return fmt.Errorf("the response request must contain the current public allegation exactly as a standalone paragraph")
+		if !containsCurrentResponseDraftAllegation(body, currentPublicAllegation) {
+			return fmt.Errorf("the response request must contain the current public allegation once; extra fixture dates and occurrence details may be added around it")
 		}
 		if strings.TrimSpace(allegedRuleParagraph) != "" && !containsExactResponseDraftParagraph(body, allegedRuleParagraph) {
 			return fmt.Errorf("the response request must contain the current alleged rule exactly as a standalone paragraph")
@@ -435,6 +435,21 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 		return fmt.Errorf("invalid response draft kind")
 	}
 	return nil
+}
+
+// containsCurrentResponseDraftAllegation keeps the reviewed public allegation
+// in the email while allowing an investigator to add related occurrences (for
+// example, two more fixture dates) to the same paragraph. Whitespace entered by
+// the browser is immaterial, but the allegation's words must remain unchanged
+// and must occur exactly once so a corrected case summary invalidates old
+// drafts.
+func containsCurrentResponseDraftAllegation(body, allegation string) bool {
+	normalizedBody := strings.Join(strings.Fields(body), " ")
+	normalizedAllegation := strings.Join(strings.Fields(allegation), " ")
+	if normalizedAllegation == "" {
+		return false
+	}
+	return strings.Count(normalizedBody, normalizedAllegation) == 1
 }
 
 func containsExactResponseDraftParagraph(body, allegation string) bool {
