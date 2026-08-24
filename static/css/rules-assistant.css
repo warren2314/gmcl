@@ -39,3 +39,21 @@
 @media(prefers-reduced-motion:no-preference){.rules-widget-panel{animation:rules-widget-in .2s ease-out}.rules-widget-online{animation:rules-online 2.4s ease-out infinite}@keyframes rules-widget-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}@keyframes rules-online{50%{box-shadow:0 0 0 7px rgba(70,211,146,0)}}}
 @media(max-width:600px){.rules-widget{right:12px;bottom:12px}.rules-widget-launcher{min-width:72px;width:72px;padding:6px}.rules-widget-launch-copy{display:none}.rules-widget-panel{position:fixed;inset:8px;width:auto;height:auto;max-height:none;border-radius:20px;transform-origin:bottom center}.rules-widget.is-open .rules-widget-launcher{visibility:hidden}.rules-widget-footer span{display:none}}
 @media(prefers-contrast:more){.rules-widget-panel,.rules-widget-form,.rules-widget-prompts button{border-width:2px}.rules-widget-launcher{border:2px solid #fff}.rules-widget-messages .rules-message.assistant{border-color:#142c4f}}
+
+/* The widget floats over the page, so it can cover a control in the corner it
+   sits in - the bulk close button, for example. It can be dragged anywhere,
+   and the page keeps room underneath its resting position. */
+body.has-rules-widget{padding-bottom:104px}
+.rules-widget.is-placed{right:auto;bottom:auto}
+.rules-widget.is-dragging{user-select:none}
+.rules-widget.is-dragging .rules-widget-launcher{transition:none;transform:none}
+.rules-widget-launcher{touch-action:none;cursor:grab}
+.rules-widget.is-dragging .rules-widget-launcher,.rules-widget.is-dragging .rules-widget-header{cursor:grabbing}
+.rules-widget-header{touch-action:none;cursor:grab}
+.rules-widget-close{cursor:pointer}
+@media(min-width:601px){
+.rules-widget.is-panel-top .rules-widget-panel{top:84px;bottom:auto;transform-origin:top right}
+.rules-widget.is-panel-left .rules-widget-panel{left:0;right:auto;transform-origin:bottom left}
+.rules-widget.is-panel-top.is-panel-left .rules-widget-panel{transform-origin:top left}
+}
+@media(max-width:600px){body.has-rules-widget{padding-bottom:88px}}

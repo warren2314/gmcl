@@ -174,7 +174,7 @@
   const widget = createElement('div', 'rules-widget');
   widget.innerHTML = `
     <section class="rules-widget-panel" id="rules-widget-panel" aria-label="Hawk AI Rules Assistant" hidden>
-      <header class="rules-widget-header">
+      <header class="rules-widget-header" title="Drag to move Hawk AI">
         <img src="/images/hawk-ai-mascot.webp" alt="" class="rules-widget-avatar" width="48" height="48">
         <div class="rules-widget-heading">
           <strong>Hawk AI</strong>
@@ -207,16 +207,18 @@
       </form>
       <footer class="rules-widget-footer"><a href="${config.fullURL || '/rules-assistant'}">${config.admin ? 'Assistant controls and history' : 'Open full assistant'}</a><span>Informational, not an official ruling</span></footer>
     </section>
-    <button type="button" class="rules-widget-launcher" aria-expanded="false" aria-controls="rules-widget-panel">
+    <button type="button" class="rules-widget-launcher" aria-expanded="false" aria-controls="rules-widget-panel" title="Drag to move Hawk AI">
       <span class="rules-widget-launch-copy"><strong>Ask Hawk AI about GMCL rules</strong><small>Open Hawk AI</small></span>
       <span class="rules-widget-bot-wrap"><span class="rules-widget-online" aria-hidden="true"></span><img src="/images/hawk-ai-mascot.webp" alt="" width="68" height="68"></span>
-      <span class="visually-hidden">Open Hawk AI</span>
+      <span class="visually-hidden">Open Hawk AI. Drag it to move it out of the way, or hold Alt and press the arrow keys. Alt and 0 puts it back in the corner.</span>
     </button>`;
   document.body.appendChild(widget);
+  document.body.classList.add('has-rules-widget');
 
   const launcher = widget.querySelector('.rules-widget-launcher');
   const panel = widget.querySelector('.rules-widget-panel');
   const close = widget.querySelector('.rules-widget-close');
+  const header = widget.querySelector('.rules-widget-header');
   const form = widget.querySelector('.rules-widget-form');
   const input = widget.querySelector('textarea');
   const messages = widget.querySelector('.rules-widget-messages');
@@ -231,7 +233,144 @@
     if (open) setTimeout(() => input.focus(), 80);
     else launcher.focus();
   };
-  launcher.addEventListener('click', () => setOpen(launcher.getAttribute('aria-expanded') !== 'true'));
+  // The widget is fixed to a corner, so it can sit on top of whatever is in
+  // that corner - the bulk close button, for example. Let people drag it
+  // anywhere and remember where they put it.
+  const positionKey = 'gmcl.hawk-ai.position';
+  const edgeMargin = 8;
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+  // The launcher lifts 2px on hover, so its rendered rect is not its layout
+  // position. Track what was actually applied and store that instead, or a
+  // drag would creep upwards every time.
+  let placedPosition = null;
+  const currentPosition = () => {
+    if (placedPosition) return placedPosition;
+    const rect = launcher.getBoundingClientRect();
+    return {x: rect.left, y: rect.top};
+  };
+
+  const readStoredPosition = () => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(positionKey) || 'null');
+      if (!stored || typeof stored.x !== 'number' || typeof stored.y !== 'number') return null;
+      return stored;
+    } catch (_) {
+      return null;
+    }
+  };
+  const storePosition = position => {
+    try { window.localStorage.setItem(positionKey, JSON.stringify(position)); } catch (_) {}
+  };
+
+  // Keeps the widget on screen and opens its panel towards the space it has.
+  const applyPosition = (x, y) => {
+    const size = launcher.getBoundingClientRect();
+    const left = clamp(x, edgeMargin, Math.max(edgeMargin, window.innerWidth - size.width - edgeMargin));
+    const top = clamp(y, edgeMargin, Math.max(edgeMargin, window.innerHeight - size.height - edgeMargin));
+    widget.classList.add('is-placed');
+    widget.style.left = `${left}px`;
+    widget.style.top = `${top}px`;
+    widget.classList.toggle('is-panel-top', top < window.innerHeight / 2);
+    widget.classList.toggle('is-panel-left', left < window.innerWidth / 2);
+    placedPosition = {x: left, y: top};
+    return placedPosition;
+  };
+  const resetPosition = () => {
+    widget.classList.remove('is-placed', 'is-panel-top', 'is-panel-left');
+    widget.style.left = '';
+    widget.style.top = '';
+    placedPosition = null;
+    try { window.localStorage.removeItem(positionKey); } catch (_) {}
+  };
+
+  const startingPosition = readStoredPosition();
+  if (startingPosition) applyPosition(startingPosition.x, startingPosition.y);
+  window.addEventListener('resize', () => {
+    if (!widget.classList.contains('is-placed')) return;
+    const current = currentPosition();
+    storePosition(applyPosition(current.x, current.y));
+  });
+
+  const dragThreshold = 5;
+  let drag = null;
+  let suppressLauncherClick = false;
+
+  const beginDrag = (event, handle) => {
+    if (event.button > 0 || drag) return;
+    const start = currentPosition();
+    drag = {
+      handle,
+      pointerId: event.pointerId,
+      offsetX: event.clientX - start.x,
+      offsetY: event.clientY - start.y,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false
+    };
+    if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+  };
+  const continueDrag = event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.moved &&
+        Math.abs(event.clientX - drag.startX) < dragThreshold &&
+        Math.abs(event.clientY - drag.startY) < dragThreshold) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      widget.classList.add('is-dragging');
+    }
+    event.preventDefault();
+    applyPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+  };
+  const finishDrag = event => {
+    if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+    const {handle, pointerId, moved} = drag;
+    drag = null;
+    widget.classList.remove('is-dragging');
+    if (handle.releasePointerCapture && handle.hasPointerCapture && handle.hasPointerCapture(pointerId)) {
+      handle.releasePointerCapture(pointerId);
+    }
+    if (!moved) return;
+    storePosition(currentPosition());
+    // A drag ends with a click on the launcher; that must not also open it.
+    suppressLauncherClick = true;
+    window.setTimeout(() => { suppressLauncherClick = false; }, 0);
+  };
+
+  launcher.addEventListener('pointerdown', event => beginDrag(event, launcher));
+  header.addEventListener('pointerdown', event => {
+    if (event.target.closest('button')) return;
+    beginDrag(event, header);
+  });
+  [launcher, header].forEach(handle => {
+    handle.addEventListener('pointermove', continueDrag);
+    handle.addEventListener('pointerup', finishDrag);
+    handle.addEventListener('pointercancel', finishDrag);
+  });
+
+  launcher.addEventListener('keydown', event => {
+    if (!event.altKey) return;
+    if (event.key === '0') {
+      event.preventDefault();
+      resetPosition();
+      return;
+    }
+    const step = event.shiftKey ? 40 : 12;
+    const nudge = {ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step]}[event.key];
+    if (!nudge) return;
+    event.preventDefault();
+    const current = currentPosition();
+    storePosition(applyPosition(current.x + nudge[0], current.y + nudge[1]));
+  });
+
+  launcher.addEventListener('click', event => {
+    if (suppressLauncherClick) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    setOpen(launcher.getAttribute('aria-expanded') !== 'true');
+  });
   close.addEventListener('click', () => setOpen(false));
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !panel.hidden) setOpen(false);
