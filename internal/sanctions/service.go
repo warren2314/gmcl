@@ -25,14 +25,14 @@ func shouldCopyPlayCricketHelpOnOffendingOutcome(sourceType string) bool {
 }
 
 func shouldIncludeReporterOutcomeRecipient(sourceType, recipient string) bool {
-	if strings.TrimSpace(sourceType) != "ineligible_player" {
-		return true
-	}
 	canonical, err := canonicalOutcomeRecipient(recipient)
 	if err != nil {
 		return true
 	}
-	return canonical != joepIneligibleOutcomeRecipient && canonical != PlayCricketHelpCopyRecipient
+	if canonical == joepIneligibleOutcomeRecipient {
+		return false
+	}
+	return strings.TrimSpace(sourceType) != "ineligible_player" || canonical != PlayCricketHelpCopyRecipient
 }
 
 var (
