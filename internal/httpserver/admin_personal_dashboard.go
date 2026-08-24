@@ -65,6 +65,15 @@ type personalWorkDashboard struct {
 }
 
 func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, adminName string) (personalWorkDashboard, error) {
+	return s.loadPersonalWorkDashboardWithLimit(ctx, adminID, adminName, 6)
+}
+
+func (s *Server) loadPersonalWorkDashboardWithLimit(ctx context.Context, adminID int32, adminName string, itemLimit int) (personalWorkDashboard, error) {
+	if itemLimit < 1 {
+		itemLimit = 6
+	} else if itemLimit > 300 {
+		itemLimit = 300
+	}
 	data := personalWorkDashboard{AdminName: strings.TrimSpace(adminName)}
 	var role string
 	if err := s.DB.QueryRow(ctx, `SELECT COALESCE(role,'admin'),
@@ -89,7 +98,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		WHERE cases.assigned_admin_id=$1 AND NOT cases.is_test
 		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
 		  AND cases.status NOT IN ('published','closed','rejected','withdrawn')
-		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT 6`, adminID)
+		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT $2`, adminID, itemLimit)
 	if err != nil {
 		return data, err
 	}
@@ -125,7 +134,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 			WHERE reviewed.case_id=cases.id AND reviewed.event_type='response_reviewed'
 			  AND reviewed.metadata->>'response_event_id'=response.id::text
 		  )
-		ORDER BY response.created_at DESC,cases.id DESC LIMIT 6`, adminID)
+		ORDER BY response.created_at DESC,cases.id DESC LIMIT $2`, adminID, itemLimit)
 	if err != nil {
 		return data, err
 	}
@@ -150,7 +159,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 		WHERE task.assigned_admin_id=$1 AND task.status IN ('open','in_progress')
 		  AND NOT cases.is_test
 		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
-		ORDER BY task.due_at NULLS LAST,task.id LIMIT 6`, adminID)
+		ORDER BY task.due_at NULLS LAST,task.id LIMIT $2`, adminID, itemLimit)
 	if err != nil {
 		return data, err
 	}
@@ -183,7 +192,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 			  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
 			  AND (`+strings.Join(queueClauses, " OR ")+`)
 			ORDER BY CASE cases.status WHEN 'decision_proposed' THEN 0 ELSE 1 END,
-			         cases.updated_at,cases.id LIMIT 6`, adminID)
+			         cases.updated_at,cases.id LIMIT $2`, adminID, itemLimit)
 		if queryErr != nil {
 			return data, queryErr
 		}
@@ -217,7 +226,7 @@ func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, a
 			SELECT 1 FROM sanction_case_events event
 			WHERE event.case_id=cases.id AND event.event_type='case_training_designated'
 		)) AND (`+strings.Join(testClauses, " OR ")+`)
-		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT 12`, adminID)
+		ORDER BY cases.updated_at DESC,cases.id DESC LIMIT $2`, adminID, itemLimit)
 	if err != nil {
 		return data, err
 	}
@@ -272,7 +281,7 @@ func (s *Server) handleAdminUserWorkPreview() http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := s.loadPersonalWorkDashboard(r.Context(), int32(id), username)
+		data, err := s.loadPersonalWorkDashboardWithLimit(r.Context(), int32(id), username, 300)
 		if err != nil {
 			http.Error(w, "work preview unavailable", http.StatusInternalServerError)
 			return
