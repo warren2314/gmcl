@@ -26,4 +26,11 @@ func TestIneligibleDashboardCountsAllOpenPlayCricketPointsTasks(t *testing.T) {
 	if !strings.Contains(dashboardSource, "League points awaiting Denver") {
 		t.Fatal("dashboard does not explain that league-points work awaits Denver")
 	}
+	want := "JOIN live_cases c ON c.id=t.case_id WHERE t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')"
+	if !strings.Contains(dashboardSource, want) {
+		t.Fatal("dashboard must count open Play-Cricket points tasks from every live sanctions source")
+	}
+	if strings.Contains(dashboardSource, "c.source_type='ineligible_player' AND t.task_type='play_cricket_points'") {
+		t.Fatal("dashboard still excludes Denver's points tasks from other sanctions sources")
+	}
 }
