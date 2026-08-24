@@ -79,7 +79,10 @@ func closeBatchWhereSQL(filters closeBatchFilters, adminID int32) (string, []any
 	}
 	if filters.OpenedBefore != "" {
 		args = append(args, filters.OpenedBefore)
-		where = append(where, fmt.Sprintf("cases.created_at < $%d::date", len(args)))
+		// Cast through text so the parameter is described as text and a Go
+		// string always encodes cleanly; parseCloseBatchFilters has already
+		// checked the value is a real YYYY-MM-DD date.
+		where = append(where, fmt.Sprintf("cases.created_at < $%d::text::date", len(args)))
 	}
 	switch filters.Source {
 	case "ineligible_player":

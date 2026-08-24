@@ -58,7 +58,7 @@ func TestCloseBatchWhereSQLBindsDatesAndExcludesTestCases(t *testing.T) {
 	if !strings.Contains(where, "NOT cases.is_test") || !strings.Contains(where, "case_training_designated") {
 		t.Fatalf("bulk close would list test or training cases: %s", where)
 	}
-	if !strings.Contains(where, "cases.created_at < $2::date") {
+	if !strings.Contains(where, "cases.created_at < $2::text::date") {
 		t.Fatalf("opened-before filter is not a bound parameter: %s", where)
 	}
 	if len(args) != 2 || args[0] != int32(4) || args[1] != "2025-01-31" {
