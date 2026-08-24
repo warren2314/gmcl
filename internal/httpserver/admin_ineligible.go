@@ -384,8 +384,18 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		defer cancel()
 		filter := parseIneligibleQueueFilters(r.URL.Query())
 		var currentAdminID *int32
+		adminName := ""
 		if sess, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil {
 			currentAdminID = &sess.AdminID
+			adminName = sess.Name
+		}
+		// The final sign-off administrator has one job on this page, so give
+		// them only that queue. Report triage, imports and league-wide totals
+		// belong to the investigators. "Show the full queue" opens this page in
+		// full, so nothing is permanently out of reach.
+		if currentAdminID != nil && ineligibleSignOffViewRequested(r.URL.Query()) && s.adminIsFinalSignOffAdmin(ctx, *currentAdminID) {
+			s.writeAdminIneligibleSignOffPage(w, r, *currentAdminID, adminName)
+			return
 		}
 		query, args := buildIneligibleQueueQueryForAdmin(filter, currentAdminID)
 		rows, err := s.DB.Query(ctx, query, args...)
@@ -424,6 +434,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		nextHref, nextLabel := ineligibleNextReportAction(nextReportID)
 		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Your own cases come first. The team queue below is the shared work; totals, filters and the import routes are tucked away until you need them.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="%s">%s</a><a class="btn btn-outline-primary" href="/admin/cases/mine/ineligible">My cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
 		writeIneligibleFlash(w, r)
+		if ineligibleFullQueueRequested(r.URL.Query()) {
+			fmt.Fprint(w, `<div class="alert alert-light border d-flex flex-wrap justify-content-between align-items-center gap-2"><div class="small text-muted">You are looking at the full ineligible-player queue.</div><a class="btn btn-sm btn-outline-secondary" href="/admin/ineligible">Back to outcomes to sign off</a></div>`)
+		}
 
 		// Each investigator's own casework is the first thing on the page; the
 		// shared queue and the running totals follow it.

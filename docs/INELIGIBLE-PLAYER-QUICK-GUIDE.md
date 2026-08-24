@@ -23,6 +23,15 @@ Three routes, one controlled process.
 
 The buttons at the top of the page are **Open next selected report**, **My cases** and **Close historic cases**. Everything else is one click away inside **Queue totals, filters and import routes**.
 
+### If you give the final sign-off
+
+The administrator who gives the final sign-off — the active **Play-Cricket** entry under **Notice recipients** — gets a different page. **Ineligible-player work** opens on **Outcomes to sign off**, which lists only:
+
+1. cases with an approved, locked decision waiting for the final sign-off, and
+2. league-table adjustments still to be keyed into Play-Cricket.
+
+Report triage, imports, the shared queue and the running totals are hidden. **Show the full queue** at the bottom of the page opens the normal view, and **Back to outcomes to sign off** returns.
+
 Running totals are not a to-do list. Denver's work is one entry, **With Denver for final sign-off**, and any open Play-Cricket league-points work is shown underneath it as a link.
 
 | What do you need to do? | Choose |
