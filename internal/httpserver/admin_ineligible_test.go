@@ -548,7 +548,7 @@ func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
-		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status IN ('decision_proposed','approved')",
+		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
 		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
 	}
 	for group, want := range tests {
