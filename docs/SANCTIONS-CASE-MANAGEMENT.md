@@ -13,6 +13,7 @@ reconciliation cycles and a super-admin explicitly changes its mode.
 - Captain own-team history: `/captain/discipline`
 - Admin case queue: `/admin/cases`
 - Manual card/ban/fine/points case: `/admin/cases/new`
+- Bulk "close with no action" for historic cases: `/admin/cases/close-batch`
 - Safety modes and kill switch: `/admin/cases/automation`
 - Role-based notice recipients: `/admin/cases/recipients`
 - Immutable historical CSV staging: `/admin/cases/imports`
@@ -86,6 +87,26 @@ discipline, finance, and Play-Cricket recipients come from the recipient
 directory; finance is included for fines and Play-Cricket for points effects.
 The n8n workflow processes pending messages every five minutes. Idempotency is
 per case, decision revision, and recipient.
+
+## Closing historic cases in bulk
+
+`/admin/cases/close-batch` applies the single-case **Close with no action**
+control to a chosen list. It requires `sanctions_investigate`, lists only open
+cases (`submitted`, `triage`, `investigating`, `response_pending`,
+`decision_proposed`) that are assigned to the signed-in administrator or to
+nobody, and caps a batch at 200 cases. Test and training cases are excluded,
+and a case assigned to another administrator is reported as a count only.
+
+Each selected case is locked with `FOR UPDATE`, moved to `closed` /
+`unpublished`, and has its pending response link, response window, unsent
+outbox messages and open follow-up tasks cancelled, exactly as the single-case
+control does. An unassigned case records an `investigator_assigned` event
+before it is closed so the timeline shows who took it over. The shared reason
+is written to every `case_closed_no_action` event, whose metadata records the
+batch size, and the batch as a whole is written to `audit_logs`. Cases that
+changed between listing and submission are skipped and named back to the
+administrator rather than silently ignored; nothing is published and no email
+is sent.
 
 ## Historical migration procedure
 

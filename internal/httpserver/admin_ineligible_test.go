@@ -557,11 +557,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 			t.Fatalf("predicate for %s = %q, want %q", group, got, want)
 		}
 	}
-	raw, err := os.ReadFile("admin_ineligible.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
+	source := ineligibleDashboardSource(t)
 	for _, want := range []string{
 		`/admin/cases?group=investigating#cases`,
 		`/admin/cases?group=awaiting_decision#cases`,
@@ -573,4 +569,19 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 			t.Fatalf("ineligible dashboard source missing %q", want)
 		}
 	}
+}
+
+// ineligibleDashboardSource returns the whole ineligible-player dashboard
+// source: the handler and the work lanes that render its tiles.
+func ineligibleDashboardSource(t *testing.T) string {
+	t.Helper()
+	var combined strings.Builder
+	for _, name := range []string{"admin_ineligible.go", "admin_ineligible_worklanes.go"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined.Write(raw)
+	}
+	return combined.String()
 }
