@@ -549,6 +549,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 	tests := map[string]string{
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
 		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
+		"awaiting_denver":   "cases.source_type='ineligible_player' AND cases.status='approved'",
 		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
 	}
 	for group, want := range tests {
@@ -564,6 +565,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 	for _, want := range []string{
 		`/admin/cases?group=investigating#cases`,
 		`/admin/cases?group=awaiting_decision#cases`,
+		`/admin/cases?group=awaiting_denver#cases`,
 		`/admin/cases?group=closed#cases`,
 		`Review %d row(s) needing attention`,
 	} {
