@@ -9,13 +9,39 @@ Three routes, one controlled process.
 1. Sign in to the GMCL admin portal.
 2. Click **Sanctions**.
 3. Click **Ineligible-player work**.
-4. On **Ineligible-player cases**, choose the route that matches your task.
+4. Read **Ineligible-player cases** from the top down.
+
+### How the page is laid out
+
+| Band | What it is | Who it is for |
+|---|---|---|
+| **My work** | The cases you own, club replies waiting on you, and anything needing your approval or sign-off | You. Start here every time. |
+| **Team queue** | Four shared numbers: reports to review, club replies to read, responses overdue, cases under investigation | The whole panel |
+| **Latest import** | Whether the last Google Form import worked | Whoever imports |
+| **Queue totals, filters and import routes** | Closed by default. Running totals, the search filters, and the three import routes | Only when you need them |
+| **Report table** | The list the queue tabs and filters produce | Everyone |
+
+The buttons at the top of the page are **Open next selected report**, **My cases** and **Close historic cases**. Everything else is one click away inside **Queue totals, filters and import routes**.
+
+### If you give the final sign-off
+
+The administrator who gives the final sign-off — the active **Play-Cricket** entry under **Notice recipients** — gets a different page. **Ineligible-player work** opens on **Outcomes to sign off**, which lists only:
+
+1. cases with an approved, locked decision waiting for the final sign-off, and
+2. league-table adjustments still to be keyed into Play-Cricket.
+
+Report triage, imports, the shared queue and the running totals are hidden. **Show the full queue** at the bottom of the page opens the normal view, and **Back to outcomes to sign off** returns.
+
+Running totals are not a to-do list. Denver's work is one entry, **With Denver for final sign-off**, and any open Play-Cricket league-points work is shown underneath it as a link.
 
 | What do you need to do? | Choose |
 |---|---|
 | Review one report and raise its case | **Route 1 - Raise one case** |
 | Bring in several Google Form responses and choose which to progress | **Route 2 - Import and choose reports** |
 | Reconcile the approved historical workbook | **Route 3 - Import historical tracker** |
+| Close old cases that were never finished | **Close historic cases** |
+
+The three routes live inside **Queue totals, filters and import routes**. Open that section to see them.
 
 ### What “raise one case manually” means
 
@@ -27,7 +53,7 @@ If the report is not in the queue, complete the current private Google Form and 
 
 1. Click **Sanctions**.
 2. Click **Ineligible-player work**.
-3. Under **Route 1 - Raise one case**, click **Open next selected report**.
+3. Click **Open next selected report** at the top of the page.
 4. If the button says **View reports**, click it and then click **Review report** beside the correct entry.
 5. On the intake page, check **Reported details** and any evidence.
 6. Under **Raise this case**, check:
@@ -54,19 +80,20 @@ Click **Other outcomes**, then choose the appropriate action:
 1. Make sure the required reports are present in the private Google Form response sheet. Do not delete, copy or reorder live response rows.
 2. Click **Sanctions**.
 3. Click **Ineligible-player work**.
-4. Under **Route 2 - Import and choose reports**, click **Import and choose reports**.
-5. Read the import summary:
+4. Open **Queue totals, filters and import routes**.
+5. Under **Route 2 - Import and choose reports**, click **Import and choose reports**.
+6. Read the import summary:
    1. **Source rows read** is every response read from Google.
    2. **Added** and **changed** are database updates. Zero is normal when the same sheet is imported again.
    3. **Need attention** means one or more rows have a warning; it does not automatically mean that the row is missing.
-6. If the page says **Selection is blocked**, record the import number and error, plus any spreadsheet row shown, then stop for import or identity help.
-7. The table contains open, unlinked reports only. Use **Fixture from**, **Fixture to**, **Order** or search to find the current handover.
-8. Tick **Progress** beside each required report, or click **Select all shown**. Filtering never unticks a report that is already selected.
-9. If a report is missing, click **Open report history** and search for the player. Do not select it again if it is already case-raised, linked, marked duplicate or ignored.
-10. Check the selected total against the current handover list. Do not use an old fixed total.
-11. Enter a short handover label, for example **Dave handover - 11 Aug 2026**.
-12. Click **Save selection and show work queue**.
-13. Click **Review report** beside the first selected report and follow Route 1.
+7. If the page says **Selection is blocked**, record the import number and error, plus any spreadsheet row shown, then stop for import or identity help.
+8. The table contains open, unlinked reports only. Use **Fixture from**, **Fixture to**, **Order** or search to find the current handover.
+9. Tick **Progress** beside each required report, or click **Select all shown**. Filtering never unticks a report that is already selected.
+10. If a report is missing, click **Open report history** and search for the player. Do not select it again if it is already case-raised, linked, marked duplicate or ignored.
+11. Check the selected total against the current handover list. Do not use an old fixed total.
+12. Enter a short handover label, for example **Dave handover - 11 Aug 2026**.
+13. Click **Save selection and show work queue**.
+14. Click **Review report** beside the first selected report and follow Route 1.
 
 **Expected result:** selected reports appear in the normal work queue. Unselected open reports are hidden from that queue, not deleted. Progressed reports remain in **Report history**.
 
@@ -82,10 +109,11 @@ Use this route only for the approved historical workbook. It must be an `.xlsx` 
 
 1. Click **Sanctions**.
 2. Click **Ineligible-player work**.
-3. Under **Route 3 - Import historical tracker**, click **Open tracker import**.
-4. Under **Step 1 - Upload tracker**, click **Tracker (.xlsx, max 16 MB)**.
-5. Select the approved workbook.
-6. Click **Upload tracker**.
+3. Open **Queue totals, filters and import routes**.
+4. Under **Route 3 - Import historical tracker**, click **Open tracker import**.
+5. Under **Step 1 - Upload tracker**, click **Tracker (.xlsx, max 16 MB)**.
+6. Select the approved workbook.
+7. Click **Upload tracker**.
 
 The system opens **Import check #[number]**.
 
@@ -125,6 +153,26 @@ When **Needs checking** reaches zero:
 **Expected result:** signed-off private history and reviewed open/closed status are applied once. Unmatched or excluded rows remain untouched.
 
 > The tracker cannot create a case, decision, sanction, points/cards entry, task, correspondence or email.
+
+## Close historic cases in one go
+
+Use this for old cases that were never finished and need no sanction. It is the same action as **Close with no action** on a single case, applied to a list.
+
+1. Click **Sanctions**.
+2. Click **Ineligible-player work**.
+3. Click **Close historic cases**.
+4. Set **Opened before** to the cut-off date, and **Case source** if you only want one kind of case. Click **Show cases**.
+5. Check the list. Only open cases assigned to you, or to nobody, are shown; a case owned by another administrator is counted in a note instead.
+6. Tick each case to close, or search and click **Select all shown**.
+7. Write one reason. It is recorded on every case you close, with your name.
+8. Tick the confirmation and click **Close selected cases**.
+
+**Expected result:** each selected case moves to **Closed**. Any pending response link, reminder, unsent email and open follow-up task is cancelled. Nothing is deleted, nothing is published and no email is sent.
+
+- An unassigned case is recorded as yours before it is closed, so the history shows who closed it.
+- A case that changed while you were choosing is skipped and named in the confirmation message.
+- At most 200 cases can be closed at a time.
+- Anything that needs a sanction must go through the normal decision, approval and Denver sign-off steps instead.
 
 ## Send the first email after raising a case
 
@@ -172,6 +220,7 @@ Stop and ask the casework lead for help if details conflict, **Selection is bloc
 - **Send initial email to club** is the deliberate live-send action.
 - Dave or Warren must approve and lock the decision; this may be the person who prepared it because Denver still provides the separate final sign-off.
 - Outcomes are not sent until Denver selects **Final sign-off and issue outcomes**.
+- **Close selected cases** never sends an email or publishes anything; it only records that no action is needed.
 
 ## Board flow: controlled intake to outcome
 

@@ -13,6 +13,7 @@ reconciliation cycles and a super-admin explicitly changes its mode.
 - Captain own-team history: `/captain/discipline`
 - Admin case queue: `/admin/cases`
 - Manual card/ban/fine/points case: `/admin/cases/new`
+- Bulk "close with no action" for historic cases: `/admin/cases/close-batch`
 - Safety modes and kill switch: `/admin/cases/automation`
 - Role-based notice recipients: `/admin/cases/recipients`
 - Immutable historical CSV staging: `/admin/cases/imports`
@@ -86,6 +87,45 @@ discipline, finance, and Play-Cricket recipients come from the recipient
 directory; finance is included for fines and Play-Cricket for points effects.
 The n8n workflow processes pending messages every five minutes. Idempotency is
 per case, decision revision, and recipient.
+
+## The final sign-off queue
+
+`/admin/ineligible` renders a focused **Outcomes to sign off** page instead of
+the full queue when the signed-in administrator is the final sign-off account.
+That account is identified with `isActiveSanctionRecipientAdmin(..., "play_cricket")`
+— the same test that gates the sign-off button in `PublishCase` — so the queue
+shown can never disagree with the outcomes the account may issue, and no
+username is hard-coded. Re-point the active `play_cricket` recipient and the
+focused view moves with it.
+
+The page lists ineligible-player cases at `approved` with their approved effect
+types, and open `play_cricket_points` follow-up tasks assigned to that account
+or to nobody. An unassigned points task is flagged, because
+`handleAdminSanctionTaskUpdate` rejects updates when `assigned_admin_id` is
+null and it would otherwise be uncompletable. If the account is the
+Play-Cricket recipient but lacks `sanctions_publish`, the page says so rather
+than presenting a queue it cannot action. `?view=all` opens the full queue and
+that view links back.
+
+## Closing historic cases in bulk
+
+`/admin/cases/close-batch` applies the single-case **Close with no action**
+control to a chosen list. It requires `sanctions_investigate`, lists only open
+cases (`submitted`, `triage`, `investigating`, `response_pending`,
+`decision_proposed`) that are assigned to the signed-in administrator or to
+nobody, and caps a batch at 200 cases. Test and training cases are excluded,
+and a case assigned to another administrator is reported as a count only.
+
+Each selected case is locked with `FOR UPDATE`, moved to `closed` /
+`unpublished`, and has its pending response link, response window, unsent
+outbox messages and open follow-up tasks cancelled, exactly as the single-case
+control does. An unassigned case records an `investigator_assigned` event
+before it is closed so the timeline shows who took it over. The shared reason
+is written to every `case_closed_no_action` event, whose metadata records the
+batch size, and the batch as a whole is written to `audit_logs`. Cases that
+changed between listing and submission are skipped and named back to the
+administrator rather than silently ignored; nothing is published and no email
+is sent.
 
 ## Historical migration procedure
 

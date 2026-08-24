@@ -123,37 +123,8 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 			return
 		}
 
-		if _, err = tx.Exec(r.Context(), `UPDATE sanction_case_access_tokens token SET revoked_at=COALESCE(token.revoked_at,now()),last_used_at=now()
-			WHERE token.id IN (SELECT request.access_token_id FROM sanction_response_requests request WHERE request.case_id=$1 AND request.status IN ('queued','pending'))`, caseID); err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "revoke_response_access", err)
-			return
-		}
-		cancelledRequests, revokedMessages, cancelledTasks := int64(0), int64(0), int64(0)
-		result, err := tx.Exec(r.Context(), `UPDATE sanction_response_requests SET status='cancelled',closed_at=COALESCE(closed_at,now()) WHERE case_id=$1 AND status IN ('queued','pending')`, caseID)
-		if err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "cancel_response_request", err)
-			return
-		}
-		cancelledRequests = result.RowsAffected()
-		result, err = tx.Exec(r.Context(), `UPDATE sanction_notification_outbox SET processed_at=now(),revoked_at=now(),revoked_by_admin_id=$2,revocation_reason=$3 WHERE case_id=$1 AND processed_at IS NULL AND revoked_at IS NULL`, caseID, *actor.ID, reason)
-		if err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "revoke_unsent_messages", err)
-			return
-		}
-		revokedMessages = result.RowsAffected()
-		result, err = tx.Exec(r.Context(), cancelOpenCaseFollowUpTasksSQL, caseID, "Cancelled because the case was closed with no action: "+reason)
-		if err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "cancel_follow_up_tasks", err)
-			return
-		}
-		cancelledTasks = result.RowsAffected()
-		if _, err = tx.Exec(r.Context(), `UPDATE sanction_cases SET status='closed',public_status='unpublished',closed_at=now(),updated_at=now() WHERE id=$1`, caseID); err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "update_case", err)
-			return
-		}
-		if _, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,request_id,before_data,after_data,metadata)
-			VALUES($1,'case_closed_no_action','admin',$2,$3,$4,$5,jsonb_build_object('status',$6::text),jsonb_build_object('status','closed','public_status','unpublished'),jsonb_build_object('cancelled_response_requests',$7::bigint,'revoked_outbox_messages',$8::bigint,'cancelled_follow_up_tasks',$9::bigint))`, caseID, *actor.ID, actor.Label, reason, actor.RequestID, status, cancelledRequests, revokedMessages, cancelledTasks); err != nil {
-			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "record_case_history", err)
+		if stage, stepErr := closeSanctionCaseNoActionSteps(r.Context(), tx, caseID, status, *actor.ID, actor.Label, actor.RequestID, reason, 1); stepErr != nil {
+			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, stage, stepErr)
 			return
 		}
 		if err = tx.Commit(r.Context()); err != nil {
@@ -163,4 +134,39 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 		message := url.QueryEscape(reference + " closed with no action")
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", caseID, message), http.StatusSeeOther)
 	}
+}
+
+// closeSanctionCaseNoActionSteps performs the shared "close with no action"
+// state changes inside an open transaction. The caller has already locked the
+// case row and checked that the actor may close it. The returned stage names
+// the step that failed so single-case and batch callers can explain it.
+func closeSanctionCaseNoActionSteps(ctx context.Context, tx pgx.Tx, caseID int64, previousStatus string, actorID int32, actorLabel, requestID, reason string, batchSize int) (string, error) {
+	if _, err := tx.Exec(ctx, `UPDATE sanction_case_access_tokens token SET revoked_at=COALESCE(token.revoked_at,now()),last_used_at=now()
+		WHERE token.id IN (SELECT request.access_token_id FROM sanction_response_requests request WHERE request.case_id=$1 AND request.status IN ('queued','pending'))`, caseID); err != nil {
+		return "revoke_response_access", err
+	}
+	result, err := tx.Exec(ctx, `UPDATE sanction_response_requests SET status='cancelled',closed_at=COALESCE(closed_at,now()) WHERE case_id=$1 AND status IN ('queued','pending')`, caseID)
+	if err != nil {
+		return "cancel_response_request", err
+	}
+	cancelledRequests := result.RowsAffected()
+	result, err = tx.Exec(ctx, `UPDATE sanction_notification_outbox SET processed_at=now(),revoked_at=now(),revoked_by_admin_id=$2,revocation_reason=$3 WHERE case_id=$1 AND processed_at IS NULL AND revoked_at IS NULL`, caseID, actorID, reason)
+	if err != nil {
+		return "revoke_unsent_messages", err
+	}
+	revokedMessages := result.RowsAffected()
+	result, err = tx.Exec(ctx, cancelOpenCaseFollowUpTasksSQL, caseID, "Cancelled because the case was closed with no action: "+reason)
+	if err != nil {
+		return "cancel_follow_up_tasks", err
+	}
+	cancelledTasks := result.RowsAffected()
+	if _, err = tx.Exec(ctx, `UPDATE sanction_cases SET status='closed',public_status='unpublished',closed_at=now(),updated_at=now() WHERE id=$1`, caseID); err != nil {
+		return "update_case", err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,request_id,before_data,after_data,metadata)
+		VALUES($1,'case_closed_no_action','admin',$2,$3,$4,$5,jsonb_build_object('status',$6::text),jsonb_build_object('status','closed','public_status','unpublished'),jsonb_build_object('cancelled_response_requests',$7::bigint,'revoked_outbox_messages',$8::bigint,'cancelled_follow_up_tasks',$9::bigint,'batch_size',$10::int))`,
+		caseID, actorID, actorLabel, reason, requestID, previousStatus, cancelledRequests, revokedMessages, cancelledTasks, batchSize); err != nil {
+		return "record_case_history", err
+	}
+	return "", nil
 }

@@ -308,13 +308,7 @@ func writePersonalWorkDashboard(w http.ResponseWriter, data personalWorkDashboar
 	if loc == nil {
 		loc = time.Local
 	}
-	localNow := now.In(loc)
-	greeting := "Good evening"
-	if localNow.Hour() < 12 {
-		greeting = "Good morning"
-	} else if localNow.Hour() < 18 {
-		greeting = "Good afternoon"
-	}
+	greeting := greetingFor(now.In(loc))
 	name := strings.TrimSpace(data.AdminName)
 	if name == "" {
 		name = "administrator"

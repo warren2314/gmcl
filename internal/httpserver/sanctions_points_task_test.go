@@ -18,11 +18,7 @@ func TestPlayCricketPointsTaskRequiresAssignedFinalSignOffAdmin(t *testing.T) {
 }
 
 func TestIneligibleDashboardCountsAllOpenPlayCricketPointsTasks(t *testing.T) {
-	source, err := os.ReadFile("admin_ineligible.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dashboardSource := string(source)
+	dashboardSource := ineligibleDashboardSource(t)
 	if !strings.Contains(dashboardSource, "League points awaiting Denver") {
 		t.Fatal("dashboard does not explain that league-points work awaits Denver")
 	}
