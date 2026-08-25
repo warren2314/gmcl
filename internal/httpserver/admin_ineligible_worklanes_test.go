@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -90,18 +91,32 @@ func TestIneligibleNextReportActionNamesTheStartingPoint(t *testing.T) {
 	}
 }
 
-func TestIneligibleDashboardPutsPersonalWorkBeforeTeamQueue(t *testing.T) {
+func TestIneligibleDashboardLeavesPersonalWorkToTheDashboardPage(t *testing.T) {
 	source := ineligibleDashboardSource(t)
-	personal := strings.Index(source, "s.writeAdminPersonalWork(w, r)")
+	// "My work" and the training-case list are rendered on /admin by the same
+	// helper. Repeating them here pushed the shared queue below the fold.
+	if strings.Contains(source, "s.writeAdminPersonalWork(w, r)") {
+		t.Fatal("the ineligible page repeats the Dashboard's personal work sections")
+	}
 	team := strings.Index(source, "writeIneligibleTodayLane(w, counts)")
 	totals := strings.Index(source, "writeIneligibleTotalsLane(w, counts)")
-	if personal < 0 || team < 0 || totals < 0 {
-		t.Fatalf("dashboard is missing a work lane: personal=%d team=%d totals=%d", personal, team, totals)
+	if team < 0 || totals < 0 || team > totals {
+		t.Fatalf("the shared queue must lead and the totals follow: team=%d totals=%d", team, totals)
 	}
-	if !(personal < team && team < totals) {
-		t.Fatalf("dashboard order is wrong: personal=%d team=%d totals=%d", personal, team, totals)
+	if !strings.Contains(source, `href="/admin/cases/mine/ineligible">My cases`) {
+		t.Fatal("with the personal sections gone, the page must still link to my own cases")
 	}
 	if !strings.Contains(source, `href="/admin/cases/close-batch">Close historic cases`) {
 		t.Fatal("dashboard does not offer the bulk close route")
+	}
+}
+
+func TestAdminHomeStillShowsPersonalWork(t *testing.T) {
+	raw, err := os.ReadFile("admin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "s.writeAdminPersonalWork(w, r)") {
+		t.Fatal("personal work was removed from the Dashboard page as well, so it now appears nowhere")
 	}
 }

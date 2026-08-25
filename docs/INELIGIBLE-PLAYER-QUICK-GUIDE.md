@@ -15,13 +15,14 @@ Three routes, one controlled process.
 
 | Band | What it is | Who it is for |
 |---|---|---|
-| **My work** | The cases you own, club replies waiting on you, and anything needing your approval or sign-off | You. Start here every time. |
 | **Team queue** | Four shared numbers: reports to review, club replies to read, responses overdue, cases under investigation | The whole panel |
 | **Latest import** | Whether the last Google Form import worked | Whoever imports |
 | **Queue totals, filters and import routes** | Closed by default. Running totals, the search filters, and the three import routes | Only when you need them |
 | **Report table** | The list the queue tabs and filters produce | Everyone |
 
 The buttons at the top of the page are **Open next selected report**, **My cases** and **Close historic cases**. Everything else is one click away inside **Queue totals, filters and import routes**.
+
+Your own cases, the club replies waiting on you and anything needing your approval are on the **Dashboard** page under **My work**; this page does not repeat them. **My cases** goes straight to the cases you own.
 
 ### If you give the final sign-off
 
