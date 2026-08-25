@@ -1,113 +1,120 @@
 package httpserver
 
 import (
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
 
-func TestIneligibleTodayLaneShowsOnlyActionableCounts(t *testing.T) {
+func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 	counts := ineligibleDashboardCounts{
 		NewIntakes: 2, AwaitingSelection: 3, HiddenReports: 198, ActiveCases: 4,
 		ResponsesDue: 3, ResponsesOverdue: 5, RecentReplies: 1, AwaitingDecision: 0,
 		AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2, DeliveryExceptions: 0, ClosedCases: 8,
 	}
-	tiles := ineligibleTodayTiles(counts)
-	if len(tiles) != 4 {
-		t.Fatalf("team queue shows %d tiles, want the four actionable ones", len(tiles))
+	cards := ineligibleQueueStatusCards(counts)
+	// Twelve figures, eleven cards: Denver's two are one.
+	want := []string{
+		"Visible queue", "Not yet selected", "Hidden reports", "Under investigation",
+		"Responses due", "Responses overdue", "New replies", "Awaiting decision",
+		"Awaiting Denver final sign-off", "Delivery exceptions", "Closed cases",
 	}
-	for _, tile := range tiles {
-		if strings.Contains(tile.Label, "Denver") || strings.Contains(tile.Label, "Hidden") || strings.Contains(tile.Label, "Closed") {
-			t.Fatalf("%q is a running total, not work to pick up, so it must not sit in the team queue", tile.Label)
+	if len(cards) != len(want) {
+		t.Fatalf("queue status shows %d cards, want %d", len(cards), len(want))
+	}
+	for i, label := range want {
+		if cards[i].Label != label {
+			t.Fatalf("card %d is %q, want %q - the grid order changed", i, cards[i].Label, label)
 		}
-	}
-	output := httptest.NewRecorder()
-	writeIneligibleTodayLane(output, counts)
-	html := output.Body.String()
-	for _, want := range []string{"Team queue", "Reports to review", "Club replies to read", "Responses overdue", "Cases under investigation"} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("team queue is missing %q", want)
-		}
-	}
-	if strings.Contains(html, "198") {
-		t.Fatal("hidden-report total leaked into the team queue")
 	}
 }
 
-func TestIneligibleTotalsShowDenverAsOneTile(t *testing.T) {
+func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
 	counts := ineligibleDashboardCounts{AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2}
-	denverTiles := 0
-	for _, tile := range ineligibleTotalsTiles(counts) {
-		if strings.Contains(tile.Label, "Denver") {
-			denverTiles++
-			if tile.Count != 7 {
-				t.Fatalf("Denver tile counts %d cases, want 7", tile.Count)
-			}
-			if !strings.Contains(tile.Note, "League points awaiting Denver") || !strings.Contains(tile.Note, "2") {
-				t.Fatalf("Denver tile note %q does not carry the open league-points work", tile.Note)
-			}
-			if tile.NoteHref != "/admin/cases/tasks" {
-				t.Fatalf("Denver league-points note links to %q, want the task list", tile.NoteHref)
-			}
+	denverCards := 0
+	for _, card := range ineligibleQueueStatusCards(counts) {
+		if !strings.Contains(card.Label, "Denver") {
+			continue
+		}
+		denverCards++
+		if card.Count != 7 {
+			t.Fatalf("Denver card counts %d cases, want 7", card.Count)
+		}
+		if !strings.Contains(card.Note, "League points awaiting Denver") || !strings.Contains(card.Note, "2") {
+			t.Fatalf("Denver card note %q does not carry the open league-points work", card.Note)
+		}
+		if card.NoteHref != "/admin/cases/tasks" {
+			t.Fatalf("Denver league-points note links to %q, want the task list", card.NoteHref)
 		}
 	}
-	if denverTiles != 1 {
-		t.Fatalf("dashboard renders %d Denver tiles, want exactly one", denverTiles)
+	if denverCards != 1 {
+		t.Fatalf("queue status renders %d Denver cards, want exactly one", denverCards)
 	}
 }
 
-func TestIneligibleDenverTileHidesEmptyPointsNote(t *testing.T) {
-	for _, tile := range ineligibleTotalsTiles(ineligibleDashboardCounts{AwaitingDenverSignoff: 1}) {
-		if strings.Contains(tile.Label, "Denver") && tile.Note != "" {
-			t.Fatalf("Denver tile still shows a league-points note (%q) when none is open", tile.Note)
+func TestIneligibleDenverCardHidesEmptyPointsNote(t *testing.T) {
+	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{AwaitingDenverSignoff: 1}) {
+		if strings.Contains(card.Label, "Denver") && card.Note != "" {
+			t.Fatalf("Denver card still shows a league-points note (%q) when none is open", card.Note)
 		}
 	}
 }
 
-func TestIneligibleTilesEscapeAndLinkNotes(t *testing.T) {
-	output := httptest.NewRecorder()
-	writeIneligibleTiles(output, []ineligibleWorkTile{{
-		Label: "Cases <all>", Count: 3, Href: "/admin/cases?group=closed#cases", Accent: "border-success",
-		Note: "League points awaiting Denver: 2", NoteHref: "/admin/cases/tasks",
-	}})
-	html := output.Body.String()
-	if strings.Contains(html, "Cases <all>") {
-		t.Fatal("tile label was not escaped")
-	}
-	if !strings.Contains(html, `href="/admin/cases/tasks">League points awaiting Denver: 2</a>`) {
-		t.Fatalf("tile note is not a link to its own list: %s", html)
-	}
-}
-
-func TestIneligibleNextReportActionNamesTheStartingPoint(t *testing.T) {
-	href, label := ineligibleNextReportAction(1176)
-	if href != "/admin/ineligible/1176" || label != "Open next selected report" {
-		t.Fatalf("next report action = %q/%q", href, label)
-	}
-	href, label = ineligibleNextReportAction(0)
-	if !strings.HasPrefix(href, "/admin/ineligible?") || label != "View reports" {
-		t.Fatalf("empty queue action = %q/%q", href, label)
-	}
-}
-
-func TestIneligibleDashboardLeavesPersonalWorkToTheDashboardPage(t *testing.T) {
+func TestIneligibleDashboardKeepsItsOriginalLayout(t *testing.T) {
 	source := ineligibleDashboardSource(t)
-	// "My work" and the training-case list are rendered on /admin by the same
-	// helper. Repeating them here pushed the shared queue below the fold.
-	if strings.Contains(source, "s.writeAdminPersonalWork(w, r)") {
-		t.Fatal("the ineligible page repeats the Dashboard's personal work sections")
+	// The page was restored after the reworked layout was rolled back. These
+	// are the pieces that rework had moved or replaced.
+	for _, want := range []string{
+		`<summary class="card-header fw-semibold">More filters and queue status</summary>`,
+		`Import, choose the reports to progress, then work from that selected list.`,
+		`<a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a>`,
+		`<a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a>`,
+		`aria-label="Choose work queue"`,
+		`row-cols-2 row-cols-md-3 row-cols-xl-5`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("the original ineligible dashboard layout is missing %q", want)
+		}
 	}
-	team := strings.Index(source, "writeIneligibleTodayLane(w, counts)")
-	totals := strings.Index(source, "writeIneligibleTotalsLane(w, counts)")
-	if team < 0 || totals < 0 || team > totals {
-		t.Fatalf("the shared queue must lead and the totals follow: team=%d totals=%d", team, totals)
+	for _, unwanted := range []string{
+		"s.writeAdminPersonalWork(w, r)",
+		"writeIneligibleTodayLane",
+		"writeIneligibleTotalsLane",
+		"Team queue",
+		"Queue totals, filters and import routes",
+	} {
+		if strings.Contains(source, unwanted) {
+			t.Fatalf("the rolled-back layout is still present: %q", unwanted)
+		}
 	}
-	if !strings.Contains(source, `href="/admin/cases/mine/ineligible">My cases`) {
-		t.Fatal("with the personal sections gone, the page must still link to my own cases")
+	// The queue tabs sit inside the collapsible section again, above the grid.
+	tabs := strings.Index(source, `aria-label="Choose work queue"`)
+	grid := strings.Index(source, `row-cols-2 row-cols-md-3 row-cols-xl-5`)
+	details := strings.Index(source, `More filters and queue status`)
+	if details < 0 || tabs < details || grid < tabs {
+		t.Fatalf("tabs and grid must sit inside the collapsible section: details=%d tabs=%d grid=%d", details, tabs, grid)
 	}
-	if !strings.Contains(source, `href="/admin/cases/close-batch">Close historic cases`) {
-		t.Fatal("dashboard does not offer the bulk close route")
+}
+
+func TestIneligibleDashboardStillReachesBulkClose(t *testing.T) {
+	// Bulk close is a separate feature, not part of the layout that was rolled
+	// back, so the page must still offer a way in.
+	if !strings.Contains(ineligibleDashboardSource(t), `href="/admin/cases/close-batch">Close historic cases`) {
+		t.Fatal("the dashboard no longer links to the bulk close page")
+	}
+}
+
+func TestEveryAdminSeesTheSameIneligibleDashboard(t *testing.T) {
+	// The focused sign-off page was removed: no administrator gets a different
+	// version of this route any more.
+	if _, err := os.Stat("admin_ineligible_signoff_view.go"); err == nil {
+		t.Fatal("the separate sign-off view still exists")
+	}
+	source := ineligibleDashboardSource(t)
+	for _, unwanted := range []string{"writeAdminIneligibleSignOffPage", "adminIsFinalSignOffAdmin", "ineligibleSignOffViewRequested"} {
+		if strings.Contains(source, unwanted) {
+			t.Fatalf("the dashboard still branches to a per-administrator view: %q", unwanted)
+		}
 	}
 }
 
@@ -117,6 +124,6 @@ func TestAdminHomeStillShowsPersonalWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(raw), "s.writeAdminPersonalWork(w, r)") {
-		t.Fatal("personal work was removed from the Dashboard page as well, so it now appears nowhere")
+		t.Fatal("personal work is no longer shown on the Dashboard page")
 	}
 }
