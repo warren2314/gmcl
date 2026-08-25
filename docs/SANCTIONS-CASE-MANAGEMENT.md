@@ -88,25 +88,6 @@ directory; finance is included for fines and Play-Cricket for points effects.
 The n8n workflow processes pending messages every five minutes. Idempotency is
 per case, decision revision, and recipient.
 
-## The final sign-off queue
-
-`/admin/ineligible` renders a focused **Outcomes to sign off** page instead of
-the full queue when the signed-in administrator is the final sign-off account.
-That account is identified with `isActiveSanctionRecipientAdmin(..., "play_cricket")`
-— the same test that gates the sign-off button in `PublishCase` — so the queue
-shown can never disagree with the outcomes the account may issue, and no
-username is hard-coded. Re-point the active `play_cricket` recipient and the
-focused view moves with it.
-
-The page lists ineligible-player cases at `approved` with their approved effect
-types, and open `play_cricket_points` follow-up tasks assigned to that account
-or to nobody. An unassigned points task is flagged, because
-`handleAdminSanctionTaskUpdate` rejects updates when `assigned_admin_id` is
-null and it would otherwise be uncompletable. If the account is the
-Play-Cricket recipient but lacks `sanctions_publish`, the page says so rather
-than presenting a queue it cannot action. `?view=all` opens the full queue and
-that view links back.
-
 ## Closing historic cases in bulk
 
 `/admin/cases/close-batch` applies the single-case **Close with no action**

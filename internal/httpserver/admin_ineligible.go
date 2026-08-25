@@ -384,18 +384,8 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		defer cancel()
 		filter := parseIneligibleQueueFilters(r.URL.Query())
 		var currentAdminID *int32
-		adminName := ""
 		if sess, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil {
 			currentAdminID = &sess.AdminID
-			adminName = sess.Name
-		}
-		// The final sign-off administrator has one job on this page, so give
-		// them only that queue. Report triage, imports and league-wide totals
-		// belong to the investigators. "Show the full queue" opens this page in
-		// full, so nothing is permanently out of reach.
-		if currentAdminID != nil && ineligibleSignOffViewRequested(r.URL.Query()) && s.adminIsFinalSignOffAdmin(ctx, *currentAdminID) {
-			s.writeAdminIneligibleSignOffPage(w, r, *currentAdminID, adminName)
-			return
 		}
 		query, args := buildIneligibleQueueQueryForAdmin(filter, currentAdminID)
 		rows, err := s.DB.Query(ctx, query, args...)
@@ -427,22 +417,39 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Ineligible-player work")
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`)
+		writeIneligibleFlash(w, r)
 		var nextReportID int64
 		if filter.Worklist == "visible" {
 			nextReportID = nextIneligibleReportID(queue)
 		}
-		nextHref, nextLabel := ineligibleNextReportAction(nextReportID)
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">The team queue is the shared work; totals, filters and the import routes are tucked away until you need them. Your own cases are on the Dashboard, or under <strong>My cases</strong>.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="%s">%s</a><a class="btn btn-outline-primary" href="/admin/cases/mine/ineligible">My cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
-		writeIneligibleFlash(w, r)
-		if ineligibleFullQueueRequested(r.URL.Query()) {
-			fmt.Fprint(w, `<div class="alert alert-light border d-flex flex-wrap justify-content-between align-items-center gap-2"><div class="small text-muted">You are looking at the full ineligible-player queue.</div><a class="btn btn-sm btn-outline-secondary" href="/admin/ineligible">Back to outcomes to sign off</a></div>`)
+		writeIneligibleStartRoutes(w, csrf, nextReportID)
+		advancedOpen := ""
+		if ineligibleQueueUsesAdvancedView(filter) {
+			advancedOpen = " open"
 		}
-
-		// "My work" and the training-case list belong to the Dashboard page;
-		// repeating them here only pushed the shared queue further down. The
-		// "My cases" button in the header covers getting back to your own work.
-		writeIneligibleTodayLane(w, counts)
-
+		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">More filters and queue status</summary><div class="card-body">`, advancedOpen)
+		mineClass, selectedClass, importedClass := "btn-outline-primary", "btn-outline-primary", "btn-outline-primary"
+		if filter.Scope == "mine" {
+			mineClass = "btn-primary"
+		} else if filter.Worklist == "all" {
+			importedClass = "btn-primary"
+		} else if filter.Worklist == "visible" {
+			selectedClass = "btn-primary"
+		}
+		mineHref := ineligibleQueueTabURL(filter, "mine", "all", "visible")
+		selectedHref := ineligibleQueueTabURL(filter, "all", "open", "visible")
+		importedHref := ineligibleQueueTabURL(filter, "all", "all", "all")
+		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">Report history</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
+		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
+		for _, card := range ineligibleQueueStatusCards(counts) {
+			fmt.Fprintf(w, `<div class="col"><a class="border rounded d-block h-100 %s text-decoration-none text-body p-2" href="%s"><div class="h4 mb-0">%d</div><div class="small text-muted">%s</div></a>`, card.Accent, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
+			if card.Note != "" && card.NoteHref != "" {
+				fmt.Fprintf(w, `<div class="small mt-1"><a href="%s">%s</a></div>`, escapeHTML(card.NoteHref), escapeHTML(card.Note))
+			}
+			fmt.Fprint(w, `</div>`)
+		}
+		fmt.Fprint(w, `</div>`)
 		if hasSyncHealth {
 			completed := "still running"
 			if syncHealth.CompletedAt != nil {
@@ -468,15 +475,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			fmt.Fprint(w, `<div class="alert alert-warning mb-3"><strong>No Google Form import has run.</strong> Configure the read-only source before using the import action.</div>`)
 		}
 
-		advancedOpen := ""
-		if ineligibleQueueUsesAdvancedView(filter) {
-			advancedOpen = " open"
-		}
-		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">Queue totals, filters and import routes</summary><div class="card-body">`, advancedOpen)
-		writeIneligibleTotalsLane(w, counts)
-		writeIneligibleStartRoutes(w, csrf, nextReportID)
 		writeIneligibleFilters(w, filter)
-		fmt.Fprint(w, `</div></details>`)
 		queueTitle := "Selected reports ready for review"
 		queueHelp := "Open a selected report, check its details, then raise or link its case. New arrivals also stay visible until the next selection."
 		switch {
@@ -502,7 +501,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			queueTitle = "Google Form reports ready for review"
 			queueHelp = "Open each imported report, check its details, then raise, link or resolve it."
 		}
-		writeIneligibleQueueTabs(w, filter)
+		fmt.Fprint(w, `</div></details>`)
 		writeIneligibleFixtureDateControls(w, filter)
 		fmt.Fprintf(w, `<section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
 		for _, row := range queue {
@@ -607,11 +606,16 @@ func ineligibleCaseNextStepHTML(row ineligibleQueueRow, loc *time.Location) stri
 }
 
 func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
-	nextHref, nextLabel := ineligibleNextReportAction(nextReportID)
+	nextHref := "/admin/ineligible?scope=all&state=open&worklist=visible#reports"
+	nextLabel := "View reports"
+	if nextReportID > 0 {
+		nextHref = fmt.Sprintf("/admin/ineligible/%d", nextReportID)
+		nextLabel = "Open next selected report"
+	}
 	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-3 g-3">`)
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100 border-primary"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 1</div><h3 class="h5">Raise one case</h3><p class="text-muted flex-grow-1">Open a report, check the pre-filled details, then select <strong>Raise case</strong>.</p><a class="btn btn-primary" href="%s">%s</a></div></article></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import and choose reports</h3><p class="text-muted flex-grow-1">Import the Google Form, then tick the reports you have been asked to progress.</p><button class="btn btn-outline-primary">Import and choose reports</button></form></article></div>`, escapeHTML(csrf))
-	fmt.Fprint(w, `<div class="col"><article class="card h-100"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 3</div><h3 class="h5">Import historical tracker</h3><p class="text-muted flex-grow-1">Upload the Excel tracker, check its matches, sign off, then apply history.</p><a class="btn btn-outline-primary" href="/admin/ineligible/backfill">Open tracker import</a></div></article></div></div><div class="alert alert-light border mt-3 mb-2"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div><div class="small"><a href="/admin/ineligible/training/new">Create a training report</a> &middot; <a href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a> &middot; <a href="/admin/cases">All sanction cases</a> &middot; <a href="/admin/cases/close-batch">Close historic cases</a> &middot; <a href="/admin/ineligible">Refresh this page</a></div></section>`)
+	fmt.Fprint(w, `<div class="col"><article class="card h-100"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 3</div><h3 class="h5">Import historical tracker</h3><p class="text-muted flex-grow-1">Upload the Excel tracker, check its matches, sign off, then apply history.</p><a class="btn btn-outline-primary" href="/admin/ineligible/backfill">Open tracker import</a></div></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`)
 }
 
 func nextIneligibleReportID(queue []ineligibleQueueRow) int64 {
