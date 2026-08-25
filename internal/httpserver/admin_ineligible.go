@@ -432,15 +432,15 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			nextReportID = nextIneligibleReportID(queue)
 		}
 		nextHref, nextLabel := ineligibleNextReportAction(nextReportID)
-		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Your own cases come first. The team queue below is the shared work; totals, filters and the import routes are tucked away until you need them.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="%s">%s</a><a class="btn btn-outline-primary" href="/admin/cases/mine/ineligible">My cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
+		fmt.Fprintf(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">The team queue is the shared work; totals, filters and the import routes are tucked away until you need them. Your own cases are on the Dashboard, or under <strong>My cases</strong>.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-primary" href="%s">%s</a><a class="btn btn-outline-primary" href="/admin/cases/mine/ineligible">My cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
 		writeIneligibleFlash(w, r)
 		if ineligibleFullQueueRequested(r.URL.Query()) {
 			fmt.Fprint(w, `<div class="alert alert-light border d-flex flex-wrap justify-content-between align-items-center gap-2"><div class="small text-muted">You are looking at the full ineligible-player queue.</div><a class="btn btn-sm btn-outline-secondary" href="/admin/ineligible">Back to outcomes to sign off</a></div>`)
 		}
 
-		// Each investigator's own casework is the first thing on the page; the
-		// shared queue and the running totals follow it.
-		s.writeAdminPersonalWork(w, r)
+		// "My work" and the training-case list belong to the Dashboard page;
+		// repeating them here only pushed the shared queue further down. The
+		// "My cases" button in the header covers getting back to your own work.
 		writeIneligibleTodayLane(w, counts)
 
 		if hasSyncHealth {
