@@ -20,7 +20,10 @@ var (
 	ErrSyncInProgress = errors.New("an ineligible-player sync is already running")
 )
 
-const googleFormOrigin = "google_form"
+const (
+	googleFormOrigin         = "google_form"
+	googleFormImportLookback = 24 * time.Hour
+)
 
 // Source is the read-only form values provider used by Service.
 type Source interface {
@@ -108,6 +111,7 @@ type Service struct {
 	source Source
 	store  Store
 	loc    *time.Location
+	now    func() time.Time
 }
 
 func NewService(cfg Config, source Source, store Store) (*Service, error) {
@@ -121,7 +125,7 @@ func NewService(cfg Config, source Source, store Store) (*Service, error) {
 	if err != nil {
 		loc = time.UTC
 	}
-	return &Service{cfg: cfg, source: source, store: store, loc: loc}, nil
+	return &Service{cfg: cfg, source: source, store: store, loc: loc, now: time.Now}, nil
 }
 
 // SyncFromEnv is the admin-callable production entry point. It intentionally
@@ -206,6 +210,8 @@ func (s *Service) Sync(ctx context.Context, trigger Trigger) (summary Summary, r
 	}
 
 	rows := s.prepareRows(data.Values[1:], sourceReference, expectedHeaderSHA)
+	rows = rowsReceivedSince(rows, s.now().Add(-googleFormImportLookback))
+	summary.Seen = len(rows)
 	storeFailures := make([]error, 0)
 	for index := range rows {
 		s.attachUploads(ctx, &rows[index])
@@ -256,6 +262,20 @@ func (s *Service) Sync(ctx context.Context, trigger Trigger) (summary Summary, r
 		return summary, fmt.Errorf("finish ineligible-player sync run: %w", err)
 	}
 	return summary, nil
+}
+
+func rowsReceivedSince(rows []IntakeRow, cutoff time.Time) []IntakeRow {
+	recent := make([]IntakeRow, 0, len(rows))
+	for _, row := range rows {
+		// A malformed Form timestamp is retained for manual attention instead of
+		// being silently discarded. Valid timestamps older than the daily window
+		// have already been observed by an earlier run and require no work here.
+		if row.ExternalCreatedAt != nil && row.ExternalCreatedAt.Before(cutoff) {
+			continue
+		}
+		recent = append(recent, row)
+	}
+	return recent
 }
 
 func (s *Service) finishFailure(_ context.Context, summary Summary, headerSHA string, cause error) error {

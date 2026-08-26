@@ -212,7 +212,7 @@ func testConfig() Config {
 
 func validSourceRow() []any {
 	return []any{
-		"04/08/2026 09:30:00",
+		time.Now().UTC().Format(time.RFC3339Nano),
 		"reporter@example.test",
 		"Defaulting Player",
 		"Registration rule",

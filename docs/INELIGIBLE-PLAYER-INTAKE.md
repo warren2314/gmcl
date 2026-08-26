@@ -101,16 +101,19 @@ automatically.
 
 ## Import selection and queue visibility
 
-The importer reads cell values, not spreadsheet formatting. It cannot detect
-whether a row is blue, so **Import and choose reports** always reads the full
-configured Google response range. Staff then choose the reports to progress on
-the selection screen; deleting, reordering or recolouring source rows is not a
-selection mechanism.
+The importer reads cell values, not spreadsheet formatting. It validates the
+full configured Google response range and then processes only reports whose
+Form timestamp is within the preceding 24 hours. The scheduled n8n workflow
+runs daily at 03:30; the manual **Import and choose reports** action uses the
+same rolling window. A malformed timestamp is retained as an exception for
+manual attention rather than silently discarded. Staff then choose the reports
+to progress on the selection screen; deleting, reordering or recolouring source
+rows is not a selection mechanism.
 
 The import summary and selection table measure different things:
 
-- **Source rows read** is every data row returned by the configured Google
-  range.
+- **Source rows read** is every report inside the current 24-hour processing
+  window (plus any malformed timestamp that requires attention).
 - **Added** and **changed** count database mutations. Both can be zero on a
   successful repeat import.
 - **Need attention** counts row warnings and failures. A validation or evidence

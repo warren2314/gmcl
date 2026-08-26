@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakeSource struct {
@@ -163,6 +164,59 @@ func TestServiceSyncIsIdempotentAndAppendsChangedRevision(t *testing.T) {
 		if got := intake.row.RawData["Your Name & Role at Club/League"]; got != "Jane Smith, Secretary" {
 			t.Fatalf("raw reporter name/role: %v", got)
 		}
+	}
+}
+
+func TestServiceProcessesOnlyReportsReceivedInPrevious24Hours(t *testing.T) {
+	cfg := testConfig()
+	now := time.Date(2026, time.August, 26, 16, 0, 0, 0, time.UTC)
+	recent := validSourceRow()
+	recent[0] = now.Add(-23 * time.Hour).Format(time.RFC3339)
+	boundary := validSourceRow()
+	boundary[0] = now.Add(-24 * time.Hour).Format(time.RFC3339)
+	boundary[2] = "Boundary Player"
+	old := validSourceRow()
+	old[0] = now.Add(-24*time.Hour - time.Second).Format(time.RFC3339)
+	old[2] = "Old Player"
+
+	source := &fakeSource{data: sheetWithRows(old, boundary, recent)}
+	store := newFakeStore()
+	service, err := NewService(cfg, source, store)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	service.now = func() time.Time { return now }
+
+	summary, err := service.Sync(context.Background(), Trigger{Type: "n8n"})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if summary.Seen != 2 || summary.New != 2 || summary.Changed != 0 || summary.Errors != 0 {
+		t.Fatalf("summary: %+v", summary)
+	}
+	for _, intake := range store.intakes {
+		if intake.row.PlayerText == "Old Player" {
+			t.Fatal("report older than 24 hours was processed")
+		}
+	}
+}
+
+func TestServiceRetainsMalformedRecentTimestampForAttention(t *testing.T) {
+	cfg := testConfig()
+	row := validSourceRow()
+	row[0] = "not-a-timestamp"
+	store := newFakeStore()
+	service, err := NewService(cfg, &fakeSource{data: sheetWithRows(row)}, store)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	summary, err := service.Sync(context.Background(), Trigger{Type: "n8n"})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if summary.Seen != 1 || summary.New != 1 || summary.Errors != 1 || summary.Status != "partial" {
+		t.Fatalf("summary: %+v", summary)
 	}
 }
 

@@ -125,16 +125,16 @@ func TestIneligibleCaseNextStepShowsReplyCountStatusAndDirectAnchor(t *testing.T
 		}
 	}
 }
-func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
+func TestWriteIneligibleStartRoutesShowsTwoPlainLanguageChoices(t *testing.T) {
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
 	html := out.String()
-	for _, want := range []string{"Raise one case", "Import and choose reports", "Import historical tracker", "Open next selected report", "/admin/ineligible/42"} {
+	for _, want := range []string{"Raise one case", "Import and choose reports", "last 24 hours", "Open next selected report", "/admin/ineligible/42", "row-cols-lg-2"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("start routes missing %q", want)
 		}
 	}
-	if strings.Contains(html, "Check for new reports") || strings.Contains(html, ">Excel import<") {
+	if strings.Contains(html, "Import historical tracker") || strings.Contains(html, "ROUTE 3") || strings.Contains(html, "/admin/ineligible/backfill") || strings.Contains(html, ">Excel import<") {
 		t.Fatalf("start routes retained old busy labels: %s", html)
 	}
 }
