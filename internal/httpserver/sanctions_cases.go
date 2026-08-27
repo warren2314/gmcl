@@ -2236,11 +2236,17 @@ func (s *Server) handleAdminCaseCorrect() http.HandlerFunc {
 			http.Error(w, "the allegation shown in the active response portal is locked until the response window closes; record private notes meanwhile", http.StatusConflict)
 			return
 		}
-		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'case_corrected','admin',$2,$3,$4,jsonb_build_object('public_summary',$5,'private_summary',$6),jsonb_build_object('public_summary',$7,'private_summary',$8),$9)`, id, actorIDAny(actor), actor.Label, reason, beforePublic, beforePrivate, afterPublic, afterPrivate, actor.RequestID)
+		_, err = tx.Exec(r.Context(), `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,before_data,after_data,request_id) VALUES($1,'case_corrected','admin',$2,$3,$4,jsonb_build_object('public_summary',$5::text,'private_summary',$6::text),jsonb_build_object('public_summary',$7::text,'private_summary',$8::text),$9)`, id, actorIDAny(actor), actor.Label, reason, beforePublic, beforePrivate, afterPublic, afterPrivate, actor.RequestID)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE sanction_cases SET public_summary=$2,private_summary=$3,current_revision=current_revision+1,updated_at=now() WHERE id=$1`, id, afterPublic, afterPrivate)
 		}
-		if err != nil || tx.Commit(r.Context()) != nil {
+		if err != nil {
+			slog.Error("correct sanction case summary", "case_id", id, "admin_id", actor.ID, "error", err)
+			http.Error(w, "correction failed", 500)
+			return
+		}
+		if err = tx.Commit(r.Context()); err != nil {
+			slog.Error("commit sanction case summary correction", "case_id", id, "admin_id", actor.ID, "error", err)
 			http.Error(w, "correction failed", 500)
 			return
 		}
