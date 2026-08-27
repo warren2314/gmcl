@@ -548,6 +548,7 @@ func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
+		"responses_overdue": "cases.source_type='ineligible_player' AND cases.status NOT IN ('closed','rejected','withdrawn','published') AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=cases.id ORDER BY request.id DESC LIMIT 1) AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired'))",
 		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
 		"awaiting_denver":   "cases.source_type='ineligible_player' AND cases.status='approved'",
 		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
@@ -560,6 +561,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 	source := ineligibleDashboardSource(t)
 	for _, want := range []string{
 		`/admin/cases?group=investigating#cases`,
+		`/admin/cases?group=responses_overdue#cases`,
 		`/admin/cases?group=awaiting_decision#cases`,
 		`/admin/cases?group=awaiting_denver#cases`,
 		`/admin/cases?group=closed#cases`,

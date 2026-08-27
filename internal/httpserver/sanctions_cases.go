@@ -918,9 +918,9 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		group := strings.TrimSpace(r.URL.Query().Get("group"))
 		predicate := "c.status != 'withdrawn'"
 		title := "Sanctions cases"
-		if group == "investigating" || group == "awaiting_decision" || group == "awaiting_denver" || group == "closed" {
+		if group == "investigating" || group == "responses_overdue" || group == "awaiting_decision" || group == "awaiting_denver" || group == "closed" {
 			predicate = ineligibleCaseGroupPredicate(group, "c")
-			title = map[string]string{"investigating": "Ineligible-player cases under investigation", "awaiting_decision": "Ineligible-player cases awaiting decision", "awaiting_denver": "Ineligible-player cases awaiting Denver final sign-off", "closed": "Closed ineligible-player cases"}[group]
+			title = map[string]string{"investigating": "Ineligible-player cases under investigation", "responses_overdue": "Ineligible-player cases with overdue responses", "awaiting_decision": "Ineligible-player cases awaiting decision", "awaiting_denver": "Ineligible-player cases awaiting Denver final sign-off", "closed": "Closed ineligible-player cases"}[group]
 		}
 		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(c.player_name,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated') AND `+predicate+` ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC LIMIT 300`)
 		if err != nil {

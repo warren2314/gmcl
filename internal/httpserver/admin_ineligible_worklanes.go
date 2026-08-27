@@ -37,7 +37,7 @@ func ineligibleQueueStatusCards(counts ineligibleDashboardCounts) []ineligibleQu
 		{Label: "Hidden reports", Count: counts.HiddenReports, Accent: "border-secondary", Href: "/admin/ineligible?scope=all&state=open&worklist=deferred"},
 		{Label: "Under investigation", Count: counts.ActiveCases, Accent: "border-primary", Href: "/admin/cases?group=investigating#cases"},
 		{Label: "Responses due", Count: counts.ResponsesDue, Accent: "border-warning", Href: "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
-		{Label: "Responses overdue", Count: counts.ResponsesOverdue, Accent: "border-danger", Href: "/admin/ineligible?scope=all&state=all&case_status=investigating"},
+		{Label: "Responses overdue", Count: counts.ResponsesOverdue, Accent: "border-danger", Href: "/admin/cases?group=responses_overdue#cases"},
 		{Label: "New replies", Count: counts.RecentReplies, Accent: "border-info", Href: ineligibleNewRepliesHref(counts)},
 		{Label: "Awaiting decision", Count: counts.AwaitingDecision, Accent: "border-primary", Href: "/admin/cases?group=awaiting_decision#cases"},
 		denver,

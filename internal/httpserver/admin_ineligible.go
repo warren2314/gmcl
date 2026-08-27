@@ -658,10 +658,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
 		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND latest.status='pending' AND latest.due_at>=now()),
-		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
-			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
-		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND c.status NOT IN ('closed','rejected','withdrawn','published')
-			AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired')),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("responses_overdue", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
 			SELECT e.id,e.created_at FROM sanction_case_events e WHERE e.case_id=c.id AND e.event_type IN ('party_response','external_response_recorded') ORDER BY e.id DESC LIMIT 1
 		 ) reply ON TRUE WHERE c.source_type='ineligible_player' AND NOT EXISTS (
@@ -699,6 +696,8 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='investigating'"
 	case "awaiting_decision":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='decision_proposed'"
+	case "responses_overdue":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status NOT IN ('closed','rejected','withdrawn','published') AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired'))"
 	case "awaiting_denver":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='approved'"
 	case "closed":

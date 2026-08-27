@@ -27,6 +27,9 @@ func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 			t.Fatalf("card %d is %q, want %q - the grid order changed", i, cards[i].Label, label)
 		}
 	}
+	if cards[5].Href != "/admin/cases?group=responses_overdue#cases" {
+		t.Fatalf("responses overdue links to %q, want the matching overdue case group", cards[5].Href)
+	}
 }
 
 func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
