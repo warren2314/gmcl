@@ -127,6 +127,7 @@ func (s *Server) handleAdminWeeklyCardReport() http.HandlerFunc {
 <form method="POST" action="/admin/sanctions/weekly-report/pdf">
   <input type="hidden" name="csrf_token" value="%s">
   <input type="hidden" name="week_id" value="%d">
+  <input type="hidden" name="redirect" value="/admin/sanctions/weekly-report?week_id=%d">
   <div class="card shadow-sm mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
       <span class="fw-semibold">Review Clubs Before Publishing</span>
@@ -142,9 +143,10 @@ func (s *Server) handleAdminWeeklyCardReport() http.HandlerFunc {
           <th>Include</th><th>Club</th><th>Team</th><th>Missing Details</th><th>Prior Offences</th><th>Card Due</th><th>Current Card</th>
         </tr></thead>
         <tbody>
-`, escapeHTML(csrfToken), week.ID)
+`, escapeHTML(csrfToken), week.ID, week.ID)
 
 		for _, row := range rows {
+			currentCardHTML := cardReportCurrentHTML(row) + weeklyCardReportRevokeButton(row)
 			fmt.Fprintf(w, `<tr>
   <td><input class="form-check-input card-report-check" type="checkbox" name="team_id" value="%d" checked aria-label="Include %s"></td>
   <td>%s</td>
@@ -158,7 +160,7 @@ func (s *Server) handleAdminWeeklyCardReport() http.HandlerFunc {
 				cardReportMissingHTML(row),
 				cardReportPriorHTML(row),
 				cardReportDueBadge(row),
-				cardReportCurrentHTML(row))
+				currentCardHTML)
 		}
 
 		fmt.Fprint(w, `        </tbody>
@@ -520,6 +522,13 @@ func cardReportCurrentHTML(row weeklyCardReportRow) string {
 		points,
 		issuedAt,
 		escapeHTML(reasonLabel(row.ExistingReason)))
+}
+
+func weeklyCardReportRevokeButton(row weeklyCardReportRow) string {
+	if row.ExistingSanctionID == nil || row.ExistingCard != "yellow" || row.ExistingReason != "non_submission" || (row.ExistingStatus != "active" && row.ExistingStatus != "served") {
+		return ""
+	}
+	return fmt.Sprintf(`<div class="mt-2"><button type="submit" class="btn btn-sm btn-outline-danger" name="reason" value="" formaction="/admin/sanctions/%d/revoke-yellow" formmethod="post" onclick="const reason=prompt('Why was this yellow card given by mistake?'); if (!reason || !reason.trim()) return false; this.value=reason.trim(); return confirm('Remove this yellow card and retain it in the audit history?')">Remove mistaken yellow</button></div>`, *row.ExistingSanctionID)
 }
 
 func cardReportMissingText(row weeklyCardReportRow) string {

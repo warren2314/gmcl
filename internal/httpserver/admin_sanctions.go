@@ -387,7 +387,7 @@ func revokeYellowCardForm(csrfToken string, sanctionID int64, redirect string) s
   <input type="hidden" name="redirect" value="%s">
   <input type="hidden" name="reason" value="">
   <button type="submit" class="btn btn-sm btn-outline-danger py-0"
-          onclick="const reason = prompt('Reason for revoking this yellow card?'); if (!reason || !reason.trim()) return false; this.form.reason.value = reason.trim(); return confirm('Revoke this yellow card?')">Revoke yellow</button>
+          onclick="const reason = prompt('Why was this yellow card given by mistake?'); if (!reason || !reason.trim()) return false; this.form.reason.value = reason.trim(); return confirm('Remove this yellow card and retain it in the audit history?')">Remove mistaken yellow</button>
 </form>`, sanctionID, escapeHTML(csrfToken), escapeHTML(redirect))
 }
 
@@ -640,6 +640,23 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 			http.Error(w, "unauthorised", http.StatusUnauthorized)
 			return
 		}
+		var linkedCaseID *int64
+		if err = s.DB.QueryRow(ctx, `SELECT case_id FROM sanctions WHERE id=$1 AND colour='yellow' AND status IN ('active','served')`, sanctionID).Scan(&linkedCaseID); err != nil {
+			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not removable."), http.StatusSeeOther)
+			return
+		}
+		if linkedCaseID != nil {
+			if err = sanctiondomain.NewService(s.DB).OverturnCase(ctx, *linkedCaseID, actor, reason); err != nil {
+				redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+				http.Redirect(w, r, redirectWithMessage(redirect, "error", "Linked case could not be closed: "+err.Error()), http.StatusSeeOther)
+				return
+			}
+			s.audit(ctx, r, "admin", actor.ID, "yellow_card_case_overturned", "sanction_case", linkedCaseID, map[string]any{"sanction_id": sanctionID, "reason": reason})
+			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
+			http.Redirect(w, r, redirectWithMessage(redirect, "success", "Mistaken yellow card removed and linked case closed."), http.StatusSeeOther)
+			return
+		}
 		tx, err := s.DB.Begin(ctx)
 		if err != nil {
 			http.Error(w, "update failed", http.StatusInternalServerError)
@@ -662,7 +679,7 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 		`, sanctionID).Scan(&before.TeamID, &before.WeekID, &before.SeasonID, &before.Status, &before.EmailStatus)
 		if err != nil {
 			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
-			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not revocable."), http.StatusSeeOther)
+			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not removable."), http.StatusSeeOther)
 			return
 		}
 
@@ -688,7 +705,7 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 		}
 		if tag.RowsAffected() == 0 {
 			redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
-			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not revocable."), http.StatusSeeOther)
+			http.Redirect(w, r, redirectWithMessage(redirect, "error", "Yellow card is not removable."), http.StatusSeeOther)
 			return
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO sanction_events(sanction_id,event_type,event_at,notes,created_by_admin_id,actor_label,reason,before_data,after_data,request_id) SELECT id,'yellow_revoked',now(),$2,$3,$4,$2,$5::jsonb,to_jsonb(sa),$6 FROM sanctions sa WHERE id=$1`, sanctionID, reason, *actor.ID, actor.Label, string(beforeData), actor.RequestID)
@@ -707,7 +724,7 @@ func (s *Server) handleAdminSanctionRevokeYellow() http.HandlerFunc {
 		})
 
 		redirect := safeAdminRedirect(r.FormValue("redirect"), "/admin/sanctions")
-		http.Redirect(w, r, redirectWithMessage(redirect, "success", "Yellow card revoked."), http.StatusSeeOther)
+		http.Redirect(w, r, redirectWithMessage(redirect, "success", "Mistaken yellow card removed."), http.StatusSeeOther)
 	}
 }
 

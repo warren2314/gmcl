@@ -2386,7 +2386,9 @@ func (s *Service) OverturnCase(ctx context.Context, caseID int64, actor Actor, r
 	if _, err = tx.Exec(ctx, `UPDATE sanction_cases SET status='closed',public_status='overturned',closed_at=now(),current_revision=$2,updated_at=now() WHERE id=$1`, caseID, priorRevision+1); err != nil {
 		return err
 	}
-	_, _ = tx.Exec(ctx, `UPDATE sanctions SET status='overturned',resolved_at=now(),resolved_by_admin_id=$2 WHERE case_id=$1 AND status IN ('active','served')`, caseID, *actor.ID)
+	_, _ = tx.Exec(ctx, `UPDATE sanctions SET status='overturned',resolved_at=now(),resolved_by_admin_id=$2,
+		email_status=CASE WHEN COALESCE(email_status,'pending') IN ('pending','approved') THEN 'skipped' ELSE email_status END
+		WHERE case_id=$1 AND status IN ('active','served')`, caseID, *actor.ID)
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,request_id,after_data) VALUES($1,'decision_overturned','admin',$2,$3,$4,$5,$6)`, caseID, *actor.ID, actor.Label, reason, actor.RequestID, mapJSON(map[string]any{"decision_revision_id": overturnedID})); err != nil {
 		return err
 	}
