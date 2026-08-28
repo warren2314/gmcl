@@ -1,6 +1,10 @@
 package sanctions
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestPlayCricketHelpCopyRecipientIsCanonicalAndDeduplicated(t *testing.T) {
 	seen := map[string]bool{"secretary@droylsden.example": true}
@@ -42,5 +46,49 @@ func TestIneligibleOutcomeDoesNotEmailJoepRoutes(t *testing.T) {
 	}
 	if !shouldIncludeReporterOutcomeRecipient("manual", "club-reporter@example.test") {
 		t.Fatal("unrelated manual reporter was excluded")
+	}
+}
+
+func TestFinalIssueRefreshesPlayCricketRecipientsForPointOutcomes(t *testing.T) {
+	raw, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, required := range []string{
+		"currentPlayCricketRecipients",
+		"active AND recipient_role='play_cricket'",
+		`item.audience == "official" && hasAnyPoints`,
+		"appendUniqueOutcomeRecipient(item.recipients, seen, recipient)",
+		"'queued',$3::jsonb",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("final issue does not refresh the Play-Cricket recipient snapshot: missing %q", required)
+		}
+	}
+}
+
+func TestStuartPointsEmailBackfillIsOfficialIdempotentAndLiveOnly(t *testing.T) {
+	raw, err := os.ReadFile("../../migrations/0084_restore_stuart_play_cricket_outcomes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.ToLower(string(raw))
+	for _, required := range []string{
+		"'play_cricket','stuart russell','playcrickethelp@gtrmcrcricket.co.uk',true",
+		"cases.source_type='ineligible_player'",
+		"cases.status='published'",
+		"not cases.is_test",
+		"case_training_designated",
+		"coalesce(effect.points,0)<>0",
+		"outbox.message_kind='outcome_official'",
+		"correspondence.audience='official'",
+		"where not exists",
+		"on conflict(idempotency_key) do nothing",
+		"play_cricket_outcome_backfill_queued",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("Stuart points-email repair is missing %q", required)
+		}
 	}
 }

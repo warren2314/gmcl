@@ -2226,14 +2226,59 @@ func (s *Service) PublishCase(ctx context.Context, caseID int64, actor Actor) er
 	if len(approved) == 0 {
 		return errors.New("approved outcome email and PDF snapshots are missing")
 	}
+	var hasAnyPoints bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sanction_effect_revisions
+		WHERE decision_revision_id=$1 AND COALESCE(points,0)<>0
+	)`, decisionID).Scan(&hasAnyPoints); err != nil {
+		return err
+	}
+	var currentPlayCricketRecipients []string
+	if hasAnyPoints {
+		playCricketRows, recipientErr := tx.Query(ctx, `SELECT lower(email)
+			FROM sanction_recipient_directory
+			WHERE active AND recipient_role='play_cricket'
+			ORDER BY id`)
+		if recipientErr != nil {
+			return recipientErr
+		}
+		for playCricketRows.Next() {
+			var recipient string
+			if recipientErr = playCricketRows.Scan(&recipient); recipientErr != nil {
+				playCricketRows.Close()
+				return recipientErr
+			}
+			currentPlayCricketRecipients = append(currentPlayCricketRecipients, recipient)
+		}
+		if recipientErr = playCricketRows.Err(); recipientErr != nil {
+			playCricketRows.Close()
+			return recipientErr
+		}
+		playCricketRows.Close()
+		if len(currentPlayCricketRecipients) == 0 {
+			return errors.New("an active Play-Cricket recipient is required before issuing a card or points outcome")
+		}
+	}
 
 	var policyID *int64
 	_ = tx.QueryRow(ctx, `SELECT id FROM sanction_notification_policy_versions WHERE active AND source_type='*' AND event_type='decision_published' ORDER BY version DESC LIMIT 1`).Scan(&policyID)
 	for _, item := range approved {
+		if item.audience == "official" && hasAnyPoints {
+			seen := make(map[string]bool, len(item.recipients)+len(currentPlayCricketRecipients))
+			for _, recipient := range item.recipients {
+				seen[strings.ToLower(strings.TrimSpace(recipient))] = true
+			}
+			for _, recipient := range currentPlayCricketRecipients {
+				item.recipients, err = appendUniqueOutcomeRecipient(item.recipients, seen, recipient)
+				if err != nil {
+					return fmt.Errorf("Play-Cricket outcome recipient is invalid: %w", err)
+				}
+			}
+		}
 		var queuedID int64
 		if err = tx.QueryRow(ctx, `INSERT INTO sanction_correspondence_revisions(case_id,decision_revision_id,supersedes_id,message_kind,audience,revision,status,recipients,subject,body,attachment_manifest,pdf_storage_key,pdf_sha256,pdf_bytes,created_by_admin_id,approved_by_admin_id)
-			SELECT case_id,decision_revision_id,id,message_kind,audience,$2,'queued',recipients,subject,body,attachment_manifest,pdf_storage_key,pdf_sha256,pdf_bytes,created_by_admin_id,approved_by_admin_id
-			FROM sanction_correspondence_revisions WHERE id=$1 RETURNING id`, item.id, item.revision+1).Scan(&queuedID); err != nil {
+			SELECT case_id,decision_revision_id,id,message_kind,audience,$2,'queued',$3::jsonb,subject,body,attachment_manifest,pdf_storage_key,pdf_sha256,pdf_bytes,created_by_admin_id,approved_by_admin_id
+			FROM sanction_correspondence_revisions WHERE id=$1 RETURNING id`, item.id, item.revision+1, mapJSON(item.recipients)).Scan(&queuedID); err != nil {
 			return err
 		}
 		for _, recipient := range item.recipients {
