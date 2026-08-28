@@ -419,16 +419,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`)
 		writeIneligibleFlash(w, r)
-		var nextReportID int64
-		if filter.Worklist == "visible" {
-			nextReportID = nextIneligibleReportID(queue)
-		}
-		writeIneligibleStartRoutes(w, csrf, nextReportID)
-		advancedOpen := ""
-		if ineligibleQueueUsesAdvancedView(filter) {
-			advancedOpen = " open"
-		}
-		fmt.Fprintf(w, `<details class="card mb-4"%s><summary class="card-header fw-semibold">More filters and queue status</summary><div class="card-body">`, advancedOpen)
+		writeIneligibleQueueStatusStart(w)
 		mineClass, selectedClass, importedClass := "btn-outline-primary", "btn-outline-primary", "btn-outline-primary"
 		if filter.Scope == "mine" {
 			mineClass = "btn-primary"
@@ -615,6 +606,10 @@ func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
 	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-2 g-3">`)
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100 border-primary"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 1</div><h3 class="h5">Raise one case</h3><p class="text-muted flex-grow-1">Open a report, check the pre-filled details, then select <strong>Raise case</strong>.</p><a class="btn btn-primary" href="%s">%s</a></div></article></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import and choose reports</h3><p class="text-muted flex-grow-1">Check the Google Form for reports received in the last 24 hours, then tick the reports you have been asked to progress.</p><button class="btn btn-outline-primary">Import and choose reports</button></form></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`, escapeHTML(csrf))
+}
+
+func writeIneligibleQueueStatusStart(w io.Writer) {
+	fmt.Fprint(w, `<details class="card mb-4" open><summary class="card-header fw-semibold">Filters and queue status</summary><div class="card-body">`)
 }
 
 func nextIneligibleReportID(queue []ineligibleQueueRow) int64 {

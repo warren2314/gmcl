@@ -63,12 +63,13 @@ func TestIneligibleDenverCardHidesEmptyPointsNote(t *testing.T) {
 	}
 }
 
-func TestIneligibleDashboardKeepsItsOriginalLayout(t *testing.T) {
+func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 	source := ineligibleDashboardSource(t)
-	// The page was restored after the reworked layout was rolled back. These
-	// are the pieces that rework had moved or replaced.
+	// Keep the restored queue layout, but open it immediately without placing
+	// the route-choice cards before it.
 	for _, want := range []string{
-		`<summary class="card-header fw-semibold">More filters and queue status</summary>`,
+		`<details class="card mb-4" open>`,
+		`<summary class="card-header fw-semibold">Filters and queue status</summary>`,
 		`Import, choose the reports to progress, then work from that selected list.`,
 		`<a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a>`,
 		`<a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a>`,
@@ -80,6 +81,7 @@ func TestIneligibleDashboardKeepsItsOriginalLayout(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
+		"writeIneligibleStartRoutes(w, csrf, nextReportID)",
 		"s.writeAdminPersonalWork(w, r)",
 		"writeIneligibleTodayLane",
 		"writeIneligibleTotalsLane",
@@ -90,12 +92,12 @@ func TestIneligibleDashboardKeepsItsOriginalLayout(t *testing.T) {
 			t.Fatalf("the rolled-back layout is still present: %q", unwanted)
 		}
 	}
-	// The queue tabs sit inside the collapsible section again, above the grid.
+	// The queue tabs sit inside the open section above the grid.
 	tabs := strings.Index(source, `aria-label="Choose work queue"`)
 	grid := strings.Index(source, `row-cols-2 row-cols-md-3 row-cols-xl-5`)
-	details := strings.Index(source, `More filters and queue status`)
+	details := strings.Index(source, `writeIneligibleQueueStatusStart(w)`)
 	if details < 0 || tabs < details || grid < tabs {
-		t.Fatalf("tabs and grid must sit inside the collapsible section: details=%d tabs=%d grid=%d", details, tabs, grid)
+		t.Fatalf("tabs and grid must sit inside the open queue section: details=%d tabs=%d grid=%d", details, tabs, grid)
 	}
 }
 

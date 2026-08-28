@@ -139,6 +139,18 @@ func TestWriteIneligibleStartRoutesShowsTwoPlainLanguageChoices(t *testing.T) {
 	}
 }
 
+func TestWriteIneligibleQueueStatusStartIsOpenByDefault(t *testing.T) {
+	var out bytes.Buffer
+	writeIneligibleQueueStatusStart(&out)
+	html := out.String()
+	if !strings.Contains(html, `<details class="card mb-4" open>`) {
+		t.Fatalf("queue status is not open by default: %s", html)
+	}
+	if !strings.Contains(html, "Filters and queue status") {
+		t.Fatalf("queue status heading missing: %s", html)
+	}
+}
+
 func TestIneligibleAdvancedControlsStayClosedForDefaultView(t *testing.T) {
 	filter := parseIneligibleQueueFilters(url.Values{})
 	if ineligibleQueueUsesAdvancedView(filter) {

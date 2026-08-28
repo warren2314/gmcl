@@ -396,6 +396,7 @@ func validResponseDraftBody(body string) bool {
 }
 
 var responseDraftParagraphBreak = regexp.MustCompile(`\n[\t ]*\n+`)
+var responseDraftWord = regexp.MustCompile(`[[:alnum:]]+`)
 
 func responseSummaryIsPlaceholder(value string) bool {
 	normalized := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "."))
@@ -416,7 +417,7 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 			return fmt.Errorf("replace the placeholder with reviewed, reporter-safe allegation facts before saving a response request")
 		}
 		if !containsCurrentResponseDraftAllegation(body, currentPublicAllegation) {
-			return fmt.Errorf("the response request must contain the current public allegation once; extra fixture dates and occurrence details may be added around it")
+			return fmt.Errorf("the response request must preserve the current public allegation's words in order; extra fixture dates and occurrence details may be inserted within or around it")
 		}
 		if strings.TrimSpace(allegedRuleParagraph) != "" && !containsExactResponseDraftParagraph(body, allegedRuleParagraph) {
 			return fmt.Errorf("the response request must contain the current alleged rule exactly as a standalone paragraph")
@@ -438,18 +439,38 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 }
 
 // containsCurrentResponseDraftAllegation keeps the reviewed public allegation
-// in the email while allowing an investigator to add related occurrences (for
-// example, two more fixture dates) to the same paragraph. Whitespace entered by
-// the browser is immaterial, but the allegation's words must remain unchanged
-// and must occur exactly once so a corrected case summary invalidates old
-// drafts.
+// in the email while allowing an investigator to insert related occurrences
+// (for example, another fixture date) anywhere in the same paragraph. The
+// allegation's words must remain in order, so deleting or replacing recorded
+// facts is rejected and a corrected case summary still invalidates old drafts.
 func containsCurrentResponseDraftAllegation(body, allegation string) bool {
-	normalizedBody := strings.Join(strings.Fields(body), " ")
-	normalizedAllegation := strings.Join(strings.Fields(allegation), " ")
-	if normalizedAllegation == "" {
+	want := responseDraftComparableWords(allegation)
+	if len(want) == 0 {
 		return false
 	}
-	return strings.Count(normalizedBody, normalizedAllegation) == 1
+	matches := 0
+	for _, paragraph := range responseDraftParagraphBreak.Split(strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n"), -1) {
+		words := responseDraftComparableWords(paragraph)
+		matched := 0
+		for _, word := range words {
+			if word == want[matched] {
+				matched++
+				if matched == len(want) {
+					matches++
+					matched = 0
+				}
+			}
+		}
+	}
+	return matches == 1
+}
+
+func responseDraftComparableWords(value string) []string {
+	words := responseDraftWord.FindAllString(value, -1)
+	for i := range words {
+		words[i] = strings.ToLower(words[i])
+	}
+	return words
 }
 
 func containsExactResponseDraftParagraph(body, allegation string) bool {
