@@ -350,7 +350,7 @@ func (s *Server) writeAdminResponseDraftForms(w http.ResponseWriter, r *http.Req
 			stepTitle = "2. Review and save the reminder"
 			buttonText = "Save reminder"
 		}
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required>%s</textarea><div class="form-text">Keep exactly one %s placeholder. You may add other fixture dates and occurrence details around the recorded allegation. Saving this wording does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-primary">%s</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), stepTitle, badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, buttonText, preview)
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/response-drafts/%s" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong>%s</div><div class="card-body"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="12" maxlength="30000" required>%s</textarea><div class="form-text">Keep the recorded allegation facts, the alleged Rule reference, its published-source link and exactly one %s placeholder. Other explanatory wording may be edited. Saving this wording does not contact the club.</div></div><div class="card-footer d-flex gap-2"><button class="btn btn-primary">%s</button>%s</div></form>`, caseID, kind, escapeHTML(csrf), stepTitle, badge, escapeHTML(view.subject), escapeHTML(view.body), responseLinkPlaceholder, buttonText, preview)
 		if kind == "response_request" && view.exists && !sanctionsEmailDisabled() && (sourceType != "ineligible_player" || ineligibleOutboundEmailEnabled()) {
 			actor := adminActor(r)
 			adminEmail := ""
@@ -419,8 +419,8 @@ func validateResponseDraftContent(kind, body, currentPublicAllegation, allegedRu
 		if !containsCurrentResponseDraftAllegation(body, currentPublicAllegation) {
 			return fmt.Errorf("the response request must preserve the current public allegation's words in order; extra fixture dates and occurrence details may be inserted within or around it")
 		}
-		if strings.TrimSpace(allegedRuleParagraph) != "" && !containsExactResponseDraftParagraph(body, allegedRuleParagraph) {
-			return fmt.Errorf("the response request must contain the current alleged rule exactly as a standalone paragraph")
+		if strings.TrimSpace(allegedRuleParagraph) != "" && !containsCurrentAllegedRuleCitation(body, allegedRuleParagraph) {
+			return fmt.Errorf("the response request must keep the current alleged rule reference and published source; other explanatory wording may be edited")
 		}
 		if !containsSevenDayWindow(normalized) {
 			return fmt.Errorf("the response request must state that the secure response window lasts seven days")
@@ -473,17 +473,55 @@ func responseDraftComparableWords(value string) []string {
 	return words
 }
 
-func containsExactResponseDraftParagraph(body, allegation string) bool {
-	body = strings.ReplaceAll(body, "\r\n", "\n")
-	body = strings.ReplaceAll(body, "\r", "\n")
-	want := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(allegation, "\r\n", "\n"), "\r", "\n"))
-	matches := 0
-	for _, paragraph := range responseDraftParagraphBreak.Split(body, -1) {
-		if strings.TrimSpace(paragraph) == want {
-			matches++
+// containsCurrentAllegedRuleCitation locks the identity of the reviewed rule
+// without making all of the generated descriptive wording immutable. An
+// investigator may remove a sentence from the rule heading that does not
+// relate to the actual offence, but cannot silently change the rule reference
+// or its published source.
+func containsCurrentAllegedRuleCitation(body, allegedRuleParagraph string) bool {
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(allegedRuleParagraph, "\r\n", "\n"), "\r", "\n"), "\n")
+	if len(lines) == 0 {
+		return false
+	}
+	ruleCitation := strings.TrimSpace(lines[0])
+	if separator := strings.Index(ruleCitation, " - "); separator >= 0 {
+		ruleCitation = strings.TrimSpace(ruleCitation[:separator])
+	}
+	if ruleCitation == "" {
+		return false
+	}
+
+	normalizedBody := strings.Join(strings.Fields(body), " ")
+	if countResponseDraftAnchor(normalizedBody, strings.Join(strings.Fields(ruleCitation), " ")) != 1 {
+		return false
+	}
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), "published source:") &&
+			countResponseDraftAnchor(normalizedBody, strings.Join(strings.Fields(line), " ")) != 1 {
+			return false
 		}
 	}
-	return matches == 1
+	return true
+}
+
+func countResponseDraftAnchor(body, anchor string) int {
+	count := 0
+	for offset := 0; offset <= len(body)-len(anchor); {
+		match := strings.Index(body[offset:], anchor)
+		if match < 0 {
+			break
+		}
+		start := offset + match
+		end := start + len(anchor)
+		beforeBoundary := start == 0 || body[start-1] == ' '
+		afterBoundary := end == len(body) || body[end] == ' '
+		if beforeBoundary && afterBoundary {
+			count++
+		}
+		offset = start + 1
+	}
+	return count
 }
 
 func containsSevenDayWindow(normalized string) bool {

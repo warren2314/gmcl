@@ -67,6 +67,36 @@ func TestResponseRequestAllowsDetailsInsertedWithinRecordedAllegation(t *testing
 	}
 }
 
+func TestResponseRequestAllowsIrrelevantRuleExplanationToBeRemoved(t *testing.T) {
+	allegation := "Parth Gaikwad appeared for Example First XI on 2 August 2026."
+	rule := "Alleged rule under investigation: Rule 3.1.2.1.2.5.1.1 - Deliberately incorrect or misleading/false statements will result in penalties being applied. The player in question was registered as a Cat 1 player and there is information to believe that the player did not qualify as a Cat 1 player.\nPublished source: https://www.gtrmcrcricket.co.uk/pages/rules-3-1"
+	editedRule := "Alleged rule under investigation: Rule 3.1.2.1.2.5.1.1 - Deliberately incorrect or misleading/false statements will result in penalties being applied.\nPublished source: https://www.gtrmcrcricket.co.uk/pages/rules-3-1"
+	body := allegation + "\n\n" + editedRule + "\n\n" + responseLinkPlaceholder + "\n\nPlease reply within seven days."
+
+	if err := validateResponseDraftContent("response_request", body, allegation, rule); err != nil {
+		t.Fatalf("request with unrelated rule explanation removed was rejected: %v", err)
+	}
+}
+
+func TestResponseRequestStillRejectsChangedRuleReferenceOrSource(t *testing.T) {
+	allegation := "Parth Gaikwad appeared for Example First XI on 2 August 2026."
+	rule := "Alleged rule under investigation: Rule 3.1.2.1.2.5.1.1 - False statements\nPublished source: https://www.gtrmcrcricket.co.uk/pages/rules-3-1"
+	base := allegation + "\n\n" + rule + "\n\n" + responseLinkPlaceholder + "\n\nPlease reply within seven days."
+
+	for name, changed := range map[string]string{
+		"rule reference":        strings.Replace(base, "3.1.2.1.2.5.1.1", "3.1.2.1.2.5.1.2", 1),
+		"longer rule reference": strings.Replace(base, "3.1.2.1.2.5.1.1", "3.1.2.1.2.5.1.1.1", 1),
+		"published source":      strings.Replace(base, "rules-3-1", "rules-3-2", 1),
+		"longer source URL":     strings.Replace(base, "rules-3-1", "rules-3-10", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateResponseDraftContent("response_request", changed, allegation, rule); err == nil {
+				t.Fatal("request with changed rule identity was accepted")
+			}
+		})
+	}
+}
+
 func TestResponseRequestStillRejectsDeletedOrReplacedAllegationFacts(t *testing.T) {
 	allegation := "Parth Gaikwad appeared for Example Second XI on 2 August 2026."
 	rule := "Alleged rule under investigation: Rule 3.5 - Player eligibility"
