@@ -33,21 +33,23 @@ const (
 )
 
 type ineligibleQueueFilters struct {
-	State         string
-	Origin        string
-	ReportingClub string
-	OffendingClub string
-	Team          string
-	Player        string
-	Assignee      string
-	CaseStatus    string
-	ReplyStatus   string
-	Age           string
-	Scope         string
-	Worklist      string
-	Sort          string
-	FixtureFrom   string
-	FixtureTo     string
+	State            string
+	Origin           string
+	ReportingClub    string
+	OffendingClub    string
+	Team             string
+	Player           string
+	Assignee         string
+	CaseStatus       string
+	ReplyStatus      string
+	Age              string
+	Scope            string
+	Worklist         string
+	Sort             string
+	FixtureFrom      string
+	FixtureTo        string
+	LiveOnly         bool
+	PendingSelection bool
 }
 
 type ineligibleQueueRow struct {
@@ -137,21 +139,23 @@ type ineligibleCaseLinkView struct {
 
 func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 	filter := ineligibleQueueFilters{
-		State:         strings.TrimSpace(values.Get("state")),
-		Origin:        strings.TrimSpace(values.Get("origin")),
-		ReportingClub: strings.TrimSpace(values.Get("reporting_club")),
-		OffendingClub: strings.TrimSpace(values.Get("offending_club")),
-		Team:          strings.TrimSpace(values.Get("team")),
-		Player:        strings.TrimSpace(values.Get("player")),
-		Assignee:      strings.TrimSpace(values.Get("assignee")),
-		CaseStatus:    strings.TrimSpace(values.Get("case_status")),
-		ReplyStatus:   strings.TrimSpace(values.Get("reply_status")),
-		Age:           strings.TrimSpace(values.Get("age")),
-		Scope:         strings.TrimSpace(values.Get("scope")),
-		Worklist:      strings.TrimSpace(values.Get("worklist")),
-		Sort:          strings.TrimSpace(values.Get("sort")),
-		FixtureFrom:   parseIneligibleFixtureDateFilter(values.Get("fixture_from")),
-		FixtureTo:     parseIneligibleFixtureDateFilter(values.Get("fixture_to")),
+		State:            strings.TrimSpace(values.Get("state")),
+		Origin:           strings.TrimSpace(values.Get("origin")),
+		ReportingClub:    strings.TrimSpace(values.Get("reporting_club")),
+		OffendingClub:    strings.TrimSpace(values.Get("offending_club")),
+		Team:             strings.TrimSpace(values.Get("team")),
+		Player:           strings.TrimSpace(values.Get("player")),
+		Assignee:         strings.TrimSpace(values.Get("assignee")),
+		CaseStatus:       strings.TrimSpace(values.Get("case_status")),
+		ReplyStatus:      strings.TrimSpace(values.Get("reply_status")),
+		Age:              strings.TrimSpace(values.Get("age")),
+		Scope:            strings.TrimSpace(values.Get("scope")),
+		Worklist:         strings.TrimSpace(values.Get("worklist")),
+		Sort:             strings.TrimSpace(values.Get("sort")),
+		FixtureFrom:      parseIneligibleFixtureDateFilter(values.Get("fixture_from")),
+		FixtureTo:        parseIneligibleFixtureDateFilter(values.Get("fixture_to")),
+		LiveOnly:         values.Get("live") == "1",
+		PendingSelection: values.Get("pending_selection") == "1",
 	}
 	if filter.State == "" {
 		filter.State = "open"
@@ -215,6 +219,12 @@ func ineligibleQueueTabURL(filter ineligibleQueueFilters, scope, state, worklist
 		"worklist": {worklist},
 		"sort":     {filter.Sort},
 	}
+	if filter.LiveOnly {
+		values.Set("live", "1")
+	}
+	if filter.PendingSelection {
+		values.Set("pending_selection", "1")
+	}
 	if filter.FixtureFrom != "" {
 		values.Set("fixture_from", filter.FixtureFrom)
 	}
@@ -227,25 +237,34 @@ func ineligibleQueueTabURL(filter ineligibleQueueFilters, scope, state, worklist
 func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
 	values := url.Values{}
 	for key, value := range map[string]string{
-		"state":          filter.State,
-		"origin":         filter.Origin,
-		"reporting_club": filter.ReportingClub,
-		"offending_club": filter.OffendingClub,
-		"team":           filter.Team,
-		"player":         filter.Player,
-		"assignee":       filter.Assignee,
-		"case_status":    filter.CaseStatus,
-		"reply_status":   filter.ReplyStatus,
-		"age":            filter.Age,
-		"scope":          filter.Scope,
-		"worklist":       filter.Worklist,
-		"sort":           filter.Sort,
+		"state":             filter.State,
+		"origin":            filter.Origin,
+		"reporting_club":    filter.ReportingClub,
+		"offending_club":    filter.OffendingClub,
+		"team":              filter.Team,
+		"player":            filter.Player,
+		"assignee":          filter.Assignee,
+		"case_status":       filter.CaseStatus,
+		"reply_status":      filter.ReplyStatus,
+		"age":               filter.Age,
+		"scope":             filter.Scope,
+		"worklist":          filter.Worklist,
+		"sort":              filter.Sort,
+		"live":              boolQueryValue(filter.LiveOnly),
+		"pending_selection": boolQueryValue(filter.PendingSelection),
 	} {
 		if value != "" {
 			values.Set(key, value)
 		}
 	}
 	return "/admin/ineligible?" + values.Encode()
+}
+
+func boolQueryValue(value bool) string {
+	if value {
+		return "1"
+	}
+	return ""
 }
 
 func buildIneligibleQueueQuery(filter ineligibleQueueFilters) (string, []any) {
@@ -258,6 +277,12 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	add := func(value any) string {
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
+	}
+	if filter.LiveOnly {
+		where = append(where, "NOT i.is_training")
+	}
+	if filter.PendingSelection {
+		where = append(where, "i.origin='google_form'", "worklist.batch_id IS NULL", "c.id IS NULL")
 	}
 	switch filter.State {
 	case "", "open":
@@ -556,7 +581,7 @@ func ineligibleNewRepliesHref(counts ineligibleDashboardCounts) string {
 	if counts.RecentReplies == 1 && counts.RecentReplyCaseID > 0 {
 		return fmt.Sprintf("/admin/cases/%d#club-response", counts.RecentReplyCaseID)
 	}
-	return "/admin/ineligible?scope=all&state=all&worklist=all&reply_status=unreviewed#reports"
+	return "/admin/cases?group=new_replies#cases"
 }
 func ineligibleCaseNextStepHTML(row ineligibleQueueRow, loc *time.Location) string {
 	if row.CaseID == nil {
@@ -634,50 +659,54 @@ func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
 		filter.Age != "" ||
 		filter.Scope != "all" ||
 		filter.Worklist != "visible" ||
-		filter.Sort != "newest"
+		filter.Sort != "newest" ||
+		filter.LiveOnly ||
+		filter.PendingSelection
 }
 
 func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleDashboardCounts, error) {
 	var counts ineligibleDashboardCounts
 	err := s.DB.QueryRow(ctx, `
 		WITH live_intakes AS (SELECT * FROM sanction_intakes WHERE NOT is_training),
+		live_intake_queue AS (
+			SELECT intake.*,COALESCE(worklist.visibility,'visible') AS worklist_visibility,
+			       worklist.batch_id AS worklist_batch_id,linked_case.id AS linked_case_id,
+			       linked_case.status AS linked_case_status
+			FROM live_intakes intake
+			LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id
+			LEFT JOIN LATERAL (
+				SELECT cases.id,cases.status
+				FROM sanction_intake_effective_case_links link
+				JOIN sanction_cases cases ON cases.id=link.case_id
+				WHERE link.intake_id=intake.id
+				ORDER BY CASE link.relationship WHEN 'primary' THEN 0 WHEN 'split' THEN 1 ELSE 2 END,link.id DESC
+				LIMIT 1
+			) linked_case ON TRUE
+		),
 		live_cases AS (
 			SELECT c.* FROM sanction_cases c WHERE NOT c.is_test
 			AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
 		)
 		SELECT
-		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND (COALESCE(worklist.visibility,'visible')='visible' OR EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id))),
-		 (SELECT COUNT(*) FROM live_intakes intake LEFT JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND worklist.batch_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
-		 (SELECT COUNT(*) FROM live_intakes intake JOIN sanction_intake_worklist_current worklist ON worklist.intake_id=intake.id WHERE intake.state IN ('new','reviewing','exception') AND worklist.visibility='deferred' AND NOT EXISTS(SELECT 1 FROM sanction_intake_effective_case_links link WHERE link.intake_id=intake.id)),
+		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND (intake.worklist_visibility='visible' OR intake.linked_case_id IS NOT NULL) AND (intake.linked_case_id IS NULL OR intake.linked_case_status<>'withdrawn') AND (intake.linked_case_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn'))),
+		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND intake.worklist_batch_id IS NULL AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
+		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND intake.worklist_visibility='deferred' AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("investigating", "cases")+`),
-		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
-			SELECT rr.status,rr.due_at FROM sanction_response_requests rr WHERE rr.case_id=c.id ORDER BY rr.id DESC LIMIT 1
-		 ) latest ON TRUE WHERE c.source_type='ineligible_player' AND latest.status='pending' AND latest.due_at>=now()),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("responses_due", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("responses_overdue", "cases")+`),
-		 (SELECT COUNT(*) FROM live_cases c JOIN LATERAL (
-			SELECT e.id,e.created_at FROM sanction_case_events e WHERE e.case_id=c.id AND e.event_type IN ('party_response','external_response_recorded') ORDER BY e.id DESC LIMIT 1
-		 ) reply ON TRUE WHERE c.source_type='ineligible_player' AND NOT EXISTS (
-			SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
-			  AND reviewed.metadata->>'response_event_id'=reply.id::text)),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("new_replies", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("awaiting_decision", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("awaiting_denver", "cases")+`),
 		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id WHERE t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')),
-		 (SELECT COUNT(DISTINCT o.id) FROM sanction_notification_outbox o JOIN live_cases c ON c.id=o.case_id WHERE c.source_type='ineligible_player' AND o.revoked_at IS NULL AND EXISTS (
-			SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=o.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained'))),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("delivery_exceptions", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("closed", "cases")+`)
 	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.AwaitingDenverSignoff, &counts.PlayCricketPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	if err == nil && counts.RecentReplies == 1 {
-		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c JOIN LATERAL (
-			SELECT event.id FROM sanction_case_events event
-			WHERE event.case_id=c.id AND event.event_type IN ('party_response','external_response_recorded')
-			ORDER BY event.id DESC LIMIT 1
-		) reply ON TRUE
-		WHERE c.source_type='ineligible_player' AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
-		  AND NOT EXISTS (
-			SELECT 1 FROM sanction_case_events reviewed
-			WHERE reviewed.case_id=c.id AND reviewed.event_type='response_reviewed'
-			  AND reviewed.metadata->>'response_event_id'=reply.id::text)
-		LIMIT 1`).Scan(&counts.RecentReplyCaseID)
+		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c
+			WHERE NOT c.is_test
+			  AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
+			  AND `+ineligibleCaseGroupPredicate("new_replies", "c")+`
+			LIMIT 1`).Scan(&counts.RecentReplyCaseID)
 	}
 	return counts, err
 }
@@ -692,7 +721,13 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 	case "awaiting_decision":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='decision_proposed'"
 	case "responses_overdue":
-		return alias + ".source_type='ineligible_player' AND " + alias + ".status NOT IN ('closed','rejected','withdrawn','published') AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired'))"
+		return alias + ".source_type='ineligible_player' AND ((" + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at<now())) OR (" + alias + ".status='investigating' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='expired')))"
+	case "responses_due":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at>=now())"
+	case "new_replies":
+		return alias + ".source_type='ineligible_player' AND EXISTS (SELECT 1 FROM sanction_case_events reply WHERE reply.id=(SELECT event.id FROM sanction_case_events event WHERE event.case_id=" + alias + ".id AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1) AND NOT EXISTS (SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=" + alias + ".id AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=reply.id::text))"
+	case "delivery_exceptions":
+		return alias + ".source_type='ineligible_player' AND EXISTS (SELECT 1 FROM sanction_notification_outbox outbox WHERE outbox.case_id=" + alias + ".id AND outbox.revoked_at IS NULL AND EXISTS (SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=outbox.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained')))"
 	case "awaiting_denver":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='approved'"
 	case "closed":
@@ -708,7 +743,7 @@ func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHe
 }
 
 func writeIneligibleFixtureDateControls(w io.Writer, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="reply_status" value="%s"><input type="hidden" name="age" value="%s"><div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.ReplyStatus), escapeHTML(filter.Age), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="reply_status" value="%s"><input type="hidden" name="age" value="%s">%s<div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.ReplyStatus), escapeHTML(filter.Age), ineligibleFixedFilterInputs(filter), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
 	writeIneligibleDateSortOptions(w, filter.Sort)
 	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Apply dates</button></div>`)
 	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
@@ -753,6 +788,14 @@ func writeIneligibleDateSortOptions(w io.Writer, selectedValue string) {
 
 func ineligibleClearFiltersURL(filter ineligibleQueueFilters) string {
 	values := url.Values{"scope": {"all"}, "state": {"open"}, "worklist": {"visible"}}
+	if filter.LiveOnly {
+		values.Set("live", "1")
+	}
+	if filter.PendingSelection {
+		values.Set("pending_selection", "1")
+		values.Set("worklist", "all")
+		values.Set("origin", "google_form")
+	}
 	if filter.Scope == "mine" {
 		values.Set("scope", "mine")
 		values.Set("state", "all")
@@ -767,7 +810,7 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	} else {
 		allSelected = " selected"
 	}
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s"><div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to this queue's default view.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Ownership</label><select class="form-select" name="scope"><option value="mine"%s>My assigned cases</option><option value="all"%s>All reports</option></select></div><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), escapeHTML(plainIneligibleWorklist(filter.Worklist)), mineSelected, allSelected)
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s">%s<div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to this queue's default view.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Ownership</label><select class="form-select" name="scope"><option value="mine"%s>My assigned cases</option><option value="all"%s>All reports</option></select></div><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), ineligibleFixedFilterInputs(filter), escapeHTML(plainIneligibleWorklist(filter.Worklist)), mineSelected, allSelected)
 	for _, option := range []struct{ Value, Label string }{{"visible", "Selected reports"}, {"deferred", "Hidden reports"}, {"all", "All imported reports"}} {
 		selected := ""
 		if filter.Worklist == option.Value {
@@ -794,6 +837,17 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Order</label><select class="form-select" name="sort">`)
 	writeIneligibleDateSortOptions(w, filter.Sort)
 	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="%s">Clear</a></div></div></form>`, escapeHTML(ineligibleClearFiltersURL(filter)))
+}
+
+func ineligibleFixedFilterInputs(filter ineligibleQueueFilters) string {
+	var result strings.Builder
+	if filter.LiveOnly {
+		result.WriteString(`<input type="hidden" name="live" value="1">`)
+	}
+	if filter.PendingSelection {
+		result.WriteString(`<input type="hidden" name="pending_selection" value="1">`)
+	}
+	return result.String()
 }
 
 func writeSelectedOptions(w http.ResponseWriter, selected string, values []string) {

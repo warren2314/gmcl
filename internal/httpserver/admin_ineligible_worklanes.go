@@ -29,19 +29,19 @@ func ineligibleQueueStatusCards(counts ineligibleDashboardCounts) []ineligibleQu
 	}
 	if counts.PlayCricketPointsTasks > 0 {
 		denver.Note = fmt.Sprintf("League points awaiting Denver: %d", counts.PlayCricketPointsTasks)
-		denver.NoteHref = "/admin/cases/tasks"
+		denver.NoteHref = "/admin/cases/tasks?type=play_cricket_points&live=1"
 	}
 	return []ineligibleQueueStatusCard{
-		{Label: "Visible queue", Count: counts.NewIntakes, Accent: "border-primary", Href: "/admin/ineligible?scope=all&state=open&worklist=visible"},
-		{Label: "Not yet selected", Count: counts.AwaitingSelection, Accent: "border-warning", Href: "/admin/ineligible/selection"},
-		{Label: "Hidden reports", Count: counts.HiddenReports, Accent: "border-secondary", Href: "/admin/ineligible?scope=all&state=open&worklist=deferred"},
+		{Label: "Visible queue", Count: counts.NewIntakes, Accent: "border-primary", Href: "/admin/ineligible?live=1&scope=all&state=open&worklist=visible"},
+		{Label: "Not yet selected", Count: counts.AwaitingSelection, Accent: "border-warning", Href: "/admin/ineligible?live=1&origin=google_form&pending_selection=1&scope=all&state=open&worklist=all"},
+		{Label: "Hidden reports", Count: counts.HiddenReports, Accent: "border-secondary", Href: "/admin/ineligible?live=1&scope=all&state=open&worklist=deferred"},
 		{Label: "Under investigation", Count: counts.ActiveCases, Accent: "border-primary", Href: "/admin/cases?group=investigating#cases"},
-		{Label: "Responses due", Count: counts.ResponsesDue, Accent: "border-warning", Href: "/admin/ineligible?scope=all&state=all&case_status=response_pending"},
+		{Label: "Responses due", Count: counts.ResponsesDue, Accent: "border-warning", Href: "/admin/cases?group=responses_due#cases"},
 		{Label: "Responses overdue", Count: counts.ResponsesOverdue, Accent: "border-danger", Href: "/admin/cases?group=responses_overdue#cases"},
 		{Label: "New replies", Count: counts.RecentReplies, Accent: "border-info", Href: ineligibleNewRepliesHref(counts)},
 		{Label: "Awaiting decision", Count: counts.AwaitingDecision, Accent: "border-primary", Href: "/admin/cases?group=awaiting_decision#cases"},
 		denver,
-		{Label: "Delivery exceptions", Count: counts.DeliveryExceptions, Accent: "border-danger", Href: "/admin/cases"},
+		{Label: "Delivery exceptions", Count: counts.DeliveryExceptions, Accent: "border-danger", Href: "/admin/cases?group=delivery_exceptions#cases"},
 		{Label: "Closed cases", Count: counts.ClosedCases, Accent: "border-success", Href: "/admin/cases?group=closed#cases"},
 	}
 }

@@ -30,6 +30,12 @@ func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 	if cards[5].Href != "/admin/cases?group=responses_overdue#cases" {
 		t.Fatalf("responses overdue links to %q, want the matching overdue case group", cards[5].Href)
 	}
+	if cards[4].Href != "/admin/cases?group=responses_due#cases" {
+		t.Fatalf("responses due links to %q, want the exact due case group", cards[4].Href)
+	}
+	if cards[9].Href != "/admin/cases?group=delivery_exceptions#cases" {
+		t.Fatalf("delivery exceptions links to %q, want the exact exception case group", cards[9].Href)
+	}
 }
 
 func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
@@ -46,7 +52,7 @@ func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
 		if !strings.Contains(card.Note, "League points awaiting Denver") || !strings.Contains(card.Note, "2") {
 			t.Fatalf("Denver card note %q does not carry the open league-points work", card.Note)
 		}
-		if card.NoteHref != "/admin/cases/tasks" {
+		if card.NoteHref != "/admin/cases/tasks?type=play_cricket_points&live=1" {
 			t.Fatalf("Denver league-points note links to %q, want the task list", card.NoteHref)
 		}
 	}

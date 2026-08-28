@@ -96,8 +96,28 @@ func TestIneligibleNewRepliesHrefOpensOneCaseOrFilteredReplyList(t *testing.T) {
 		t.Fatalf("single reply href = %q", got)
 	}
 	got := ineligibleNewRepliesHref(ineligibleDashboardCounts{RecentReplies: 3})
-	if !strings.Contains(got, "reply_status=unreviewed") || !strings.HasSuffix(got, "#reports") {
+	if got != "/admin/cases?group=new_replies#cases" {
 		t.Fatalf("multiple replies href = %q", got)
+	}
+}
+
+func TestDashboardIntakeLinksUseTheExactLiveCountFilters(t *testing.T) {
+	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{}) {
+		if card.Label != "Visible queue" && card.Label != "Not yet selected" && card.Label != "Hidden reports" {
+			continue
+		}
+		parsed, err := url.Parse(card.Href)
+		if err != nil {
+			t.Fatalf("parse %s href: %v", card.Label, err)
+		}
+		filter := parseIneligibleQueueFilters(parsed.Query())
+		query, _ := buildIneligibleQueueQuery(filter)
+		if !strings.Contains(query, "NOT i.is_training") {
+			t.Fatalf("%s link does not exclude training reports: %s", card.Label, card.Href)
+		}
+		if card.Label == "Not yet selected" && (!filter.PendingSelection || !strings.Contains(query, "worklist.batch_id IS NULL") || !strings.Contains(query, "c.id IS NULL")) {
+			t.Fatalf("not-yet-selected link does not reproduce the tile definition: %s", card.Href)
+		}
 	}
 }
 
@@ -560,7 +580,6 @@ func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
-		"responses_overdue": "cases.source_type='ineligible_player' AND cases.status NOT IN ('closed','rejected','withdrawn','published') AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=cases.id ORDER BY request.id DESC LIMIT 1) AND ((latest.status='pending' AND latest.due_at<now()) OR latest.status='expired'))",
 		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
 		"awaiting_denver":   "cases.source_type='ineligible_player' AND cases.status='approved'",
 		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
@@ -570,12 +589,21 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 			t.Fatalf("predicate for %s = %q, want %q", group, got, want)
 		}
 	}
+	for _, group := range []string{"responses_due", "responses_overdue", "new_replies", "delivery_exceptions"} {
+		predicate := ineligibleCaseGroupPredicate(group, "cases")
+		if !strings.Contains(predicate, "cases.source_type='ineligible_player'") || predicate == "TRUE" {
+			t.Fatalf("group %s has no exact ineligible-player predicate: %s", group, predicate)
+		}
+	}
 	source := ineligibleDashboardSource(t)
 	for _, want := range []string{
 		`/admin/cases?group=investigating#cases`,
+		`/admin/cases?group=responses_due#cases`,
 		`/admin/cases?group=responses_overdue#cases`,
+		`/admin/cases?group=new_replies#cases`,
 		`/admin/cases?group=awaiting_decision#cases`,
 		`/admin/cases?group=awaiting_denver#cases`,
+		`/admin/cases?group=delivery_exceptions#cases`,
 		`/admin/cases?group=closed#cases`,
 		`Review %d row(s) needing attention`,
 	} {
