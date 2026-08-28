@@ -47,6 +47,19 @@ func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
 			http.Error(w, "response deadline maintenance is unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if _, err := s.DB.Exec(ctx, `UPDATE sanction_notification_outbox outbox
+			SET processed_at=now(),revoked_at=now(),revocation_reason='Case is no longer awaiting independent decision approval'
+			FROM sanction_cases cases
+			WHERE outbox.case_id=cases.id AND outbox.message_kind='decision_approval_request'
+			  AND outbox.processed_at IS NULL AND outbox.revoked_at IS NULL
+			  AND (cases.status<>'decision_proposed' OR NOT EXISTS(
+				SELECT 1 FROM sanction_case_events sent
+				WHERE sent.case_id=cases.id AND sent.event_type='decision_sent_for_approval'
+				  AND sent.metadata->>'decision_revision_id'=outbox.decision_revision_id::text
+			  ))`); err != nil {
+			http.Error(w, "stale approval notification maintenance is unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		if sanctionsEmailDisabled() {
 			http.Error(w, "sanctions email sending is disabled in this environment", http.StatusServiceUnavailable)
 			return

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -985,10 +986,22 @@ func isSelfSignedIneligibleDecision(sourceType string, proposerID, approverID *i
 		*proposerID == *approverID
 }
 
-func decisionApprovalNotification(caseID, decisionID int64) (idempotencyKeyPrefix, subject, body string) {
+func decisionApprovalNotification(caseID, decisionID int64, reference string) (idempotencyKeyPrefix, subject, body string) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		reference = fmt.Sprintf("Case %d", caseID)
+	}
+	baseURL := "https://gmcl.co.uk"
+	for _, key := range []string{"PUBLIC_BASE_URL", "APP_BASE_URL"} {
+		if value := strings.TrimRight(strings.TrimSpace(os.Getenv(key)), "/"); value != "" {
+			baseURL = value
+			break
+		}
+	}
+	caseURL := fmt.Sprintf("%s/admin/cases/%d", baseURL, caseID)
 	return fmt.Sprintf("case:%d:decision-approval-request:%d:recipient:", caseID, decisionID),
-		"GMCL sanctions awaiting approval",
-		"A sanctions decision is awaiting your approval. Please sign in to GMCL Admin, open the Awaiting decision queue, and review the proposed sanctions before approving or rejecting them."
+		"GMCL case " + reference + " awaiting approval",
+		fmt.Sprintf("Case reference: %s\n\nWaiting for: Independent approval of the proposed sanctions decision.\n\nWhat to review: The proposed decision, sanctions, and the offending-club, reporting-club and league-official email/PDF versions. Approve or reject the proposal in GMCL Admin.\n\nOpen this case:\n%s\n\nIf this case is no longer in your dashboard, another authorised administrator may already have actioned it.", reference, caseURL)
 }
 
 // SubmitDecisionForApproval records the case owner's confirmation that they
@@ -1003,9 +1016,9 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var status string
-	var assignedAdminID *int32
-	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID); err != nil {
+	var status, reference, sourceType string
+	var assignedAdminID, proposedByAdminID *int32
+	if err = tx.QueryRow(ctx, `SELECT status,assigned_admin_id,reference,source_type,proposed_by_admin_id FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &assignedAdminID, &reference, &sourceType, &proposedByAdminID); err != nil {
 		return err
 	}
 	if !CanSubmitDecisionForApproval(status, assignedAdminID, actor.ID) {
@@ -1032,7 +1045,7 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_case_events(case_id,event_type,actor_type,actor_id,actor_label,reason,metadata,request_id) VALUES($1,'decision_sent_for_approval','admin',$2,$3,'Case owner reviewed all three complete audience versions and sent the decision for independent approval',jsonb_build_object('decision_revision_id',$4::bigint),$5)`, caseID, *actor.ID, actor.Label, decisionID, actor.RequestID); err != nil {
 		return err
 	}
-	idempotencyKeyPrefix, subject, body := decisionApprovalNotification(caseID, decisionID)
+	idempotencyKeyPrefix, subject, body := decisionApprovalNotification(caseID, decisionID, reference)
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_notification_outbox(case_id,decision_revision_id,message_kind,idempotency_key,recipient,subject,body)
 		SELECT $1,$2,'decision_approval_request',$3||LOWER(BTRIM(admin.email)),LOWER(BTRIM(admin.email)),$4,$5
 		FROM admin_users admin
@@ -1046,7 +1059,8 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 			WHERE recipient.active AND recipient.recipient_role='play_cricket'
 			  AND LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email))
 		  )
-		ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKeyPrefix, subject, body, *actor.ID); err != nil {
+		  AND ($7='ineligible_player' OR $8::integer IS DISTINCT FROM admin.id)
+		ON CONFLICT(idempotency_key) DO NOTHING`, caseID, decisionID, idempotencyKeyPrefix, subject, body, *actor.ID, sourceType, proposedByAdminID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

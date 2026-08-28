@@ -243,6 +243,18 @@ func scorecardTeamLabel(match leagueapi.ScorecardMatch, teamID string) string {
 	return teamID
 }
 
+func scorecardDisplayTeamLabels(match leagueapi.ScorecardMatch) (home, away string) {
+	home = scorecardTeamLabel(match, match.HomeTeamID)
+	away = scorecardTeamLabel(match, match.AwayTeamID)
+	if strings.TrimSpace(home) == "" {
+		home = strings.TrimSpace(match.HomeTeamName)
+	}
+	if strings.TrimSpace(away) == "" {
+		away = strings.TrimSpace(match.AwayTeamName)
+	}
+	return home, away
+}
+
 func scorecardPointsDescription(points leagueapi.ScorecardPoints) string {
 	parts := make([]string, 0, 8)
 	for _, item := range []struct{ label, value string }{
@@ -406,12 +418,13 @@ func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.
 		fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><strong>Match %d</strong><a href="/admin/cases/%d/evidence/%d">Download original JSON</a></div><div class="small text-muted mb-2">Fetched %s &middot; SHA-256 %s</div>`, item.matchID, caseID, item.evidenceID, escapeHTML(item.fetched.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(item.digest[:minInt(12, len(item.digest))]))
 		if parseErr == nil && len(parsed.MatchDetails) > 0 {
 			match := parsed.MatchDetails[0]
-			fmt.Fprintf(w, `<div class="small mb-2"><strong>%s</strong> v <strong>%s</strong> &middot; %s</div>`, escapeHTML(match.HomeTeamName), escapeHTML(match.AwayTeamName), escapeHTML(match.MatchDate))
+			homeLabel, awayLabel := scorecardDisplayTeamLabels(match)
+			fmt.Fprintf(w, `<div class="small mb-2"><strong>%s</strong> v <strong>%s</strong> &middot; %s</div>`, escapeHTML(homeLabel), escapeHTML(awayLabel), escapeHTML(match.MatchDate))
 			fmt.Fprintf(w, `%s<div class="row g-3">`, scorecardResultHTML(match))
 			for _, side := range []struct {
 				name    string
 				players []leagueapi.ScorecardPlayer
-			}{{match.HomeTeamName, match.Players.HomeTeam}, {match.AwayTeamName, match.Players.AwayTeam}} {
+			}{{homeLabel, match.Players.HomeTeam}, {awayLabel, match.Players.AwayTeam}} {
 				fmt.Fprintf(w, `<div class="col-md-6"><div class="fw-semibold">%s</div><ol class="small mb-0">`, escapeHTML(side.name))
 				for _, player := range side.players {
 					marks := ""

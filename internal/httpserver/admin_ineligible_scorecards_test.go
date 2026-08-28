@@ -77,6 +77,16 @@ func TestScorecardResultHTMLOmitsEmptyResult(t *testing.T) {
 	}
 }
 
+func TestScorecardDisplayTeamLabelsIncludeClubAndXI(t *testing.T) {
+	home, away := scorecardDisplayTeamLabels(leagueapi.ScorecardMatch{
+		HomeClubName: "Micklehurst Cricket & Social Club", HomeTeamName: "3rd XI", HomeTeamID: "10",
+		AwayClubName: "Glodwick CC", AwayTeamName: "3rd XI", AwayTeamID: "20",
+	})
+	if home != "Micklehurst Cricket & Social Club - 3rd XI" || away != "Glodwick CC - 3rd XI" {
+		t.Fatalf("scorecard labels = %q v %q", home, away)
+	}
+}
+
 func TestScorecardPointsReviewRequiresExplicitDecisionCheck(t *testing.T) {
 	match := leagueapi.ScorecardMatch{
 		HomeClubName: "Glodwick CC", HomeTeamName: "3rd XI", HomeTeamID: "235",
