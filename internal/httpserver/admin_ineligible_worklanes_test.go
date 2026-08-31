@@ -71,11 +71,10 @@ func TestIneligibleDenverCardHidesEmptyPointsNote(t *testing.T) {
 
 func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 	source := ineligibleDashboardSource(t)
-	// Keep the restored queue layout and put the requested import cards directly
+	// Keep the restored queue layout and put the requested start routes directly
 	// above it.
 	for _, want := range []string{
 		`writeIneligibleStartRoutes(w, csrf, nextReportID)`,
-		`Import historical tracker`,
 		`<details class="card mb-4" open>`,
 		`<summary class="card-header fw-semibold">Filters and queue status</summary>`,
 		`Import, choose the reports to progress, then work from that selected list.`,
@@ -89,6 +88,7 @@ func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
+		"Import historical tracker",
 		"s.writeAdminPersonalWork(w, r)",
 		"writeIneligibleTodayLane",
 		"writeIneligibleTotalsLane",

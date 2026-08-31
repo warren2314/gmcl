@@ -145,13 +145,18 @@ func TestIneligibleCaseNextStepShowsReplyCountStatusAndDirectAnchor(t *testing.T
 		}
 	}
 }
-func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
+func TestWriteIneligibleStartRoutesShowsTwoPlainLanguageChoices(t *testing.T) {
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
 	html := out.String()
-	for _, want := range []string{"Raise one case", "Import and choose reports", "Import historical tracker", "last 24 hours", "Open next selected report", "/admin/ineligible/42", "row-cols-lg-3", "/admin/ineligible/backfill"} {
+	for _, want := range []string{"Raise one case", "Import and choose reports", "last 24 hours", "Open next selected report", "/admin/ineligible/42", "row-cols-lg-2"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("start routes missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"ROUTE 3", "Import historical tracker", "/admin/ineligible/backfill", "row-cols-lg-3"} {
+		if strings.Contains(html, unwanted) {
+			t.Errorf("start routes still contain removed route 3 content %q", unwanted)
 		}
 	}
 	if strings.Contains(html, ">Excel import<") {
