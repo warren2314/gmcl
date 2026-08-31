@@ -919,10 +919,10 @@ func (s *Server) handleAdminCases() http.HandlerFunc {
 		predicate := "c.status != 'withdrawn'"
 		title := "Sanctions cases"
 		limit := " LIMIT 300"
-		if group == "investigating" || group == "responses_due" || group == "responses_overdue" || group == "new_replies" || group == "awaiting_decision" || group == "awaiting_denver" || group == "delivery_exceptions" || group == "closed" {
+		if group == "live" || group == "investigating" || group == "responses_due" || group == "responses_overdue" || group == "new_replies" || group == "awaiting_decision" || group == "awaiting_denver" || group == "delivery_exceptions" || group == "closed" {
 			predicate = ineligibleCaseGroupPredicate(group, "c")
 			limit = ""
-			title = map[string]string{"investigating": "Ineligible-player cases under investigation", "responses_due": "Ineligible-player cases with responses due", "responses_overdue": "Ineligible-player cases with overdue responses", "new_replies": "Ineligible-player cases with new replies", "awaiting_decision": "Ineligible-player cases awaiting decision", "awaiting_denver": "Ineligible-player cases awaiting Denver final sign-off", "delivery_exceptions": "Ineligible-player cases with delivery exceptions", "closed": "Closed ineligible-player cases"}[group]
+			title = map[string]string{"live": "Live ineligible-player cases", "investigating": "Ineligible-player cases under investigation", "responses_due": "Ineligible-player cases with responses due", "responses_overdue": "Ineligible-player cases with overdue responses", "new_replies": "Ineligible-player cases with new replies", "awaiting_decision": "Ineligible-player cases awaiting decision", "awaiting_denver": "Ineligible-player cases awaiting Denver final sign-off", "delivery_exceptions": "Ineligible-player cases with delivery exceptions", "closed": "Closed ineligible-player cases"}[group]
 		}
 		rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.reference,c.source_type,c.status,COALESCE(c.player_name,''),COALESCE(cl.name,''),COALESCE(t.name,''),c.created_at,COALESCE(a.username,'') FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN admin_users a ON a.id=c.assigned_admin_id WHERE NOT c.is_test AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated') AND `+predicate+` ORDER BY CASE c.status WHEN 'submitted' THEN 0 WHEN 'triage' THEN 1 WHEN 'decision_proposed' THEN 2 ELSE 3 END,c.created_at DESC`+limit)
 		if err != nil {
@@ -1497,6 +1497,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				&latestResponse.Channel, &latestResponse.Respondent, &latestResponse.ReceivedAt, &latestResponse.Unreviewed)
 		var hasResponseRequest bool
 		_ = s.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='response_request_queued')`, id).Scan(&hasResponseRequest)
+		responseWindow := s.loadAdminCaseResponseWindow(r.Context(), id)
 		csrf := middleware.CSRFToken(r)
 		backLabel, backURL := adminCaseBackDestination(source, assignedAdminID, adminActor(r).ID)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1515,6 +1516,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			blockingCaseID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("blocking_case")), 10, 64)
 			fmt.Fprint(w, adminCaseFailureHTML(failure, blockingCaseID))
 		}
+		fmt.Fprint(w, adminCaseResponseWindowHTML(id, csrf, responseWindow, status, s.LondonLoc))
 		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc))
 		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed, source))
 		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)

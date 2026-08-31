@@ -164,6 +164,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminPermission("sanctions_appeals")).Post("/cases/{id}/overturn", s.handleAdminCaseOverturn())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/correct", s.handleAdminCaseCorrect())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/request-response", s.handleAdminCaseRequestResponse())
+		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/response-window/correct", s.handleAdminCaseResponseWindowCorrect())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/response-drafts/{kind}", s.handleAdminCaseResponseDraftSave())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Get("/cases/{id}/response-drafts/{kind}/preview", s.handleAdminCaseResponseDraftPreview())
 		r.With(s.requireAdminPermission("sanctions_investigate")).Post("/cases/{id}/investigation-note", s.handleAdminCaseInvestigationNote())

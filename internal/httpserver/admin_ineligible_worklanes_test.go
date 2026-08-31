@@ -8,14 +8,14 @@ import (
 
 func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 	counts := ineligibleDashboardCounts{
-		NewIntakes: 2, AwaitingSelection: 3, HiddenReports: 198, ActiveCases: 4,
+		NewIntakes: 2, AwaitingSelection: 3, HiddenReports: 198, LiveCases: 9, ActiveCases: 4,
 		ResponsesDue: 3, ResponsesOverdue: 5, RecentReplies: 1, AwaitingDecision: 0,
 		AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2, DeliveryExceptions: 0, ClosedCases: 8,
 	}
 	cards := ineligibleQueueStatusCards(counts)
-	// Twelve figures, eleven cards: Denver's two are one.
+	// Thirteen figures, twelve cards: Denver's two are one.
 	want := []string{
-		"Visible queue", "Not yet selected", "Hidden reports", "Under investigation",
+		"Visible queue", "Not yet selected", "Hidden reports", "Live cases", "Under investigation",
 		"Responses due", "Responses overdue", "New replies", "Awaiting decision",
 		"Awaiting Denver final sign-off", "Delivery exceptions", "Closed cases",
 	}
@@ -27,14 +27,14 @@ func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 			t.Fatalf("card %d is %q, want %q - the grid order changed", i, cards[i].Label, label)
 		}
 	}
-	if cards[5].Href != "/admin/cases?group=responses_overdue#cases" {
-		t.Fatalf("responses overdue links to %q, want the matching overdue case group", cards[5].Href)
+	if cards[6].Href != "/admin/cases?group=responses_overdue#cases" {
+		t.Fatalf("responses overdue links to %q, want the matching overdue case group", cards[6].Href)
 	}
-	if cards[4].Href != "/admin/cases?group=responses_due#cases" {
-		t.Fatalf("responses due links to %q, want the exact due case group", cards[4].Href)
+	if cards[5].Href != "/admin/cases?group=responses_due#cases" {
+		t.Fatalf("responses due links to %q, want the exact due case group", cards[5].Href)
 	}
-	if cards[9].Href != "/admin/cases?group=delivery_exceptions#cases" {
-		t.Fatalf("delivery exceptions links to %q, want the exact exception case group", cards[9].Href)
+	if cards[10].Href != "/admin/cases?group=delivery_exceptions#cases" {
+		t.Fatalf("delivery exceptions links to %q, want the exact exception case group", cards[10].Href)
 	}
 }
 
@@ -71,9 +71,11 @@ func TestIneligibleDenverCardHidesEmptyPointsNote(t *testing.T) {
 
 func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 	source := ineligibleDashboardSource(t)
-	// Keep the restored queue layout, but open it immediately without placing
-	// the route-choice cards before it.
+	// Keep the restored queue layout and put the requested import cards directly
+	// above it.
 	for _, want := range []string{
+		`writeIneligibleStartRoutes(w, csrf, nextReportID)`,
+		`Import historical tracker`,
 		`<details class="card mb-4" open>`,
 		`<summary class="card-header fw-semibold">Filters and queue status</summary>`,
 		`Import, choose the reports to progress, then work from that selected list.`,
@@ -87,7 +89,6 @@ func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"writeIneligibleStartRoutes(w, csrf, nextReportID)",
 		"s.writeAdminPersonalWork(w, r)",
 		"writeIneligibleTodayLane",
 		"writeIneligibleTotalsLane",
@@ -101,9 +102,10 @@ func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
 	// The queue tabs sit inside the open section above the grid.
 	tabs := strings.Index(source, `aria-label="Choose work queue"`)
 	grid := strings.Index(source, `row-cols-2 row-cols-md-3 row-cols-xl-5`)
+	routes := strings.Index(source, `writeIneligibleStartRoutes(w, csrf, nextReportID)`)
 	details := strings.Index(source, `writeIneligibleQueueStatusStart(w)`)
-	if details < 0 || tabs < details || grid < tabs {
-		t.Fatalf("tabs and grid must sit inside the open queue section: details=%d tabs=%d grid=%d", details, tabs, grid)
+	if routes < 0 || details < routes || tabs < details || grid < tabs {
+		t.Fatalf("imports must precede the open queue, with tabs and grid inside it: routes=%d details=%d tabs=%d grid=%d", routes, details, tabs, grid)
 	}
 }
 

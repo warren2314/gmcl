@@ -145,16 +145,16 @@ func TestIneligibleCaseNextStepShowsReplyCountStatusAndDirectAnchor(t *testing.T
 		}
 	}
 }
-func TestWriteIneligibleStartRoutesShowsTwoPlainLanguageChoices(t *testing.T) {
+func TestWriteIneligibleStartRoutesShowsThreePlainLanguageChoices(t *testing.T) {
 	var out bytes.Buffer
 	writeIneligibleStartRoutes(&out, "csrf-token", 42)
 	html := out.String()
-	for _, want := range []string{"Raise one case", "Import and choose reports", "last 24 hours", "Open next selected report", "/admin/ineligible/42", "row-cols-lg-2"} {
+	for _, want := range []string{"Raise one case", "Import and choose reports", "Import historical tracker", "last 24 hours", "Open next selected report", "/admin/ineligible/42", "row-cols-lg-3", "/admin/ineligible/backfill"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("start routes missing %q", want)
 		}
 	}
-	if strings.Contains(html, "Import historical tracker") || strings.Contains(html, "ROUTE 3") || strings.Contains(html, "/admin/ineligible/backfill") || strings.Contains(html, ">Excel import<") {
+	if strings.Contains(html, ">Excel import<") {
 		t.Fatalf("start routes retained old busy labels: %s", html)
 	}
 }
@@ -579,6 +579,7 @@ func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
 
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
+		"live":              "cases.source_type='ineligible_player' AND cases.status NOT IN ('published','closed','rejected','withdrawn')",
 		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
 		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
 		"awaiting_denver":   "cases.source_type='ineligible_player' AND cases.status='approved'",
@@ -597,6 +598,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 	}
 	source := ineligibleDashboardSource(t)
 	for _, want := range []string{
+		`/admin/cases?group=live#cases`,
 		`/admin/cases?group=investigating#cases`,
 		`/admin/cases?group=responses_due#cases`,
 		`/admin/cases?group=responses_overdue#cases`,

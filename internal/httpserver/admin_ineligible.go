@@ -80,6 +80,7 @@ type ineligibleDashboardCounts struct {
 	NewIntakes             int64
 	AwaitingSelection      int64
 	HiddenReports          int64
+	LiveCases              int64
 	ActiveCases            int64
 	ResponsesDue           int64
 	ResponsesOverdue       int64
@@ -444,6 +445,11 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
 		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`)
 		writeIneligibleFlash(w, r)
+		var nextReportID int64
+		if filter.Worklist == "visible" {
+			nextReportID = nextIneligibleReportID(queue)
+		}
+		writeIneligibleStartRoutes(w, csrf, nextReportID)
 		writeIneligibleQueueStatusStart(w)
 		mineClass, selectedClass, importedClass := "btn-outline-primary", "btn-outline-primary", "btn-outline-primary"
 		if filter.Scope == "mine" {
@@ -628,9 +634,10 @@ func writeIneligibleStartRoutes(w io.Writer, csrf string, nextReportID int64) {
 		nextHref = fmt.Sprintf("/admin/ineligible/%d", nextReportID)
 		nextLabel = "Open next selected report"
 	}
-	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-2 g-3">`)
+	fmt.Fprint(w, `<section class="mb-4" aria-labelledby="ineligible-start-title"><h2 class="h4 mb-3" id="ineligible-start-title">What do you want to do?</h2><div class="row row-cols-1 row-cols-lg-3 g-3">`)
 	fmt.Fprintf(w, `<div class="col"><article class="card h-100 border-primary"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 1</div><h3 class="h5">Raise one case</h3><p class="text-muted flex-grow-1">Open a report, check the pre-filled details, then select <strong>Raise case</strong>.</p><a class="btn btn-primary" href="%s">%s</a></div></article></div>`, escapeHTML(nextHref), escapeHTML(nextLabel))
-	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import and choose reports</h3><p class="text-muted flex-grow-1">Check the Google Form for reports received in the last 24 hours, then tick the reports you have been asked to progress.</p><button class="btn btn-outline-primary">Import and choose reports</button></form></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`, escapeHTML(csrf))
+	fmt.Fprintf(w, `<div class="col"><article class="card h-100"><form class="card-body d-flex flex-column" method="POST" action="/admin/ineligible/sync"><input type="hidden" name="csrf_token" value="%s"><div class="small text-primary fw-semibold mb-2">ROUTE 2</div><h3 class="h5">Import and choose reports</h3><p class="text-muted flex-grow-1">Check the Google Form for reports received in the last 24 hours, then tick the reports you have been asked to progress.</p><button class="btn btn-outline-primary">Import and choose reports</button></form></article></div>`, escapeHTML(csrf))
+	fmt.Fprint(w, `<div class="col"><article class="card h-100"><div class="card-body d-flex flex-column"><div class="small text-primary fw-semibold mb-2">ROUTE 3</div><h3 class="h5">Import historical tracker</h3><p class="text-muted flex-grow-1">Upload the Excel tracker, check its matches, sign off, then apply history.</p><a class="btn btn-outline-primary" href="/admin/ineligible/backfill">Open tracker import</a></div></article></div></div><div class="alert alert-light border mt-3 mb-0"><strong>Safe by design:</strong> importing never sends an email or issues a sanction. A member of staff must deliberately raise each live case.</div></section>`)
 }
 
 func writeIneligibleQueueStatusStart(w io.Writer) {
@@ -691,6 +698,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND (intake.worklist_visibility='visible' OR intake.linked_case_id IS NOT NULL) AND (intake.linked_case_id IS NULL OR intake.linked_case_status<>'withdrawn') AND (intake.linked_case_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn'))),
 		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND intake.worklist_batch_id IS NULL AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
 		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND intake.worklist_visibility='deferred' AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
+		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("live", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("investigating", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("responses_due", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("responses_overdue", "cases")+`),
@@ -700,7 +708,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 		 (SELECT COUNT(*) FROM sanction_follow_up_tasks t JOIN live_cases c ON c.id=t.case_id WHERE t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("delivery_exceptions", "cases")+`),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("closed", "cases")+`)
-	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.AwaitingDenverSignoff, &counts.PlayCricketPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
+	`).Scan(&counts.NewIntakes, &counts.AwaitingSelection, &counts.HiddenReports, &counts.LiveCases, &counts.ActiveCases, &counts.ResponsesDue, &counts.ResponsesOverdue, &counts.RecentReplies, &counts.AwaitingDecision, &counts.AwaitingDenverSignoff, &counts.PlayCricketPointsTasks, &counts.DeliveryExceptions, &counts.ClosedCases)
 	if err == nil && counts.RecentReplies == 1 {
 		_ = s.DB.QueryRow(ctx, `SELECT c.id FROM sanction_cases c
 			WHERE NOT c.is_test
@@ -716,6 +724,8 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 		alias = "cases"
 	}
 	switch group {
+	case "live":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status NOT IN ('published','closed','rejected','withdrawn')"
 	case "investigating":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='investigating'"
 	case "awaiting_decision":

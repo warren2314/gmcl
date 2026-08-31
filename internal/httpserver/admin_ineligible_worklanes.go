@@ -35,6 +35,7 @@ func ineligibleQueueStatusCards(counts ineligibleDashboardCounts) []ineligibleQu
 		{Label: "Visible queue", Count: counts.NewIntakes, Accent: "border-primary", Href: "/admin/ineligible?live=1&scope=all&state=open&worklist=visible"},
 		{Label: "Not yet selected", Count: counts.AwaitingSelection, Accent: "border-warning", Href: "/admin/ineligible?live=1&origin=google_form&pending_selection=1&scope=all&state=open&worklist=all"},
 		{Label: "Hidden reports", Count: counts.HiddenReports, Accent: "border-secondary", Href: "/admin/ineligible?live=1&scope=all&state=open&worklist=deferred"},
+		{Label: "Live cases", Count: counts.LiveCases, Accent: "border-success", Href: "/admin/cases?group=live#cases"},
 		{Label: "Under investigation", Count: counts.ActiveCases, Accent: "border-primary", Href: "/admin/cases?group=investigating#cases"},
 		{Label: "Responses due", Count: counts.ResponsesDue, Accent: "border-warning", Href: "/admin/cases?group=responses_due#cases"},
 		{Label: "Responses overdue", Count: counts.ResponsesOverdue, Accent: "border-danger", Href: "/admin/cases?group=responses_overdue#cases"},
