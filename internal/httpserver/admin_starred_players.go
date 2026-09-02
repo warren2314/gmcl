@@ -182,13 +182,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
-		breachRecent, breachRecentErr := parseStarredBreachRecentWindow(r)
 		filteredAuditBreaches := eval.Breaches
 		if breachFilterErr == nil {
 			filteredAuditBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
-		}
-		if breachRecentErr == nil {
-			filteredAuditBreaches = filterStarredBreachesByRecentAppearances(filteredAuditBreaches, breachRecent)
 		}
 		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
 		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
@@ -209,10 +205,6 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
 				return
 			}
-			if breachRecentErr != nil {
-				http.Error(w, breachRecentErr.Error(), http.StatusBadRequest)
-				return
-			}
 			includeClosed := r.URL.Query().Get("include_closed") == "1"
 			exportBreaches := starredBreachExportRows(filteredAuditBreaches, findingStates, includeClosed)
 			if !includeClosed {
@@ -227,17 +219,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		if breachFilterErr == nil {
 			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
 		}
-		if breachRecentErr == nil {
-			filteredBreaches = filterStarredBreachesByRecentAppearances(filteredBreaches, breachRecent)
-		}
 		resolvedBreachCount := len(eval.Breaches) - len(outstandingBreaches)
-		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
-		acceptedCandidateCount := 0
-		for _, state := range candidateReviewStates {
-			if state.Status == "accepted" {
-				acceptedCandidateCount++
-			}
-		}
 		currentA, currentB := 0, 0
 		reviewAsOf := reviewCutoff
 		for _, p := range periods {
@@ -289,10 +271,10 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 #starred-overview,#card-detail,#sync,#identity-matches,#amendments,#sunday-exemptions,#potential-breaches,#club-lists,#july-31-test,.starred-breach-group{scroll-margin-top:4.5rem}
 .starred-section-nav{position:sticky;top:0;z-index:1020;background:var(--bs-body-bg);border-bottom:1px solid var(--bs-border-color)}
 </style>
-<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Season-to-date breach monitoring, with the separate player-list review fixed at 31 July.</p></div>
-<div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d&amp;view=player-review#card-detail">Player list review</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d" aria-label="Season year"><button class="btn btn-outline-primary">Load</button></form></div></div>`,
-			starredHelpIcon("What this page does", "Rule 3.5 protects lower divisions: each club nominates its strongest players as List A (1st XI only) or List B (1st or 2nd XI only). This page checks every imported Play-Cricket scorecard against the published lists so a person can review possible breaches — nothing is decided automatically. Work through the numbered steps in order: import data, match identities, review breaches, then run the 31 July test."),
-			year, year, year)
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2"><div><h3 class="mb-1">Starred Player Compliance%s</h3><p class="text-muted mb-0">Season-to-date breach monitoring from imported Play-Cricket scorecards.</p></div>
+<div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/starred-players?season=%d&amp;view=club-list#card-detail">Starred list by club</a><form method="get" class="d-flex gap-2"><input class="form-control" style="width:110px" type="number" name="season" value="%d" aria-label="Season year"><button class="btn btn-outline-primary">Load</button></form></div></div>`,
+			starredHelpIcon("What this page does", "This page checks every imported Play-Cricket scorecard against the published List A/List B restrictions and the final-three-match Second XI eligibility rule. Nothing is decided automatically: review each possible breach and either close it or create an investigation case."),
+			year, year)
 		if msg := r.URL.Query().Get("message"); msg != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(msg))
 		}
@@ -303,32 +285,29 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-warning">No imported starred list is available for %d yet. Sync the published list below.</div>`, year)
 		}
 		unmappedCount := len(unmappedPeriods)
-		outstandingCandidates := countOutstandingUnstarredCandidates(year, eval.Candidates, candidateReviewStates)
-		fmt.Fprintf(w, `<div class="starred-section-nav py-2 mb-4"><div class="d-flex flex-wrap gap-2 align-items-center"><span class="small fw-semibold text-muted me-1">Jump to</span>%s%s%s%s%s%s%s%s</div></div>`,
+		fmt.Fprintf(w, `<div class="starred-section-nav py-2 mb-4"><div class="d-flex flex-wrap gap-2 align-items-center"><span class="small fw-semibold text-muted me-1">Jump to</span>%s%s%s%s%s%s%s</div></div>`,
 			starredNavPill("#starred-overview", "Overview", -1, ""),
 			starredNavPill("#sync", "1&nbsp;&middot; Import data", pendingCount, "text-bg-primary"),
 			starredNavPill("#identity-matches", "2&nbsp;&middot; Identities", unmappedCount, "text-bg-info"),
 			starredNavPill("#amendments", "Amendments", len(issues), "text-bg-secondary"),
 			starredNavPill("#sunday-exemptions", "Exemptions", pendingExemptionCount, "text-bg-warning text-dark"),
 			starredNavPill("#potential-breaches", "3&nbsp;&middot; Breaches", len(outstandingBreaches), "text-bg-danger"),
-			starredNavPill("#club-lists", "Club lists", clubIssueCount, "text-bg-warning text-dark"),
-			starredNavPill("#july-31-test", "4&nbsp;&middot; 31 July test", outstandingCandidates, "text-bg-warning text-dark"))
+			starredNavPill("#club-lists", "Club lists", clubIssueCount, "text-bg-warning text-dark"))
 		fmt.Fprintf(w, `<div id="starred-overview" class="row g-3 mb-4">
 <div class="col-xl-5"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Imported season data</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2">%s%s%s%s</div></div></div></div>
-<div class="col-xl-7"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Action queue — what needs a decision</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2 row-cols-md-3 row-cols-lg-6">%s%s%s%s%s%s</div></div></div></div>
+<div class="col-xl-7"><div class="card shadow-sm h-100"><div class="card-header"><span class="fw-semibold">Action queue — what needs a decision</span>%s</div><div class="card-body"><div class="row g-2 row-cols-2 row-cols-md-3 row-cols-lg-5">%s%s%s%s%s</div></div></div></div>
 </div>`,
 			starredHelpIcon("Imported season data", "How much source data has been imported for this season. Every check on this page is only as complete as these numbers — if scorecards are still pending, run the import in step 1 before trusting the results."),
 			starredDataTileHTML("List A at cutoff", "List A", "Players on the published List A on the review date. A List A player may only play for their club's 1st XI in League and Cup matches.", strconv.Itoa(currentA), "", fmt.Sprintf("/admin/starred-players?season=%d&view=list-a#card-detail", year), "View players"),
 			starredDataTileHTML("List B at cutoff", "List B", "Players on the published List B on the review date. A List B player may play 1st or 2nd XI, but not lower.", strconv.Itoa(currentB), "", fmt.Sprintf("/admin/starred-players?season=%d&view=list-b#card-detail", year), "View players"),
 			starredDataTileHTML("Scorecards", "Scorecards", "Season-to-date men's open-age match scorecards imported from Play-Cricket. Pending fixtures have not been imported yet — run the import in step 1 to fetch them.", strconv.Itoa(matchCount), fmt.Sprintf("%d pending import", pendingCount), fmt.Sprintf("/admin/starred-players?season=%d&view=scorecards#card-detail", year), "View scorecards"),
-			starredDataTileHTML("Appearances", "Appearances", "Season-to-date player entries from imported scorecards. These rows drive ongoing breach monitoring; the separate 31 July review remains fixed.", strconv.Itoa(len(monitoringApps)), "", fmt.Sprintf("/admin/starred-players?season=%d&view=appearances#card-detail", year), "View appearances"),
+			starredDataTileHTML("Appearances", "Appearances", "Season-to-date player entries from imported scorecards. These rows drive all breach monitoring on this page.", strconv.Itoa(len(monitoringApps)), "", fmt.Sprintf("/admin/starred-players?season=%d&view=appearances#card-detail", year), "View appearances"),
 			starredHelpIcon("Action queue", "Everything that currently needs a human decision, in the order it is best worked through. Each tile links to its section below; when every tile is green there is nothing outstanding."),
 			starredActionTileHTML(unmappedCount, "Identities to match", "Identities to match", "Published players not yet linked to a Play-Cricket ID. Match these first — breach detection is unreliable for unmatched players whose scorecard name is spelt differently.", "#identity-matches", "Match now", "info"),
 			starredActionTileHTML(len(issues), "Amendments to review", "Amendments", "Dated changes to the published sheet that the importer could not apply automatically. A person needs to decide what each one means.", "#amendments", "Review", "secondary"),
 			starredActionTileHTML(pendingExemptionCount, "Exemption requests", "Player exemptions", "Sunday requests awaiting a decision, plus approved season-long junior exemptions. Approved exemptions automatically suppress every finding they cover.", "#sunday-exemptions", "Review exemptions", "warning"),
-			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "Appearances by starred players below their permitted team in League or Cup matches. Each needs to be accepted and closed, or opened as an ineligible-player investigation case.", "#potential-breaches", "Review evidence", "danger"),
-			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"),
-			starredActionTileHTML(outstandingCandidates, "Unstarred ≥ 50%", "31 July candidates", "Players who are not starred but played half or more of their league cricket in the top two XIs by 31 July. They may need adding to a list — review or accept each one.", "#july-31-test", "View calculation", "warning"))
+			starredActionTileHTML(len(outstandingBreaches), "Potential breaches", "Potential breaches", "List A/List B selection breaches and rule 4.6.3.3.5.1 final-three-match Second XI breaches. Each needs to be closed or opened as an investigation case.", "#potential-breaches", "Review evidence", "danger"),
+			starredActionTileHTML(clubIssueCount, "Club list issues", "Club list issues", "Clubs whose published list is missing, or does not have the size the rules require (standard 5, reduced List B 8, large List B 16).", "#club-lists", "View clubs", "warning"))
 		s.renderStarredCardDetail(w, ctx, year, monitoringCutoff, reviewCutoff, strings.TrimSpace(r.URL.Query().Get("view")), periods, reviewApps, mappings, matchCount, len(monitoringApps), r)
 		fmt.Fprintf(w, `<div id="sync" class="card shadow-sm mb-4"><div class="card-header">%s</div><div class="card-body d-flex flex-wrap gap-3">
 <form method="post" action="/admin/starred-players/sync-list"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><button class="btn btn-primary">Sync published list</button><div class="form-text">Imports base lists and applies dated amendments. Automatic refresh: Mondays at 03:00 through season end.</div></form>
@@ -505,19 +484,10 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		breachGroups := groupStarredBreaches(filteredBreaches)
 		breachFromValue := strings.TrimSpace(r.URL.Query().Get("breach_from"))
 		breachToValue := strings.TrimSpace(r.URL.Query().Get("breach_to"))
-		breachRecentValue := strings.TrimSpace(r.URL.Query().Get("breach_recent"))
-		latestThreeBreachesQuery := url.Values{"season": {strconv.Itoa(year)}}
-		if breachFromValue != "" {
-			latestThreeBreachesQuery.Set("breach_from", breachFromValue)
-		}
-		if breachToValue != "" {
-			latestThreeBreachesQuery.Set("breach_to", breachToValue)
-		}
-		latestThreeBreachesQuery.Set("breach_recent", "3")
 		clearBreachFilterQuery := url.Values{"season": {strconv.Itoa(year)}}
 		fmt.Fprintf(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header">%s</div>`,
-			starredSectionTitle("Step 3", "Potential List A / List B breaches by division", "Accept and close a finding where no offence should be pursued, or create an ineligible-player investigation case.",
-				"What counts as a breach", "Each row is one appearance where a starred player turned out below their permitted team in a League or Cup match: List A below the 1st XI, or List B below the 2nd XI. Open the match to see the full team sheets, then either accept and close the finding (no offence) or create an investigation case. Case creation revalidates the finding and exact Play-Cricket team mapping; it does not send an email. Findings tagged Junior may qualify for an exemption, so verify before escalating."))
+			starredSectionTitle("Step 3", "Potential player-selection breaches by division", "Accept and close a finding where no offence should be pursued, or create an ineligible-player investigation case.",
+				"What counts as a breach", "Rows include List A players below the 1st XI, List B players below the 2nd XI, and rule 4.6.3.3.5.1: a player selected for a Sunday Second XI in its final three league matches after six or more First XI league appearances but fewer than three Second XI league appearances. Open the match to verify the team sheet before deciding."))
 		breachExportQuery := url.Values{"season": {strconv.Itoa(year)}, "export": {"breaches-csv"}}
 		breachExportIncludingClosedQuery := url.Values{"season": {strconv.Itoa(year)}, "export": {"breaches-csv"}, "include_closed": {"1"}}
 		if value := strings.TrimSpace(r.URL.Query().Get("breach_from")); value != "" {
@@ -528,10 +498,6 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			breachExportQuery.Set("breach_to", value)
 			breachExportIncludingClosedQuery.Set("breach_to", value)
 		}
-		if value := strings.TrimSpace(r.URL.Query().Get("breach_recent")); value != "" {
-			breachExportQuery.Set("breach_recent", value)
-			breachExportIncludingClosedQuery.Set("breach_recent", value)
-		}
 		if breachFromValue != "" {
 			clearBreachFilterQuery.Set("breach_from", breachFromValue)
 		}
@@ -539,17 +505,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			clearBreachFilterQuery.Set("breach_to", breachToValue)
 		}
 		clearBreachQuery := clearBreachFilterQuery.Encode()
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="breach_recent" value="%s"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Clear filters</a></div><div class="col-auto"><a class="btn btn-outline-success" href="/admin/starred-players?%s#potential-breaches">Latest 3 matches</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Show all</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed, escalated or exempted findings are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachRecentValue), escapeHTML(breachFromValue), escapeHTML(breachToValue), clearBreachQuery, escapeHTML(latestThreeBreachesQuery.Encode()), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), resolvedBreachCount)
-		if breachRecent > 0 && breachRecentErr == nil {
-			fmt.Fprintf(w, `<div class="form-text text-warning">Showing the latest %d breaches per player. Use “Show all” to review complete breach history.</div>`, breachRecent)
-		}
-		if breachFilterErr != nil || breachRecentErr != nil {
-			if breachFilterErr != nil {
-				fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
-			}
-			if breachRecentErr != nil {
-				fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachRecentErr.Error()))
-			}
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Clear filters</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Show all</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed, escalated or exempted findings are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), clearBreachQuery, year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), resolvedBreachCount)
+		if breachFilterErr != nil {
+			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
 		}
 		fmt.Fprint(w, `</div>`)
 		returnAnchor := strings.TrimSpace(r.URL.Query().Get("breach_return"))
@@ -573,7 +531,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 			fmt.Fprint(w, `</div>`)
 		}
-		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>List</th><th>Team</th><th>Format</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
+		fmt.Fprint(w, `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>Rule / list</th><th>Team</th><th>Format</th><th>Evidence</th><th>Review</th></tr></thead><tbody>`)
 		if len(filteredBreaches) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No outstanding potential breaches found for the selected dates.</td></tr>`)
 		}
@@ -586,11 +544,14 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprintf(w, `<tr id="%s" class="table-primary starred-breach-group"><th colspan="8" class="py-2">%s — %s <span class="badge bg-primary ms-1">%d %s</span></th></tr>`, anchor, escapeHTML(group.Day), escapeHTML(group.Division), len(group.Breaches), findingWord)
 			for _, b := range group.Breaches {
 				evidence := "Review"
+				if b.RuleReference == starred.LastThreeSecondXIRule {
+					evidence = fmt.Sprintf("%d First XI league; %d Second XI league", b.FirstXILeague, b.SecondXILeague)
+				}
 				if b.NeedsExemptionReview {
 					evidence = "Junior tag — verify exemption"
 				}
 				state := findingStates[starredFindingKey(b)]
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue, breachRecentValue))
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue, ""))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
@@ -610,22 +571,6 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			fmt.Fprintf(w, `<div id="club-lists" class="card shadow-sm mb-4"><div class="card-header">%s</div><div class="card-body text-success py-3">&#10003; Every club's published list has the required size and a submitted form.</div></div>`, clubListHeader)
 		}
 
-		fmt.Fprintf(w, `<div id="july-31-test" class="card shadow-sm mb-4"><div class="card-header">%s</div><div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Club</th><th>Player</th><th>1st + 2nd XI</th><th>All league</th><th>Percentage</th><th>Actions</th></tr></thead><tbody>`,
-			starredSectionTitle("Step 4", "31 July league-appearance test", fmt.Sprintf("List B reviews use combined 1st XI and 2nd XI league appearances. Review a player's games or accept and close the review. Accepted decisions leave this outstanding list and remain in the audit trail. %d accepted.", acceptedCandidateCount),
-				"How the 31 July test works", "At 31 July every unstarred player's league appearances are checked: 1st XI + 2nd XI league games divided by all their league games. A share of 50% or more means the player may need adding to a starred list. Cup matches are deliberately excluded from this calculation. Nothing is changed automatically — review the player's games or accept and close the review."))
-		shown := 0
-		for _, c := range eval.Candidates {
-			if c.AlreadyStarred || candidateReviewStates[starredCandidateKey(year, c)].Status == "accepted" {
-				continue
-			}
-			shown++
-			appearanceSearch := starredAppearanceSearch(c.PlayerName, c.PlayerID)
-			fmt.Fprintf(w, `<tr><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=appearances&amp;appearance_to=review&amp;q=%s#card-detail">%s</a><div class="small text-muted">List B review</div></td><td>%d</td><td>%d</td><td>%.1f%%</td><td>%s</td></tr>`, escapeHTML(c.ClubName), year, url.QueryEscape(appearanceSearch), escapeHTML(c.PlayerName), c.TopTwoXILeague, c.AllLeague, c.Percentage*100, starredCandidateActionsHTML(c, csrf, year))
-		}
-		if shown == 0 {
-			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-3">No unstarred candidates currently meet the threshold.</td></tr>`)
-		}
-		fmt.Fprint(w, `</tbody></table></div></div>`)
 		fmt.Fprint(w, `</div>`)
 		pageFooterWithScript(w, starredPopoverInitScript)
 	}

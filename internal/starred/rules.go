@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const LastThreeSecondXIRule = "4.6.3.3.5.1"
+
 // IsWomensAppearance keeps the men's Rule 3.5 review separate from women's cricket.
 // Play-Cricket does not expose a single reliable gender flag on every scorecard, so
 // the competition, club and team labels are checked together.
@@ -52,11 +54,12 @@ func EvaluateAtCutoffs(periods []Period, appearances []Appearance, mappings []Id
 			}
 			breach := (p.ListType == "A" && a.TeamLevel > 1) || (p.ListType == "B" && a.TeamLevel > 2)
 			if breach && (strings.EqualFold(a.CompetitionType, "League") || strings.EqualFold(a.CompetitionType, "Cup")) {
-				out.Breaches = append(out.Breaches, Breach{Appearance: a, ListType: p.ListType, StarredName: p.PlayerName, NeedsExemptionReview: hasJuniorTag(p.Tags)})
+				out.Breaches = append(out.Breaches, Breach{Appearance: a, ListType: p.ListType, StarredName: p.PlayerName, RuleReference: "3.5", NeedsExemptionReview: hasJuniorTag(p.Tags)})
 			}
 			break
 		}
 	}
+	out.Breaches = append(out.Breaches, lastThreeSecondXIBreaches(appearances, breachCutoff)...)
 
 	type counts struct {
 		sample               Appearance
@@ -135,6 +138,93 @@ func EvaluateAtCutoffs(periods []Period, appearances []Appearance, mappings []Id
 		return out.Candidates[i].PlayerID < out.Candidates[j].PlayerID
 	})
 	return out
+}
+
+func appearanceIdentity(a Appearance) string {
+	if a.PlayerID > 0 {
+		return "id:" + itoa64(a.PlayerID)
+	}
+	return a.PlayerKey
+}
+
+// lastThreeSecondXIBreaches applies rule 4.6.3.3.5.1 to imported scorecards.
+// A player is ineligible for a Sunday Second XI appearance in that team's last
+// three played league matches when they have six or more First XI league
+// appearances but fewer than three Second XI league appearances in the season.
+func lastThreeSecondXIBreaches(appearances []Appearance, cutoff time.Time) []Breach {
+	type match struct {
+		id   int64
+		date time.Time
+	}
+	type counts struct {
+		first  map[int64]struct{}
+		second map[int64]struct{}
+	}
+
+	matchesByClub := make(map[string][]match)
+	seenMatches := make(map[string]map[int64]struct{})
+	playerCounts := make(map[string]*counts)
+	for _, a := range appearances {
+		if a.TeamLevel == 0 || a.MatchDate.After(cutoff) || !strings.EqualFold(a.CompetitionType, "League") || IsWomensAppearance(a) {
+			continue
+		}
+		identity := a.ClubKey + "|" + appearanceIdentity(a)
+		if playerCounts[identity] == nil {
+			playerCounts[identity] = &counts{first: make(map[int64]struct{}), second: make(map[int64]struct{})}
+		}
+		if a.TeamLevel == 1 {
+			playerCounts[identity].first[a.MatchID] = struct{}{}
+		}
+		if a.TeamLevel == 2 {
+			playerCounts[identity].second[a.MatchID] = struct{}{}
+		}
+		if a.TeamLevel != 2 || !strings.EqualFold(a.PlayingDay, "Sunday") {
+			continue
+		}
+		if seenMatches[a.ClubKey] == nil {
+			seenMatches[a.ClubKey] = make(map[int64]struct{})
+		}
+		if _, seen := seenMatches[a.ClubKey][a.MatchID]; !seen {
+			seenMatches[a.ClubKey][a.MatchID] = struct{}{}
+			matchesByClub[a.ClubKey] = append(matchesByClub[a.ClubKey], match{id: a.MatchID, date: a.MatchDate})
+		}
+	}
+
+	lastThree := make(map[string]map[int64]struct{})
+	for clubKey, matches := range matchesByClub {
+		sort.Slice(matches, func(i, j int) bool {
+			if !matches[i].date.Equal(matches[j].date) {
+				return matches[i].date.After(matches[j].date)
+			}
+			return matches[i].id > matches[j].id
+		})
+		if len(matches) > 3 {
+			matches = matches[:3]
+		}
+		lastThree[clubKey] = make(map[int64]struct{}, len(matches))
+		for _, fixture := range matches {
+			lastThree[clubKey][fixture.id] = struct{}{}
+		}
+	}
+
+	breaches := make([]Breach, 0)
+	for _, a := range appearances {
+		if a.TeamLevel != 2 || a.MatchDate.After(cutoff) || !strings.EqualFold(a.PlayingDay, "Sunday") || !strings.EqualFold(a.CompetitionType, "League") || IsWomensAppearance(a) {
+			continue
+		}
+		if _, inWindow := lastThree[a.ClubKey][a.MatchID]; !inWindow {
+			continue
+		}
+		counts := playerCounts[a.ClubKey+"|"+appearanceIdentity(a)]
+		if counts == nil || len(counts.first) < 6 || len(counts.second) >= 3 {
+			continue
+		}
+		breaches = append(breaches, Breach{
+			Appearance: a, ListType: "Last 3", RuleReference: LastThreeSecondXIRule,
+			FirstXILeague: len(counts.first), SecondXILeague: len(counts.second),
+		})
+	}
+	return breaches
 }
 
 func ReviewCutoff(seasonYear int, now time.Time) time.Time {

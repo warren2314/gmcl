@@ -102,6 +102,9 @@ type Breach struct {
 	Appearance           Appearance
 	ListType             string
 	StarredName          string
+	RuleReference        string
+	FirstXILeague        int
+	SecondXILeague       int
 	NeedsExemptionReview bool
 }
 

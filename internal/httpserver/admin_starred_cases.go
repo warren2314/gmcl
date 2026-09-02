@@ -111,6 +111,10 @@ func starredCaseSourceReference(breach starred.Breach) string {
 }
 
 func starredCaseProvenance(breach starred.Breach) ([]byte, string, error) {
+	ruleReference := breach.RuleReference
+	if ruleReference == "" {
+		ruleReference = "3.5"
+	}
 	payload := map[string]any{
 		"origin":      "starred_player",
 		"finding_key": starredFindingKey(breach),
@@ -141,7 +145,9 @@ func starredCaseProvenance(breach starred.Breach) ([]byte, string, error) {
 			"player_key":             breach.Appearance.PlayerKey,
 		},
 		"evaluation": map[string]any{
-			"rule":                   "3.5",
+			"rule":                   ruleReference,
+			"first_xi_league":        breach.FirstXILeague,
+			"second_xi_league":       breach.SecondXILeague,
 			"needs_exemption_review": breach.NeedsExemptionReview,
 			"revalidated":            true,
 		},
