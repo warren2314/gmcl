@@ -10,7 +10,7 @@ func TestSelectStarredFixtureSideFallsBackToUniqueClubForTeamNameAlias(t *testin
 	breach := starred.Breach{Appearance: starred.Appearance{
 		MatchID: 7460280, ClubName: "Bolton Deane & Derby CC", ClubKey: "boltondeanederby", TeamName: "3rd XI", TeamLevel: 3,
 	}}
-	home := starredFixtureSide{Side: "home", TeamPCID: "123", ClubName: "Bolton Deane & Derby CC", TeamName: "Bolton Deane & Derby CC 3rd XI"}
+	home := starredFixtureSide{Side: "home", TeamPCID: "123", ClubName: "Deane & Derby CC", TeamName: "3rd XI"}
 	away := starredFixtureSide{Side: "away", TeamPCID: "456", ClubName: "Other CC", TeamName: "Other CC 3rd XI"}
 
 	selected, err := selectStarredFixtureSide(breach, home, away)

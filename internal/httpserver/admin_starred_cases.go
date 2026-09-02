@@ -63,7 +63,14 @@ func starredCaseClubMatches(left, right string) bool {
 	if starred.NormalizeClub(left) == starred.NormalizeClub(right) {
 		return true
 	}
-	return starredClubDataMatchKey(left) == starredClubDataMatchKey(right)
+	canonical := func(value string) string {
+		key := starredClubDataMatchKey(value)
+		if key == "boltondeanederby" {
+			return "deanederby"
+		}
+		return key
+	}
+	return canonical(left) == canonical(right)
 }
 
 func selectStarredFixtureSide(breach starred.Breach, home, away starredFixtureSide) (starredFixtureSide, error) {
