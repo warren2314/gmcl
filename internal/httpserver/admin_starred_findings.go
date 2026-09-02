@@ -23,6 +23,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const maxStarredBreachRecent = 50
+
 type starredFindingState struct {
 	ID            int64
 	Status        string
@@ -61,6 +63,24 @@ func parseStarredBreachDateRange(r *http.Request) (from, to *time.Time, err erro
 	return from, to, nil
 }
 
+func parseStarredBreachRecentWindow(r *http.Request) (int, error) {
+	value := strings.TrimSpace(r.URL.Query().Get("breach_recent"))
+	if value == "" {
+		return 0, nil
+	}
+	recent, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid breach recent value")
+	}
+	if recent <= 0 {
+		return 0, fmt.Errorf("breach recent must be at least 1")
+	}
+	if recent > maxStarredBreachRecent {
+		return 0, fmt.Errorf("breach recent cannot exceed %d", maxStarredBreachRecent)
+	}
+	return recent, nil
+}
+
 func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time) []starred.Breach {
 	if from == nil && to == nil {
 		return breaches
@@ -77,6 +97,31 @@ func filterStarredBreachesByDate(breaches []starred.Breach, from, to *time.Time)
 		filtered = append(filtered, breach)
 	}
 	return filtered
+}
+
+func starredBreachRecentIdentityKey(b starred.Breach) string {
+	identity := b.Appearance.PlayerKey
+	if b.Appearance.PlayerID > 0 {
+		identity = "id:" + strconv.FormatInt(b.Appearance.PlayerID, 10)
+	}
+	return b.Appearance.ClubKey + "|" + identity
+}
+
+func filterStarredBreachesByRecentAppearances(breaches []starred.Breach, recent int) []starred.Breach {
+	if recent <= 0 {
+		return breaches
+	}
+	out := make([]starred.Breach, 0, len(breaches))
+	kept := make(map[string]int, len(breaches))
+	for _, breach := range breaches {
+		key := starredBreachRecentIdentityKey(breach)
+		if kept[key] >= recent {
+			continue
+		}
+		out = append(out, breach)
+		kept[key]++
+	}
+	return out
 }
 
 func filterOutstandingStarredBreaches(breaches []starred.Breach, states map[string]starredFindingState) []starred.Breach {
@@ -323,7 +368,7 @@ func juniorTaggedIdentityBreaches(breaches []starred.Breach, selected starred.Br
 	return out
 }
 
-func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int, breachFrom, breachTo string) string {
+func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf string, year int, breachFrom, breachTo, breachRecent string) string {
 	if state.CaseID > 0 {
 		label := strings.TrimSpace(state.CaseReference)
 		if label == "" {
@@ -351,7 +396,7 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 		}
 		return fmt.Sprintf(`<a class="badge %s text-decoration-none" href="/admin/starred-players/findings/%d">%s</a>`, class, state.ID, escapeHTML(label))
 	}
-	hidden := fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="match_id" value="%d"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="list_type" value="%s"><input type="hidden" name="breach_from" value="%s"><input type="hidden" name="breach_to" value="%s">`, escapeHTML(csrf), year, b.Appearance.MatchID, b.Appearance.PlayerID, escapeHTML(b.Appearance.ClubKey), escapeHTML(b.Appearance.PlayerKey), escapeHTML(b.ListType), escapeHTML(breachFrom), escapeHTML(breachTo))
+	hidden := fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season" value="%d"><input type="hidden" name="match_id" value="%d"><input type="hidden" name="player_id" value="%d"><input type="hidden" name="club_key" value="%s"><input type="hidden" name="player_key" value="%s"><input type="hidden" name="list_type" value="%s"><input type="hidden" name="breach_from" value="%s"><input type="hidden" name="breach_to" value="%s"><input type="hidden" name="breach_recent" value="%s">`, escapeHTML(csrf), year, b.Appearance.MatchID, b.Appearance.PlayerID, escapeHTML(b.Appearance.ClubKey), escapeHTML(b.Appearance.PlayerKey), escapeHTML(b.ListType), escapeHTML(breachFrom), escapeHTML(breachTo), escapeHTML(breachRecent))
 	acceptPrompt := "Accept and close this finding with no offence letter?"
 	acceptLabel := "Accept / close — no offence"
 	if b.NeedsExemptionReview {
@@ -600,6 +645,11 @@ func redirectStarredFinding(w http.ResponseWriter, r *http.Request, year int, me
 		value := strings.TrimSpace(r.FormValue(field))
 		if _, err := time.Parse("2006-01-02", value); err == nil {
 			q.Set(field, value)
+		}
+	}
+	if value := strings.TrimSpace(r.FormValue("breach_recent")); value != "" {
+		if _, err := strconv.Atoi(value); err == nil {
+			q.Set("breach_recent", value)
 		}
 	}
 	anchor := "potential-breaches"

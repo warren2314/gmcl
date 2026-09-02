@@ -182,9 +182,13 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			}
 		}
 		breachFrom, breachTo, breachFilterErr := parseStarredBreachDateRange(r)
+		breachRecent, breachRecentErr := parseStarredBreachRecentWindow(r)
 		filteredAuditBreaches := eval.Breaches
 		if breachFilterErr == nil {
 			filteredAuditBreaches = filterStarredBreachesByDate(eval.Breaches, breachFrom, breachTo)
+		}
+		if breachRecentErr == nil {
+			filteredAuditBreaches = filterStarredBreachesByRecentAppearances(filteredAuditBreaches, breachRecent)
 		}
 		mappingSource := strings.TrimSpace(r.URL.Query().Get("mapping_source"))
 		mappingQuery := strings.TrimSpace(r.URL.Query().Get("mapping_q"))
@@ -205,6 +209,10 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 				http.Error(w, breachFilterErr.Error(), http.StatusBadRequest)
 				return
 			}
+			if breachRecentErr != nil {
+				http.Error(w, breachRecentErr.Error(), http.StatusBadRequest)
+				return
+			}
 			includeClosed := r.URL.Query().Get("include_closed") == "1"
 			exportBreaches := starredBreachExportRows(filteredAuditBreaches, findingStates, includeClosed)
 			if !includeClosed {
@@ -218,6 +226,9 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		filteredBreaches := outstandingBreaches
 		if breachFilterErr == nil {
 			filteredBreaches = filterStarredBreachesByDate(outstandingBreaches, breachFrom, breachTo)
+		}
+		if breachRecentErr == nil {
+			filteredBreaches = filterStarredBreachesByRecentAppearances(filteredBreaches, breachRecent)
 		}
 		resolvedBreachCount := len(eval.Breaches) - len(outstandingBreaches)
 		candidateReviewStates := s.loadStarredCandidateReviewStates(ctx, year)
@@ -494,6 +505,16 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		breachGroups := groupStarredBreaches(filteredBreaches)
 		breachFromValue := strings.TrimSpace(r.URL.Query().Get("breach_from"))
 		breachToValue := strings.TrimSpace(r.URL.Query().Get("breach_to"))
+		breachRecentValue := strings.TrimSpace(r.URL.Query().Get("breach_recent"))
+		latestThreeBreachesQuery := url.Values{"season": {strconv.Itoa(year)}}
+		if breachFromValue != "" {
+			latestThreeBreachesQuery.Set("breach_from", breachFromValue)
+		}
+		if breachToValue != "" {
+			latestThreeBreachesQuery.Set("breach_to", breachToValue)
+		}
+		latestThreeBreachesQuery.Set("breach_recent", "3")
+		clearBreachFilterQuery := url.Values{"season": {strconv.Itoa(year)}}
 		fmt.Fprintf(w, `<div id="potential-breaches" class="card shadow-sm mb-4"><div class="card-header">%s</div>`,
 			starredSectionTitle("Step 3", "Potential List A / List B breaches by division", "Accept and close a finding where no offence should be pursued, or create an ineligible-player investigation case.",
 				"What counts as a breach", "Each row is one appearance where a starred player turned out below their permitted team in a League or Cup match: List A below the 1st XI, or List B below the 2nd XI. Open the match to see the full team sheets, then either accept and close the finding (no offence) or create an investigation case. Case creation revalidates the finding and exact Play-Cricket team mapping; it does not send an email. Findings tagged Junior may qualify for an exemption, so verify before escalating."))
@@ -507,9 +528,28 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 			breachExportQuery.Set("breach_to", value)
 			breachExportIncludingClosedQuery.Set("breach_to", value)
 		}
-		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Clear dates</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed, escalated or exempted findings are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachFromValue), escapeHTML(breachToValue), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), resolvedBreachCount)
-		if breachFilterErr != nil {
-			fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
+		if value := strings.TrimSpace(r.URL.Query().Get("breach_recent")); value != "" {
+			breachExportQuery.Set("breach_recent", value)
+			breachExportIncludingClosedQuery.Set("breach_recent", value)
+		}
+		if breachFromValue != "" {
+			clearBreachFilterQuery.Set("breach_from", breachFromValue)
+		}
+		if breachToValue != "" {
+			clearBreachFilterQuery.Set("breach_to", breachToValue)
+		}
+		clearBreachQuery := clearBreachFilterQuery.Encode()
+		fmt.Fprintf(w, `<div class="card-body border-bottom"><form method="get" action="/admin/starred-players" class="row g-2 align-items-end"><input type="hidden" name="season" value="%d"><input type="hidden" name="breach_recent" value="%s"><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-from">From date</label><input class="form-control" id="breach-from" type="date" name="breach_from" value="%s"></div><div class="col-sm-3 col-lg-2"><label class="form-label" for="breach-to">To date</label><input class="form-control" id="breach-to" type="date" name="breach_to" value="%s"></div><div class="col-auto"><button class="btn btn-primary">Filter breaches</button></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Clear filters</a></div><div class="col-auto"><a class="btn btn-outline-success" href="/admin/starred-players?%s#potential-breaches">Latest 3 matches</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?season=%d#potential-breaches">Show all</a></div><div class="col-auto"><a class="btn btn-outline-primary" href="/admin/starred-players?%s">Export outstanding CSV</a></div><div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/starred-players?%s">Export including closed</a></div></form><div class="form-text">Showing %d of %d outstanding potential breaches. %d closed, escalated or exempted findings are hidden from the screen and default export; use “Export including closed” only when the audit history is required. Either date can be used on its own, or use both for an inclusive range.</div>`, year, escapeHTML(breachRecentValue), escapeHTML(breachFromValue), escapeHTML(breachToValue), clearBreachQuery, escapeHTML(latestThreeBreachesQuery.Encode()), year, escapeHTML(breachExportQuery.Encode()), escapeHTML(breachExportIncludingClosedQuery.Encode()), len(filteredBreaches), len(outstandingBreaches), resolvedBreachCount)
+		if breachRecent > 0 && breachRecentErr == nil {
+			fmt.Fprintf(w, `<div class="form-text text-warning">Showing the latest %d breaches per player. Use “Show all” to review complete breach history.</div>`, breachRecent)
+		}
+		if breachFilterErr != nil || breachRecentErr != nil {
+			if breachFilterErr != nil {
+				fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachFilterErr.Error()))
+			}
+			if breachRecentErr != nil {
+				fmt.Fprintf(w, `<div class="alert alert-danger mt-3 mb-0">%s</div>`, escapeHTML(breachRecentErr.Error()))
+			}
 		}
 		fmt.Fprint(w, `</div>`)
 		returnAnchor := strings.TrimSpace(r.URL.Query().Get("breach_return"))
@@ -550,7 +590,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 					evidence = "Junior tag — verify exemption"
 				}
 				state := findingStates[starredFindingKey(b)]
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue))
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue, breachRecentValue))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)

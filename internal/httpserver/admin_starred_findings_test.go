@@ -56,6 +56,65 @@ func TestStarredBreachDateRangeIsInclusiveAndAllowsOneSidedFilters(t *testing.T)
 	}
 }
 
+func TestParseStarredBreachRecentWindowIsValidatedAndLimited(t *testing.T) {
+	request := httptest.NewRequest("GET", "/admin/starred-players", nil)
+	if recent, err := parseStarredBreachRecentWindow(request); err != nil || recent != 0 {
+		t.Fatalf("empty breach_recent should be treated as 0: recent=%d err=%v", recent, err)
+	}
+	request = httptest.NewRequest("GET", "/admin/starred-players?breach_recent=3", nil)
+	if recent, err := parseStarredBreachRecentWindow(request); err != nil || recent != 3 {
+		t.Fatalf("breach_recent=3 should parse: recent=%d err=%v", recent, err)
+	}
+	request = httptest.NewRequest("GET", "/admin/starred-players?breach_recent=0", nil)
+	if _, err := parseStarredBreachRecentWindow(request); err == nil {
+		t.Fatalf("breach_recent=0 should be rejected")
+	}
+	request = httptest.NewRequest("GET", "/admin/starred-players?breach_recent=abc", nil)
+	if _, err := parseStarredBreachRecentWindow(request); err == nil {
+		t.Fatalf("non-numeric breach_recent should be rejected")
+	}
+	request = httptest.NewRequest("GET", "/admin/starred-players?breach_recent=999", nil)
+	if _, err := parseStarredBreachRecentWindow(request); err == nil {
+		t.Fatalf("too-large breach_recent should be rejected")
+	}
+}
+
+func TestFilterStarredBreachesByRecentAppearancesKeepsRecentPerIdentity(t *testing.T) {
+	makeBreach := func(id int64, playerID int64, clubKey string, day int) starred.Breach {
+		breach := sampleStarredBreach()
+		breach.Appearance.MatchID = id
+		breach.Appearance.PlayerID = playerID
+		breach.Appearance.ClubKey = clubKey
+		breach.Appearance.ClubName = strings.ToUpper(clubKey) + " Club"
+		breach.Appearance.MatchDate = time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC)
+		return breach
+	}
+	breaches := []starred.Breach{
+		makeBreach(1001, 9001, "alpha", 30),
+		makeBreach(1002, 9002, "beta", 29),
+		makeBreach(1003, 9001, "alpha", 20),
+		makeBreach(1004, 9003, "gamma", 15),
+		makeBreach(1005, 9001, "alpha", 10),
+		makeBreach(1006, 9002, "beta", 5),
+	}
+	filtered := filterStarredBreachesByRecentAppearances(breaches, 2)
+	if len(filtered) != 5 {
+		t.Fatalf("filtered breaches=%d want 5: %#v", len(filtered), filtered)
+	}
+	for _, wantID := range []int64{1001, 1002, 1003, 1004, 1006} {
+		found := false
+		for _, got := range filtered {
+			if got.Appearance.MatchID == wantID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected breach %d in filtered set: %#v", wantID, filtered)
+		}
+	}
+}
+
 func TestFilterOutstandingStarredBreachesRemovesAcceptedFindings(t *testing.T) {
 	accepted := sampleStarredBreach()
 	outstanding := sampleStarredBreach()
@@ -165,8 +224,8 @@ func TestStarredFindingKeyIsStableAndPlayerSpecific(t *testing.T) {
 
 func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.T) {
 	breach := sampleStarredBreach()
-	pending := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "2026-05-01", "2026-06-30")
-	for _, want := range []string{"Accept / close", "Create ineligible-player case", "/findings/create-case", "No email will be sent", `name="breach_from" value="2026-05-01"`, `name="breach_to" value="2026-06-30"`} {
+	pending := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "2026-05-01", "2026-06-30", "")
+	for _, want := range []string{"Accept / close", "Create ineligible-player case", "/findings/create-case", "No email will be sent", `name="breach_from" value="2026-05-01"`, `name="breach_to" value="2026-06-30"`, `name="breach_recent"`} {
 		if !strings.Contains(pending, want) {
 			t.Fatalf("pending actions do not contain %q: %s", want, pending)
 		}
@@ -174,18 +233,18 @@ func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.
 	if strings.Contains(pending, "draft letter") || strings.Contains(pending, "/findings/escalate") {
 		t.Fatalf("new findings must not create a legacy letter draft: %s", pending)
 	}
-	draft := starredFindingActionsHTML(breach, starredFindingState{ID: 42, Status: "draft"}, "token", 2026, "", "")
+	draft := starredFindingActionsHTML(breach, starredFindingState{ID: 42, Status: "draft"}, "token", 2026, "", "", "3")
 	if !strings.Contains(draft, "/findings/42") || strings.Contains(draft, "approve") {
 		t.Fatalf("draft state should link to review without approving inline: %s", draft)
 	}
 	caseAction := starredFindingActionsHTML(breach, starredFindingState{
 		CaseID: 73, CaseReference: "GMCL-2026-001073", CaseStatus: "investigating",
-	}, "token", 2026, "", "")
+	}, "token", 2026, "", "", "3")
 	if !strings.Contains(caseAction, `/admin/cases/73`) || !strings.Contains(caseAction, "GMCL-2026-001073") || strings.Contains(caseAction, "<form") {
 		t.Fatalf("linked finding should open its existing case: %s", caseAction)
 	}
 	breach.NeedsExemptionReview = true
-	junior := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "", "")
+	junior := starredFindingActionsHTML(breach, starredFindingState{}, "token", 2026, "", "", "")
 	for _, want := range []string{"Accept junior exemption", "rest of this season", "close every current finding for this player"} {
 		if !strings.Contains(junior, want) {
 			t.Fatalf("junior actions do not contain %q: %s", want, junior)
@@ -195,7 +254,7 @@ func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.
 	sunday.Appearance.PlayingDay = "Sunday"
 	sunday.Appearance.CompetitionType = "League"
 	sunday.Appearance.CompetitionName = "GMCL Sunday Division 1"
-	if actions := starredFindingActionsHTML(sunday, starredFindingState{}, "token", 2026, "", ""); !strings.Contains(actions, "Record Sunday exemption") {
+	if actions := starredFindingActionsHTML(sunday, starredFindingState{}, "token", 2026, "", "", ""); !strings.Contains(actions, "Record Sunday exemption") {
 		t.Fatalf("Sunday league finding should offer the exemption workflow: %s", actions)
 	}
 	if strings.Contains(pending, "Record Sunday exemption") {
@@ -265,6 +324,7 @@ func TestRedirectStarredFindingReturnsToExactGroupAndKeepsDates(t *testing.T) {
 	form := url.Values{
 		"breach_from": {"2026-05-01"},
 		"breach_to":   {"2026-06-30"},
+		"breach_recent": {"3"},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/admin/starred-players/findings/accept", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -272,7 +332,7 @@ func TestRedirectStarredFindingReturnsToExactGroupAndKeepsDates(t *testing.T) {
 	redirectStarredFinding(recorder, request, 2026, "closed", "", &breach)
 	anchor := starredBreachGroupAnchor(starredBreachDay(breach), starredDivisionLabel(breach.Appearance.CompetitionName, breach.Appearance.CompetitionType))
 	location := recorder.Header().Get("Location")
-	for _, want := range []string{"breach_from=2026-05-01", "breach_to=2026-06-30", "breach_return=" + anchor, "#" + anchor} {
+	for _, want := range []string{"breach_from=2026-05-01", "breach_to=2026-06-30", "breach_recent=3", "breach_return=" + anchor, "#" + anchor} {
 		if !strings.Contains(location, want) {
 			t.Fatalf("redirect location %q does not contain %q", location, want)
 		}
