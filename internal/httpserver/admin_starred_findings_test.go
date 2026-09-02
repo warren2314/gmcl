@@ -322,8 +322,8 @@ func TestStarredBreachGroupAnchorIsStableAndValid(t *testing.T) {
 func TestRedirectStarredFindingReturnsToExactGroupAndKeepsDates(t *testing.T) {
 	breach := sampleStarredBreach()
 	form := url.Values{
-		"breach_from": {"2026-05-01"},
-		"breach_to":   {"2026-06-30"},
+		"breach_from":   {"2026-05-01"},
+		"breach_to":     {"2026-06-30"},
 		"breach_recent": {"3"},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/admin/starred-players/findings/accept", strings.NewReader(form.Encode()))
