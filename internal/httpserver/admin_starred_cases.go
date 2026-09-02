@@ -82,7 +82,7 @@ func selectStarredFixtureSide(breach starred.Breach, home, away starredFixtureSi
 	}
 	if len(candidates) == 0 {
 		for _, side := range []starredFixtureSide{home, away} {
-			if clubMatches(side) {
+			if clubMatches(side) && breach.Appearance.TeamLevel > 0 && starred.TeamLevel(side.TeamName) == breach.Appearance.TeamLevel {
 				candidates = append(candidates, side)
 			}
 		}
