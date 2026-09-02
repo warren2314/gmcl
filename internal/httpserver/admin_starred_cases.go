@@ -67,16 +67,24 @@ func starredCaseClubMatches(left, right string) bool {
 }
 
 func selectStarredFixtureSide(breach starred.Breach, home, away starredFixtureSide) (starredFixtureSide, error) {
-	matches := func(side starredFixtureSide) bool {
-		clubMatches := starred.NormalizeClub(side.ClubName) == breach.Appearance.ClubKey ||
+	clubMatches := func(side starredFixtureSide) bool {
+		return starred.NormalizeClub(side.ClubName) == breach.Appearance.ClubKey ||
 			starredCaseClubMatches(side.ClubName, breach.Appearance.ClubName)
-		teamMatches := starred.NormalizeName(side.TeamName) == starred.NormalizeName(breach.Appearance.TeamName)
-		return clubMatches && teamMatches
+	}
+	exactMatches := func(side starredFixtureSide) bool {
+		return clubMatches(side) && starred.NormalizeName(side.TeamName) == starred.NormalizeName(breach.Appearance.TeamName)
 	}
 	candidates := make([]starredFixtureSide, 0, 2)
 	for _, side := range []starredFixtureSide{home, away} {
-		if matches(side) {
+		if exactMatches(side) {
 			candidates = append(candidates, side)
+		}
+	}
+	if len(candidates) == 0 {
+		for _, side := range []starredFixtureSide{home, away} {
+			if clubMatches(side) {
+				candidates = append(candidates, side)
+			}
 		}
 	}
 	if len(candidates) == 0 {

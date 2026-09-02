@@ -551,7 +551,7 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 					evidence = "Junior tag — verify exemption"
 				}
 				state := findingStates[starredFindingKey(b)]
-				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(b.ListType), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue, ""))
+				fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td><span class="badge bg-danger">%s</span></td><td>%s</td><td>%s</td><td>%s · <a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">view match %d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(starredBreachRuleLabel(b)), escapeHTML(b.Appearance.TeamName), escapeHTML(b.Appearance.CompetitionType), escapeHTML(evidence), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, breachFromValue, breachToValue, ""))
 			}
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
@@ -574,6 +574,19 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		fmt.Fprint(w, `</div>`)
 		pageFooterWithScript(w, starredPopoverInitScript)
 	}
+}
+
+func starredBreachRuleLabel(breach starred.Breach) string {
+	if breach.RuleReference == starred.LastThreeSecondXIRule {
+		return "Rule " + breach.RuleReference
+	}
+	if breach.ListType == "A" || breach.ListType == "B" {
+		return "List " + breach.ListType
+	}
+	if breach.RuleReference != "" {
+		return "Rule " + breach.RuleReference
+	}
+	return breach.ListType
 }
 
 func (s *Server) renderStarredCardDetail(w http.ResponseWriter, ctx context.Context, year int, monitoringCutoff, reviewCutoff time.Time, view string, periods []starred.Period, reviewApps []starred.Appearance, mappings []starred.IdentityMapping, scorecardTotal, appearanceTotal int, r *http.Request) {
