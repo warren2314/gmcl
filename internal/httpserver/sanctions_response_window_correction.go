@@ -33,6 +33,10 @@ func (s *Server) loadAdminCaseResponseWindow(ctx context.Context, caseID int64) 
 }
 
 func adminCaseResponseWindowHTML(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location) string {
+	return adminCaseResponseWindowHTMLAt(caseID, csrf, view, caseStatus, loc, time.Now())
+}
+
+func adminCaseResponseWindowHTMLAt(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location, now time.Time) string {
 	if view.ID == 0 {
 		return ""
 	}
@@ -46,7 +50,7 @@ func adminCaseResponseWindowHTML(caseID int64, csrf string, view adminCaseRespon
 		badgeClass, badgeLabel = "text-bg-warning", "Waiting for email delivery"
 	case "pending":
 		badgeClass, badgeLabel = "text-bg-primary", "Response due"
-		if view.DueAt != nil && !view.DueAt.After(time.Now()) {
+		if view.DueAt != nil && !view.DueAt.After(now) {
 			badgeClass, badgeLabel = "text-bg-danger", "Response overdue"
 		}
 	case "expired":

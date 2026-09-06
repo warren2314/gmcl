@@ -14,13 +14,13 @@ func TestAdminCaseResponseWindowShowsAuditedEarlierDateCorrection(t *testing.T) 
 	}
 	started := time.Date(2026, time.August, 29, 10, 15, 0, 0, london)
 	reminder, due := responseDeliveryDeadlines(started)
-	html := adminCaseResponseWindowHTML(77, "token", adminCaseResponseWindowView{
+	html := adminCaseResponseWindowHTMLAt(77, "token", adminCaseResponseWindowView{
 		ID:            12,
 		Status:        "pending",
 		DeliveredAt:   &started,
 		ReminderDueAt: &reminder,
 		DueAt:         &due,
-	}, "response_pending", london)
+	}, "response_pending", london, started.Add(24*time.Hour))
 	for _, want := range []string{
 		"Club response clock",
 		"Response due",
