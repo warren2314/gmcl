@@ -535,8 +535,15 @@ func parseStarredFindingForm(r *http.Request) (year int, matchID, playerID int64
 	playerID, _ = strconv.ParseInt(strings.TrimSpace(r.FormValue("player_id")), 10, 64)
 	clubKey = strings.TrimSpace(r.FormValue("club_key"))
 	playerKey = strings.TrimSpace(r.FormValue("player_key"))
-	listType = strings.ToUpper(strings.TrimSpace(r.FormValue("list_type")))
-	if clubKey == "" || playerKey == "" || (listType != "A" && listType != "B") {
+	switch strings.ToUpper(strings.TrimSpace(r.FormValue("list_type"))) {
+	case "A":
+		listType = "A"
+	case "B":
+		listType = "B"
+	case "LAST 3":
+		listType = "Last 3"
+	}
+	if clubKey == "" || playerKey == "" || listType == "" {
 		err = fmt.Errorf("invalid finding")
 	}
 	return
