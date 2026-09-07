@@ -13,7 +13,7 @@ import (
 func TestAdminCloseCaseNoActionHTML(t *testing.T) {
 	owner, other := int32(7), int32(8)
 	html := adminCloseCaseNoActionHTML(42, `token"value`, "investigating", false, &owner, &owner)
-	for _, want := range []string{"/admin/cases/42/close-no-action", "Close case with no action", "goes straight to", "token&quot;value", "no sanction, approval request or outcome letter"} {
+	for _, want := range []string{"/admin/cases/42/close-no-action", "Close case with no action", "goes straight to", "token&quot;value", "no sanction or approval request"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected %q in %s", want, html)
 		}

@@ -25,6 +25,7 @@ func closeCaseNoActionErrorMessage(stage, requestID string) string {
 		"cancel_response_request": "the open response window could not be cancelled",
 		"revoke_unsent_messages":  "the unsent case emails could not be cancelled",
 		"cancel_follow_up_tasks":  "the open follow-up tasks could not be cancelled",
+		"queue_closure_notices":   "the selected clubs could not be notified; check their verified official mailboxes and email settings",
 		"update_case":             "the case status could not be updated",
 		"record_case_history":     "the case history could not be recorded",
 		"commit_transaction":      "the completed changes could not be saved",
@@ -56,11 +57,11 @@ const cancelOpenCaseFollowUpTasksSQL = `UPDATE sanction_follow_up_tasks
 	SET status='cancelled',current_note=CONCAT_WS(E'\n',NULLIF(current_note,''),$2::text),updated_at=now()
 	WHERE case_id=$1 AND status IN ('open','in_progress')`
 
-func adminCloseCaseNoActionHTML(caseID int64, csrf, status string, hasProposed bool, assignedAdminID, currentAdminID *int32) string {
+func adminCloseCaseNoActionHTML(caseID int64, csrf, status string, hasProposed bool, assignedAdminID, currentAdminID *int32, notificationControls ...string) string {
 	if !map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] || !sameAdminAssignment(assignedAdminID, currentAdminID) {
 		return ""
 	}
-	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/close-no-action" class="card mb-3 border-success"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Close with no action</strong></div><div class="card-body"><p class="small">Use this when the investigation is complete and no sanction or outcome letter is required. The case goes straight to <strong>Closed</strong>; its history and evidence remain available.</p><label class="form-label">Reason for taking no action</label><textarea class="form-control" name="reason" required minlength="5" maxlength="2000" rows="3"></textarea><div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" id="confirm-close-no-action" required><label class="form-check-label" for="confirm-close-no-action">I confirm that no sanction, approval request or outcome letter is required.</label></div><div class="form-text mt-2">Any pending response link, reminder, unsent email or open follow-up task will be cancelled.</div></div><div class="card-footer"><button class="btn btn-outline-success">Close case with no action</button></div></form>`, caseID, escapeHTML(csrf))
+	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/close-no-action" class="card mb-3 border-success"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Close with no action</strong></div><div class="card-body"><p class="small">Use this when the investigation is complete and no sanction is required. The case goes straight to <strong>Closed</strong>; its history and evidence remain available.</p>%s<label class="form-label">Private reason for taking no action</label><textarea class="form-control" name="reason" required minlength="5" maxlength="2000" rows="3"></textarea><div class="form-check mt-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" id="confirm-close-no-action" required><label class="form-check-label" for="confirm-close-no-action">I confirm that no sanction or approval request is required.</label></div><div class="form-text mt-2">Any pending response link, reminder, unsent email or open follow-up task will be cancelled.</div></div><div class="card-footer"><button class="btn btn-outline-success">Close case with no action</button></div></form>`, caseID, escapeHTML(csrf), strings.Join(notificationControls, ""))
 }
 
 func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
@@ -77,6 +78,11 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 		reason := strings.TrimSpace(r.FormValue("reason"))
 		if r.FormValue("confirm") != "yes" || utf8.RuneCountInString(reason) < 5 || utf8.RuneCountInString(reason) > 2000 {
 			http.Error(w, "confirm no action and provide a reason of 5 to 2,000 characters", http.StatusBadRequest)
+			return
+		}
+		selectedClubs, err := parseClosureClubIDs(r.Form["notify_club"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		actor := adminActor(r)
@@ -127,11 +133,15 @@ func (s *Server) handleAdminCaseCloseNoAction() http.HandlerFunc {
 			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, stage, stepErr)
 			return
 		}
+		if err = queueCaseClosureNotices(r.Context(), tx, caseID, reference, selectedClubs, *actor.ID, actor.Label, actor.RequestID); err != nil {
+			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "queue_closure_notices", err)
+			return
+		}
 		if err = tx.Commit(r.Context()); err != nil {
 			s.failAdminCaseCloseNoAction(w, r, caseID, actor.ID, "commit_transaction", err)
 			return
 		}
-		message := url.QueryEscape(reference + " closed with no action")
+		message := url.QueryEscape(reference + fmt.Sprintf(" closed with no action; %d club(s) selected for notification", len(selectedClubs)))
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?success=%s", caseID, message), http.StatusSeeOther)
 	}
 }

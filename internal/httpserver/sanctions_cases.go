@@ -1657,7 +1657,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
 		}
 		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] {
-			fmt.Fprint(w, adminCloseCaseNoActionHTML(id, csrf, status, hasProposed, assignedAdminID, actor.ID))
+			fmt.Fprint(w, adminCloseCaseNoActionHTML(id, csrf, status, hasProposed, assignedAdminID, actor.ID, s.caseClosureNotificationControls(r.Context(), id)))
 		}
 		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Add a private investigation note"></textarea><div class="form-text">Saved notes cannot be edited later. Add a correction if something changes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save note</button></div></form>`, id, escapeHTML(csrf))
