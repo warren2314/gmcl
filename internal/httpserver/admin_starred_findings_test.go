@@ -262,6 +262,39 @@ func TestStarredFindingActionsCreateCaseWithoutReplacingLegacyDrafts(t *testing.
 	}
 }
 
+func TestReopenedStarredFindingReturnsToActionQueue(t *testing.T) {
+	breach := sampleStarredBreach()
+	breach.ListType = "Last 3"
+	state := starredFindingState{ID: 42, Status: "pending"}
+	states := map[string]starredFindingState{starredFindingKey(breach): state}
+	if got := filterOutstandingStarredBreaches([]starred.Breach{breach}, states); len(got) != 1 {
+		t.Fatal("reopened finding must return to the outstanding queue")
+	}
+	if got := starredFindingStatus(state); got != "Outstanding" {
+		t.Fatalf("reopened status = %q", got)
+	}
+	actions := starredFindingActionsHTML(breach, state, "token", 2026, "", "", "")
+	for _, want := range []string{"/findings/accept", "/findings/create-case", `name="list_type" value="Last 3"`} {
+		if !strings.Contains(actions, want) {
+			t.Fatalf("reopened finding lacks %q: %s", want, actions)
+		}
+	}
+}
+
+func TestOnlyAcceptedFindingsOfferReopen(t *testing.T) {
+	for _, status := range []string{"accepted", "pending", "draft", "approved", "sent", "send_failed"} {
+		state := starredFindingState{ID: 42, Status: status}
+		actions := starredFindingActionsHTML(sampleStarredBreach(), state, "token", 2026, "", "", "")
+		if strings.Contains(actions, "/findings/reopen") != (status == "accepted") {
+			t.Fatalf("unexpected reopen action for %s: %s", status, actions)
+		}
+		state.CaseID = 73
+		if actions := starredFindingActionsHTML(sampleStarredBreach(), state, "token", 2026, "", "", ""); strings.Contains(actions, "/findings/reopen") {
+			t.Fatalf("linked case must not offer reopening: %s", actions)
+		}
+	}
+}
+
 func TestOutstandingStarredBreachesExcludeAcceptedAndSent(t *testing.T) {
 	accepted := sampleStarredBreach()
 	draft := sampleStarredBreach()

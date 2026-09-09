@@ -153,7 +153,7 @@ func starredFindingStatus(state starredFindingState) string {
 		}
 		return label + " / " + status
 	}
-	if state.ID == 0 {
+	if state.ID == 0 || state.Status == "pending" {
 		return "Outstanding"
 	}
 	switch state.Status {
@@ -380,11 +380,11 @@ func starredFindingActionsHTML(b starred.Breach, state starredFindingState, csrf
 		}
 		return fmt.Sprintf(`<a class="badge bg-info text-dark text-decoration-none" href="/admin/cases/%d">%s</a>`, state.CaseID, escapeHTML(label))
 	}
-	if state.ID > 0 {
+	if state.ID > 0 && state.Status != "pending" {
 		label, class := "Review", "bg-secondary"
 		switch state.Status {
 		case "accepted":
-			return `<span class="badge bg-success">Accepted / closed</span><div class="small text-muted mt-1">No letter required</div>`
+			return fmt.Sprintf(`<span class="badge bg-success">Accepted / closed</span><form method="post" action="/admin/starred-players/findings/reopen" onsubmit="return confirm('Reopen this finding for investigation?')"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="id" value="%d"><button class="btn btn-sm btn-outline-primary mt-1">Reopen finding</button></form>`, escapeHTML(csrf), state.ID)
 		case "draft":
 			label, class = "Legacy draft — read only", "bg-warning text-dark"
 		case "approved":
@@ -637,6 +637,63 @@ func (s *Server) handleAdminStarredFindingAccept() http.HandlerFunc {
 			})
 		}
 		redirectStarredFinding(w, r, year, message, "", &breach)
+	}
+}
+
+func (s *Server) handleAdminStarredFindingReopen() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid finding", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		var year int
+		var matchID, playerID int64
+		var clubKey, playerKey, listType string
+		err = s.DB.QueryRow(ctx, `SELECT season_year,play_cricket_match_id,COALESCE(play_cricket_player_id,0),club_key,player_key,list_type FROM starred_finding_reviews WHERE id=$1 AND status='accepted'`, id).Scan(&year, &matchID, &playerID, &clubKey, &playerKey, &listType)
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "finding is not accepted / closed", http.StatusConflict)
+			return
+		}
+		if err != nil {
+			http.Error(w, "could not load finding", http.StatusInternalServerError)
+			return
+		}
+		breach, err := s.verifiedStarredBreach(ctx, year, matchID, playerID, clubKey, playerKey, listType)
+		if err != nil {
+			redirectStarredFinding(w, r, year, "", err.Error(), nil)
+			return
+		}
+		tx, err := s.DB.Begin(ctx)
+		if err != nil {
+			http.Error(w, "could not reopen finding", http.StatusInternalServerError)
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		result, err := tx.Exec(ctx, `UPDATE starred_finding_reviews f SET status='pending',updated_at=now()
+			WHERE f.id=$1 AND f.status='accepted' AND NOT EXISTS (
+				SELECT 1 FROM sanction_intakes i JOIN sanction_intake_case_links l ON l.intake_id=i.id AND l.relationship='primary'
+				WHERE i.origin='starred_player' AND i.external_key=f.finding_key)`, id)
+		if err != nil {
+			http.Error(w, "could not reopen finding", http.StatusInternalServerError)
+			return
+		}
+		if result.RowsAffected() != 1 {
+			http.Error(w, "finding is already reopened or linked to a case", http.StatusConflict)
+			return
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,entity_id,metadata)
+			VALUES('admin',$1,'starred_finding_reopened','starred_finding_review',$2,'{"previous_status":"accepted","status":"pending"}'::jsonb)`, s.resolveAdminID(r), id)
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			http.Error(w, "could not record finding reopening", http.StatusInternalServerError)
+			return
+		}
+		redirectStarredFinding(w, r, year, "Finding reopened. It can now be investigated or closed again.", "", &breach)
 	}
 }
 

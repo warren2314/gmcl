@@ -229,6 +229,7 @@ func (s *Server) adminRouter() http.Handler {
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions", s.handleAdminStarredExemptionCreate())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/exemptions/{id}/status", s.handleAdminStarredExemptionStatus())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/accept", s.handleAdminStarredFindingAccept())
+		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/reopen", s.handleAdminStarredFindingReopen())
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/create-case", s.handleAdminStarredFindingCaseCreate())
 		// Compatibility alias for forms rendered before the case workflow was deployed.
 		r.With(s.requireAdminRole("super_admin")).Post("/starred-players/findings/escalate", s.handleAdminStarredFindingEscalate())

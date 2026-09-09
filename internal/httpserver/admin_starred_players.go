@@ -556,6 +556,16 @@ func (s *Server) handleAdminStarredPlayersGet() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</tbody></table></div></div>`)
 
+		fmt.Fprint(w, `<details class="card shadow-sm mb-4"><summary class="card-header">Accepted / closed findings — reopen for investigation</summary><div class="card-body"><p class="text-muted">Current findings closed with no offence. Approved exemptions are managed separately.</p><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Date</th><th>Club</th><th>Player</th><th>Rule</th><th>Match</th><th>Action</th></tr></thead><tbody>`)
+		for _, b := range filterStarredBreachesWithoutApprovedExemption(eval.Breaches, exemptions) {
+			state := findingStates[starredFindingKey(b)]
+			if state.Status != "accepted" || state.CaseID > 0 {
+				continue
+			}
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><a href="/admin/starred-players?season=%d&amp;view=scorecard&amp;match_id=%d#card-detail">%d</a></td><td>%s</td></tr>`, b.Appearance.MatchDate.Format("02 Jan 2006"), escapeHTML(b.Appearance.ClubName), escapeHTML(b.Appearance.PlayerName), escapeHTML(starredBreachRuleLabel(b)), year, b.Appearance.MatchID, b.Appearance.MatchID, starredFindingActionsHTML(b, state, csrf, year, "", "", ""))
+		}
+		fmt.Fprint(w, `</tbody></table></div></div></details>`)
+
 		clubListHeader := starredSectionTitle("", "Club list completeness", "Only clubs with a problem are listed here.",
 			"How list sizes are checked", "Every club must publish a starred list of the size the rules require: 5 players as standard, 8 under the reduced List B option, or 16 under the large List B option — and must have submitted its form. Clubs listed here either sent no form or have the wrong number of active players after amendments.")
 		if clubIssueCount > 0 {
