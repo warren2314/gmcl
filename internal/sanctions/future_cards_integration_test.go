@@ -85,7 +85,33 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO sanction_case_subjects(case_id,subject_type,team_id,is_primary) VALUES($1,'team',$2,true) RETURNING id`, caseID, team1).Scan(&subject1); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `INSERT INTO sanction_case_subjects(case_id,subject_type,team_id) VALUES($1,'team',$2) RETURNING id`, caseID, team2).Scan(&subject2); err != nil {
+	otherClub := queryID(`INSERT INTO clubs(id,name) VALUES($1,$2) RETURNING id`, fixtureID(), unique+"-other")
+	otherTeam := queryID(`INSERT INTO teams(id,club_id,name) VALUES($1,$2,'Other XI') RETURNING id`, fixtureID(), otherClub)
+	for _, invalid := range []struct {
+		team   int32
+		reason string
+		actor  Actor
+	}{
+		{team2, "", owner}, {team2, "Meeting decision", approver}, {team1, "Meeting decision", owner}, {otherTeam, "Meeting decision", owner},
+	} {
+		if err := service.AddCaseTeam(ctx, caseID, invalid.team, invalid.reason, invalid.actor); err == nil {
+			t.Fatal("invalid additional team accepted")
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := service.AddCaseTeam(ctx, caseID, team2, "Meeting agreed a separate second-XI deduction", owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var addedEvents, parties int
+	var savedPrimary int32
+	if err := pool.QueryRow(ctx, `SELECT team_id,(SELECT COUNT(*) FROM sanction_case_events WHERE case_id=$1 AND event_type='case_team_added'),(SELECT COUNT(*) FROM sanction_case_parties WHERE case_id=$1 AND team_id=$2 AND relationship='offending_club') FROM sanction_cases WHERE id=$1`, caseID, team2).Scan(&savedPrimary, &addedEvents, &parties); err != nil {
+		t.Fatal(err)
+	}
+	if savedPrimary != team1 || addedEvents != 1 || parties != 1 {
+		t.Fatalf("team addition changed primary or duplicated audit/party: %d/%d/%d", savedPrimary, addedEvents, parties)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM sanction_case_subjects WHERE case_id=$1 AND subject_type='team' AND team_id=$2`, caseID, team2).Scan(&subject2); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -99,6 +125,9 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	decisionID, err := service.ProposeDecisionBundle(ctx, req)
 	if err != nil {
 		t.Fatalf("propose: %v", err)
+	}
+	if err := service.AddCaseTeam(ctx, caseID, team2, "Cannot change saved decision", owner); err == nil {
+		t.Fatal("saved decision allowed team mutation")
 	}
 	var points, count int
 	var target int32
