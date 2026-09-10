@@ -64,6 +64,27 @@ type personalWorkDashboard struct {
 	CanPublish    bool
 }
 
+const personalResponsesAwaitingReviewQuery = `SELECT cases.id,cases.reference,COALESCE(cases.player_name,''),
+	COALESCE(club.name,''),response.created_at,COUNT(*) OVER()
+	FROM sanction_cases cases
+	LEFT JOIN clubs club ON club.id=cases.club_id
+	JOIN LATERAL (
+		SELECT event.id,event.created_at
+		FROM sanction_case_events event
+		WHERE event.case_id=cases.id
+		  AND event.event_type IN ('party_response','external_response_recorded')
+		ORDER BY event.id DESC LIMIT 1
+	) response ON TRUE
+	WHERE cases.assigned_admin_id=$1 AND NOT cases.is_test
+	  AND cases.status NOT IN ('published','closed','rejected','withdrawn')
+	  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
+	  AND NOT EXISTS(
+		SELECT 1 FROM sanction_case_events reviewed
+		WHERE reviewed.case_id=cases.id AND reviewed.event_type='response_reviewed'
+		  AND reviewed.metadata->>'response_event_id'=response.id::text
+	  )
+	ORDER BY response.created_at DESC,cases.id DESC LIMIT $2`
+
 func (s *Server) loadPersonalWorkDashboard(ctx context.Context, adminID int32, adminName string) (personalWorkDashboard, error) {
 	return s.loadPersonalWorkDashboardWithLimit(ctx, adminID, adminName, 6)
 }
@@ -116,25 +137,7 @@ func (s *Server) loadPersonalWorkDashboardWithLimit(ctx context.Context, adminID
 	}
 	caseRows.Close()
 
-	responseRows, err := s.DB.Query(ctx, `SELECT cases.id,cases.reference,COALESCE(cases.player_name,''),
-		COALESCE(club.name,''),response.created_at,COUNT(*) OVER()
-		FROM sanction_cases cases
-		LEFT JOIN clubs club ON club.id=cases.club_id
-		JOIN LATERAL (
-			SELECT event.id,event.created_at
-			FROM sanction_case_events event
-			WHERE event.case_id=cases.id
-			  AND event.event_type IN ('party_response','external_response_recorded')
-			ORDER BY event.id DESC LIMIT 1
-		) response ON TRUE
-		WHERE cases.assigned_admin_id=$1 AND NOT cases.is_test
-		  AND NOT EXISTS(SELECT 1 FROM sanction_case_events event WHERE event.case_id=cases.id AND event.event_type='case_training_designated')
-		  AND NOT EXISTS(
-			SELECT 1 FROM sanction_case_events reviewed
-			WHERE reviewed.case_id=cases.id AND reviewed.event_type='response_reviewed'
-			  AND reviewed.metadata->>'response_event_id'=response.id::text
-		  )
-		ORDER BY response.created_at DESC,cases.id DESC LIMIT $2`, adminID, itemLimit)
+	responseRows, err := s.DB.Query(ctx, personalResponsesAwaitingReviewQuery, adminID, itemLimit)
 	if err != nil {
 		return data, err
 	}

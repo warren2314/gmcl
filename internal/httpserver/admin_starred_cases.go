@@ -42,6 +42,17 @@ type starredCaseResult struct {
 	Created   bool
 }
 
+// A terminal intake needs its recorded disposition preserved. This is not a
+// mapping exception: attempting to create a case must leave its state intact.
+type starredCaseIntakeStateError struct {
+	IntakeID int64
+	State    string
+}
+
+func (e *starredCaseIntakeStateError) Error() string {
+	return fmt.Sprintf("Report #%d is marked %s; no new case was created. Its recorded decision and history have been preserved.", e.IntakeID, e.State)
+}
+
 // starredCaseExceptionError represents a data/configuration problem that must
 // be shown in the intake exception queue. It is deliberately distinct from a
 // database failure, which rolls the transaction back instead.
@@ -366,6 +377,10 @@ func (s *Server) createStarredIneligibleCase(ctx context.Context, breach starred
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var latestRevision int
+	var intakeState string
+	// The upsert locks an existing intake until this transaction ends, sharing
+	// the same row lock as the ignore/duplicate actions. Read the disposition
+	// under that lock so a stale starred-player page cannot bypass it.
 	err = tx.QueryRow(ctx, `
 		INSERT INTO sanction_intakes(
 			origin,external_key,source_reference,external_created_at,state,
@@ -374,9 +389,9 @@ func (s *Server) createStarredIneligibleCase(ctx context.Context, breach starred
 		VALUES('starred_player',$1,$2,$3,'reviewing',$4,$5,$6,$7)
 		ON CONFLICT(origin,external_key) DO UPDATE
 		SET updated_at=sanction_intakes.updated_at
-		RETURNING id,latest_revision`, findingKey, sourceReference, breach.Appearance.MatchDate,
+		RETURNING id,latest_revision,state`, findingKey, sourceReference, breach.Appearance.MatchDate,
 		breach.Appearance.ClubName, breach.Appearance.TeamName, breach.Appearance.PlayerName,
-		breach.Appearance.MatchDate).Scan(&result.IntakeID, &latestRevision)
+		breach.Appearance.MatchDate).Scan(&result.IntakeID, &latestRevision, &intakeState)
 	if err != nil {
 		return result, fmt.Errorf("stage starred-player intake: %w", err)
 	}
@@ -397,6 +412,9 @@ func (s *Server) createStarredIneligibleCase(ctx context.Context, breach starred
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return result, fmt.Errorf("find linked starred-player case: %w", err)
+	}
+	if intakeState == "ignored" || intakeState == "duplicate" {
+		return result, &starredCaseIntakeStateError{IntakeID: result.IntakeID, State: intakeState}
 	}
 
 	var syncRunID int64
@@ -685,6 +703,11 @@ func (s *Server) handleAdminStarredFindingCaseCreate() http.HandlerFunc {
 		actor := adminActor(r)
 		result, err := s.createStarredIneligibleCase(ctx, breach, actor.ID, actor.Label, actor.RequestID)
 		if err != nil {
+			var disposition *starredCaseIntakeStateError
+			if errors.As(err, &disposition) {
+				redirectIneligible(w, r, disposition.IntakeID, "error", disposition.Error())
+				return
+			}
 			redirectStarredFinding(w, r, year, "", "Could not create ineligible-player case: "+err.Error(), &breach)
 			return
 		}
