@@ -1581,6 +1581,9 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			}
 		}
 		canPropose := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
+		if !hasProposed && canPropose && (sameAdminAssignment(assignedAdminID, adminActor(r).ID) || adminRoleForRequest(r) == "super_admin") {
+			fmt.Fprint(w, s.adminCaseTeamFormHTML(r.Context(), id, csrf))
+		}
 		if !hasProposed && canPropose && !latestResponse.Unreviewed && sameAdminAssignment(assignedAdminID, adminActor(r).ID) {
 			fmt.Fprint(w, s.adminDecisionBundleFormHTML(r.Context(), id, csrf, publicSummary))
 		} else if !hasProposed && canPropose && !latestResponse.Unreviewed {
