@@ -91,7 +91,7 @@ func (s *Server) handleAdminCaptainFormSettingsPost() http.HandlerFunc {
 }
 
 func (s *Server) loadCaptainFormSeasons(ctx context.Context, r *http.Request) ([]seasonOption, int32, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name FROM seasons ORDER BY start_date DESC, id DESC`)
+	rows, err := s.DB.Query(ctx, captainFormSeasonsQuery, s.londonDate())
 	if err != nil {
 		return nil, 0, err
 	}

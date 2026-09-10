@@ -28,6 +28,8 @@ Suspended cards add no red cards or points to the ledger. A follow-up review tas
 
 The future season must exist before it can be selected. The feature does not silently create a season or alter the current competition's defaults. If the form reports that no future season is configured, league administration must arrange the season setup first.
 
+The 2027 season is configured by migration 0088 with Warren's confirmed dates: **17 April 2027 to 11 September 2027**. For the Whalley Range first-team award, select **2027** and check **Effective from: 17 April 2027**. Refresh an already-open decision form after deployment to load the new season, preserving any unsaved entries first. This configuration does not save or approve a decision or apply a deduction.
+
 The saved decision, letters, public register, captain timeline and rules lookup retain the effect's target season and card count. The public register supports a scheduled-red filter and labels future effects **Scheduled**. Publication is still required before an award appears publicly. The existing weekly legacy CSV export remains a legacy report and does not include these case-based future awards.
 
 ## Validation
