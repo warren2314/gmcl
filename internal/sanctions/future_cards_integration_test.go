@@ -147,8 +147,48 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	if _, err = service.ProposeDecisionBundle(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	const customNotice = "Penalty notices issued via manual message from Denver."
+	exec(`UPDATE sanction_cases SET reporter_email=$2 WHERE id=$1`, caseID, unique+"-private-reporter@example.invalid")
+	var editedDraft OutcomeDraft
+	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
+		draft, draftErr := service.OutcomeDraft(ctx, caseID, audience)
+		if draftErr != nil {
+			t.Fatal(draftErr)
+		}
+		version := OutcomeDraftVersion{DecisionID: draft.DecisionID, DraftID: draft.ID, Audience: audience}
+		if _, draftErr = service.SaveOutcomeDraft(ctx, caseID, audience, draft.Subject, draft.Body, approver, version); draftErr == nil {
+			t.Fatal("non-owner edited notice")
+		}
+		if _, draftErr = service.SaveOutcomeDraft(ctx, caseID, audience, draft.Subject, "Incomplete notice", owner, version); draftErr == nil {
+			t.Fatal("incomplete notice accepted")
+		}
+		if _, draftErr = service.SaveOutcomeDraft(ctx, caseID, audience, draft.Subject, draft.Body+"\n"+unique+"-private-reporter@example.invalid", owner, version); draftErr == nil {
+			t.Fatal("private reporter address accepted")
+		}
+		editedDraft, draftErr = service.SaveOutcomeDraft(ctx, caseID, audience, "Reviewed: "+draft.Subject, draft.Body+"\n\n"+customNotice, owner, version)
+		if draftErr != nil {
+			t.Fatalf("save %s: %v", audience, draftErr)
+		}
+		if _, draftErr = service.SaveOutcomeDraft(ctx, caseID, audience, draft.Subject, draft.Body, owner, version); draftErr == nil {
+			t.Fatal("stale notice overwrote current wording")
+		}
+		if draftErr = service.SubmitDecisionForApproval(ctx, caseID, owner, version); draftErr == nil {
+			t.Fatal("stale owner review submitted")
+		}
+		loaded, loadErr := service.OutcomeDraft(ctx, caseID, audience)
+		if loadErr != nil || loaded.Body != editedDraft.Body || loaded.Subject != editedDraft.Subject {
+			t.Fatalf("edited notice lost on reload: %v", loadErr)
+		}
+		pdf, _, previewErr := service.PreviewOutcomeLetter(ctx, caseID, audience)
+		if previewErr != nil || !strings.Contains(string(pdf), customNotice) {
+			t.Fatalf("edited PDF preview failed: %v", previewErr)
+		}
+	}
 	if err = service.SubmitDecisionForApproval(ctx, caseID, owner); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = service.SaveOutcomeDraft(ctx, caseID, editedDraft.Audience, editedDraft.Subject, editedDraft.Body, owner); err == nil {
+		t.Fatal("submitted notice remained editable")
 	}
 	var alreadyConfigured bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM admin_users admin JOIN sanction_recipient_directory recipient ON LOWER(BTRIM(recipient.email))=LOWER(BTRIM(admin.email)) WHERE admin.is_active AND recipient.active AND recipient.recipient_role='play_cricket')`).Scan(&alreadyConfigured); err != nil {
@@ -166,6 +206,13 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	queryID(`INSERT INTO admin_users(id,username,password_hash,email) VALUES($1,$2,'test'::bytea,$3) RETURNING id`, fixtureID(), unique+"-play-cricket", unique+"-play_cricket@example.invalid")
 	if err = service.ApproveCase(ctx, caseID, approver, ""); err != nil {
 		t.Fatalf("approve: %v", err)
+	}
+	if _, err = service.SaveOutcomeDraft(ctx, caseID, editedDraft.Audience, editedDraft.Subject, editedDraft.Body, owner); err == nil {
+		t.Fatal("approved notice remained editable")
+	}
+	lockedPDF, _, pdfErr := service.PreviewOutcomeLetter(ctx, caseID, "offending_club")
+	if pdfErr != nil || !strings.Contains(string(lockedPDF), customNotice) {
+		t.Fatalf("approved PDF lost edited wording: %v", pdfErr)
 	}
 	if err = service.ApproveCase(ctx, caseID, approver, ""); err == nil {
 		t.Fatal("second approval unexpectedly accepted")
@@ -204,7 +251,7 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT body FROM sanction_correspondence_revisions WHERE case_id=$1 AND status='approved' AND audience='offending_club' ORDER BY id DESC LIMIT 1`, caseID).Scan(&outcome); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"3 red cards", "target season 2027", "effective 1 January 2027", "Further eligibility breach"} {
+	for _, want := range []string{"3 red cards", "target season 2027", "effective 1 January 2027", "Further eligibility breach", customNotice} {
 		if !strings.Contains(outcome, want) {
 			t.Fatalf("outcome missing %q: %s", want, outcome)
 		}

@@ -6,6 +6,7 @@ import (
 	"net/mail"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,9 +32,23 @@ func (s *Server) handleAdminCaseOutcomeDraftSave() http.HandlerFunc {
 			return
 		}
 		audience := chi.URLParam(r, "audience")
-		_, err = sanctions.NewService(s.DB).SaveOutcomeDraft(r.Context(), caseID, audience, r.FormValue("subject"), r.FormValue("body"), adminActor(r))
+		decisionID, decisionErr := strconv.ParseInt(r.FormValue("decision_id"), 10, 64)
+		draftID, draftErr := strconv.ParseInt(r.FormValue("draft_id"), 10, 64)
+		if decisionErr != nil || draftErr != nil || decisionID <= 0 || draftID < 0 {
+			http.Error(w, "reload the notice before saving", http.StatusBadRequest)
+			return
+		}
+		_, err = sanctions.NewService(s.DB).SaveOutcomeDraft(r.Context(), caseID, audience, r.FormValue("subject"), r.FormValue("body"), adminActor(r), sanctions.OutcomeDraftVersion{DecisionID: decisionID, DraftID: draftID})
 		if err != nil {
-			http.Error(w, "draft was not saved: "+err.Error(), http.StatusBadRequest)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			pageHead(w, "Notice wording not saved")
+			fmt.Fprintf(w, `<main class="container py-4"><h1>Notice wording not saved</h1><p class="alert alert-warning">%s</p><p>Your attempted wording is retained below. Correct it and save again. If the notice changed or is locked, copy your wording before returning to the case.</p>`, escapeHTML(err.Error()))
+			if audience == "offending_club" || audience == "reporting_club" || audience == "official" {
+				fmt.Fprint(w, adminOutcomeDraftFormHTML(caseID, r.FormValue("csrf_token"), sanctions.OutcomeDraft{Audience: audience, DecisionID: decisionID, ID: draftID, Subject: r.FormValue("subject"), Body: r.FormValue("body")}, "", true))
+			}
+			fmt.Fprintf(w, `<a href="/admin/cases/%d">Return to case</a></main>`, caseID)
+			pageFooter(w)
 			return
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/cases/%d?draft_saved=%s", caseID, audience), http.StatusSeeOther)
@@ -218,9 +233,9 @@ func (s *Server) handleAdminCaseResponseDraftPreview() http.HandlerFunc {
 	}
 }
 
-func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf string) {
+func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Request, caseID int64, csrf string, editable bool) {
 	service := sanctions.NewService(s.DB)
-	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Emails awaiting independent approval</div><div class="card-body"><p class="small text-muted">These are the exact audience versions under review. Dave or Warren can approve another administrator's work; the approval button saves and locks them together but does not send anything. Denver issues them at final sign-off.</p>`)
+	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header">Penalty notices — wording review</div><div class="card-body"><p class="small text-muted">The case owner can add, remove or change wording before submitting for approval. Save each notice before editing another, then review all three versions. Keep the section headings and check that the wording agrees with the recorded decision above. Wording changes do not change penalties or record delivery. Approval locks the saved emails and PDFs; Denver issues them at final sign-off.</p>`)
 	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
 		draft, err := service.OutcomeDraft(r.Context(), caseID, audience)
 		if err != nil {
@@ -231,19 +246,52 @@ func (s *Server) writeAdminOutcomeDraftForms(w http.ResponseWriter, r *http.Requ
 		if draft.Exists {
 			badge = fmt.Sprintf(`<span class="badge text-bg-success">saved revision %d</span>`, draft.Revision)
 		}
-		readonly := ` readonly aria-readonly="true"`
 		if !draft.Exists {
 			badge = `<span class="badge text-bg-secondary">saved when approved</span>`
 		}
-		explanation := ""
-		fmt.Fprintf(w, `<section class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>%s</strong>%s</div>%s<label class="form-label mt-2">Subject</label><input class="form-control" value="%s"%s><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" rows="12"%s>%s</textarea><div class="mt-2"><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=%s">Preview PDF</a></div></section>`, escapeHTML(strings.ReplaceAll(audience, "_", " ")), badge, explanation, escapeHTML(draft.Subject), readonly, readonly, escapeHTML(draft.Body), caseID, audience)
+		fmt.Fprint(w, adminOutcomeDraftFormHTML(caseID, csrf, draft, badge, editable))
+		if editable {
+			fmt.Fprintf(w, `<input type="hidden" form="owner-outcome-submit" name="reviewed_%s" value="%d:%d">`, audience, draft.DecisionID, draft.ID)
+		}
 	}
 	fmt.Fprint(w, `</div></section>`)
+	if editable {
+		fmt.Fprint(w, outcomeDraftUnsavedScript)
+	}
 }
 
-func outcomeDraftIsReadOnly(audience string) bool {
-	return audience == "offending_club" || audience == "reporting_club" || audience == "official"
+func adminOutcomeDraftFormHTML(caseID int64, csrf string, draft sanctions.OutcomeDraft, badge string, editable bool) string {
+	var out strings.Builder
+	readonly := ` readonly aria-readonly="true"`
+	if editable {
+		readonly = ""
+	}
+	fmt.Fprintf(&out, `<form data-outcome-draft method="POST" action="/admin/cases/%d/outcome-drafts/%s" class="border rounded p-3 mb-3"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="decision_id" value="%d"><input type="hidden" name="draft_id" value="%d"><div class="d-flex justify-content-between"><strong>%s</strong>%s</div><label class="form-label mt-2">Subject</label><input class="form-control" name="subject" maxlength="300" required value="%s"%s><label class="form-label mt-2">Body</label><textarea class="form-control font-monospace" name="body" rows="16" maxlength="30000" required%s>%s</textarea><div class="mt-2 d-flex gap-2">`, caseID, escapeHTML(draft.Audience), escapeHTML(csrf), draft.DecisionID, draft.ID, escapeHTML(strings.ReplaceAll(draft.Audience, "_", " ")), badge, escapeHTML(draft.Subject), readonly, readonly, escapeHTML(draft.Body))
+	if editable {
+		fmt.Fprint(&out, `<button class="btn btn-primary">Save notice wording</button>`)
+	}
+	fmt.Fprintf(&out, `<a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=%s">Preview saved PDF</a></div></form>`, caseID, escapeHTML(draft.Audience))
+	return out.String()
 }
+
+const outcomeDraftUnsavedScript = `<script>(()=>{
+const forms=Array.from(document.querySelectorAll('form[data-outcome-draft]'));
+const dirty=new Set();
+forms.forEach(form=>form.addEventListener('input',()=>{
+ dirty.add(form);
+ forms.filter(other=>other!==form).forEach(other=>{
+  other.querySelectorAll('input[name="subject"],textarea').forEach(field=>field.readOnly=true);
+  other.querySelectorAll('button').forEach(button=>button.disabled=true);
+ });
+}));
+window.addEventListener('beforeunload',event=>{if(dirty.size){event.preventDefault();event.returnValue='';}});
+document.addEventListener('submit',event=>{
+ if(Array.from(dirty).some(form=>form!==event.target)){
+  event.preventDefault();alert('Save the edited notice before continuing.');return;
+ }
+ dirty.delete(event.target);
+});
+})();</script>`
 
 func defaultAdminResponseDraftViews(ref, teamName, publicSummary, allegedRuleParagraph string) map[string]responseDraftView {
 	return map[string]responseDraftView{
