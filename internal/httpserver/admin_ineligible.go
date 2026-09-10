@@ -330,6 +330,11 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 			WHERE historical_link.intake_id=i.id AND historical_case.status='withdrawn'
 		))`)
 	}
+	// Finished cases belong in history, not the selected, assigned or reply queues.
+	// Explicit status searches remain available for examining completed work.
+	if filter.CaseStatus == "" && (filter.State == "" || filter.State == "open" || filter.Scope == "mine" || filter.ReplyStatus == "unreviewed") {
+		where = append(where, "(c.id IS NULL OR c.status NOT IN ('published','closed','rejected','withdrawn'))")
+	}
 	switch filter.ReplyStatus {
 	case "unreviewed":
 		where = append(where, "latest_reply.needs_review")
@@ -695,7 +700,7 @@ func (s *Server) loadIneligibleDashboardCounts(ctx context.Context) (ineligibleD
 			AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')
 		)
 		SELECT
-		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND (intake.worklist_visibility='visible' OR intake.linked_case_id IS NOT NULL) AND (intake.linked_case_id IS NULL OR intake.linked_case_status<>'withdrawn') AND (intake.linked_case_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn'))),
+		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND (intake.worklist_visibility='visible' OR intake.linked_case_id IS NOT NULL) AND (intake.linked_case_id IS NULL OR intake.linked_case_status NOT IN ('published','closed','rejected','withdrawn')) AND (intake.linked_case_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn'))),
 		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.origin='google_form' AND intake.state IN ('new','reviewing','exception') AND intake.worklist_batch_id IS NULL AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
 		 (SELECT COUNT(*) FROM live_intake_queue intake WHERE intake.state IN ('new','reviewing','exception') AND intake.worklist_visibility='deferred' AND intake.linked_case_id IS NULL AND NOT EXISTS(SELECT 1 FROM sanction_intake_case_links historical_link JOIN sanction_cases historical_case ON historical_case.id=historical_link.case_id WHERE historical_link.intake_id=intake.id AND historical_case.status='withdrawn')),
 		 (SELECT COUNT(*) FROM live_cases cases WHERE `+ineligibleCaseGroupPredicate("live", "cases")+`),
@@ -735,7 +740,7 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 	case "responses_due":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at>=now())"
 	case "new_replies":
-		return alias + ".source_type='ineligible_player' AND EXISTS (SELECT 1 FROM sanction_case_events reply WHERE reply.id=(SELECT event.id FROM sanction_case_events event WHERE event.case_id=" + alias + ".id AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1) AND NOT EXISTS (SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=" + alias + ".id AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=reply.id::text))"
+		return ineligibleCaseGroupPredicate("live", alias) + " AND EXISTS (SELECT 1 FROM sanction_case_events reply WHERE reply.id=(SELECT event.id FROM sanction_case_events event WHERE event.case_id=" + alias + ".id AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1) AND NOT EXISTS (SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=" + alias + ".id AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=reply.id::text))"
 	case "delivery_exceptions":
 		return alias + ".source_type='ineligible_player' AND EXISTS (SELECT 1 FROM sanction_notification_outbox outbox WHERE outbox.case_id=" + alias + ".id AND outbox.revoked_at IS NULL AND EXISTS (SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=outbox.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained')))"
 	case "awaiting_denver":
