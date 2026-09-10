@@ -116,7 +116,7 @@ func (s *Service) SaveOutcomeDraft(ctx context.Context, caseID int64, audience, 
 	}
 	subject = strings.TrimSpace(subject)
 	body = strings.TrimSpace(body)
-	if subject == "" || len(subject) > 300 || body == "" || len(body) > 30000 {
+	if subject == "" || len(subject) > 300 || strings.ContainsAny(subject, "\r\n") || body == "" || len(body) > 30000 {
 		return OutcomeDraft{}, errors.New("subject and body are required and must fit the correspondence limits")
 	}
 	current, err := s.OutcomeDraft(ctx, caseID, audience)
@@ -224,11 +224,6 @@ func validOutcomeAudience(audience string) bool {
 type outcomeRequiredSection struct {
 	label  string
 	inline bool
-}
-
-func outcomeDraftMatchesGenerated(subject, body, generatedSubject, generatedBody string) bool {
-	return strings.TrimSpace(subject) == strings.TrimSpace(generatedSubject) &&
-		canonicalOutcomeBody(body) == canonicalOutcomeBody(generatedBody)
 }
 
 func canonicalOutcomeBody(body string) string {
