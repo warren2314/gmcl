@@ -19,8 +19,12 @@ func TestPlayCricketPointsTaskRequiresAssignedFinalSignOffAdmin(t *testing.T) {
 
 func TestIneligibleDashboardCountsAllOpenPlayCricketPointsTasks(t *testing.T) {
 	dashboardSource := ineligibleDashboardSource(t)
-	if !strings.Contains(dashboardSource, "League points awaiting Denver") {
-		t.Fatal("dashboard does not explain that league-points work awaits Denver")
+	// Removing the overflowing dashboard note must not remove task accounting
+	// or change who is allowed to complete the underlying league-points work.
+	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{PlayCricketPointsTasks: 4}) {
+		if card.Note != "" || card.NoteHref != "" {
+			t.Fatal("open points tasks must not restore a loose dashboard note")
+		}
 	}
 	want := "JOIN live_cases c ON c.id=t.case_id WHERE t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')"
 	if !strings.Contains(dashboardSource, want) {

@@ -1,11 +1,8 @@
 package httpserver
 
-import "fmt"
-
 // ineligibleQueueStatusCard is one clickable number in the queue-status grid.
-// Note carries a secondary figure that would otherwise need a tile of its own,
-// so a single subject - Denver's sign-off work - is one card rather than two
-// competing for attention.
+// Note and NoteHref are optional renderer fields; this grid does not display
+// a separate league-points note beneath the Denver sign-off card.
 type ineligibleQueueStatusCard struct {
 	Label    string
 	Count    int64
@@ -15,21 +12,16 @@ type ineligibleQueueStatusCard struct {
 	NoteHref string
 }
 
-// ineligibleQueueStatusCards is the queue-status grid, in its original order.
-// The only departure is Denver: the cases awaiting his final sign-off and the
-// open Play-Cricket league-points tasks are one card, because they are two
-// different things (cases versus follow-up tasks, over different sources) and
-// side by side they read as the same number twice.
+// ineligibleQueueStatusCards preserves the twelve-card queue-status grid.
+// Denver's card counts cases awaiting final sign-off only. League-points
+// follow-up tasks remain available on their task page, not as a loose link
+// beneath this card.
 func ineligibleQueueStatusCards(counts ineligibleDashboardCounts) []ineligibleQueueStatusCard {
 	denver := ineligibleQueueStatusCard{
 		Label:  "Awaiting Denver final sign-off",
 		Count:  counts.AwaitingDenverSignoff,
 		Accent: "border-danger",
 		Href:   "/admin/cases?group=awaiting_denver#cases",
-	}
-	if counts.PlayCricketPointsTasks > 0 {
-		denver.Note = fmt.Sprintf("League points awaiting Denver: %d", counts.PlayCricketPointsTasks)
-		denver.NoteHref = "/admin/cases/tasks?type=play_cricket_points&live=1"
 	}
 	return []ineligibleQueueStatusCard{
 		{Label: "Visible queue", Count: counts.NewIntakes, Accent: "border-primary", Href: "/admin/ineligible?live=1&scope=all&state=open&worklist=visible"},
