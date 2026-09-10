@@ -116,17 +116,19 @@ type DecisionRequest struct {
 // bundle. CaseSubjectID preserves the player/team provenance even when a card
 // effect posts to the subject's team ledger.
 type DecisionEffectRequest struct {
-	EffectType    string
-	CaseSubjectID *int64
-	SubjectType   string
-	SubjectID     *int64
-	PlayerName    string
-	AmountPence   *int64
-	Points        *int
-	StartsAt      *time.Time
-	EndsAt        *time.Time
-	Trigger       string
-	Rescindable   bool
+	EffectType     string
+	TargetSeasonID *int32
+	RedCardCount   int
+	CaseSubjectID  *int64
+	SubjectType    string
+	SubjectID      *int64
+	PlayerName     string
+	AmountPence    *int64
+	Points         *int
+	StartsAt       *time.Time
+	EndsAt         *time.Time
+	Trigger        string
+	Rescindable    bool
 }
 
 // DecisionBundleRequest is approved or rejected as one immutable unit.
@@ -187,6 +189,7 @@ type preparedDecisionEffect struct {
 	playerName      string
 	teamID          *int32
 	clubID          *int32
+	seasonID        *int32
 }
 
 // ProposeDecisionBundle calculates and records every effect in one serializable
@@ -197,7 +200,7 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		return 0, errors.New("case, proposer, public reason, and at least one effect are required")
 	}
 	allowed := map[string]bool{
-		"yellow_card": true, "red_card": true, "suspended_red": true,
+		"yellow_card": true, "red_card": true, "suspended_red": true, "scheduled_red": true,
 		"player_ban": true, "team_ban": true, "fine": true,
 		"points_adjustment": true, "warning": true, "no_action": true,
 	}
@@ -317,9 +320,16 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		if p.playerName == "" && casePlayer != nil {
 			p.playerName = strings.TrimSpace(*casePlayer)
 		}
-		isCard := effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red"
+		isCard := isCardEffect(effect.EffectType)
 		if isCard {
-			if p.teamID == nil || seasonID == nil {
+			p.seasonID = seasonID
+			if effect.TargetSeasonID != nil {
+				p.seasonID = effect.TargetSeasonID
+				if err = validateTargetCardSeason(ctx, tx, effect, seasonID); err != nil {
+					return 0, err
+				}
+			}
+			if p.teamID == nil || p.seasonID == nil {
 				return 0, errors.New("card effects require a mapped team and season")
 			}
 			p.subjectType = "team"
@@ -397,7 +407,7 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 			JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
 			LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 			WHERE c.id<>$2 AND c.status IN ('decision_proposed','triage')
-			  AND e.effect_type IN ('yellow_card','red_card','suspended_red')
+			  AND e.effect_type IN ('yellow_card','red_card','suspended_red','scheduled_red')
 			  AND COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1
 			ORDER BY c.id LIMIT 1`, id, req.CaseID).Scan(&blockingCaseID, &blockingReference)
 		if conflictErr != nil && !errors.Is(conflictErr, pgx.ErrNoRows) {
@@ -483,8 +493,8 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		return 0, err
 	}
 
-	ledgerStates := map[int32]LedgerState{}
-	clubRedDelta := map[int32]int{}
+	ledgerStates := map[[2]int32]LedgerState{}
+	clubRedDelta := map[[2]int32]int{}
 	afterEffects := make([]map[string]any, 0, len(prepared))
 	for _, p := range prepared {
 		effect := p.request
@@ -500,18 +510,30 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 		countsForTotting := false
 		publicDetails := map[string]any{}
 		privateDetails := map[string]any{}
-		isCard := effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red"
+		isCard := isCardEffect(effect.EffectType)
 		if isCard {
-			state, loaded := ledgerStates[*p.teamID]
+			teamSeason := [2]int32{*p.teamID, *p.seasonID}
+			clubSeason := [2]int32{*p.clubID, *p.seasonID}
+			state, loaded := ledgerStates[teamSeason]
 			if !loaded {
-				state, err = loadLedgerState(ctx, tx, *p.teamID, *p.clubID, *seasonID, matchDate)
+				ledgerMatchDate := matchDate
+				if effect.TargetSeasonID != nil {
+					ledgerMatchDate = nil
+				}
+				state, err = loadLedgerState(ctx, tx, *p.teamID, *p.clubID, *p.seasonID, ledgerMatchDate)
 				if err != nil {
 					return 0, err
 				}
 			}
-			state.ClubRedCount += clubRedDelta[*p.clubID]
+			state.ClubRedCount += clubRedDelta[clubSeason]
 			kind := map[string]string{"yellow_card": "yellow", "red_card": "direct_red", "suspended_red": "suspended_red"}[effect.EffectType]
-			calc, calcErr := Calculate(policy, state, CardRequest{Kind: kind, Rescindable: effect.Rescindable})
+			var calc Calculation
+			var calcErr error
+			if effect.EffectType == "scheduled_red" {
+				calc, calcErr = calculateScheduledRed(policy, state, effectRedCardCount(effect))
+			} else {
+				calc, calcErr = Calculate(policy, state, CardRequest{Kind: kind, Rescindable: effect.Rescindable})
+			}
 			if calcErr != nil {
 				return 0, calcErr
 			}
@@ -525,7 +547,11 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 			} else {
 				points = nil
 			}
-			countsForTotting = effect.EffectType == "yellow_card" || effect.EffectType == "red_card"
+			countsForTotting = effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "scheduled_red"
+			if effect.TargetSeasonID != nil {
+				publicDetails["target_season_id"] = *effect.TargetSeasonID
+			}
+			publicDetails["red_card_count"] = effectRedCardCount(effect)
 			publicDetails["explanation"] = calc.Explanation
 			publicDetails["calculation_explanation"] = calc.Explanation
 			publicDetails["yellow_balance_after"] = calc.YellowBalanceAfter
@@ -535,18 +561,21 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 			privateDetails["consumed_yellows"] = calc.ConsumedYellowCount
 			privateDetails["rescindable"] = effect.Rescindable
 			if calc.TeamRedCountAfter > state.TeamRedCount {
-				clubRedDelta[*p.clubID]++
-				state.MatchRedCount++
+				delta := calc.TeamRedCountAfter - state.TeamRedCount
+				clubRedDelta[clubSeason] += delta
+				if effect.EffectType != "scheduled_red" {
+					state.MatchRedCount += delta
+				}
 			}
 			state.YellowBalance = calc.YellowBalanceAfter
 			state.TeamRedCount = calc.TeamRedCountAfter
 			// Club delta is reapplied before the next calculation, avoiding a
 			// double increment in the cached per-team state.
-			state.ClubRedCount = calc.ClubRedCountAfter - clubRedDelta[*p.clubID]
-			ledgerStates[*p.teamID] = state
+			state.ClubRedCount = calc.ClubRedCountAfter - clubRedDelta[clubSeason]
+			ledgerStates[teamSeason] = state
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id)
-			VALUES($1,$2,'pending',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, decisionID, effect.EffectType, p.subjectType, p.subjectID, nullIfBlank(p.playerName), effect.AmountPence, points, effect.StartsAt, effect.EndsAt, nullIfBlank(effect.Trigger), mapJSON(publicDetails), mapJSON(privateDetails), countsForTotting, p.caseSubjectID); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count)
+			VALUES($1,$2,'pending',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, decisionID, effect.EffectType, p.subjectType, p.subjectID, nullIfBlank(p.playerName), effect.AmountPence, points, effect.StartsAt, effect.EndsAt, nullIfBlank(effect.Trigger), mapJSON(publicDetails), mapJSON(privateDetails), countsForTotting, p.caseSubjectID, effect.TargetSeasonID, effectRedCardCount(effect)); err != nil {
 			return 0, err
 		}
 		afterEffects = append(afterEffects, map[string]any{"effect_type": effect.EffectType, "case_subject_id": p.caseSubjectID, "subject_type": p.subjectType, "subject_id": p.subjectID})
@@ -567,6 +596,9 @@ func (s *Service) ProposeDecisionBundle(ctx context.Context, req DecisionBundleR
 }
 
 func validateDecisionEffectFields(effect DecisionEffectRequest) error {
+	if err := validateFutureCardFields(effect); err != nil {
+		return err
+	}
 	if effect.EndsAt != nil && effect.EffectType != "player_ban" && effect.EffectType != "team_ban" && effect.EffectType != "suspended_red" {
 		return fmt.Errorf("%s cannot carry an end date; end dates are only for bans and suspended red cards", strings.ReplaceAll(effect.EffectType, "_", " "))
 	}
@@ -645,7 +677,7 @@ func (s *Service) proposeDecisionLegacy(ctx context.Context, req DecisionRequest
 			return 0, err
 		}
 		var openCardProposal bool
-		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.id<>$2 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, *teamID, req.CaseID).Scan(&openCardProposal)
+		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id WHERE COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1 AND c.id<>$2 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red','scheduled_red'))`, *teamID, req.CaseID).Scan(&openCardProposal)
 		if openCardProposal {
 			return 0, errors.New("team already has an unresolved card proposal; resolve it before calculating another")
 		}
@@ -755,7 +787,7 @@ func (s *Service) ProposeCardCase(ctx context.Context, req CardCaseRequest) (Pro
 		return ProposedCase{}, err
 	}
 	var openCardProposal bool
-	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red'))`, req.TeamID).Scan(&openCardProposal)
+	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='proposed' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id WHERE COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1 AND c.status IN ('decision_proposed','triage') AND e.effect_type IN ('yellow_card','red_card','suspended_red','scheduled_red'))`, req.TeamID).Scan(&openCardProposal)
 	if openCardProposal {
 		return ProposedCase{}, errors.New("team already has an unresolved card proposal; approve, reject, or correct it before calculating another")
 	}
@@ -1119,10 +1151,10 @@ func (s *Service) AmendProposedDecision(ctx context.Context, caseID int64, actor
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(
 		decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,
-		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count
 	)
 	SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,
-		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count
 	FROM sanction_effect_revisions WHERE decision_revision_id=$1`, proposedID, correctionID); err != nil {
 		return err
 	}
@@ -1230,8 +1262,8 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 		proposedID, revision+1, actorID(approver), nullIfBlank(emergencyReason), emergency).Scan(&approvedID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id)
-		SELECT $2,effect_key,id,effect_type,CASE WHEN effect_type='suspended_red' OR COALESCE((private_details->>'rescindable')::boolean,FALSE) THEN 'suspended' WHEN effect_type='no_action' THEN 'cancelled' ELSE 'active' END,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count)
+		SELECT $2,effect_key,id,effect_type,CASE WHEN effect_type='suspended_red' OR COALESCE((private_details->>'rescindable')::boolean,FALSE) THEN 'suspended' WHEN effect_type='no_action' THEN 'cancelled' ELSE 'active' END,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count
 		FROM sanction_effect_revisions WHERE decision_revision_id=$1`, proposedID, approvedID); err != nil {
 		return err
 	}
@@ -1242,9 +1274,9 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	// existing yellows plus the new offence: delta = 1 - threshold.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO sanction_card_ledger_entries(case_id,decision_revision_id,team_id,club_id,season_id,match_date,yellow_delta,red_delta,points_deduction,entry_type,explanation)
-		SELECT c.id,$2,t.id,t.club_id,c.season_id,c.match_date,
+		SELECT c.id,$2,t.id,t.club_id,COALESCE(e.target_season_id,c.season_id),CASE WHEN e.effect_type='scheduled_red' THEN NULL ELSE c.match_date END,
 		       CASE WHEN e.effect_type='yellow_card' AND e.status='active' THEN 1 WHEN e.effect_type='red_card' AND COALESCE((e.private_details->>'consumed_yellows')::int,0)>0 THEN 1-(e.private_details->>'consumed_yellows')::int ELSE 0 END,
-		       CASE WHEN e.effect_type='red_card' THEN 1 ELSE 0 END,
+		       CASE WHEN e.effect_type='scheduled_red' THEN e.red_card_count WHEN e.effect_type='red_card' THEN 1 ELSE 0 END,
 		       COALESCE(e.points,0),
 		       CASE WHEN e.effect_type='red_card' AND COALESCE((e.private_details->>'consumed_yellows')::int,0)>0 THEN 'conversion' ELSE 'issue' END,
 		       COALESCE(e.public_details->>'explanation','Approved card effect')
@@ -1253,7 +1285,7 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 		LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 		JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)
 		WHERE c.id=$1 AND c.season_id IS NOT NULL
-		  AND e.status='active' AND e.effect_type IN ('red_card','yellow_card')`, caseID, approvedID)
+		  AND e.status='active' AND e.effect_type IN ('red_card','yellow_card','scheduled_red')`, caseID, approvedID)
 	if err != nil {
 		return err
 	}
@@ -1263,10 +1295,14 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	}
 
 	// Create operational tasks from approved effects.
-	var hasLeaguePoints bool
-	_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type='points_adjustment' AND COALESCE(points,0)<>0)`, approvedID).Scan(&hasLeaguePoints)
+	var hasLeaguePoints, hasScheduledCards bool
+	if err = tx.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type IN ('points_adjustment','scheduled_red') AND COALESCE(points,0)<>0),
+		EXISTS(SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$1 AND effect_type='scheduled_red')`, approvedID).Scan(&hasLeaguePoints, &hasScheduledCards); err != nil {
+		return err
+	}
 	var playCricketAdminID *int32
-	if hasLeaguePoints {
+	if hasLeaguePoints || hasScheduledCards {
 		var id int32
 		err = tx.QueryRow(ctx, `SELECT admin.id
 			FROM sanction_recipient_directory recipient
@@ -1277,16 +1313,23 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 			playCricketAdminID = &id
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		} else if hasScheduledCards {
+			return errors.New("configure the Play-Cricket administrator before approving future cards")
 		}
 	}
 	if hasLeaguePoints {
-		if _, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,assigned_admin_id,due_at,current_note)
-			SELECT $1,'play_cricket_points',$3,now()+interval '2 days',
-			       'Apply '||e.points||' league-table point adjustment in Play-Cricket for '||COALESCE(t.name,'mapped team '||e.subject_id::text)
+		if _, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,assigned_admin_id,due_at,current_note,effect_key,not_before)
+			SELECT $1,'play_cricket_points',$3,CASE WHEN e.effect_type='scheduled_red' THEN e.starts_at ELSE now()+interval '2 days' END,
+			       CASE WHEN e.effect_type='scheduled_red'
+			         THEN 'Apply definite award of '||e.red_card_count||' red cards: deduct '||e.points||' points ONCE in season '||EXTRACT(YEAR FROM target.start_date)::integer||' from '||to_char(e.starts_at AT TIME ZONE 'Europe/London','YYYY-MM-DD')||' for '||COALESCE(t.name,'mapped team '||e.subject_id::text)||'. Do not add another points adjustment for these cards.'
+			         ELSE 'Apply '||e.points||' league-table point adjustment in Play-Cricket for '||COALESCE(t.name,'mapped team '||e.subject_id::text) END,
+			       e.effect_key,CASE WHEN e.effect_type='scheduled_red' THEN e.starts_at ELSE NULL END
 			FROM sanction_effect_revisions e
 			LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 			LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
-			WHERE e.decision_revision_id=$2 AND e.effect_type='points_adjustment' AND COALESCE(e.points,0)<>0`, caseID, approvedID, playCricketAdminID); err != nil {
+			LEFT JOIN seasons target ON target.id=e.target_season_id
+			WHERE e.decision_revision_id=$2 AND e.effect_type IN ('points_adjustment','scheduled_red') AND COALESCE(e.points,0)<>0
+			ON CONFLICT (task_type,effect_key) WHERE effect_key IS NOT NULL DO NOTHING`, caseID, approvedID, playCricketAdminID); err != nil {
 			return err
 		}
 	}
@@ -1295,13 +1338,21 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,current_note)
-		SELECT $1,'board_intervention','Club reached the configured red-card review threshold' WHERE EXISTS (SELECT 1 FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND COALESCE((public_details->>'create_board_review_task')::boolean,FALSE))`, caseID, approvedID)
+	_, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,due_at,current_note,effect_key,not_before)
+		SELECT $1,'board_intervention',CASE WHEN effect_type='scheduled_red' THEN starts_at END,
+		  'Club reached the configured red-card review threshold'||CASE WHEN effect_type='scheduled_red' THEN ' in the scheduled target season; review from the effective date.' ELSE '' END,
+		  effect_key,CASE WHEN effect_type='scheduled_red' THEN starts_at END
+		FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND COALESCE((public_details->>'create_board_review_task')::boolean,FALSE)
+		ON CONFLICT (task_type,effect_key) WHERE effect_key IS NOT NULL DO NOTHING`, caseID, approvedID)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,due_at,current_note)
-		SELECT $1,'suspended_review',ends_at,'Review suspended or rescindable sanction' FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND status='suspended'`, caseID, approvedID)
+	_, err = tx.Exec(ctx, `INSERT INTO sanction_follow_up_tasks(case_id,task_type,due_at,current_note,effect_key,not_before)
+		SELECT $1,'suspended_review',COALESCE(ends_at,CASE WHEN target_season_id IS NOT NULL THEN starts_at END),
+		  'Review suspended or rescindable sanction; no automatic activation. '||COALESCE(trigger_condition,''),effect_key,
+		  CASE WHEN target_season_id IS NOT NULL THEN starts_at END
+		FROM sanction_effect_revisions WHERE decision_revision_id=$2 AND status='suspended'
+		ON CONFLICT (task_type,effect_key) WHERE effect_key IS NOT NULL DO NOTHING`, caseID, approvedID)
 	if err != nil {
 		return err
 	}
@@ -1343,14 +1394,17 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 }
 
 type approvedOutcomeEffect struct {
-	typeName    string
-	subjectType string
-	playerName  string
-	teamName    string
-	amount      *int64
-	points      *int
-	startsAt    *time.Time
-	endsAt      *time.Time
+	typeName     string
+	subjectType  string
+	playerName   string
+	teamName     string
+	amount       *int64
+	points       *int
+	startsAt     *time.Time
+	endsAt       *time.Time
+	redCardCount int
+	targetYear   int
+	trigger      string
 }
 
 type outcomeRenderData struct {
@@ -1507,7 +1561,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 		return errors.New("approved public outcome wording contains reporter or reporting-club identity; redact it before approval")
 	}
 
-	rows, err := tx.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at
+	rows, err := tx.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at,e.red_card_count,COALESCE((SELECT EXTRACT(YEAR FROM target.start_date)::integer FROM seasons target WHERE target.id=e.target_season_id),0),COALESCE(e.trigger_condition,'')
 		FROM sanction_effect_revisions e
 		LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 		LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
@@ -1520,7 +1574,7 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 	hasAnyPoints := false
 	for rows.Next() {
 		var effect approvedOutcomeEffect
-		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt); err != nil {
+		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt, &effect.redCardCount, &effect.targetYear, &effect.trigger); err != nil {
 			rows.Close()
 			return err
 		}
@@ -1764,6 +1818,11 @@ func approvedEffectSummary(effects []approvedOutcomeEffect) string {
 	for _, effect := range effects {
 		label := strings.ReplaceAll(effect.typeName, "_", " ")
 		label = strings.ToUpper(label[:1]) + label[1:]
+		if effect.typeName == "scheduled_red" {
+			label = fmt.Sprintf("Definite award of %d red cards", effect.redCardCount)
+		} else if effect.typeName == "suspended_red" && effect.redCardCount > 1 {
+			label = fmt.Sprintf("%d suspended red cards", effect.redCardCount)
+		}
 		subject := outcomeEffectSubject(effect)
 		if subject != "" {
 			label += " - " + subject
@@ -1773,17 +1832,28 @@ func approvedEffectSummary(effects []approvedOutcomeEffect) string {
 		}
 		if effect.points != nil {
 			pointsKind := "league-table points"
-			if effect.typeName == "yellow_card" || effect.typeName == "red_card" || effect.typeName == "card_points" {
+			if effect.typeName == "yellow_card" || effect.typeName == "red_card" || effect.typeName == "scheduled_red" || effect.typeName == "card_points" {
 				pointsKind = "card-system points"
 			}
 			label += fmt.Sprintf(" (%d %s)", *effect.points, pointsKind)
 		}
-		showDates := effect.endsAt != nil && (effect.typeName == "player_ban" || effect.typeName == "team_ban" || effect.typeName == "suspended_red")
+		if effect.targetYear != 0 {
+			label += fmt.Sprintf("; target season %d", effect.targetYear)
+		}
+		showDates := effect.typeName == "scheduled_red" || effect.targetYear != 0 || effect.endsAt != nil && (effect.typeName == "player_ban" || effect.typeName == "team_ban" || effect.typeName == "suspended_red")
 		if showDates && effect.startsAt != nil {
-			label += "; effective " + effect.startsAt.Format("2 January 2006")
+			label += "; effective " + leagueEffectDate(*effect.startsAt)
 		}
 		if showDates && effect.endsAt != nil {
-			label += " to " + effect.endsAt.Format("2 January 2006")
+			label += " to " + leagueEffectDate(*effect.endsAt)
+		}
+		if effect.typeName == "scheduled_red" {
+			label += "; definite penalty, apply the card-system deduction once on that date"
+		} else if effect.typeName == "suspended_red" {
+			label += "; conditional, no cards or points applied unless separately activated"
+			if condition := strings.TrimSpace(effect.trigger); condition != "" {
+				label += "; activation condition: " + condition
+			}
 		}
 		lines = append(lines, "- "+label)
 	}
@@ -2069,7 +2139,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 	} else if !errors.Is(draftErr, pgx.ErrNoRows) {
 		return nil, "", draftErr
 	}
-	rows, err := s.DB.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at
+	rows, err := s.DB.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at,e.red_card_count,COALESCE((SELECT EXTRACT(YEAR FROM target.start_date)::integer FROM seasons target WHERE target.id=e.target_season_id),0),COALESCE(e.trigger_condition,'')
 		FROM sanction_effect_revisions e LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 		LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
 		WHERE e.decision_revision_id=$1 ORDER BY e.id`, decisionID)
@@ -2080,7 +2150,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 	var effects []approvedOutcomeEffect
 	for rows.Next() {
 		var effect approvedOutcomeEffect
-		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt); err != nil {
+		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt, &effect.redCardCount, &effect.targetYear, &effect.trigger); err != nil {
 			return nil, "", err
 		}
 		effects = append(effects, effect)
@@ -2388,7 +2458,7 @@ func (s *Service) RejectProposedCase(ctx context.Context, caseID int64, actor Ac
 		priorID, revision+1, *actor.ID, emergency, reason).Scan(&rejectedID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id) SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id FROM sanction_effect_revisions WHERE decision_revision_id=$1`, priorID, rejectedID); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count) SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count FROM sanction_effect_revisions WHERE decision_revision_id=$1`, priorID, rejectedID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE sanction_cases SET status='investigating',current_revision=$2,proposed_by_admin_id=NULL,closed_at=NULL,updated_at=now() WHERE id=$1`, caseID, revision+1); err != nil {
@@ -2434,12 +2504,17 @@ func (s *Service) OverturnCase(ctx context.Context, caseID int64, actor Actor, r
 		SELECT case_id,$2,id,'overturned',public_reason,private_reason,rule_release_id,rule_reference,policy_version_id,proposed_by_admin_id,$3,$4,$5,outcome_subject,outcome_findings,appeal_instructions FROM sanction_decision_revisions WHERE id=$1 RETURNING id`, priorID, priorRevision+1, *actor.ID, emergency, reason).Scan(&overturnedID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id)
-		SELECT $2,effect_key,id,effect_type,'overturned',subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id FROM sanction_effect_revisions WHERE decision_revision_id=$1`, priorID, overturnedID); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count)
+		SELECT $2,effect_key,id,effect_type,'overturned',subject_type,subject_id,player_name,amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count FROM sanction_effect_revisions WHERE decision_revision_id=$1`, priorID, overturnedID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_card_ledger_entries(case_id,decision_revision_id,team_id,club_id,season_id,match_date,yellow_delta,red_delta,points_deduction,entry_type,explanation)
 		SELECT case_id,$2,team_id,club_id,season_id,match_date,-SUM(yellow_delta),-SUM(red_delta),-SUM(points_deduction),'reversal',$3 FROM sanction_card_ledger_entries WHERE case_id=$1 GROUP BY case_id,team_id,club_id,season_id,match_date HAVING SUM(yellow_delta)<>0 OR SUM(red_delta)<>0 OR SUM(points_deduction)<>0`, caseID, overturnedID, reason); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sanction_follow_up_tasks SET status='cancelled',updated_at=now(),
+		current_note=CONCAT_WS(E'\n',current_note,'Cancelled because the approved decision was overturned: '||$2)
+		WHERE case_id=$1 AND effect_key IS NOT NULL AND status IN ('open','in_progress')`, caseID, reason); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE sanction_cases SET status='closed',public_status='overturned',closed_at=now(),current_revision=$2,updated_at=now() WHERE id=$1`, caseID, priorRevision+1); err != nil {

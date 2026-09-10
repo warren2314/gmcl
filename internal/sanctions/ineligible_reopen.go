@@ -249,7 +249,7 @@ func (s *Service) ReopenApprovedIneligibleCase(ctx context.Context, caseID int64
 	legacyRows.Close()
 
 	var correctionDecisionID int64
-		
+
 	if err = tx.QueryRow(ctx, `INSERT INTO sanction_decision_revisions(
 		case_id,revision,supersedes_id,status,public_reason,private_reason,rule_release_id,rule_reference,
 		policy_version_id,proposed_by_admin_id,approved_by_admin_id,correction_reason,emergency_override,
@@ -264,10 +264,10 @@ func (s *Service) ReopenApprovedIneligibleCase(ctx context.Context, caseID int64
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_effect_revisions(
 		decision_revision_id,effect_key,supersedes_id,effect_type,status,subject_type,subject_id,player_name,
-		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count
 	)
 	SELECT $2,effect_key,id,effect_type,'cancelled',subject_type,subject_id,player_name,
-		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id
+		amount_pence,points,starts_at,ends_at,trigger_condition,public_details,private_details,counts_for_totting,case_subject_id,target_season_id,red_card_count
 	FROM sanction_effect_revisions WHERE decision_revision_id=$1`, approvedDecisionID, correctionDecisionID); err != nil {
 		return err
 	}

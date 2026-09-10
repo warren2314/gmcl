@@ -193,16 +193,29 @@ func (s *Server) handleCaptainDiscipline() http.HandlerFunc {
 		}
 		type caseRow struct {
 			Reference, Reason, Status, Effect, Rule string
+			Season, Condition                       string
+			RedCardCount                            int
 			Points                                  *int
 			Starts, Ends                            *time.Time
 		}
 		var caseItems []caseRow
-		caseRows, caseErr := s.DB.Query(ctx, `SELECT c.reference,c.public_summary,c.public_status,e.effect_type,d.rule_reference,e.points,e.starts_at,e.ends_at FROM sanction_cases c JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved' JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id WHERE c.team_id=$1 AND c.status IN ('approved','published','appealed','closed') AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id) ORDER BY COALESCE(e.starts_at,c.approved_at) DESC`, sess.TeamID)
+		caseRows, caseErr := s.DB.Query(ctx, `SELECT c.reference,c.public_summary,e.status,e.effect_type,d.rule_reference,e.points,e.starts_at,e.ends_at,
+			COALESCE(season.name,''),e.red_card_count,COALESCE(e.trigger_condition,'')
+			FROM sanction_cases c
+			JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved'
+			JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
+			LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
+			LEFT JOIN seasons season ON season.id=COALESCE(e.target_season_id,c.season_id)
+			WHERE COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1
+			  AND c.status IN ('approved','published','appealed','closed')
+			  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
+			ORDER BY COALESCE(e.starts_at,c.approved_at) DESC`, sess.TeamID)
 		if caseErr == nil {
 			defer caseRows.Close()
 			for caseRows.Next() {
 				var x caseRow
-				if caseRows.Scan(&x.Reference, &x.Reason, &x.Status, &x.Effect, &x.Rule, &x.Points, &x.Starts, &x.Ends) == nil {
+				if caseRows.Scan(&x.Reference, &x.Reason, &x.Status, &x.Effect, &x.Rule, &x.Points, &x.Starts, &x.Ends, &x.Season, &x.RedCardCount, &x.Condition) == nil {
+					x.Status = publicSanctionEffectStatus(x.Status, x.Starts, x.Ends, time.Now())
 					caseItems = append(caseItems, x)
 				}
 			}
@@ -219,10 +232,13 @@ func (s *Server) handleCaptainDiscipline() http.HandlerFunc {
 			if x.Effect == "yellow_card" {
 				badge = "warning text-dark"
 			}
-			if x.Effect == "red_card" || x.Effect == "suspended_red" {
+			if x.Effect == "red_card" || x.Effect == "scheduled_red" || x.Effect == "suspended_red" {
 				badge = "danger"
 			}
-			fmt.Fprintf(w, `<article class="card mb-3"><div class="card-header d-flex justify-content-between"><strong>%s</strong><span class="badge bg-%s">%s · %s</span></div><div class="card-body"><h3 class="h5">Why this was recorded</h3><p>%s</p><dl class="row small">`, escapeHTML(x.Reference), badge, escapeHTML(effectLabel(x.Effect)), escapeHTML(x.Status), escapeHTML(x.Reason))
+			fmt.Fprintf(w, `<article class="card mb-3"><div class="card-header d-flex justify-content-between"><strong>%s</strong><span class="badge bg-%s">%s · %s</span></div><div class="card-body"><h3 class="h5">Why this was recorded</h3><p>%s</p><dl class="row small">`, escapeHTML(x.Reference), badge, escapeHTML(publicSanctionEffectLabel(x.Effect, x.RedCardCount)), escapeHTML(x.Status), escapeHTML(x.Reason))
+			if x.Season != "" {
+				fmt.Fprintf(w, `<dt class="col-sm-4">Season</dt><dd class="col-sm-8">%s</dd>`, escapeHTML(x.Season))
+			}
 			if x.Starts != nil {
 				fmt.Fprintf(w, `<dt class="col-sm-4">Effective</dt><dd class="col-sm-8">%s</dd>`, x.Starts.In(s.LondonLoc).Format("02 January 2006"))
 			}
@@ -230,7 +246,10 @@ func (s *Server) handleCaptainDiscipline() http.HandlerFunc {
 				fmt.Fprintf(w, `<dt class="col-sm-4">Ends</dt><dd class="col-sm-8">%s</dd>`, x.Ends.In(s.LondonLoc).Format("02 January 2006"))
 			}
 			if x.Points != nil {
-				fmt.Fprintf(w, `<dt class="col-sm-4">Points deduction</dt><dd class="col-sm-8">%d</dd>`, *x.Points)
+				fmt.Fprintf(w, `<dt class="col-sm-4">Points consequence</dt><dd class="col-sm-8">%s</dd>`, escapeHTML(publicSanctionPoints(x.Effect, *x.Points)))
+			}
+			if condition := publicSanctionCondition(x.Effect, x.Condition); condition != "" {
+				fmt.Fprintf(w, `<dt class="col-sm-4">Condition</dt><dd class="col-sm-8">%s</dd>`, escapeHTML(condition))
 			}
 			if x.Rule != "" {
 				fmt.Fprintf(w, `<dt class="col-sm-4">Applicable rule</dt><dd class="col-sm-8">%s</dd>`, escapeHTML(x.Rule))

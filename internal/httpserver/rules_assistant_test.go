@@ -138,7 +138,7 @@ func TestIsSanctionRecordQuestionSeparatesRecordsFromRulebook(t *testing.T) {
 
 func TestSanctionKindFilterNarrowsToTheKindAsked(t *testing.T) {
 	kinds, noun := sanctionKindFilter("Why do we have a yellow card?")
-	if noun != "card" || len(kinds) != 3 {
+	if noun != "card" || len(kinds) != 4 {
 		t.Fatalf("card question: kinds=%v noun=%q", kinds, noun)
 	}
 	kinds, noun = sanctionKindFilter("List our fines")
@@ -150,7 +150,7 @@ func TestSanctionKindFilterNarrowsToTheKindAsked(t *testing.T) {
 		t.Fatalf("generic question: kinds=%v noun=%q", kinds, noun)
 	}
 	kinds, noun = sanctionKindFilter("Do we have cards or fines?")
-	if noun != "sanction" || len(kinds) != 4 {
+	if noun != "sanction" || len(kinds) != 5 {
 		t.Fatalf("mixed question: kinds=%v noun=%q", kinds, noun)
 	}
 }

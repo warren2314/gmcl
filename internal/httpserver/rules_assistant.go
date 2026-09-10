@@ -314,7 +314,7 @@ func sanctionKindFilter(question string) ([]string, string) {
 		}
 	}
 	if questionContainsAny(q, "card", "totting", "yellow", "red") {
-		add("card", "yellow_card", "red_card", "suspended_red")
+		add("card", "yellow_card", "red_card", "scheduled_red", "suspended_red")
 	}
 	if questionContainsAny(q, "ban", "suspen") {
 		add("ban", "player_ban", "team_ban", "suspended_red")
@@ -323,7 +323,7 @@ func sanctionKindFilter(question string) ([]string, string) {
 		add("fine", "fine")
 	}
 	if questionContainsAny(q, "deduct", "docked", "points") {
-		add("points", "card_points", "points_adjustment")
+		add("points", "card_points", "points_adjustment", "scheduled_red")
 	}
 	if len(nouns) != 1 {
 		if len(nouns) == 0 {
@@ -338,10 +338,12 @@ type sanctionRecordRow struct {
 	CaseID                                                   int64
 	Ref, Team, Player, Reason, Status, Effect, RuleRef, Date string
 	Points                                                   int
+	RedCardCount                                             int
+	Season, Condition                                        string
 }
 
 func sanctionRecordLine(row sanctionRecordRow, includeTeam bool) string {
-	detail := fmt.Sprintf("%s: %s", row.Ref, effectLabel(row.Effect))
+	detail := fmt.Sprintf("%s: %s", row.Ref, publicSanctionEffectLabel(row.Effect, row.RedCardCount))
 	if row.Player != "" {
 		detail += " for " + row.Player
 	}
@@ -349,16 +351,26 @@ func sanctionRecordLine(row sanctionRecordRow, includeTeam bool) string {
 		detail += " (" + row.Team + ")"
 	}
 	detail += " — " + row.Reason + " (" + row.Status
+	if row.Season != "" {
+		detail += ", season " + row.Season
+	}
 	if row.Date != "" {
 		detail += ", effective " + row.Date
 	}
 	if row.Points != 0 {
-		detail += fmt.Sprintf(", %d-point deduction", row.Points)
+		if row.Effect == "points_adjustment" || row.Effect == "suspended_red" {
+			detail += ", " + publicSanctionPoints(row.Effect, row.Points)
+		} else {
+			detail += fmt.Sprintf(", %d-point deduction", row.Points)
+		}
 	}
 	if row.RuleRef != "" {
 		detail += ", rule " + row.RuleRef
 	}
 	detail += ")"
+	if condition := publicSanctionCondition(row.Effect, row.Condition); condition != "" {
+		detail += " " + condition
+	}
 	return detail
 }
 
@@ -444,14 +456,17 @@ func (s *Server) adminSanctionsAnswer(ctx context.Context, question string, club
 	}
 	kinds, kindNoun := sanctionKindFilter(question)
 	rows, err := s.DB.Query(ctx, `
-		SELECT c.id,c.reference,COALESCE(t.name,''),COALESCE(NULLIF(e.player_name,''),COALESCE(c.player_name,'')),COALESCE(c.public_summary,''),e.status,e.effect_type,
+		SELECT c.id,c.reference,COALESCE(t.name,''),CASE WHEN e.subject_type='team' AND e.effect_type IN ('points_adjustment','scheduled_red','suspended_red','team_ban') THEN '' ELSE COALESCE(NULLIF(e.player_name,''),NULLIF(cs.player_name,''),c.player_name,'') END,COALESCE(c.public_summary,''),e.status,e.effect_type,
 		       COALESCE(e.points,0),COALESCE(d.rule_reference,''),
-		       COALESCE(to_char(COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) AT TIME ZONE 'Europe/London','DD Mon YYYY'),'')
+		       COALESCE(to_char(COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) AT TIME ZONE 'Europe/London','DD Mon YYYY'),''),
+		       e.starts_at,e.ends_at,e.red_card_count,COALESCE(season.name,''),COALESCE(e.trigger_condition,'')
 		FROM sanction_cases c
 		JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved'
 		JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
-		LEFT JOIN teams t ON t.id=c.team_id
-		WHERE c.club_id=$1 AND c.status IN ('approved','published','appealed','closed')
+		LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
+		LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)
+		LEFT JOIN seasons season ON season.id=COALESCE(e.target_season_id,c.season_id)
+		WHERE COALESCE(t.club_id,c.club_id)=$1 AND c.status IN ('approved','published','appealed','closed')
 		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
 		ORDER BY COALESCE(e.starts_at,c.match_date::timestamptz,c.approved_at) DESC LIMIT 25`, club.ID)
 	if err != nil {
@@ -461,9 +476,11 @@ func (s *Server) adminSanctionsAnswer(ctx context.Context, question string, club
 	var all []sanctionRecordRow
 	for rows.Next() {
 		var row sanctionRecordRow
-		if err = rows.Scan(&row.CaseID, &row.Ref, &row.Team, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date); err != nil {
+		var starts, ends *time.Time
+		if err = rows.Scan(&row.CaseID, &row.Ref, &row.Team, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date, &starts, &ends, &row.RedCardCount, &row.Season, &row.Condition); err != nil {
 			return "", nil, err
 		}
+		row.Status = publicSanctionEffectStatus(row.Status, starts, ends, time.Now())
 		all = append(all, row)
 	}
 	if err = rows.Err(); err != nil {
@@ -492,12 +509,15 @@ func (s *Server) adminSanctionsAnswer(ctx context.Context, question string, club
 func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSession, question string) (string, []map[string]any, error) {
 	kinds, kindNoun := sanctionKindFilter(question)
 	rows, err := s.DB.Query(ctx, `
-		SELECT c.reference,COALESCE(NULLIF(e.player_name,''),COALESCE(c.player_name,'')),c.public_summary,c.public_status,e.effect_type,COALESCE(e.points,0),
-		       COALESCE(d.rule_reference,''),COALESCE(to_char(e.starts_at AT TIME ZONE 'Europe/London','DD Mon YYYY'),'')
+		SELECT c.reference,CASE WHEN e.subject_type='team' AND e.effect_type IN ('points_adjustment','scheduled_red','suspended_red','team_ban') THEN '' ELSE COALESCE(NULLIF(e.player_name,''),NULLIF(cs.player_name,''),c.player_name,'') END,c.public_summary,e.status,e.effect_type,COALESCE(e.points,0),
+		       COALESCE(d.rule_reference,''),COALESCE(to_char(e.starts_at AT TIME ZONE 'Europe/London','DD Mon YYYY'),''),
+		       e.starts_at,e.ends_at,e.red_card_count,COALESCE(season.name,''),COALESCE(e.trigger_condition,'')
 		FROM sanction_cases c
 		JOIN sanction_decision_revisions d ON d.case_id=c.id AND d.status='approved'
 		JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id
-		WHERE c.team_id=$1 AND c.status IN ('approved','published','appealed','closed')
+		LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
+		LEFT JOIN seasons season ON season.id=COALESCE(e.target_season_id,c.season_id)
+		WHERE COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)=$1 AND c.status IN ('approved','published','appealed','closed')
 		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
 		ORDER BY COALESCE(e.starts_at,c.approved_at) DESC LIMIT 25`, sess.TeamID)
 	if err != nil {
@@ -505,19 +525,14 @@ func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSessio
 	}
 	defer rows.Close()
 	var all []sanctionRecordRow
-	yellowBalance, redCount := 0, 0
 	for rows.Next() {
 		var row sanctionRecordRow
-		if err = rows.Scan(&row.Ref, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date); err != nil {
+		var starts, ends *time.Time
+		if err = rows.Scan(&row.Ref, &row.Player, &row.Reason, &row.Status, &row.Effect, &row.Points, &row.RuleRef, &row.Date, &starts, &ends, &row.RedCardCount, &row.Season, &row.Condition); err != nil {
 			return "", nil, err
 		}
+		row.Status = publicSanctionEffectStatus(row.Status, starts, ends, time.Now())
 		all = append(all, row)
-		if row.Effect == "yellow_card" && (row.Status == "active" || row.Status == "suspended") {
-			yellowBalance++
-		}
-		if row.Effect == "red_card" {
-			redCount++
-		}
 	}
 	if err = rows.Err(); err != nil {
 		return "", nil, err
@@ -537,16 +552,28 @@ func (s *Server) captainSanctionsAnswer(ctx context.Context, sess *captainSessio
 	// generally); a fines question should not lead with yellow-card arithmetic.
 	includeBalance := kinds == nil
 	for _, kind := range kinds {
-		if kind == "yellow_card" || kind == "red_card" || kind == "suspended_red" {
+		if kind == "yellow_card" || kind == "red_card" || kind == "scheduled_red" || kind == "suspended_red" {
 			includeBalance = true
 		}
 	}
 	if includeBalance {
-		remaining := 3 - (yellowBalance % 3)
-		if remaining == 0 {
-			remaining = 3
+		var yellowBalance, redCount int
+		var seasonName string
+		if err = s.DB.QueryRow(ctx, `SELECT
+			CASE WHEN EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE team_id=$1 AND yellow_delta<>0)
+			  THEN COALESCE((SELECT SUM(yellow_delta) FROM sanction_card_ledger_entries WHERE team_id=$1),0)
+			  ELSE (SELECT COUNT(*) FROM sanctions WHERE team_id=$1 AND case_id IS NULL AND colour='yellow' AND status='active') END,
+			CASE WHEN EXISTS(SELECT 1 FROM sanction_card_ledger_entries WHERE team_id=$1 AND season_id=$2 AND red_delta<>0)
+			  THEN COALESCE((SELECT SUM(red_delta) FROM sanction_card_ledger_entries WHERE team_id=$1 AND season_id=$2),0)
+			  ELSE (SELECT COUNT(*) FROM sanctions WHERE team_id=$1 AND season_id=$2 AND case_id IS NULL AND colour='red' AND status IN ('active','served')) END,
+			COALESCE((SELECT name FROM seasons WHERE id=$2),'selected season')`, sess.TeamID, sess.SeasonID).Scan(&yellowBalance, &redCount, &seasonName); err != nil {
+			return "", nil, err
 		}
-		intro += fmt.Sprintf(" The current recorded balance is %d effective yellow card(s) and %d red card(s); on that balance, %d further yellow card(s) would reach the next three-yellow threshold.", yellowBalance, redCount, remaining)
+		remaining := 3 - yellowBalance
+		if remaining < 0 {
+			remaining = 0
+		}
+		intro += fmt.Sprintf(" The recorded yellow balance is %d; %d further yellow card(s) would reach the next threshold. The approved red-card total for season %s is %d, including any scheduled awards in that season. Conditional suspended cards are excluded.", yellowBalance, remaining, seasonName, redCount)
 	}
 	lines := make([]string, 0, len(shown))
 	citations := make([]map[string]any, 0, len(shown))
