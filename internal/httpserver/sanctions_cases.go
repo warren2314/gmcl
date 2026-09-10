@@ -508,7 +508,7 @@ func (s *Server) handleSanctionReportSubmit() http.HandlerFunc {
 			seasonID = sid
 			weekID = wid
 		} else {
-			_ = s.DB.QueryRow(r.Context(), `SELECT id FROM seasons ORDER BY start_date DESC LIMIT 1`).Scan(&sid)
+			_ = s.DB.QueryRow(r.Context(), reportFallbackSeasonQuery, lookupDate).Scan(&sid)
 			if sid != 0 {
 				seasonID = sid
 			}

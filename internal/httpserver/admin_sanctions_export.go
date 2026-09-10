@@ -112,13 +112,7 @@ func (s *Server) defaultSanctionsExportSeasonID(ctx context.Context) int32 {
 	if resolved, err := s.resolveCompetitionWeek(ctx, competitionWeekActiveOnly); err == nil {
 		return resolved.SeasonID
 	}
-	_ = s.DB.QueryRow(ctx, `
-		SELECT id
-		FROM seasons
-		WHERE is_archived = FALSE
-		ORDER BY start_date DESC, id DESC
-		LIMIT 1
-	`).Scan(&seasonID)
+	_ = s.DB.QueryRow(ctx, defaultSanctionsSeasonQuery, s.londonDate()).Scan(&seasonID)
 	return seasonID
 }
 
