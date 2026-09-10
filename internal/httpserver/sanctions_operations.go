@@ -505,7 +505,7 @@ func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 		if liveOnly {
 			where += ` AND NOT c.is_test AND NOT EXISTS(SELECT 1 FROM sanction_case_events training WHERE training.case_id=c.id AND training.event_type='case_training_designated')`
 		}
-		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,'') FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`, args...)
+		rows, err := s.DB.Query(r.Context(), `SELECT t.id,c.id,c.reference,t.task_type,t.status,COALESCE(t.current_note,''),t.due_at,t.created_at,COALESCE(a.username,''),t.not_before FROM sanction_follow_up_tasks t JOIN sanction_cases c ON c.id=t.case_id LEFT JOIN admin_users a ON a.id=t.assigned_admin_id WHERE `+where+` ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,t.due_at NULLS LAST,t.id`, args...)
 		if err != nil {
 			http.Error(w, "tasks unavailable", 500)
 			return
@@ -534,15 +534,18 @@ func (s *Server) handleAdminSanctionTasks() http.HandlerFunc {
 		for rows.Next() {
 			var taskID, caseID int64
 			var ref, taskType, status, note, assigned string
-			var due *time.Time
+			var due, notBefore *time.Time
 			var created time.Time
-			if rows.Scan(&taskID, &caseID, &ref, &taskType, &status, &note, &due, &created, &assigned) != nil {
+			if rows.Scan(&taskID, &caseID, &ref, &taskType, &status, &note, &due, &created, &assigned, &notBefore) != nil {
 				continue
 			}
 			count++
 			dueLabel := "No due date"
 			if due != nil {
 				dueLabel = due.In(s.LondonLoc).Format("02 Jan 2006 15:04")
+			}
+			if notBefore != nil {
+				dueLabel += " · Do not apply before " + notBefore.In(s.LondonLoc).Format("02 Jan 2006")
 			}
 			fmt.Fprintf(w, `<div class="col-12" id="task-%d"><article class="card"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><div><a href="/admin/cases/%d"><strong>%s</strong></a> <span class="badge text-bg-secondary">%s</span></div><span>%s</span></div><form method="POST" action="/admin/cases/tasks/%d"><input type="hidden" name="csrf_token" value="%s"><div class="card-body row g-3"><div class="col-md-3"><label class="form-label">Status</label><select class="form-select" name="status"><option value="open"%s>Open</option><option value="in_progress"%s>In progress</option><option value="complete"%s>Complete</option><option value="cancelled"%s>Cancelled</option></select></div><div class="col-md-4"><label class="form-label">Operational note</label><input class="form-control" name="note" value="%s"></div><div class="col-md-5"><label class="form-label">Reason for change</label><input class="form-control" name="reason" required placeholder="Why is this task changing?"></div></div><div class="card-footer d-flex flex-column flex-sm-row justify-content-between gap-2"><small class="text-muted">Due: %s · Assigned: %s · Created: %s</small><button class="btn btn-primary">Record task update</button></div></form></article></div>`, taskID, caseID, escapeHTML(ref), escapeHTML(strings.ReplaceAll(taskType, "_", " ")), escapeHTML(status), taskID, csrf, selectedMode(status, "open"), selectedMode(status, "in_progress"), selectedMode(status, "complete"), selectedMode(status, "cancelled"), escapeHTML(note), escapeHTML(dueLabel), escapeHTML(defaultString(assigned, "unassigned")), created.In(s.LondonLoc).Format("02 Jan 2006"))
 		}
@@ -589,12 +592,23 @@ func (s *Server) handleAdminSanctionTaskUpdate() http.HandlerFunc {
 		var beforeData []byte
 		var taskType string
 		var assignedAdminID *int32
-		if tx.QueryRow(r.Context(), `SELECT to_jsonb(t),task_type,assigned_admin_id FROM sanction_follow_up_tasks t WHERE id=$1 FOR UPDATE`, taskID).Scan(&beforeData, &taskType, &assignedAdminID) != nil {
+		var notBefore *time.Time
+		var now time.Time
+		var linkedAward, currentAward bool
+		if tx.QueryRow(r.Context(), `SELECT to_jsonb(t),task_type,assigned_admin_id,not_before,now(),effect_key IS NOT NULL,
+			EXISTS(SELECT 1 FROM sanction_effect_revisions e WHERE e.effect_key=t.effect_key
+			  AND e.status IN ('active','suspended')
+			  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions newer WHERE newer.supersedes_id=e.id))
+			FROM sanction_follow_up_tasks t WHERE id=$1 FOR UPDATE`, taskID).Scan(&beforeData, &taskType, &assignedAdminID, &notBefore, &now, &linkedAward, &currentAward) != nil {
 			http.NotFound(w, r)
 			return
 		}
 		if taskType == "play_cricket_points" && (assignedAdminID == nil || *assignedAdminID != *actor.ID) {
 			http.Error(w, "only the assigned Play-Cricket administrator can update this points task", http.StatusForbidden)
+			return
+		}
+		if err = validateScheduledTaskUpdate(status, notBefore, now, linkedAward, currentAward); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		_, err = tx.Exec(r.Context(), `UPDATE sanction_follow_up_tasks SET status=$2,current_note=$3,assigned_admin_id=COALESCE(assigned_admin_id,$4),updated_at=now() WHERE id=$1`, taskID, status, nullIfEmptyHTTP(note), *actor.ID)

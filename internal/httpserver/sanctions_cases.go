@@ -146,7 +146,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		search := strings.TrimSpace(r.URL.Query().Get("q"))
 		effectFilter := strings.TrimSpace(r.URL.Query().Get("type"))
 		category := strings.TrimSpace(r.URL.Query().Get("view"))
-		allowedEffects := map[string]bool{"yellow_card": true, "red_card": true, "suspended_red": true, "player_ban": true, "team_ban": true, "fine": true, "card_points": true, "points_adjustment": true, "warning": true}
+		allowedEffects := map[string]bool{"yellow_card": true, "red_card": true, "scheduled_red": true, "suspended_red": true, "player_ban": true, "team_ban": true, "fine": true, "card_points": true, "points_adjustment": true, "warning": true}
 		if !map[string]bool{"players": true, "clubs": true, "yellow": true, "red": true}[category] {
 			category = ""
 		}
@@ -182,7 +182,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		case "yellow":
 			where += ` AND e.effect_type='yellow_card'`
 		case "red":
-			where += ` AND e.effect_type IN ('red_card','suspended_red')`
+			where += ` AND e.effect_type IN ('red_card','scheduled_red','suspended_red')`
 		}
 		if allowedEffects[effectFilter] {
 			args = append(args, effectFilter)
@@ -190,19 +190,20 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		}
 		rows, err := s.DB.Query(ctx, fmt.Sprintf(`
 			SELECT c.reference,COALESCE(EXTRACT(YEAR FROM s.start_date)::int,EXTRACT(YEAR FROM e.starts_at)::int,0),COALESCE(effect_club.name,cl.name,''),COALESCE(effect_team.name,t.name,''),
-			       CASE WHEN e.subject_type='team' AND e.effect_type NOT IN ('yellow_card','red_card','suspended_red') THEN '' ELSE COALESCE(NULLIF(e.player_name,''),NULLIF(effect_subject.player_name,''),NULLIF(c.player_name,''),'') END,
+			       CASE WHEN e.subject_type='team' AND e.effect_type NOT IN ('yellow_card','red_card') THEN '' ELSE COALESCE(NULLIF(e.player_name,''),NULLIF(effect_subject.player_name,''),NULLIF(c.player_name,''),'') END,
 			       c.public_summary,CASE WHEN e.ends_at<now() THEN 'expired' ELSE c.public_status END,e.effect_type,e.status,COALESCE(e.points,0),COALESCE(e.amount_pence,0),e.starts_at,e.ends_at,c.published_at,
-			       COALESCE(balance.yellow_balance,0),COALESCE(balance.red_count,0)
+			       COALESCE(balance.yellow_balance,0),COALESCE(balance.red_count,0),e.red_card_count,COALESCE(e.trigger_condition,'')
 			FROM sanction_cases c
-			LEFT JOIN seasons s ON s.id=c.season_id LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id
+			LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id
 			JOIN sanction_decision_revisions d ON d.id=(SELECT latest.id FROM sanction_decision_revisions latest WHERE latest.case_id=c.id AND latest.status='approved' ORDER BY latest.revision DESC LIMIT 1)
 			JOIN sanction_effect_revisions e ON e.decision_revision_id=d.id AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
+			LEFT JOIN seasons s ON s.id=COALESCE(e.target_season_id,c.season_id)
 			LEFT JOIN sanction_case_subjects effect_subject ON effect_subject.id=e.case_subject_id
 			LEFT JOIN teams effect_team ON effect_team.id=COALESCE(effect_subject.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END,c.team_id)
 			LEFT JOIN clubs effect_club ON effect_club.id=COALESCE(effect_team.club_id,c.club_id)
 			LEFT JOIN LATERAL (SELECT
 			  (SELECT SUM(yellow_delta) FROM sanction_card_ledger_entries yl WHERE yl.team_id=effect_team.id) yellow_balance,
-			  (SELECT SUM(red_delta) FROM sanction_card_ledger_entries rl WHERE rl.team_id=effect_team.id AND (c.season_id IS NULL OR rl.season_id=c.season_id)) red_count
+			  (SELECT SUM(red_delta) FROM sanction_card_ledger_entries rl WHERE rl.team_id=effect_team.id AND (COALESCE(e.target_season_id,c.season_id) IS NULL OR rl.season_id=COALESCE(e.target_season_id,c.season_id))) red_count
 			) balance ON true
 			WHERE %s ORDER BY COALESCE(e.starts_at,c.published_at) DESC,c.reference DESC`, where), args...)
 		if err != nil {
@@ -221,7 +222,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			{"players", "Players", "Player sanctions"},
 			{"clubs", "Clubs / teams", "Team decisions"},
 			{"yellow", "Yellow cards", "Yellow card records"},
-			{"red", "Red cards", "Direct and suspended reds"},
+			{"red", "Red cards", "Direct, scheduled and suspended reds"},
 		} {
 			active := item.value == category
 			classes := "card h-100 text-decoration-none text-body shadow-sm"
@@ -233,7 +234,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="col"><a class="%s" href="%s"%s><span class="card-body p-3"><strong class="d-block">%s</strong><small class="text-muted">%s</small></span></a></div>`, classes, escapeHTML(sanctionsCategoryURL(r.URL.Query(), item.value)), current, item.label, item.description)
 		}
 		fmt.Fprint(w, `</nav><form method="GET" class="card card-body mb-3"><input type="hidden" name="view" value="`+escapeHTML(category)+`"><div class="row g-2"><div class="col-12 col-md-4"><label class="form-label" for="sanction-search">Club, team, player or reason</label><input id="sanction-search" class="form-control" type="search" name="q" placeholder="Search register" value="`+escapeHTML(search)+`"></div><div class="col-6 col-md-2"><label class="form-label" for="sanction-season">Season</label><input id="sanction-season" class="form-control" type="number" name="season" min="2016" placeholder="All" value="`+escapeHTML(season)+`"></div><div class="col-6 col-md-3"><label class="form-label" for="sanction-type">Sanction</label><select id="sanction-type" class="form-select" name="type"><option value="">All types</option>`)
-		for _, option := range []struct{ value, label string }{{"yellow_card", "Yellow card"}, {"red_card", "Red card"}, {"suspended_red", "Suspended red"}, {"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"}, {"points_adjustment", "Points adjustment"}, {"warning", "Warning"}} {
+		for _, option := range []struct{ value, label string }{{"yellow_card", "Yellow card"}, {"red_card", "Red card"}, {"scheduled_red", "Scheduled red cards"}, {"suspended_red", "Suspended red"}, {"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"}, {"points_adjustment", "Points adjustment"}, {"warning", "Warning"}} {
 			selected := ""
 			if effectFilter == option.value {
 				selected = " selected"
@@ -247,29 +248,32 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 		fmt.Fprint(w, `> <span class="form-check-label">Include served and expired</span></label><button class="btn btn-primary">Apply filters</button></div></div></form><div class="table-responsive"><table class="table table-striped responsive-cards align-middle"><thead><tr><th>Reference</th><th>Season</th><th>Club / team / player</th><th>Sanction</th><th>Status</th><th>Effective</th></tr></thead><tbody>`)
 		count := 0
 		for rows.Next() {
-			var ref, club, team, player, reason, pubStatus, effect, effectStatus string
-			var year, points, yellowBalance, redCount int
+			var ref, club, team, player, reason, pubStatus, effect, effectStatus, condition string
+			var year, points, yellowBalance, redCount, cardCount int
 			var amountPence int64
 			var starts, ends, published *time.Time
-			if rows.Scan(&ref, &year, &club, &team, &player, &reason, &pubStatus, &effect, &effectStatus, &points, &amountPence, &starts, &ends, &published, &yellowBalance, &redCount) != nil {
+			if rows.Scan(&ref, &year, &club, &team, &player, &reason, &pubStatus, &effect, &effectStatus, &points, &amountPence, &starts, &ends, &published, &yellowBalance, &redCount, &cardCount, &condition) != nil {
 				continue
 			}
 			count++
 			subject := strings.TrimSpace(strings.Join(nonEmpty(club, team, player), " — "))
-			sanction := effectLabel(effect)
+			sanction := publicSanctionEffectLabel(effect, cardCount)
 			if points != 0 {
-				sanction += fmt.Sprintf(" · %d point deduction", points)
+				sanction += " · " + publicSanctionPoints(effect, points)
 			}
 			if amountPence != 0 {
 				sanction += fmt.Sprintf(" · £%.2f", float64(amountPence)/100)
 			}
 			balance := ""
-			if effect == "yellow_card" || effect == "red_card" || effect == "suspended_red" {
+			if effect == "yellow_card" || effect == "red_card" || effect == "scheduled_red" || effect == "suspended_red" {
 				toThreshold := 3 - yellowBalance
 				if toThreshold < 0 {
 					toThreshold = 0
 				}
-				balance = fmt.Sprintf(`<div class="small text-muted">Current balance: %d yellow, %d red; %d yellow to next threshold</div>`, yellowBalance, redCount, toThreshold)
+				balance = fmt.Sprintf(`<div class="small text-muted">Yellow balance: %d; %d yellow to next threshold. Approved red-card total for season %d: %d (includes scheduled cards).</div>`, yellowBalance, toThreshold, year, redCount)
+			}
+			if conditional := publicSanctionCondition(effect, condition); conditional != "" {
+				balance += `<div class="small text-muted">` + escapeHTML(conditional) + `</div>`
 			}
 			dates := "—"
 			if starts != nil {
@@ -278,7 +282,7 @@ func (s *Server) handlePublicSanctionsRegister() http.HandlerFunc {
 			if ends != nil {
 				dates += " to " + ends.In(s.LondonLoc).Format("02 Jan 2006")
 			}
-			fmt.Fprintf(w, `<tr><td data-label="Reference"><a href="/sanctions/%s"><strong>%s</strong></a></td><td data-label="Season">%d</td><td data-label="Club / team / player">%s</td><td data-label="Sanction"><strong>%s</strong>%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Effective">%s</td></tr>`, escapeHTML(ref), escapeHTML(ref), year, escapeHTML(subject), escapeHTML(sanction), balance, escapeHTML(reason), escapeHTML(pubStatus), escapeHTML(dates))
+			fmt.Fprintf(w, `<tr><td data-label="Reference"><a href="/sanctions/%s"><strong>%s</strong></a></td><td data-label="Season">%d</td><td data-label="Club / team / player">%s</td><td data-label="Sanction"><strong>%s</strong>%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Effective">%s</td></tr>`, escapeHTML(ref), escapeHTML(ref), year, escapeHTML(subject), escapeHTML(sanction), balance, escapeHTML(reason), escapeHTML(publicSanctionEffectStatus(effectStatus, starts, ends, time.Now())), escapeHTML(dates))
 		}
 		if count == 0 {
 			fmt.Fprint(w, `<tr><td colspan="6" class="text-center text-muted py-4">No published sanctions match this view.</td></tr>`)
@@ -298,11 +302,11 @@ func nonEmpty(v ...string) []string {
 	return out
 }
 func effectLabel(v string) string {
-	return map[string]string{"yellow_card": "Yellow card", "red_card": "Red card", "suspended_red": "Suspended red card", "player_ban": "Player ban", "team_ban": "Team ban", "fine": "Fine", "card_points": "Card-system points", "points_adjustment": "Points adjustment", "warning": "Warning", "no_action": "No action"}[v]
+	return map[string]string{"yellow_card": "Yellow card", "red_card": "Red card", "scheduled_red": "Scheduled red cards", "suspended_red": "Suspended red card", "player_ban": "Player ban", "team_ban": "Team ban", "fine": "Fine", "card_points": "Card-system points", "points_adjustment": "Points adjustment", "warning": "Warning", "no_action": "No action"}[v]
 }
 
 func publicEffectSubject(effectType, team, player string) string {
-	if effectType == "team_ban" || effectType == "points_adjustment" {
+	if effectType == "team_ban" || effectType == "points_adjustment" || effectType == "scheduled_red" {
 		return strings.TrimSpace(team)
 	}
 	if player = strings.TrimSpace(player); player != "" {
@@ -326,9 +330,12 @@ func (s *Server) handlePublicSanctionDetail() http.HandlerFunc {
 			return
 		}
 		effects, err := s.DB.Query(r.Context(), `SELECT e.effect_type,e.status,e.starts_at,e.ends_at,e.points,e.amount_pence,
-			COALESCE(effect_team.name,''),COALESCE(NULLIF(e.player_name,''),NULLIF(effect_subject.player_name,''),'')
+			COALESCE(effect_team.name,''),COALESCE(NULLIF(e.player_name,''),NULLIF(effect_subject.player_name,''),''),
+			COALESCE(effect_season.name,''),e.red_card_count,COALESCE(e.trigger_condition,'')
 			FROM sanction_effect_revisions e
 			JOIN sanction_decision_revisions d ON d.id=e.decision_revision_id
+			JOIN sanction_cases effect_case ON effect_case.id=d.case_id
+			LEFT JOIN seasons effect_season ON effect_season.id=COALESCE(e.target_season_id,effect_case.season_id)
 			LEFT JOIN sanction_case_subjects effect_subject ON effect_subject.id=e.case_subject_id
 			LEFT JOIN teams effect_team ON effect_team.id=COALESCE(effect_subject.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
 			WHERE d.case_id=$1 AND d.status='approved' AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id) ORDER BY e.id`, caseID)
@@ -342,16 +349,15 @@ func (s *Server) handlePublicSanctionDetail() http.HandlerFunc {
 		writeCaptainNav(w)
 		fmt.Fprintf(w, `<main class="container py-4" style="max-width:800px"><a href="/sanctions" class="btn btn-sm btn-outline-secondary mb-3">Back to register</a><article class="card mb-3"><div class="card-header d-flex justify-content-between gap-2"><strong>%s</strong><span class="badge text-bg-danger">%s</span></div><div class="card-body"><h1 class="h3">%s</h1><p>%s</p><dl class="row mb-0"><dt class="col-sm-4">Status</dt><dd class="col-sm-8">%s</dd><dt class="col-sm-4">Applicable rule</dt><dd class="col-sm-8">%s</dd></dl></div></article><h2 class="h4">Decision effects</h2><div class="row g-3">`, escapeHTML(ref), escapeHTML(status), escapeHTML(strings.Join(nonEmpty(club, team, player), " — ")), escapeHTML(summary), escapeHTML(status), escapeHTML(ruleRef))
 		for effects.Next() {
-			var effect, effectStatus, effectTeam, effectPlayer string
+			var effect, effectStatus, effectTeam, effectPlayer, effectSeason, condition string
+			var cardCount int
 			var starts, ends *time.Time
 			var points *int
 			var amountPence *int64
-			if effects.Scan(&effect, &effectStatus, &starts, &ends, &points, &amountPence, &effectTeam, &effectPlayer) != nil {
+			if effects.Scan(&effect, &effectStatus, &starts, &ends, &points, &amountPence, &effectTeam, &effectPlayer, &effectSeason, &cardCount, &condition) != nil {
 				continue
 			}
-			if ends != nil && ends.Before(time.Now()) {
-				effectStatus = "expired"
-			}
+			effectStatus = publicSanctionEffectStatus(effectStatus, starts, ends, time.Now())
 			dates := "No fixed dates"
 			if starts != nil {
 				dates = starts.In(s.LondonLoc).Format("02 Jan 2006")
@@ -359,13 +365,19 @@ func (s *Server) handlePublicSanctionDetail() http.HandlerFunc {
 			if ends != nil {
 				dates += " to " + ends.In(s.LondonLoc).Format("02 Jan 2006")
 			}
-			fmt.Fprintf(w, `<div class="col-12"><section class="card card-gmcl"><div class="card-body"><div class="d-flex justify-content-between gap-2"><h3 class="h5">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(effectLabel(effect)), escapeHTML(effectStatus))
+			fmt.Fprintf(w, `<div class="col-12"><section class="card card-gmcl"><div class="card-body"><div class="d-flex justify-content-between gap-2"><h3 class="h5">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(publicSanctionEffectLabel(effect, cardCount)), escapeHTML(effectStatus))
 			if effectSubject := publicEffectSubject(effect, effectTeam, effectPlayer); effectSubject != "" {
 				fmt.Fprintf(w, `<p class="mb-1"><strong>Subject:</strong> %s</p>`, escapeHTML(effectSubject))
 			}
-			fmt.Fprintf(w, `<p class="mb-1">%s</p>`, escapeHTML(dates))
+			if effectSeason != "" {
+				fmt.Fprintf(w, `<p class="mb-1"><strong>Applies in season:</strong> %s</p>`, escapeHTML(effectSeason))
+			}
+			fmt.Fprintf(w, `<p class="mb-1"><strong>Effective:</strong> %s</p>`, escapeHTML(dates))
 			if points != nil {
-				fmt.Fprintf(w, `<p class="mb-1"><strong>Points consequence:</strong> %d point deduction</p>`, *points)
+				fmt.Fprintf(w, `<p class="mb-1"><strong>Points consequence:</strong> %s</p>`, escapeHTML(publicSanctionPoints(effect, *points)))
+			}
+			if conditional := publicSanctionCondition(effect, condition); conditional != "" {
+				fmt.Fprintf(w, `<p class="mb-1">%s</p>`, escapeHTML(conditional))
 			}
 			if amountPence != nil {
 				fmt.Fprintf(w, `<p class="mb-1"><strong>Fine:</strong> £%.2f</p>`, float64(*amountPence)/100)
@@ -1071,6 +1083,9 @@ type adminCaseEffect struct {
 	YellowBalanceAfter string
 	TeamRedCountBefore string
 	TeamRedCountAfter  string
+	TargetSeason       string
+	RedCardCount       int
+	TeamName           string
 }
 
 func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (adminCaseDecision, []adminCaseEffect, bool) {
@@ -1091,7 +1106,9 @@ func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (admin
 		       COALESCE(NULLIF(public_details->>'explanation',''),public_details->>'calculation_explanation',''),
 		       COALESCE(public_details->>'yellow_balance_after',''),
 		       COALESCE(public_details->>'team_red_count_before',''),
-		       COALESCE(public_details->>'team_red_count_after','')
+		       COALESCE(public_details->>'team_red_count_after',''),
+		       COALESCE((SELECT name FROM seasons WHERE id=e.target_season_id),''),e.red_card_count,
+		       COALESCE((SELECT name FROM teams WHERE id=e.subject_id AND e.subject_type='team'),'')
 		FROM sanction_effect_revisions e
 		WHERE decision_revision_id=$1
 		  AND NOT EXISTS(SELECT 1 FROM sanction_effect_revisions n WHERE n.supersedes_id=e.id)
@@ -1103,7 +1120,7 @@ func (s *Server) loadAdminCaseDecision(ctx context.Context, caseID int64) (admin
 	effects := make([]adminCaseEffect, 0, 1)
 	for rows.Next() {
 		var effect adminCaseEffect
-		if err := rows.Scan(&effect.EffectType, &effect.Status, &effect.PlayerName, &effect.AmountPence, &effect.Points, &effect.StartsAt, &effect.EndsAt, &effect.TriggerCondition, &effect.CountsForTotting, &effect.Explanation, &effect.YellowBalanceAfter, &effect.TeamRedCountBefore, &effect.TeamRedCountAfter); err != nil {
+		if err := rows.Scan(&effect.EffectType, &effect.Status, &effect.PlayerName, &effect.AmountPence, &effect.Points, &effect.StartsAt, &effect.EndsAt, &effect.TriggerCondition, &effect.CountsForTotting, &effect.Explanation, &effect.YellowBalanceAfter, &effect.TeamRedCountBefore, &effect.TeamRedCountAfter, &effect.TargetSeason, &effect.RedCardCount, &effect.TeamName); err != nil {
 			return adminCaseDecision{}, nil, false
 		}
 		effects = append(effects, effect)
@@ -1134,11 +1151,21 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 		fmt.Fprint(&out, `<div class="alert alert-warning mb-3">This decision has no recorded sanction effect.</div>`)
 	}
 	for _, effect := range effects {
-		fmt.Fprintf(&out, `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><h3 class="h4 mb-2">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(adminSanctionEffectLabel(effect.EffectType)), escapeHTML(effect.Status))
+		statusLabel := effect.Status
+		if effect.Status == "active" && effect.StartsAt != nil && effect.StartsAt.After(time.Now()) {
+			statusLabel = "Scheduled"
+		}
+		fmt.Fprintf(&out, `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><h3 class="h4 mb-2">%s</h3><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(adminSanctionEffectLabel(effect.EffectType)), escapeHTML(statusLabel))
 		if effect.Explanation != "" {
 			fmt.Fprintf(&out, `<p class="mb-2">%s</p>`, escapeHTML(effect.Explanation))
 		}
 		fmt.Fprint(&out, `<dl class="row mb-0">`)
+		if effect.TeamName != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Team</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamName))
+		}
+		if effect.TargetSeason != "" {
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Applies in season</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TargetSeason))
+		}
 		if effect.PlayerName != "" {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Player</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.PlayerName))
 		}
@@ -1148,7 +1175,7 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 		if effect.Points != nil {
 			label := "League-table points to add"
 			displayPoints := *effect.Points
-			if effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red" {
+			if effect.EffectType == "yellow_card" || effect.EffectType == "red_card" || effect.EffectType == "suspended_red" || effect.EffectType == "scheduled_red" {
 				label = "Card-system points to deduct"
 			} else if displayPoints < 0 {
 				label = "League-table points to deduct"
@@ -1159,8 +1186,16 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 		if effect.YellowBalanceAfter != "" {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Team yellow balance if approved</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.YellowBalanceAfter))
 		}
-		if effect.EffectType == "red_card" {
-			fmt.Fprint(&out, `<dt class="col-sm-5">Red cards added by this case</dt><dd class="col-sm-7">1</dd>`)
+		if effect.EffectType == "red_card" || effect.EffectType == "scheduled_red" || effect.EffectType == "suspended_red" {
+			count := effect.RedCardCount
+			if count < 1 {
+				count = 1
+			}
+			label := "Red cards added by this case"
+			if effect.EffectType == "suspended_red" {
+				label = "Conditional red cards (not yet activated)"
+			}
+			fmt.Fprintf(&out, `<dt class="col-sm-5">%s</dt><dd class="col-sm-7">%d</dd>`, label, count)
 		}
 		if effect.TeamRedCountBefore != "" {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Approved team red cards before this case</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountBefore))
@@ -1169,10 +1204,10 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Team red-card total if approved</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountAfter))
 		}
 		if effect.StartsAt != nil {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, effect.StartsAt.Format("02 Jan 2006"))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, formatLeagueSanctionDate(*effect.StartsAt))
 		}
 		if effect.EndsAt != nil {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Ends / remedy date</dt><dd class="col-sm-7">%s</dd>`, effect.EndsAt.Format("02 Jan 2006"))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Ends / remedy date</dt><dd class="col-sm-7">%s</dd>`, formatLeagueSanctionDate(*effect.EndsAt))
 		}
 		if effect.TriggerCondition != "" {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Trigger</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TriggerCondition))
@@ -1195,6 +1230,7 @@ func adminSanctionEffectLabel(effect string) string {
 	labels := map[string]string{
 		"yellow_card":       "Yellow card",
 		"red_card":          "Red card",
+		"scheduled_red":     "Red cards for a future season",
 		"suspended_red":     "Suspended red card",
 		"player_ban":        "Player ban",
 		"team_ban":          "Team ban",
@@ -1246,8 +1282,12 @@ type adminDecisionSubject struct {
 }
 
 func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
+	return adminDecisionEffectsWithSeasonsHTML(subjects, nil)
+}
+
+func adminDecisionEffectsWithSeasonsHTML(subjects []adminDecisionSubject, seasons []adminDecisionSeason) string {
 	effectOptions := []struct{ value, label string }{
-		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"suspended_red", "Suspended red"},
+		{"yellow_card", "Yellow card"}, {"red_card", "Direct red card"}, {"scheduled_red", "Red cards for a future season (definite)"}, {"suspended_red", "Suspended red cards (conditional)"},
 		{"player_ban", "Player ban"}, {"team_ban", "Team ban"}, {"fine", "Fine"},
 		{"points_adjustment", "League-table points adjustment"}, {"warning", "Warning"}, {"no_action", "No action"},
 	}
@@ -1258,7 +1298,7 @@ func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
 		} else {
 			fmt.Fprintf(&out, `<details class="border rounded bg-light"><summary class="p-3 fw-semibold">Add another effect <span class="text-muted fw-normal">(optional %d of 4)</span></summary><div class="p-3 border-top">`, i)
 		}
-		fmt.Fprintf(&out, `<div class="row g-3"><div class="col-md-6"><label class="form-label">Effect</label><select class="form-select" name="effect_type"><option value="">%s</option>`, map[bool]string{true: "Select effect", false: "None"}[i == 0])
+		fmt.Fprintf(&out, `<div class="row g-3" data-decision-effect><div class="col-md-6"><label class="form-label">Effect</label><select class="form-select" name="effect_type"><option value="">%s</option>`, map[bool]string{true: "Select effect", false: "None"}[i == 0])
 		for _, option := range effectOptions {
 			fmt.Fprintf(&out, `<option value="%s">%s</option>`, option.value, option.label)
 		}
@@ -1266,13 +1306,16 @@ func adminDecisionEffectsHTML(subjects []adminDecisionSubject) string {
 		for _, subject := range subjects {
 			fmt.Fprintf(&out, `<option value="%d">%s</option>`, subject.id, escapeHTML(subject.label))
 		}
-		fmt.Fprint(&out, `</select></div><div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League-table points change <span class="text-muted">(points-adjustment effect only)</span></label><input class="form-control" name="points" type="number" step="1" placeholder="e.g. -6"><div class="form-text">For a deduction, enter a negative number, for example -6. This is separate from the automatic card-system points shown above.</div></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
+		fmt.Fprint(&out, `</select></div>`)
+		fmt.Fprint(&out, adminScheduledCardFieldsHTML(i, seasons))
+		fmt.Fprint(&out, `<div class="col-md-6"><label class="form-label">Fine amount <span class="text-muted">(GBP, fine only)</span></label><input class="form-control" name="fine_pounds" type="number" min="0.01" step="0.01"></div><div class="col-md-6"><label class="form-label">League-table points change <span class="text-muted">(points-adjustment effect only)</span></label><input class="form-control" name="points" type="number" step="1" placeholder="e.g. -6"><div class="form-text">For a deduction, enter a negative number, for example -6. This is separate from the automatic card-system points shown above.</div></div><div class="col-md-6"><label class="form-label">End or remedy date</label><input class="form-control" name="ends_at" type="date"></div><div class="col-md-6"><label class="form-label">Card remedy</label><select class="form-select" name="rescindable"><option value="no">Normal</option><option value="yes">Rescindable yellow</option></select></div><div class="col-12"><label class="form-label">Trigger or condition <span class="text-muted">(optional)</span></label><input class="form-control" name="trigger_condition"></div></div>`)
 		if i == 0 {
 			fmt.Fprint(&out, `</fieldset>`)
 		} else {
 			fmt.Fprint(&out, `</div></details>`)
 		}
 	}
+	fmt.Fprint(&out, adminScheduledCardFormScript)
 	return out.String()
 }
 
@@ -1338,7 +1381,7 @@ func (s *Server) adminDecisionBundleFormHTML(ctx context.Context, caseID int64, 
 	if preview, previewErr := sanctiondomain.NewService(s.DB).PreviewCaseDirectRed(ctx, caseID); previewErr == nil {
 		fmt.Fprint(&out, adminCaseCardPreviewHTML(preview))
 	}
-	fmt.Fprint(&out, adminDecisionEffectsHTML(subjects))
+	fmt.Fprint(&out, adminDecisionEffectsWithSeasonsHTML(subjects, s.loadAdminDecisionSeasons(ctx, caseID)))
 	fmt.Fprint(&out, `</div></div><div class="card-footer d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"><span class="small text-muted">This first saves the decision and generates all three complete audience versions. You review them on the next screen before sending them for independent approval.</span><button class="btn btn-primary align-self-start align-self-md-auto">Save decision and review complete emails</button></div></form></section>`)
 	html := out.String()
 	html = strings.Replace(html, "Any appeal must be submitted to the league in accordance with the current GMCL regulations.", escapeHTML(appealGuidance.Instructions), 1)
@@ -2056,8 +2099,12 @@ func (s *Server) handleAdminCasePropose() http.HandlerFunc {
 				return
 			}
 		}
-		effects := parseAdminDecisionEffects(r.Form)
-		_, err := sanctiondomain.NewService(s.DB).ProposeDecisionBundle(r.Context(), sanctiondomain.DecisionBundleRequest{
+		effects, err := parseAdminDecisionEffectsWithSchedule(r.Form)
+		if err != nil {
+			redirectError(err.Error(), 0)
+			return
+		}
+		_, err = sanctiondomain.NewService(s.DB).ProposeDecisionBundle(r.Context(), sanctiondomain.DecisionBundleRequest{
 			CaseID: id, PublicReason: r.FormValue("public_reason"), PrivateReason: r.FormValue("private_reason"), RuleReference: r.FormValue("rule_reference"),
 			OutcomeSubject: r.FormValue("outcome_subject"), OutcomeFindings: r.FormValue("outcome_findings"), AppealInstructions: appealInstructions,
 			Effects: effects, Actor: adminActor(r),

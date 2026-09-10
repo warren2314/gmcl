@@ -335,7 +335,7 @@ type outcomeEffectQueryer interface {
 }
 
 func loadOutcomeEffects(ctx context.Context, queryer outcomeEffectQueryer, decisionID int64) ([]approvedOutcomeEffect, error) {
-	rows, err := queryer.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at
+	rows, err := queryer.Query(ctx, `SELECT e.effect_type,e.subject_type,COALESCE(e.player_name,cs.player_name,''),COALESCE(t.name,''),e.amount_pence,e.points,e.starts_at,e.ends_at,e.red_card_count,COALESCE((SELECT EXTRACT(YEAR FROM target.start_date)::integer FROM seasons target WHERE target.id=e.target_season_id),0),COALESCE(e.trigger_condition,'')
 		FROM sanction_effect_revisions e LEFT JOIN sanction_case_subjects cs ON cs.id=e.case_subject_id
 		LEFT JOIN teams t ON t.id=COALESCE(cs.team_id,CASE WHEN e.subject_type='team' THEN e.subject_id::integer END)
 		WHERE e.decision_revision_id=$1 ORDER BY e.id`, decisionID)
@@ -346,7 +346,7 @@ func loadOutcomeEffects(ctx context.Context, queryer outcomeEffectQueryer, decis
 	var effects []approvedOutcomeEffect
 	for rows.Next() {
 		var effect approvedOutcomeEffect
-		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt); err != nil {
+		if err = rows.Scan(&effect.typeName, &effect.subjectType, &effect.playerName, &effect.teamName, &effect.amount, &effect.points, &effect.startsAt, &effect.endsAt, &effect.redCardCount, &effect.targetYear, &effect.trigger); err != nil {
 			return nil, err
 		}
 		effects = append(effects, effect)
