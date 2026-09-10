@@ -27,7 +27,15 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 	}
 	defer pool.Close()
 	service := NewService(pool)
-	unique := fmt.Sprintf("future-card-%d", time.Now().UnixNano())
+	fixtureStamp := time.Now().UnixNano()
+	unique := fmt.Sprintf("future-card-%d", fixtureStamp)
+	// Other packages seed explicit low IDs without advancing the shared SERIAL
+	// sequences. Reserve this run's own high IDs instead of racing those seeds.
+	nextFixtureID := int32(1_500_000_000 + fixtureStamp%400_000_000)
+	fixtureID := func() int32 {
+		nextFixtureID++
+		return nextFixtureID
+	}
 	queryID := func(query string, args ...any) int32 {
 		t.Helper()
 		var id int32
@@ -42,13 +50,13 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	season2026 := queryID(`INSERT INTO seasons(name,start_date,end_date) VALUES($1,'2026-01-01','2026-12-31') RETURNING id`, unique+"-2026")
-	season2027 := queryID(`INSERT INTO seasons(name,start_date,end_date) VALUES($1,'2027-01-01','2027-12-31') RETURNING id`, unique+"-2027")
-	ownerID := queryID(`INSERT INTO admin_users(username,password_hash,email) VALUES($1,'test'::bytea,$2) RETURNING id`, unique+"-owner", unique+"-owner@example.invalid")
-	approverID := queryID(`INSERT INTO admin_users(username,password_hash,email) VALUES($1,'test'::bytea,$2) RETURNING id`, unique+"-approver", unique+"-approver@example.invalid")
-	clubID := queryID(`INSERT INTO clubs(name) VALUES($1) RETURNING id`, unique)
-	team1 := queryID(`INSERT INTO teams(club_id,name) VALUES($1,'1st XI') RETURNING id`, clubID)
-	team2 := queryID(`INSERT INTO teams(club_id,name) VALUES($1,'2nd XI') RETURNING id`, clubID)
+	season2026 := queryID(`INSERT INTO seasons(id,name,start_date,end_date) VALUES($1,$2,'2026-01-01','2026-12-31') RETURNING id`, fixtureID(), unique+"-2026")
+	season2027 := queryID(`INSERT INTO seasons(id,name,start_date,end_date) VALUES($1,$2,'2027-01-01','2027-12-31') RETURNING id`, fixtureID(), unique+"-2027")
+	ownerID := queryID(`INSERT INTO admin_users(id,username,password_hash,email) VALUES($1,$2,'test'::bytea,$3) RETURNING id`, fixtureID(), unique+"-owner", unique+"-owner@example.invalid")
+	approverID := queryID(`INSERT INTO admin_users(id,username,password_hash,email) VALUES($1,$2,'test'::bytea,$3) RETURNING id`, fixtureID(), unique+"-approver", unique+"-approver@example.invalid")
+	clubID := queryID(`INSERT INTO clubs(id,name) VALUES($1,$2) RETURNING id`, fixtureID(), unique)
+	team1 := queryID(`INSERT INTO teams(id,club_id,name) VALUES($1,$2,'1st XI') RETURNING id`, fixtureID(), clubID)
+	team2 := queryID(`INSERT INTO teams(id,club_id,name) VALUES($1,$2,'2nd XI') RETURNING id`, fixtureID(), clubID)
 	exec(`INSERT INTO sanction_club_contacts(club_id,email,verified_at) VALUES($1,$2,now())`, clubID, unique+"-club@example.invalid")
 	for _, role := range []string{"executive", "discipline", "play_cricket"} {
 		exec(`INSERT INTO sanction_recipient_directory(recipient_role,name,email) VALUES($1,$2,$3)`, role, unique, unique+"-"+role+"@example.invalid")
@@ -126,7 +134,7 @@ func TestFutureSeasonAwardLifecycle(t *testing.T) {
 			t.Fatalf("failed approval retained ledger rows=%d err=%v", reservedRows, err)
 		}
 	}
-	queryID(`INSERT INTO admin_users(username,password_hash,email) VALUES($1,'test'::bytea,$2) RETURNING id`, unique+"-play-cricket", unique+"-play_cricket@example.invalid")
+	queryID(`INSERT INTO admin_users(id,username,password_hash,email) VALUES($1,$2,'test'::bytea,$3) RETURNING id`, fixtureID(), unique+"-play-cricket", unique+"-play_cricket@example.invalid")
 	if err = service.ApproveCase(ctx, caseID, approver, ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}

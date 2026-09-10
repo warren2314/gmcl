@@ -43,7 +43,7 @@ func (s *Server) loadAdminDecisionSeasons(ctx context.Context, caseID int64) []a
 
 func adminScheduledCardFieldsHTML(index int, seasons []adminDecisionSeason) string {
 	var out strings.Builder
-	fmt.Fprintf(&out, `<div class="col-12" data-card-schedule><div class="alert alert-info mb-0"><strong>Choose how these cards take effect.</strong> Future-season cards definitely apply on the effective date. Suspended cards apply only after the recorded condition is breached and an activation is separately authorised. A date alone never activates a conditional suspension.</div></div><div class="col-md-4" data-card-schedule><label class="form-label" for="red-card-count-%d">Number of red cards</label><input id="red-card-count-%d" class="form-control" name="red_card_count" type="number" min="1" max="100" step="1" value="1"><div class="form-text">For the agreed three-card award, enter 3.</div></div>`, index, index)
+	fmt.Fprintf(&out, `<div class="col-12" data-card-schedule><div class="alert alert-info mb-0"><strong>Choose how these cards take effect.</strong> Future-season cards definitely apply on the effective date. Suspended cards apply only after the recorded condition is breached and an activation is separately authorised. A date alone never activates a conditional suspension.</div></div><div class="col-md-4" data-card-schedule><label class="form-label" for="red-card-count-%d">Number of red cards</label><input id="red-card-count-%d" class="form-control" name="red_card_count" type="number" min="1" max="100" step="1" value="1"><div class="form-text">Enter the total number of cards awarded.</div></div>`, index, index)
 	fmt.Fprintf(&out, `<div class="col-md-4" data-card-schedule><label class="form-label" for="target-season-%d">Applies in season</label><select id="target-season-%d" class="form-select" name="target_season_id"><option value="">Select future season (or case season for a suspension)</option>`, index, index)
 	for _, season := range seasons {
 		fmt.Fprintf(&out, `<option value="%d" data-start="%s" data-end="%s">%s</option>`, season.id, season.start.Format("2006-01-02"), season.end.Format("2006-01-02"), escapeHTML(season.name))
@@ -52,7 +52,7 @@ func adminScheduledCardFieldsHTML(index int, seasons []adminDecisionSeason) stri
 	if len(seasons) == 0 {
 		fmt.Fprint(&out, `<div class="form-text text-danger">No future season is configured. Ask the league administrator to configure the target season before saving a future-season award.</div>`)
 	}
-	fmt.Fprintf(&out, `</div><div class="col-md-4" data-card-schedule><label class="form-label" for="card-starts-%d">Effective from</label><input id="card-starts-%d" class="form-control" name="starts_at" type="date"><div class="form-text">Selecting a season fills its start date. Check this against the agreed decision.</div></div><div class="col-12" data-card-schedule><p class="small text-muted mb-0">Points are calculated against the selected season's red-card total when you save. Three reds starting from zero give 1 + 2 + 3 = 6 points. Do not add another points adjustment for the same card deduction. Denver's task cannot be completed before the effective date.</p></div>`, index, index)
+	fmt.Fprintf(&out, `</div><div class="col-md-4" data-card-schedule><label class="form-label" for="card-starts-%d">Effective from</label><input id="card-starts-%d" class="form-control" name="starts_at" type="date"><div class="form-text">Selecting a season fills its start date. Check this against the agreed decision.</div></div><div class="col-12" data-card-schedule><p class="small text-muted mb-0" data-card-points-guidance>Points are calculated against the selected season's red-card total when you save. Three reds starting from zero give 1 + 2 + 3 = 6 points. Do not add another points adjustment for the same card deduction. Denver's task cannot be completed before the effective date.</p></div>`, index, index)
 	return out.String()
 }
 
@@ -65,6 +65,8 @@ document.querySelectorAll('[data-decision-effect]').forEach(row=>{
  const date=row.querySelector('[name=starts_at]');
  const count=row.querySelector('[name=red_card_count]');
  const trigger=row.querySelector('[name=trigger_condition]');
+ const guidance=row.querySelector('[data-card-points-guidance]');
+ const definiteGuidance=guidance.textContent;
  const update=()=>{
   const scheduled=type.value==='scheduled_red', conditional=type.value==='suspended_red';
   row.querySelectorAll('[data-card-schedule]').forEach(el=>el.hidden=!(scheduled||conditional));
@@ -73,9 +75,11 @@ document.querySelectorAll('[data-decision-effect]').forEach(row=>{
    const allowed=conditional&&(name==='ends_at'||name==='trigger_condition');
    field.parentElement.hidden=(scheduled||conditional)&&!allowed;
   });
+  guidance.textContent=conditional?'Conditional cards add no cards or points until activation is separately authorised. Record the condition below.':definiteGuidance;
   season.required=scheduled; count.required=scheduled||conditional;
   date.required=scheduled||(conditional&&season.value!=='');
   trigger.required=conditional&&season.value!=='';
+  trigger.parentElement.querySelector('.text-muted').textContent=trigger.required?'(required)':'(optional)';
   const option=season.selectedOptions[0];
   if((scheduled||conditional)&&option&&option.dataset.start){date.min=option.dataset.start;date.max=option.dataset.end;}
   else{date.removeAttribute('min');date.removeAttribute('max');}

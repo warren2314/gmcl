@@ -1204,10 +1204,10 @@ func adminCaseDecisionHTML(decision adminCaseDecision, effects []adminCaseEffect
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Team red-card total if approved</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TeamRedCountAfter))
 		}
 		if effect.StartsAt != nil {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, effect.StartsAt.Format("02 Jan 2006"))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Starts</dt><dd class="col-sm-7">%s</dd>`, formatLeagueSanctionDate(*effect.StartsAt))
 		}
 		if effect.EndsAt != nil {
-			fmt.Fprintf(&out, `<dt class="col-sm-5">Ends / remedy date</dt><dd class="col-sm-7">%s</dd>`, effect.EndsAt.Format("02 Jan 2006"))
+			fmt.Fprintf(&out, `<dt class="col-sm-5">Ends / remedy date</dt><dd class="col-sm-7">%s</dd>`, formatLeagueSanctionDate(*effect.EndsAt))
 		}
 		if effect.TriggerCondition != "" {
 			fmt.Fprintf(&out, `<dt class="col-sm-5">Trigger</dt><dd class="col-sm-7">%s</dd>`, escapeHTML(effect.TriggerCondition))
