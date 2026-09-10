@@ -13,7 +13,7 @@ func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
 		AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2, DeliveryExceptions: 0, ClosedCases: 8,
 	}
 	cards := ineligibleQueueStatusCards(counts)
-	// Thirteen figures, twelve cards: Denver's two are one.
+	// Keep twelve cards; league-points tasks do not add a separate link or count.
 	want := []string{
 		"Visible queue", "Not yet selected", "Hidden reports", "Live cases", "Under investigation",
 		"Responses due", "Responses overdue", "New replies", "Awaiting decision",
@@ -49,11 +49,11 @@ func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
 		if card.Count != 7 {
 			t.Fatalf("Denver card counts %d cases, want 7", card.Count)
 		}
-		if !strings.Contains(card.Note, "League points awaiting Denver") || !strings.Contains(card.Note, "2") {
-			t.Fatalf("Denver card note %q does not carry the open league-points work", card.Note)
+		if card.Href != "/admin/cases?group=awaiting_denver#cases" {
+			t.Fatalf("Denver card links to %q, want the final sign-off case group", card.Href)
 		}
-		if card.NoteHref != "/admin/cases/tasks?type=play_cricket_points&live=1" {
-			t.Fatalf("Denver league-points note links to %q, want the task list", card.NoteHref)
+		if card.Note != "" || card.NoteHref != "" {
+			t.Fatalf("Denver card still exposes a loose note: %q (%q)", card.Note, card.NoteHref)
 		}
 	}
 	if denverCards != 1 {
@@ -61,10 +61,13 @@ func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
 	}
 }
 
-func TestIneligibleDenverCardHidesEmptyPointsNote(t *testing.T) {
-	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{AwaitingDenverSignoff: 1}) {
-		if strings.Contains(card.Label, "Denver") && card.Note != "" {
-			t.Fatalf("Denver card still shows a league-points note (%q) when none is open", card.Note)
+func TestIneligibleQueueNeverShowsLoosePointsNote(t *testing.T) {
+	for _, pointsTasks := range []int64{0, 1, 4, 100} {
+		counts := ineligibleDashboardCounts{AwaitingDenverSignoff: 1, PlayCricketPointsTasks: pointsTasks}
+		for _, card := range ineligibleQueueStatusCards(counts) {
+			if card.Note != "" || card.NoteHref != "" || strings.Contains(card.Label, "League points") {
+				t.Fatalf("%d points tasks expose a loose link or extra points card: %#v", pointsTasks, card)
+			}
 		}
 	}
 }
