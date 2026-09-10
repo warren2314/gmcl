@@ -1039,7 +1039,7 @@ func decisionApprovalNotification(caseID, decisionID int64, reference string) (i
 // SubmitDecisionForApproval records the case owner's confirmation that they
 // have reviewed the complete offending-club, reporting-club and official
 // versions. Older proposals created before this checkpoint remain compatible.
-func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, actor Actor) error {
+func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, actor Actor, reviewed ...OutcomeDraftVersion) error {
 	if caseID < 1 || actor.ID == nil {
 		return errors.New("case and authenticated case owner are required")
 	}
@@ -1061,6 +1061,15 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 		return err
 	}
 	var reviewRequired, alreadySent bool
+	for _, version := range reviewed {
+		var latestID int64
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT id FROM sanction_correspondence_revisions WHERE case_id=$1 AND decision_revision_id=$2 AND audience=$3 AND status='draft' ORDER BY revision DESC,id DESC LIMIT 1),0)`, caseID, decisionID, version.Audience).Scan(&latestID); err != nil {
+			return err
+		}
+		if version.DecisionID != decisionID || version.DraftID != latestID {
+			return errors.New("notice wording changed since this page was opened; reload and review before submitting")
+		}
+	}
 	if err = tx.QueryRow(ctx, `SELECT
 		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_owner_review_required' AND (metadata->>'decision_revision_id')::bigint=$2),
 		EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='decision_sent_for_approval' AND (metadata->>'decision_revision_id')::bigint=$2)`, caseID, decisionID).Scan(&reviewRequired, &alreadySent); err != nil {
@@ -1765,9 +1774,6 @@ func lockApprovedOutcomeCorrespondence(ctx context.Context, tx pgx.Tx, caseID, d
 		if err = validateOutcomeDraftCompleteness(item.audience, item.body); err != nil {
 			return fmt.Errorf("saved %s draft is incomplete: %w", strings.ReplaceAll(item.audience, "_", " "), err)
 		}
-		if !outcomeDraftMatchesGenerated(item.subject, item.body, rendered.subject, expectedBody) {
-			return fmt.Errorf("saved %s draft no longer equals the deterministic audience-safe outcome; save the generated replacement before approval", strings.ReplaceAll(item.audience, "_", " "))
-		}
 		privacyValues, privacyErr := CaseReporterIdentityValues(ctx, tx, caseID)
 		if privacyErr != nil {
 			return privacyErr
@@ -2190,7 +2196,7 @@ func (s *Service) PreviewOutcomeLetter(ctx context.Context, caseID int64, audien
 	} else if audience == "official" {
 		body = rendered.official
 	}
-	if savedDraft && outcomeDraftMatchesGenerated(savedSubject, savedBody, rendered.subject, body) {
+	if savedDraft {
 		rendered.subject = savedSubject
 		body = savedBody
 	}

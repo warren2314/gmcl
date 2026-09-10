@@ -1,20 +1,25 @@
 package httpserver
 
 import (
+	"cricket-ground-feedback/internal/sanctions"
 	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestEveryAudienceOutcomeDraftIsReadOnly(t *testing.T) {
+func TestOutcomeNoticeEditorAndLockedView(t *testing.T) {
 	for _, audience := range []string{"offending_club", "reporting_club", "official"} {
-		if !outcomeDraftIsReadOnly(audience) {
-			t.Fatalf("%s outcome draft must be generated read-only", audience)
+		draft := sanctions.OutcomeDraft{Audience: audience, DecisionID: 12, ID: 34, Subject: `A "subject"`, Body: `</textarea><script>alert(1)</script>`}
+		editor := adminOutcomeDraftFormHTML(7, "csrf", draft, "", true)
+		if strings.Contains(editor, ` readonly`) || !strings.Contains(editor, `Save notice wording`) || !strings.Contains(editor, `name="decision_id" value="12"`) || !strings.Contains(editor, `name="draft_id" value="34"`) {
+			t.Fatalf("incomplete editor for %s", audience)
 		}
-	}
-	for _, audience := range []string{"", "reporter", "league"} {
-		if outcomeDraftIsReadOnly(audience) {
-			t.Fatalf("invalid %s audience was treated as an outcome draft", audience)
+		if strings.Contains(editor, draft.Body) || !strings.Contains(editor, `&lt;/textarea&gt;`) {
+			t.Fatal("notice wording was not escaped")
+		}
+		locked := adminOutcomeDraftFormHTML(7, "csrf", draft, "", false)
+		if !strings.Contains(locked, ` readonly`) || strings.Contains(locked, `Save notice wording`) {
+			t.Fatal("locked view is editable")
 		}
 	}
 }
