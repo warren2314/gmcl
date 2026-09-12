@@ -15,6 +15,7 @@ func TestDecisionApprovalDashboardMatchesApprovalRules(t *testing.T) {
 	for _, required := range []string{
 		"cases.source_type='ineligible_player' OR cases.proposed_by_admin_id IS DISTINCT FROM $1",
 		"decision_sent_for_approval",
+		"cases.source_type<>'ineligible_player' OR sanction_ineligible_decision_approver($1)",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("decision dashboard routing is missing %q", required)
@@ -34,6 +35,8 @@ func TestSanctionOutboxRevokesStaleDecisionApprovalAlerts(t *testing.T) {
 		"decision_sent_for_approval",
 		"revoked_at=now()",
 		"Case is no longer awaiting independent decision approval",
+		"sanction_ineligible_decision_approver(admin.id)",
+		"outbox.decision_revision_id IS DISTINCT FROM",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("stale approval-alert cleanup is missing %q", required)

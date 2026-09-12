@@ -12,7 +12,7 @@ func TestDecisionApprovalNotificationUsesPerRecipientKeyPrefix(t *testing.T) {
 	if key != "case:42:decision-approval-request:107:recipient:" {
 		t.Fatalf("idempotency key = %q", key)
 	}
-	for _, want := range []string{"GMCL-2026-0042 awaiting approval", "Case reference: GMCL-2026-0042", "Waiting for: Independent approval", "What to review:", "https://gmcl.example.test/admin/cases/42", "another authorised administrator may already have actioned it"} {
+	for _, want := range []string{"GMCL-2026-0042 awaiting approval", "Case reference: GMCL-2026-0042", "Waiting for: Independent approval", "What to review:", "https://gmcl.example.test/admin/cases/42", "https://gmcl.example.test/admin#my-decisions", "even when you do not own the case", "Open the case link to check its current status"} {
 		if !strings.Contains(strings.ToLower(subject+"\n"+body), strings.ToLower(want)) {
 			t.Fatalf("approval notification is missing %q:\n%s\n%s", want, subject, body)
 		}
@@ -35,6 +35,7 @@ func TestDecisionApprovalRequestsGoToPeerApproversNotFinalIssuer(t *testing.T) {
 		"permission.permission='sanctions_approve'",
 		"recipient.recipient_role='play_cricket'",
 		"$7='ineligible_player' OR $8::integer IS DISTINCT FROM admin.id",
+		"$7<>'ineligible_player' OR sanction_ineligible_decision_approver(admin.id)",
 		"NOT EXISTS(",
 	} {
 		if !strings.Contains(approvalSource, required) {

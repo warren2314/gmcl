@@ -178,9 +178,9 @@ Open **Case owner and help** on the case page.
 ## Continue the case
 
 1. Review the club response and any new evidence.
-2. Complete **Prepare decision for approval** and click **Submit decision for approval**.
-3. Dave or Warren checks the proposal and clicks **Approve decision and lock outcomes**. Either may approve a proposal they prepared because this step only locks the outcome and cannot issue it.
-4. Denver completes the separate **Final sign-off and issue outcomes** step before anything is sent.
+2. Complete **Prepare decision for approval** and click **Submit decision for approval**. The approval request is emailed only to Dave and Warren.
+3. Dave or Warren checks the proposal and clicks **Approve decision and lock outcomes**. Either may approve a proposal they prepared because this step only locks the outcome and cannot issue it. Only Denver receives the next email, requesting his final sign-off.
+4. Denver completes the separate **Final sign-off and issue outcomes** step before the outcome emails and letters are sent. Case owners receive neither approval-stage handover email.
 
 Stop and ask the casework lead for help if details conflict, **Selection is blocked**, a needs-attention warning cannot be resolved, a tracker row is ambiguous, or the correct club, team, intake or case cannot be found.
 

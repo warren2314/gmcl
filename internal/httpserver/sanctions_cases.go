@@ -1485,7 +1485,7 @@ func adminCaseNextStageHTML(hasResponse, unreviewed bool, sourceType string) str
 
 func adminCaseApprovalFormHTML(caseID int64, csrf, sourceType string) string {
 	if sourceType == "ineligible_player" {
-		return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Decision approval</div><div class="card-body"><p>Review the email versions above. Dave or Warren can approve and lock them even if they prepared the proposal. This does not send anything: Denver must separately give final sign-off and issue the outcomes.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, caseID, escapeHTML(csrf))
+		return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Decision approval</div><div class="card-body"><p>Review the email versions above. Dave or Warren can approve and lock them even if they prepared the proposal. This emails only Denver to request his final sign-off. Denver must separately give final sign-off and issue the outcomes before club outcome emails are sent.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, caseID, escapeHTML(csrf))
 	}
 	return fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/approve" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Independent approval</div><div class="card-body"><p>Review the email versions above. One approval action saves and locks the exact emails and PDFs; it does not send them until the separate issue step.</p><label class="form-label">Additional outcome recipients (optional)</label><textarea class="form-control" name="additional_recipients" rows="2" placeholder="stuart@example.org, gary@example.org"></textarea><div class="form-text mb-3">Play-Cricket recipients are added automatically for red-card/card points and league points. Finance recipients are added automatically for fines.</div><label class="form-label">Emergency override reason (super-admin only)</label><textarea class="form-control" name="emergency_reason" rows="2"></textarea></div><div class="card-footer"><button class="btn btn-success">Save email versions and approve decision</button></div></form>`, caseID, escapeHTML(csrf))
 }
@@ -1673,7 +1673,12 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if status == "decision_proposed" && (!ownerReviewRequired || sentForApproval) {
 			actor := adminActor(r)
 			isFinalSignOffAdmin := source == "ineligible_player" && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
-			if actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") && !isFinalSignOffAdmin {
+			canApprove := actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") && !isFinalSignOffAdmin
+			if canApprove && source == "ineligible_player" {
+				canApprove = false
+				_ = s.DB.QueryRow(r.Context(), `SELECT sanction_ineligible_decision_approver($1)`, *actor.ID).Scan(&canApprove)
+			}
+			if canApprove {
 				fmt.Fprint(w, adminCaseApprovalFormHTML(id, csrf, source))
 			} else if isFinalSignOffAdmin {
 				fmt.Fprint(w, `<div class="alert alert-info"><strong>Awaiting decision approval from Dave or Warren.</strong> Denver's account provides the separate final sign-off after the decision and exact emails have been approved and locked.</div>`)
@@ -1690,6 +1695,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			canIssue := actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_publish")
 			if source == "ineligible_player" {
 				canIssue = canIssue && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
+				if canIssue {
+					canIssue = false
+					_ = s.DB.QueryRow(r.Context(), `SELECT sanction_ineligible_final_issuer($1)`, *actor.ID).Scan(&canIssue)
+				}
 			}
 			if canIssue {
 				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/publish" class="card mb-3 border-danger"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Denver final sign-off</strong></div><div class="card-body"><p>This queues the exact locked email and PDF for the offending club, reporting club and required league officials. A no-action decision is delivered and closed without public-register publication.</p><button class="btn btn-danger">Final sign-off and issue outcomes</button></div></form>`, id, csrf)

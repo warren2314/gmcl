@@ -1033,7 +1033,7 @@ func decisionApprovalNotification(caseID, decisionID int64, reference string) (i
 	caseURL := fmt.Sprintf("%s/admin/cases/%d", baseURL, caseID)
 	return fmt.Sprintf("case:%d:decision-approval-request:%d:recipient:", caseID, decisionID),
 		"GMCL case " + reference + " awaiting approval",
-		fmt.Sprintf("Case reference: %s\n\nWaiting for: Independent approval of the proposed sanctions decision.\n\nWhat to review: The proposed decision, sanctions, and the offending-club, reporting-club and league-official email/PDF versions. Approve or reject the proposal in GMCL Admin.\n\nOpen this case:\n%s\n\nIf this case is no longer in your dashboard, another authorised administrator may already have actioned it.", reference, caseURL)
+		fmt.Sprintf("Case reference: %s\n\nWaiting for: Independent approval of the proposed sanctions decision.\n\nWhat to review: The proposed decision, sanctions, and the offending-club, reporting-club and league-official email/PDF versions. Approve or reject the proposal in GMCL Admin.\n\nOpen this case:\n%s\n\nApproval queue:\n%s/admin#my-decisions\n\nYou are receiving this as a decision approver. Approval requests appear in the Approval / issue queue on your dashboard, even when you do not own the case. My ineligible-player cases only lists cases assigned to you.\n\nIf the case has already been approved, returned for changes or closed, this request no longer needs action. Open the case link to check its current status.", reference, caseURL, baseURL)
 }
 
 // SubmitDecisionForApproval records the case owner's confirmation that they
@@ -1090,7 +1090,9 @@ func (s *Service) SubmitDecisionForApproval(ctx context.Context, caseID int64, a
 	if _, err = tx.Exec(ctx, `INSERT INTO sanction_notification_outbox(case_id,decision_revision_id,message_kind,idempotency_key,recipient,subject,body)
 		SELECT $1,$2,'decision_approval_request',$3||LOWER(BTRIM(admin.email)),LOWER(BTRIM(admin.email)),$4,$5
 		FROM admin_users admin
-		WHERE admin.is_active AND admin.id<>$6
+		WHERE admin.is_active AND BTRIM(admin.email)<>''
+		  AND ($7='ineligible_player' OR admin.id<>$6)
+		  AND ($7<>'ineligible_player' OR sanction_ineligible_decision_approver(admin.id))
 		  AND (COALESCE(admin.role,'admin')='super_admin' OR EXISTS(
 			SELECT 1 FROM admin_user_permissions permission
 			WHERE permission.admin_user_id=admin.id AND permission.permission='sanctions_approve'
@@ -1231,6 +1233,9 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 		}
 		if isFinalSignOffAdmin {
 			return errors.New("the final sign-off account cannot also approve the decision; Dave or Warren must approve it first")
+		}
+		if err = requireIneligibleDecisionApprover(ctx, tx, *approver.ID); err != nil {
+			return err
 		}
 	}
 	if violatesDecisionApprovalSeparation(sourceType, proposer, approver.ID, emergency) {
@@ -1398,6 +1403,11 @@ func (s *Service) ApproveCaseWithOptions(ctx context.Context, caseID int64, appr
 	_ = clubID
 	if err = lockApprovedOutcomeCorrespondence(ctx, tx, caseID, approvedID, approver, options.AdditionalRecipients); err != nil {
 		return err
+	}
+	if sourceType == "ineligible_player" {
+		if err = queueFinalSignOffNotification(ctx, tx, caseID, approvedID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -2235,6 +2245,11 @@ func (s *Service) PublishCase(ctx context.Context, caseID int64, actor Actor) er
 		)`, *actor.ID).Scan(&isFinalSignOffAdmin); err != nil {
 			return err
 		}
+		if isFinalSignOffAdmin {
+			if err = tx.QueryRow(ctx, `SELECT sanction_ineligible_final_issuer($1)`, *actor.ID).Scan(&isFinalSignOffAdmin); err != nil {
+				return err
+			}
+		}
 		if !isFinalSignOffAdmin {
 			return errors.New("only Denver's active Play-Cricket account can give final sign-off and issue this ineligible-player outcome")
 		}
@@ -2444,6 +2459,11 @@ func (s *Service) RejectProposedCase(ctx context.Context, caseID int64, actor Ac
 	var sourceType string
 	if err = tx.QueryRow(ctx, `SELECT status,source_type FROM sanction_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(&status, &sourceType); err != nil {
 		return err
+	}
+	if sourceType == "ineligible_player" {
+		if err = requireIneligibleDecisionApprover(ctx, tx, *actor.ID); err != nil {
+			return err
+		}
 	}
 	if status != "decision_proposed" && status != "triage" {
 		return errors.New("case is not awaiting a decision")

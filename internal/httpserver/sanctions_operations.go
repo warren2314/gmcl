@@ -48,16 +48,44 @@ func (s *Server) handleInternalSanctionOutbox() http.HandlerFunc {
 			return
 		}
 		if _, err := s.DB.Exec(ctx, `UPDATE sanction_notification_outbox outbox
-			SET processed_at=now(),revoked_at=now(),revocation_reason='Case is no longer awaiting independent decision approval'
+			SET processed_at=now(),revoked_at=now(),revoked_by_system=TRUE,revocation_reason='Case is no longer awaiting independent decision approval or recipient is no longer eligible'
 			FROM sanction_cases cases
 			WHERE outbox.case_id=cases.id AND outbox.message_kind='decision_approval_request'
 			  AND outbox.processed_at IS NULL AND outbox.revoked_at IS NULL
-			  AND (cases.status<>'decision_proposed' OR NOT EXISTS(
+			  AND (cases.status<>'decision_proposed'
+			    OR outbox.decision_revision_id IS DISTINCT FROM (
+				SELECT id FROM sanction_decision_revisions
+				WHERE case_id=cases.id AND status='proposed' ORDER BY revision DESC,id DESC LIMIT 1
+			    )
+			    OR (cases.source_type='ineligible_player' AND NOT EXISTS(
+				SELECT 1 FROM admin_users admin
+				WHERE LOWER(BTRIM(admin.email))=LOWER(BTRIM(outbox.recipient))
+				  AND sanction_ineligible_decision_approver(admin.id)
+			    ))
+			    OR NOT EXISTS(
 				SELECT 1 FROM sanction_case_events sent
 				WHERE sent.case_id=cases.id AND sent.event_type='decision_sent_for_approval'
 				  AND sent.metadata->>'decision_revision_id'=outbox.decision_revision_id::text
 			  ))`); err != nil {
 			http.Error(w, "stale approval notification maintenance is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if _, err := s.DB.Exec(ctx, `UPDATE sanction_notification_outbox outbox
+			SET processed_at=now(),revoked_at=now(),revoked_by_system=TRUE,revocation_reason='Case is no longer awaiting final sign-off or recipient is no longer the final issuer'
+			FROM sanction_cases cases
+			WHERE outbox.case_id=cases.id AND outbox.message_kind='final_sign_off_request'
+			  AND outbox.processed_at IS NULL AND outbox.revoked_at IS NULL
+			  AND (cases.status<>'approved'
+			    OR outbox.decision_revision_id IS DISTINCT FROM (
+				SELECT id FROM sanction_decision_revisions
+				WHERE case_id=cases.id AND status='approved' ORDER BY revision DESC,id DESC LIMIT 1
+			    )
+			    OR NOT EXISTS(
+				SELECT 1 FROM admin_users admin
+				WHERE LOWER(BTRIM(admin.email))=LOWER(BTRIM(outbox.recipient))
+				  AND sanction_ineligible_final_issuer(admin.id)
+			    ))`); err != nil {
+			http.Error(w, "stale final sign-off notification maintenance is unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if sanctionsEmailDisabled() {
