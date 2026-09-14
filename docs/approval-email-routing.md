@@ -21,6 +21,11 @@ status alone does not receive these handover requests. Final issue requires the
 explicit final-issuer permission and an active Play-Cricket directory entry.
 Copy recipients in that directory do not receive final sign-off requests.
 
+Migration `0090_restore_denver_final_sign_off.sql` also recognises Denver's
+live `denver` login. It grants the missing issuer permission only when the
+account and its matching Play-Cricket directory entry are active. This repairs
+the blocked approval handover without approving or issuing any case.
+
 The same eligibility checks apply to notifications, the dashboard and actions.
 Pending wrongly routed approval alerts are revoked by the migration. The
 outbox worker also cancels requests for superseded decisions, completed
