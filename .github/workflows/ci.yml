@@ -38,6 +38,7 @@ jobs:
     env:
       DB_DSN: postgres://appuser:apppassword@localhost:5432/appdb?sslmode=disable
       TEST_DB_DSN: postgres://appuser:apppassword@localhost:5432/appdb?sslmode=disable
+      GMCL_HANDLER_TEST_DSN: postgres://appuser:apppassword@localhost:5432/gmcl_handler_qa_ci?sslmode=disable
 
     steps:
       - name: Check out tested commit
@@ -48,7 +49,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: true
 
       - name: Install security tools
@@ -89,6 +90,11 @@ jobs:
           for migration in migrations/*.sql; do
             psql "$DB_DSN" -v ON_ERROR_STOP=1 -f "$migration"
           done
+
+      - name: Prepare isolated admin workflow test database
+        run: |
+          psql "$DB_DSN" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE gmcl_handler_qa_ci'
+          psql "$GMCL_HANDLER_TEST_DSN" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
 
       - name: Run tests
         run: go test -race ./...

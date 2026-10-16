@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sanctiondomain "cricket-ground-feedback/internal/sanctions"
 )
 
 func TestParseIneligibleQueueFiltersDefaultsAndRejectsUnknownValues(t *testing.T) {
@@ -102,21 +104,26 @@ func TestIneligibleNewRepliesHrefOpensOneCaseOrFilteredReplyList(t *testing.T) {
 }
 
 func TestDashboardIntakeLinksUseTheExactLiveCountFilters(t *testing.T) {
-	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{}) {
-		if card.Label != "Visible queue" && card.Label != "Not yet selected" && card.Label != "Hidden reports" {
-			continue
+	out := httptest.NewRecorder()
+	writeIneligibleReportLeagueSummary(out, ineligibleDashboardCounts{}, nil)
+	for _, href := range []string{
+		"/admin/ineligible?view=reports&state=open&worklist=visible",
+		"/admin/ineligible?view=reports&state=open&worklist=deferred",
+	} {
+		if !strings.Contains(out.Body.String(), `href="`+escapeHTML(href)+`"`) {
+			t.Fatalf("summary missing live report link %s", href)
 		}
-		parsed, err := url.Parse(card.Href)
+		parsed, err := url.Parse(href)
 		if err != nil {
-			t.Fatalf("parse %s href: %v", card.Label, err)
+			t.Fatalf("parse report href: %v", err)
 		}
 		filter := parseIneligibleQueueFilters(parsed.Query())
+		// The report handler applies the default live population independently
+		// of the legacy live=1 query parameter.
+		filter.LiveOnly = !filter.TrainingOnly
 		query, _ := buildIneligibleQueueQuery(filter)
-		if !strings.Contains(query, "NOT i.is_training") {
-			t.Fatalf("%s link does not exclude training reports: %s", card.Label, card.Href)
-		}
-		if card.Label == "Not yet selected" && (!filter.PendingSelection || !strings.Contains(query, "worklist.batch_id IS NULL") || !strings.Contains(query, "c.id IS NULL")) {
-			t.Fatalf("not-yet-selected link does not reproduce the tile definition: %s", card.Href)
+		if !strings.Contains(query, "NOT i.is_training") || filter.State != "open" || parsed.Query().Get("view") != "reports" {
+			t.Fatalf("summary link does not reproduce the live report population: %s", href)
 		}
 	}
 }
@@ -584,11 +591,10 @@ func TestV8DecisionHistoryOnlyShowsCurrentDecisionFields(t *testing.T) {
 
 func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *testing.T) {
 	tests := map[string]string{
-		"live":              "cases.source_type='ineligible_player' AND cases.status NOT IN ('published','closed','rejected','withdrawn')",
-		"investigating":     "cases.source_type='ineligible_player' AND cases.status='investigating'",
-		"awaiting_decision": "cases.source_type='ineligible_player' AND cases.status='decision_proposed'",
-		"awaiting_denver":   "cases.source_type='ineligible_player' AND cases.status='approved'",
-		"closed":            "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
+		"live":            "cases.source_type='ineligible_player' AND cases.status NOT IN ('published','closed','rejected','withdrawn')",
+		"investigating":   "cases.source_type='ineligible_player' AND cases.status='investigating'",
+		"awaiting_denver": "cases.source_type='ineligible_player' AND cases.status='approved' AND NOT EXISTS (SELECT 1 FROM sanction_cases c WHERE c.id=cases.id AND " + sanctiondomain.ApprovedIneligibleSourceReviewPredicate() + ")",
+		"closed":          "cases.source_type='ineligible_player' AND cases.status IN ('published','closed')",
 	}
 	for group, want := range tests {
 		if got := ineligibleCaseGroupPredicate(group, "cases"); got != want {
@@ -601,21 +607,12 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 			t.Fatalf("group %s has no exact ineligible-player predicate: %s", group, predicate)
 		}
 	}
-	source := ineligibleDashboardSource(t)
-	for _, want := range []string{
-		`/admin/cases?group=live#cases`,
-		`/admin/cases?group=investigating#cases`,
-		`/admin/cases?group=responses_due#cases`,
-		`/admin/cases?group=responses_overdue#cases`,
-		`/admin/cases?group=new_replies#cases`,
-		`/admin/cases?group=awaiting_decision#cases`,
-		`/admin/cases?group=awaiting_denver#cases`,
-		`/admin/cases?group=delivery_exceptions#cases`,
-		`/admin/cases?group=closed#cases`,
-		`Review %d row(s) needing attention`,
-	} {
-		if !strings.Contains(source, want) {
-			t.Fatalf("ineligible dashboard source missing %q", want)
+	for _, group := range []string{"owner_review", "awaiting_decision"} {
+		predicate := ineligibleCaseGroupPredicate(group, "cases")
+		for _, required := range []string{"cases.status='decision_proposed'", "current.revision DESC", "decision_owner_review_required", "decision_sent_for_approval", "decision_revision_id"} {
+			if !strings.Contains(predicate, required) {
+				t.Fatalf("%s predicate lost current-proposal review requirement %q", group, required)
+			}
 		}
 	}
 }
@@ -625,7 +622,7 @@ func TestIneligibleCaseDashboardGroupsShareExactStatusPredicatesAndLinks(t *test
 func ineligibleDashboardSource(t *testing.T) string {
 	t.Helper()
 	var combined strings.Builder
-	for _, name := range []string{"admin_ineligible.go", "admin_ineligible_worklanes.go"} {
+	for _, name := range []string{"admin_ineligible.go", "admin_ineligible_report_data.go", "admin_ineligible_workspace.go"} {
 		raw, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)

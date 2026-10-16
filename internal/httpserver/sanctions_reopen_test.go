@@ -28,7 +28,9 @@ func TestAdminIneligibleReopenFormExplainsSafeWorkflow(t *testing.T) {
 		`before publication or delivery`,
 		`merge the latest intake revision`,
 		`fresh proposal`,
-		`different authorised administrator`,
+		`designated ineligible-player approver`,
+		`approver may have prepared the proposal`,
+		`separate final sign-off`,
 		`csrf-&lt;token&gt;`,
 	} {
 		if !strings.Contains(html, required) {

@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -19,12 +20,12 @@ func TestPlayCricketPointsTaskRequiresAssignedFinalSignOffAdmin(t *testing.T) {
 
 func TestIneligibleDashboardCountsAllOpenPlayCricketPointsTasks(t *testing.T) {
 	dashboardSource := ineligibleDashboardSource(t)
-	// Removing the overflowing dashboard note must not remove task accounting
-	// or change who is allowed to complete the underlying league-points work.
-	for _, card := range ineligibleQueueStatusCards(ineligibleDashboardCounts{PlayCricketPointsTasks: 4}) {
-		if card.Note != "" || card.NoteHref != "" {
-			t.Fatal("open points tasks must not restore a loose dashboard note")
-		}
+	// Report summaries do not display unrelated points tasks. Their accounting
+	// and command-side completion permissions remain independently protected.
+	out := httptest.NewRecorder()
+	writeIneligibleReportLeagueSummary(out, ineligibleDashboardCounts{PlayCricketPointsTasks: 4}, nil)
+	if strings.Contains(out.Body.String(), "League points") || strings.Contains(out.Body.String(), "4 reports") {
+		t.Fatal("points work leaked into the report summary")
 	}
 	want := "JOIN live_cases c ON c.id=t.case_id WHERE t.task_type='play_cricket_points' AND t.status IN ('open','in_progress')"
 	if !strings.Contains(dashboardSource, want) {

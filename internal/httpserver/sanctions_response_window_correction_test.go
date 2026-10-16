@@ -20,7 +20,7 @@ func TestAdminCaseResponseWindowShowsAuditedEarlierDateCorrection(t *testing.T) 
 		DeliveredAt:   &started,
 		ReminderDueAt: &reminder,
 		DueAt:         &due,
-	}, "response_pending", london, started.Add(24*time.Hour))
+	}, "response_pending", london, started.Add(24*time.Hour), adminCaseWorkspacePermissions{CanInvestigate: true})
 	for _, want := range []string{
 		"Club response clock",
 		"Response due",
@@ -40,7 +40,7 @@ func TestAdminCaseResponseWindowShowsAuditedEarlierDateCorrection(t *testing.T) 
 
 func TestAdminCaseExpiredResponseWindowHasNoCorrectionForm(t *testing.T) {
 	due := time.Date(2026, time.August, 31, 9, 0, 0, 0, time.UTC)
-	html := adminCaseResponseWindowHTML(77, "token", adminCaseResponseWindowView{ID: 12, Status: "expired", DueAt: &due}, "investigating", time.UTC)
+	html := adminCaseResponseWindowHTML(77, "token", adminCaseResponseWindowView{ID: 12, Status: "expired", DueAt: &due}, "investigating", time.UTC, adminCaseWorkspacePermissions{CanInvestigate: true})
 	if !strings.Contains(html, "Response overdue") {
 		t.Fatalf("expired response window is not labelled overdue: %s", html)
 	}

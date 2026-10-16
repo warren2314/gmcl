@@ -26,7 +26,7 @@ func adminCaseSourceReportFromRaw(intakeID int64, raw []byte) adminCaseSourceRep
 	}
 }
 
-func adminCaseSourceReportHTML(report adminCaseSourceReport) string {
+func adminCaseSourceReportHTML(report adminCaseSourceReport, permissions adminCaseWorkspacePermissions) string {
 	if report.IntakeID <= 0 {
 		return ""
 	}
@@ -47,11 +47,15 @@ func adminCaseSourceReportHTML(report adminCaseSourceReport) string {
 	for _, row := range rows {
 		fmt.Fprintf(&out, "<dt class=\"col-sm-4\">%s</dt><dd class=\"col-sm-8\">%s</dd>", escapeHTML(row[0]), value(row[1]))
 	}
-	fmt.Fprintf(&out, "</dl><a class=\"btn btn-sm btn-outline-primary mt-3\" href=\"/admin/ineligible/%d\">Open original intake and uploaded files</a></div></section>", report.IntakeID)
+	fmt.Fprint(&out, "</dl>")
+	if permissions.CanTriage {
+		fmt.Fprintf(&out, "<a class=\"btn btn-sm btn-outline-primary mt-3\" href=\"/admin/ineligible/%d\">Open original intake and uploaded files</a>", report.IntakeID)
+	}
+	fmt.Fprint(&out, "</div></section>")
 	return out.String()
 }
 
-func (s *Server) loadAdminCaseSourceReportHTML(ctx context.Context, caseID int64) string {
+func (s *Server) loadAdminCaseSourceReportHTML(ctx context.Context, caseID int64, permissions adminCaseWorkspacePermissions) string {
 	var intakeID int64
 	var raw []byte
 	err := s.DB.QueryRow(ctx, `SELECT intake.id,revision.raw_data
@@ -63,5 +67,5 @@ func (s *Server) loadAdminCaseSourceReportHTML(ctx context.Context, caseID int64
 	if err != nil {
 		return ""
 	}
-	return adminCaseSourceReportHTML(adminCaseSourceReportFromRaw(intakeID, raw))
+	return adminCaseSourceReportHTML(adminCaseSourceReportFromRaw(intakeID, raw), permissions)
 }

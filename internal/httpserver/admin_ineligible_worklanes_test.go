@@ -1,128 +1,70 @@
 package httpserver
 
 import (
+	"errors"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
 
-func TestIneligibleQueueStatusCardsKeepTheOriginalGrid(t *testing.T) {
-	counts := ineligibleDashboardCounts{
-		NewIntakes: 2, AwaitingSelection: 3, HiddenReports: 198, LiveCases: 9, ActiveCases: 4,
-		ResponsesDue: 3, ResponsesOverdue: 5, RecentReplies: 1, AwaitingDecision: 0,
-		AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2, DeliveryExceptions: 0, ClosedCases: 8,
-	}
-	cards := ineligibleQueueStatusCards(counts)
-	// Keep twelve cards; league-points tasks do not add a separate link or count.
-	want := []string{
-		"Visible queue", "Not yet selected", "Hidden reports", "Live cases", "Under investigation",
-		"Responses due", "Responses overdue", "New replies", "Awaiting decision",
-		"Awaiting Denver final sign-off", "Delivery exceptions", "Closed cases",
-	}
-	if len(cards) != len(want) {
-		t.Fatalf("queue status shows %d cards, want %d", len(cards), len(want))
-	}
-	for i, label := range want {
-		if cards[i].Label != label {
-			t.Fatalf("card %d is %q, want %q - the grid order changed", i, cards[i].Label, label)
-		}
-	}
-	if cards[6].Href != "/admin/cases?group=responses_overdue#cases" {
-		t.Fatalf("responses overdue links to %q, want the matching overdue case group", cards[6].Href)
-	}
-	if cards[5].Href != "/admin/cases?group=responses_due#cases" {
-		t.Fatalf("responses due links to %q, want the exact due case group", cards[5].Href)
-	}
-	if cards[10].Href != "/admin/cases?group=delivery_exceptions#cases" {
-		t.Fatalf("delivery exceptions links to %q, want the exact exception case group", cards[10].Href)
-	}
-}
-
-func TestIneligibleQueueStatusShowsDenverAsOneCard(t *testing.T) {
-	counts := ineligibleDashboardCounts{AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 2}
-	denverCards := 0
-	for _, card := range ineligibleQueueStatusCards(counts) {
-		if !strings.Contains(card.Label, "Denver") {
-			continue
-		}
-		denverCards++
-		if card.Count != 7 {
-			t.Fatalf("Denver card counts %d cases, want 7", card.Count)
-		}
-		if card.Href != "/admin/cases?group=awaiting_denver#cases" {
-			t.Fatalf("Denver card links to %q, want the final sign-off case group", card.Href)
-		}
-		if card.Note != "" || card.NoteHref != "" {
-			t.Fatalf("Denver card still exposes a loose note: %q (%q)", card.Note, card.NoteHref)
-		}
-	}
-	if denverCards != 1 {
-		t.Fatalf("queue status renders %d Denver cards, want exactly one", denverCards)
-	}
-}
-
-func TestIneligibleQueueNeverShowsLoosePointsNote(t *testing.T) {
-	for _, pointsTasks := range []int64{0, 1, 4, 100} {
-		counts := ineligibleDashboardCounts{AwaitingDenverSignoff: 1, PlayCricketPointsTasks: pointsTasks}
-		for _, card := range ineligibleQueueStatusCards(counts) {
-			if card.Note != "" || card.NoteHref != "" || strings.Contains(card.Label, "League points") {
-				t.Fatalf("%d points tasks expose a loose link or extra points card: %#v", pointsTasks, card)
-			}
-		}
-	}
-}
-
-func TestIneligibleDashboardOpensTheOriginalQueueLayoutDirectly(t *testing.T) {
-	source := ineligibleDashboardSource(t)
-	// Keep the restored queue layout and put the requested start routes directly
-	// above it.
+func TestIneligibleReportSummarySeparatesCasesAndReports(t *testing.T) {
+	out := httptest.NewRecorder()
+	writeIneligibleReportLeagueSummary(out, ineligibleDashboardCounts{
+		LiveCases: 9, NewIntakes: 2, HiddenReports: 198, AwaitingDenverSignoff: 7, PlayCricketPointsTasks: 4,
+	}, nil)
+	html := out.Body.String()
 	for _, want := range []string{
-		`writeIneligibleStartRoutes(w, csrf, nextReportID)`,
-		`<details class="card mb-4" open>`,
-		`<summary class="card-header fw-semibold">Filters and queue status</summary>`,
-		`Import, choose the reports to progress, then work from that selected list.`,
-		`<a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a>`,
-		`<a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a>`,
-		`aria-label="Choose work queue"`,
-		`row-cols-2 row-cols-md-3 row-cols-xl-5`,
+		`href="/admin/ineligible?view=cases">9 active cases`,
+		`href="/admin/ineligible?view=reports&amp;state=open&amp;worklist=visible">2 reports in the visible queue`,
+		`href="/admin/ineligible?view=reports&amp;state=open&amp;worklist=deferred">198 deferred reports`,
+		`These league totals are separate from the filtered report count.`,
 	} {
-		if !strings.Contains(source, want) {
-			t.Fatalf("the original ineligible dashboard layout is missing %q", want)
+		if !strings.Contains(html, want) {
+			t.Fatalf("report summary missing %q: %s", want, html)
 		}
 	}
-	for _, unwanted := range []string{
-		"Import historical tracker",
-		"s.writeAdminPersonalWork(w, r)",
-		"writeIneligibleTodayLane",
-		"writeIneligibleTotalsLane",
-		"Team queue",
-		"Queue totals, filters and import routes",
-	} {
-		if strings.Contains(source, unwanted) {
-			t.Fatalf("the rolled-back layout is still present: %q", unwanted)
+	for _, unwanted := range []string{"Awaiting Denver", "League points", "209 total", "row-cols"} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("report summary mixes unrelated work into report totals: %s", html)
 		}
 	}
-	// The queue tabs sit inside the open section above the grid.
-	tabs := strings.Index(source, `aria-label="Choose work queue"`)
-	grid := strings.Index(source, `row-cols-2 row-cols-md-3 row-cols-xl-5`)
-	routes := strings.Index(source, `writeIneligibleStartRoutes(w, csrf, nextReportID)`)
-	details := strings.Index(source, `writeIneligibleQueueStatusStart(w)`)
-	if routes < 0 || details < routes || tabs < details || grid < tabs {
-		t.Fatalf("imports must precede the open queue, with tabs and grid inside it: routes=%d details=%d tabs=%d grid=%d", routes, details, tabs, grid)
+}
+
+func TestIneligibleReportSummaryShowsUnavailableCounts(t *testing.T) {
+	out := httptest.NewRecorder()
+	writeIneligibleReportLeagueSummary(out, ineligibleDashboardCounts{}, errors.New("query failed"))
+	html := out.Body.String()
+	if !strings.Contains(html, "League totals unavailable") || !strings.Contains(html, "report list below remains usable") {
+		t.Fatalf("failed counts need a visible, usable fallback: %s", html)
+	}
+	if strings.Contains(html, "0 active cases") || strings.Contains(html, "0 reports") {
+		t.Fatal("unavailable counts are represented as zero")
+	}
+}
+
+func TestIneligibleWorkspaceTabsLinkDifferentRecordPopulations(t *testing.T) {
+	out := httptest.NewRecorder()
+	writeIneligibleWorkspaceTabs(out, "reports", true)
+	html := out.Body.String()
+	for _, want := range []string{
+		`href="/admin/ineligible?view=reports" aria-current="page">Reports to review`,
+		`href="/admin/ineligible?view=cases">Cases in progress`,
+		`href="/admin/ineligible?view=history">Case history`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("workspace navigation missing %q: %s", want, html)
+		}
 	}
 }
 
 func TestIneligibleDashboardStillReachesBulkClose(t *testing.T) {
-	// Bulk close is a separate feature, not part of the layout that was rolled
-	// back, so the page must still offer a way in.
 	if !strings.Contains(ineligibleDashboardSource(t), `href="/admin/cases/close-batch">Close historic cases`) {
 		t.Fatal("the dashboard no longer links to the bulk close page")
 	}
 }
 
 func TestEveryAdminSeesTheSameIneligibleDashboard(t *testing.T) {
-	// The focused sign-off page was removed: no administrator gets a different
-	// version of this route any more.
 	if _, err := os.Stat("admin_ineligible_signoff_view.go"); err == nil {
 		t.Fatal("the separate sign-off view still exists")
 	}

@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"cricket-ground-feedback/internal/middleware"
 )
 
 const personalIneligibleCasesFromSQL = `
@@ -77,10 +75,14 @@ func (s *Server) handleAdminPersonalIneligibleCases() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "My ineligible-player cases")
-		writeAdminNav(w, middleware.CSRFToken(r), r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">My ineligible-player cases</h1><p class="text-muted mb-0">Active cases currently assigned to you. Test and completed cases are excluded.</p></div><a class="btn btn-outline-primary align-self-md-start" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible">Open report triage</a></div><section class="card shadow-sm"><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Case</th><th>Player</th><th>Club / team</th><th>Status</th><th>Updated</th></tr></thead><tbody>`)
+		s.writeAdminWorkspaceNav(w, r)
+		canTriage := s.adminHasPermission(ctx, *actor.ID, "sanctions_triage")
+		canOpenCase := s.adminHasPermission(ctx, *actor.ID, "sanctions_investigate") || s.adminHasPermission(ctx, *actor.ID, "sanctions_approve")
+		fmt.Fprint(w, `<main class="container py-4"><div class="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">My ineligible-player cases</h1><p class="text-muted mb-0">Active cases currently assigned to you. Test and completed cases are excluded.</p></div>`)
+		fmt.Fprint(w, personalIneligibleTriageLink(canTriage))
+		fmt.Fprint(w, `</div><section class="card shadow-sm"><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Case</th><th>Player</th><th>Club / team</th><th>Status</th><th>Updated</th></tr></thead><tbody>`)
 		for _, item := range cases {
-			fmt.Fprintf(w, `<tr><td data-label="Case"><a href="/admin/cases/%d"><strong>%s</strong></a></td><td data-label="Player">%s</td><td data-label="Club / team">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Updated">%s</td></tr>`, item.ID, escapeHTML(item.Reference), escapeHTML(item.Player), escapeHTML(item.Club), escapeHTML(item.Team), escapeHTML(caseStatusLabel(item.Status)), item.UpdatedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
+			fmt.Fprintf(w, `<tr><td data-label="Case">%s</td><td data-label="Player">%s</td><td data-label="Club / team">%s<div class="small text-muted">%s</div></td><td data-label="Status">%s</td><td data-label="Updated">%s</td></tr>`, personalIneligibleCaseLink(canOpenCase, item.ID, item.Reference), escapeHTML(item.Player), escapeHTML(item.Club), escapeHTML(item.Team), escapeHTML(caseStatusLabel(item.Status)), item.UpdatedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04"))
 		}
 		if len(cases) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="5" class="text-center text-muted py-5">No active ineligible-player cases are assigned to you.</td></tr>`)
@@ -88,4 +90,18 @@ func (s *Server) handleAdminPersonalIneligibleCases() http.HandlerFunc {
 		fmt.Fprint(w, `</tbody></table></div></section></main>`)
 		pageFooter(w)
 	}
+}
+
+func personalIneligibleTriageLink(canTriage bool) string {
+	if !canTriage {
+		return ""
+	}
+	return `<a class="btn btn-outline-primary align-self-md-start" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible">Open report triage</a>`
+}
+
+func personalIneligibleCaseLink(canOpen bool, id int64, reference string) string {
+	if !canOpen {
+		return `<strong>` + escapeHTML(reference) + `</strong>`
+	}
+	return fmt.Sprintf(`<a href="/admin/cases/%d?return_to=%%2Fadmin%%2Fcases%%2Fmine%%2Fineligible"><strong>%s</strong></a>`, id, escapeHTML(reference))
 }

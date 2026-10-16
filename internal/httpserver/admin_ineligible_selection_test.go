@@ -230,9 +230,9 @@ func TestWriteIneligibleFiltersPreservesWorklist(t *testing.T) {
 		`<option value="deferred" selected>Hidden reports</option>`,
 		`Current queue: Hidden reports`,
 		`name="scope"`,
-		`<option value="mine" selected>My assigned cases</option>`,
+		`<option value="mine" selected>Reports linked to my cases</option>`,
 		`<option value="all">All reports</option>`,
-		`href="/admin/ineligible?scope=mine&amp;state=all&amp;worklist=visible"`,
+		`href="/admin/ineligible?scope=mine&amp;state=all&amp;view=reports&amp;worklist=visible"`,
 		`value="Reporting&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp; CC"`,
 	} {
 		if !strings.Contains(html, want) {

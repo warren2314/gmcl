@@ -58,18 +58,22 @@ func investigationAdminSelect(options []investigationAdminOption, selected *int3
 	return output.String()
 }
 
-func (s *Server) writeAdminCaseDelegationControls(w http.ResponseWriter, r *http.Request, caseID int64, csrf string, assignedAdminID *int32, assignedAdminName string, currentAdminID *int32) {
-	options, err := s.loadInvestigationAdmins(r.Context())
-	if err != nil || len(options) == 0 {
-		fmt.Fprint(w, adminCaseAssignmentHTML(caseID, csrf, assignedAdminID, assignedAdminName, currentAdminID))
-		return
-	}
+func (s *Server) writeAdminCaseDelegationControls(w http.ResponseWriter, r *http.Request, caseID int64, csrf string, assignedAdminID *int32, assignedAdminName string, currentAdminID *int32, permissions adminCaseWorkspacePermissions) {
 	currentOwner := "Unassigned"
 	if strings.TrimSpace(assignedAdminName) != "" {
 		currentOwner = assignedAdminName
 	}
-	fmt.Fprintf(w, `<section class="card mb-3 border-primary"><div class="card-header"><strong>Case owner</strong></div><div class="card-body"><p class="mb-0"><strong>Current owner:</strong> %s</p><details class="mt-3"><summary class="btn btn-sm btn-outline-primary" role="button">Change owner or assign help</summary><div class="mt-3"><p class="small text-muted">Change the case owner, or keep the owner and give a separate task to another administrator.</p><form method="POST" action="/admin/cases/%d/assign" class="border rounded p-2 mb-3"><input type="hidden" name="csrf_token" value="%s"><label class="form-label fw-semibold">Assign the whole investigation</label><select class="form-select mb-2" name="admin_id" required>%s</select><label class="form-label">Reason</label><input class="form-control mb-2" name="reason" maxlength="1000" required placeholder="Why is ownership changing?"><button class="btn btn-outline-primary">Save case owner</button></form>`, escapeHTML(currentOwner), caseID, escapeHTML(csrf), investigationAdminSelect(options, assignedAdminID))
-	fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/tasks" class="border rounded p-2"><input type="hidden" name="csrf_token" value="%s"><label class="form-label fw-semibold">Give a supporting task to another administrator</label><select class="form-select mb-2" name="admin_id" required>%s</select><label class="form-label">What help is needed?</label><textarea class="form-control mb-2" name="task" rows="3" minlength="5" maxlength="2000" required placeholder="For example: check Play-Cricket registration and add a private note to this case"></textarea><label class="form-label">Due date (optional)</label><input class="form-control mb-2" type="date" name="due_date"><button class="btn btn-outline-secondary">Assign supporting task</button></form></div></details></div></section>`, caseID, escapeHTML(csrf), investigationAdminSelect(options, nil))
+	if !permissions.CanInvestigate {
+		fmt.Fprintf(w, `<section class="card mb-3 border-primary"><div class="card-header"><strong>Case owner</strong></div><div class="card-body"><p class="mb-0"><strong>Current owner:</strong> %s</p></div></section>`, escapeHTML(currentOwner))
+	} else {
+		options, err := s.loadInvestigationAdmins(r.Context())
+		if err != nil || len(options) == 0 {
+			fmt.Fprint(w, adminCaseAssignmentHTML(caseID, csrf, assignedAdminID, assignedAdminName, currentAdminID))
+			return
+		}
+		fmt.Fprintf(w, `<section class="card mb-3 border-primary"><div class="card-header"><strong>Case owner</strong></div><div class="card-body"><p class="mb-0"><strong>Current owner:</strong> %s</p><details class="mt-3"><summary class="btn btn-sm btn-outline-primary" role="button">Change owner or assign help</summary><div class="mt-3"><p class="small text-muted">Change the case owner, or keep the owner and give a separate task to another administrator.</p><form method="POST" action="/admin/cases/%d/assign" class="border rounded p-2 mb-3"><input type="hidden" name="csrf_token" value="%s"><label class="form-label fw-semibold">Assign the whole investigation</label><select class="form-select mb-2" name="admin_id" required>%s</select><label class="form-label">Reason</label><input class="form-control mb-2" name="reason" maxlength="1000" required placeholder="Why is ownership changing?"><button class="btn btn-outline-primary">Save case owner</button></form>`, escapeHTML(currentOwner), caseID, escapeHTML(csrf), investigationAdminSelect(options, assignedAdminID))
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/tasks" class="border rounded p-2"><input type="hidden" name="csrf_token" value="%s"><label class="form-label fw-semibold">Give a supporting task to another administrator</label><select class="form-select mb-2" name="admin_id" required>%s</select><label class="form-label">What help is needed?</label><textarea class="form-control mb-2" name="task" rows="3" minlength="5" maxlength="2000" required placeholder="For example: check Play-Cricket registration and add a private note to this case"></textarea><label class="form-label">Due date (optional)</label><input class="form-control mb-2" type="date" name="due_date"><button class="btn btn-outline-secondary">Assign supporting task</button></form></div></details></div></section>`, caseID, escapeHTML(csrf), investigationAdminSelect(options, nil))
+	}
 
 	rows, queryErr := s.DB.Query(r.Context(), `SELECT task.id,COALESCE(admin.username,''),task.status,COALESCE(task.current_note,''),task.due_at
 		FROM sanction_follow_up_tasks task LEFT JOIN admin_users admin ON admin.id=task.assigned_admin_id
@@ -102,7 +106,11 @@ func (s *Server) writeAdminCaseDelegationControls(w http.ResponseWriter, r *http
 		}
 		fmt.Fprintf(w, `<li class="list-group-item"><strong>%s</strong><div class="small text-muted">Assigned to %s - %s - %s</div></li>`, escapeHTML(task.note), escapeHTML(defaultString(task.assignee, "unassigned")), escapeHTML(task.status), escapeHTML(due))
 	}
-	fmt.Fprint(w, `</ul><div class="card-footer"><a href="/admin/cases/tasks" class="btn btn-sm btn-outline-secondary">Open task list</a></div></section>`)
+	fmt.Fprint(w, `</ul>`)
+	if permissions.CanInvestigate {
+		fmt.Fprint(w, `<div class="card-footer"><a href="/admin/cases/tasks" class="btn btn-sm btn-outline-secondary">Open task list</a></div>`)
+	}
+	fmt.Fprint(w, `</section>`)
 }
 
 func (s *Server) resolveInvestigationAdmin(ctx context.Context, adminID int32) (string, error) {

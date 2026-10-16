@@ -1439,7 +1439,7 @@ type adminCaseResponseView struct {
 	Unreviewed bool
 }
 
-func adminCaseResponseHTML(caseID int64, csrf string, response adminCaseResponseView, loc *time.Location) string {
+func adminCaseResponseHTML(caseID int64, csrf string, response adminCaseResponseView, loc *time.Location, reviewPermission ...bool) string {
 	if response.ID == 0 {
 		return ""
 	}
@@ -1463,7 +1463,11 @@ func adminCaseResponseHTML(caseID int64, csrf string, response adminCaseResponse
 	if response.Unreviewed {
 		badge = `<span class="badge text-bg-danger">Needs review</span>`
 		border = "border-danger border-3"
-		action = fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/response-reviewed" class="mt-3"><input type="hidden" name="csrf_token" value="%s"><label class="form-label">Review note (optional)</label><input class="form-control" name="note" maxlength="2000"><button class="btn btn-danger mt-2">Mark reply reviewed and continue</button></form>`, caseID, escapeHTML(csrf))
+		if len(reviewPermission) == 0 || reviewPermission[0] {
+			action = fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/response-reviewed" class="mt-3"><input type="hidden" name="csrf_token" value="%s"><label class="form-label">Review note (optional)</label><input class="form-control" name="note" maxlength="2000"><button class="btn btn-danger mt-2">Mark reply reviewed and continue</button></form>`, caseID, escapeHTML(csrf))
+		} else {
+			action = `<p class="small text-muted mt-3 mb-0">An authorised investigator must mark this response reviewed.</p>`
+		}
 	}
 	return fmt.Sprintf(`<section class="card mb-4 %s" id="club-response"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><strong>Club reply received</strong>%s</div><div class="card-body"><dl class="row small mb-3"><dt class="col-sm-3">From</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Via</dt><dd class="col-sm-9">%s</dd><dt class="col-sm-3">Received</dt><dd class="col-sm-9">%s</dd></dl><div class="alert alert-light border mb-0"><div class="fw-semibold mb-2">Their response</div><div style="white-space:pre-wrap">%s</div></div>%s</div></section>`, border, badge, escapeHTML(source), escapeHTML(channel), escapeHTML(response.ReceivedAt.In(loc).Format("02 Jan 2006 15:04")), escapeHTML(response.Body), action)
 }
@@ -1512,6 +1516,7 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		var ref, source, status, publicSummary, privateSummary, club, team string
 		var reporter adminCaseReporterView
 		var assignedAdminID *int32
+		var proposedByAdminID *int32
 		var assignedAdminName string
 		var hasProposed, isTest, isTraining, ownerReviewRequired, sentForApproval bool
 		err := s.DB.QueryRow(r.Context(), `SELECT c.reference,c.source_type,c.status,COALESCE(c.public_summary,''),COALESCE(c.private_summary,''),COALESCE(cl.name,''),COALESCE(t.name,''),COALESCE(c.reporter_name,''),COALESCE(c.reporter_email,''),COALESCE(c.reporter_role,''),COALESCE(c.reporter_phone,''),COALESCE(reporting.name,''),c.assigned_admin_id,COALESCE(assigned.username,''),EXISTS(
@@ -1522,14 +1527,14 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		EXISTS(SELECT 1 FROM sanction_case_events review WHERE review.case_id=c.id AND review.event_type='decision_owner_review_required'
 			AND review.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1)),
 		EXISTS(SELECT 1 FROM sanction_case_events sent WHERE sent.case_id=c.id AND sent.event_type='decision_sent_for_approval'
-			AND sent.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1))
-		FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining, &ownerReviewRequired, &sentForApproval)
+			AND sent.metadata->>'decision_revision_id'=(SELECT d.id::text FROM sanction_decision_revisions d WHERE d.case_id=c.id AND d.status='proposed' ORDER BY d.revision DESC,d.id DESC LIMIT 1)),c.proposed_by_admin_id
+		FROM sanction_cases c LEFT JOIN clubs cl ON cl.id=c.club_id LEFT JOIN teams t ON t.id=c.team_id LEFT JOIN clubs reporting ON reporting.id=c.reporting_club_id LEFT JOIN admin_users assigned ON assigned.id=c.assigned_admin_id WHERE c.id=$1`, id).Scan(&ref, &source, &status, &publicSummary, &privateSummary, &club, &team, &reporter.Name, &reporter.Email, &reporter.Role, &reporter.Phone, &reporter.ReportingClub, &assignedAdminID, &assignedAdminName, &hasProposed, &isTest, &isTraining, &ownerReviewRequired, &sentForApproval, &proposedByAdminID)
 		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
 		var latestResponse adminCaseResponseView
-		_ = s.DB.QueryRow(r.Context(), `SELECT response.id,response.event_type,response.actor_type,COALESCE(response.actor_label,''),COALESCE(response.reason,''),
+		responseReadErr := s.DB.QueryRow(r.Context(), `SELECT response.id,response.event_type,response.actor_type,COALESCE(response.actor_label,''),COALESCE(response.reason,''),
 			COALESCE(response.metadata->>'channel',''),COALESCE(response.metadata->>'respondent',''),response.created_at,
 			NOT EXISTS(SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=response.case_id
 				AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=response.id::text)
@@ -1538,17 +1543,61 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1)`, id).
 			Scan(&latestResponse.ID, &latestResponse.EventType, &latestResponse.ActorType, &latestResponse.ActorLabel, &latestResponse.Body,
 				&latestResponse.Channel, &latestResponse.Respondent, &latestResponse.ReceivedAt, &latestResponse.Unreviewed)
-		var hasResponseRequest bool
-		_ = s.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='response_request_queued')`, id).Scan(&hasResponseRequest)
+		var hasResponseRequest, deliveryException bool
+		requestReadErr := s.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM sanction_case_events WHERE case_id=$1 AND event_type='response_request_queued'),
+			EXISTS(SELECT 1 FROM sanction_notification_outbox outbox
+			JOIN LATERAL (SELECT attempt.status FROM sanction_notification_attempts attempt
+				WHERE attempt.outbox_id=outbox.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) latest ON TRUE
+			WHERE outbox.case_id=$1 AND outbox.revoked_at IS NULL AND latest.status IN ('failed','bounced','complained'))`, id).Scan(&hasResponseRequest, &deliveryException)
 		responseWindow := s.loadAdminCaseResponseWindow(r.Context(), id)
+		actor := adminActor(r)
+		var permissionReadErr error
+		var sourceReviewErr error
+		view := adminCaseActionContext{
+			Source: source, Status: status, OwnerName: assignedAdminName,
+			HasProposed: hasProposed, OwnerReviewRequired: ownerReviewRequired, SentForApproval: sentForApproval,
+			ReplyUnreviewed: latestResponse.Unreviewed, HasResponseRequest: hasResponseRequest, DeliveryException: deliveryException,
+			IsOwner: sameAdminAssignment(assignedAdminID, actor.ID), ResponseWindow: responseWindow,
+			Unavailable: requestReadErr != nil || (responseReadErr != nil && !errors.Is(responseReadErr, pgx.ErrNoRows)),
+		}
+		var permissions adminCaseWorkspacePermissions
+		if actor.ID != nil {
+			view.CanInvestigate = s.adminHasPermission(r.Context(), *actor.ID, "sanctions_investigate")
+			view.CanPropose = s.adminHasPermission(r.Context(), *actor.ID, "sanctions_propose")
+			view.CanApprove = s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve")
+			view.CanReviewSource = view.CanInvestigate || view.CanApprove
+			view.CanIssue = s.adminHasPermission(r.Context(), *actor.ID, "sanctions_publish")
+			permissions = adminCaseWorkspacePermissions{CanInvestigate: view.CanInvestigate, CanPublishNotices: view.CanIssue, CanTriage: s.adminHasPermission(r.Context(), *actor.ID, "sanctions_triage")}
+			view.CanAppeal = s.adminHasPermission(r.Context(), *actor.ID, "sanctions_appeals")
+			if source == "ineligible_player" {
+				view.CanApprove, view.CanIssue = false, false
+				permissionReadErr = s.DB.QueryRow(r.Context(), `SELECT sanction_ineligible_decision_approver($1),sanction_ineligible_final_issuer($1)`, *actor.ID).Scan(&view.CanApprove, &view.CanIssue)
+				if permissionReadErr != nil {
+					view.CanApprove, view.CanIssue, view.Unavailable = false, false, true
+				}
+			} else if sameAdminAssignment(proposedByAdminID, actor.ID) && adminRoleForRequest(r) != "super_admin" {
+				view.CanApprove = false
+			}
+		}
+		if source == "ineligible_player" && status == "approved" {
+			view.SourceReviewRequired, sourceReviewErr = sanctiondomain.NewService(s.DB).ApprovedIneligibleCaseNeedsReopen(r.Context(), id)
+			if sourceReviewErr != nil {
+				view.Unavailable = true
+			}
+		}
+		if view.Unavailable {
+			slog.Error("load case next action", "case_id", id, "response_error", responseReadErr, "request_error", requestReadErr, "authority_error", permissionReadErr, "source_review_error", sourceReviewErr)
+		}
 		csrf := middleware.CSRFToken(r)
 		backLabel, backURL := adminCaseBackDestination(source, assignedAdminID, adminActor(r).ID)
+		if backURL == "/admin/cases" && !permissions.CanTriage {
+			backLabel, backURL = "Back to Home", "/admin/dashboard"
+		}
+		backLabel, backURL = adminCaseReturnDestination(w, r, id, backLabel, backURL)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, "Case "+ref)
-		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="%s" class="btn btn-sm btn-outline-secondary mb-3">%s</a><div class="d-flex justify-content-between"><div><h1 class="h2">%s</h1><p>%s - %s - %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div><div class="row g-4"><div class="col-xl-8"><section class="card mb-4"><div class="card-header">Case record</div><div class="card-body"><h2 class="h5">Public summary</h2><p>%s</p><h2 class="h5">Private summary</h2><p>%s</p></div></section>`, escapeHTML(backURL), escapeHTML(backLabel), escapeHTML(ref), escapeHTML(source), escapeHTML(club), escapeHTML(team), escapeHTML(status), escapeHTML(publicSummary), escapeHTML(privateSummary))
-		fmt.Fprint(w, adminCaseReporterHTML(reporter))
-		fmt.Fprint(w, s.loadAdminCaseSourceReportHTML(r.Context(), id))
+		s.writeAdminWorkspaceNav(w, r)
+		fmt.Fprintf(w, `<main class="container py-4" style="max-width:1280px"><a href="%s" class="btn btn-sm btn-outline-secondary mb-3">%s</a><div class="d-flex flex-wrap justify-content-between gap-2"><div><h1 class="h2">%s</h1><p>%s · %s · %s</p></div><span class="badge text-bg-secondary align-self-start">%s</span></div>`, escapeHTML(backURL), escapeHTML(backLabel), escapeHTML(ref), escapeHTML(strings.ReplaceAll(source, "_", " ")), escapeHTML(club), escapeHTML(team), escapeHTML(strings.ReplaceAll(status, "_", " ")))
 		if success := strings.TrimSpace(r.URL.Query().Get("success")); success != "" {
 			fmt.Fprintf(w, `<div class="alert alert-success">%s</div>`, escapeHTML(success))
 		}
@@ -1559,16 +1608,16 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			blockingCaseID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("blocking_case")), 10, 64)
 			fmt.Fprint(w, adminCaseFailureHTML(failure, blockingCaseID))
 		}
-		fmt.Fprint(w, adminCaseResponseWindowHTML(id, csrf, responseWindow, status, s.LondonLoc))
-		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc))
-		fmt.Fprint(w, adminCaseNextStageHTML(latestResponse.ID > 0, latestResponse.Unreviewed, source))
-		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
+		fmt.Fprint(w, adminCaseNextActionHTML(selectAdminCaseNextAction(view, time.Now()), view, s.LondonLoc))
+		fmt.Fprint(w, `<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Case sections"><a class="btn btn-sm btn-outline-primary" href="#case-actions">Current work</a><a class="btn btn-sm btn-outline-secondary" href="#case-background">Case background</a><a class="btn btn-sm btn-outline-secondary" href="#case-evidence">Evidence and ownership</a><a class="btn btn-sm btn-outline-secondary" href="#case-history">History and delivery</a><a class="btn btn-sm btn-outline-secondary" href="#case-maintenance">Other case actions</a></nav><div class="row g-4"><div class="col-xl-8"><section id="case-actions" aria-labelledby="case-actions-title"><h2 class="h4 mb-3" id="case-actions-title">Current work</h2>`)
+		fmt.Fprint(w, adminCaseResponseWindowHTML(id, csrf, responseWindow, status, s.LondonLoc, permissions))
+		fmt.Fprint(w, adminCaseResponseHTML(id, csrf, latestResponse, s.LondonLoc, view.CanInvestigate))
 		canRequestResponse := map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
-		s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf, source)
+		s.writeAdminCaseAllegedRule(w, r.Context(), id, status, csrf, source, permissions)
 		if source == "ineligible_player" {
-			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf)
+			s.writeAdminScorecardEvidence(w, r.Context(), id, csrf, permissions)
 		}
-		if canRequestResponse && !hasResponseRequest && latestResponse.ID == 0 {
+		if canRequestResponse && !hasResponseRequest && latestResponse.ID == 0 && view.CanInvestigate {
 			s.writeAdminResponseDraftForms(w, r, id, csrf, ref, team, publicSummary, source)
 		}
 		if source == "ineligible_player" {
@@ -1584,11 +1633,13 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 		if !hasProposed && canPropose && (sameAdminAssignment(assignedAdminID, adminActor(r).ID) || adminRoleForRequest(r) == "super_admin") {
 			fmt.Fprint(w, s.adminCaseTeamFormHTML(r.Context(), id, csrf))
 		}
-		if !hasProposed && canPropose && !latestResponse.Unreviewed && sameAdminAssignment(assignedAdminID, adminActor(r).ID) {
+		fmt.Fprint(w, `<div id="decision-preparation">`)
+		if !hasProposed && canPropose && !latestResponse.Unreviewed && view.IsOwner && view.CanPropose {
 			fmt.Fprint(w, s.adminDecisionBundleFormHTML(r.Context(), id, csrf, publicSummary))
 		} else if !hasProposed && canPropose && !latestResponse.Unreviewed {
 			fmt.Fprint(w, `<div class="alert alert-warning"><strong>Case owner action required.</strong> Only the assigned case owner can decide the sanctions, card points, league-points deductions and fines after checking the previous system.</div>`)
 		}
+		fmt.Fprint(w, `</div><div id="case-decision">`)
 		if status == "triage" && hasProposed {
 			fmt.Fprint(w, `<div class="alert alert-info">This is a shadow-mode calculated candidate. Change the source to manual mode before a future run; this candidate remains available for reconciliation but cannot be published.</div>`)
 		}
@@ -1596,21 +1647,31 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			fmt.Fprint(w, adminCaseDecisionHTML(decision, effects))
 			if status == "decision_proposed" || (status == "triage" && hasProposed) {
 				currentActor := adminActor(r)
-				ownerCanSend := !sentForApproval && sanctiondomain.CanSubmitDecisionForApproval(status, assignedAdminID, currentActor.ID)
+				ownerCanSend := !sentForApproval && view.CanPropose && sanctiondomain.CanSubmitDecisionForApproval(status, assignedAdminID, currentActor.ID)
+				fmt.Fprint(w, `<div id="outcome-notice-review">`)
 				s.writeAdminOutcomeDraftForms(w, r, id, csrf, ownerCanSend)
 				if ownerCanSend {
-					fmt.Fprintf(w, `<form id="owner-outcome-submit" method="POST" action="/admin/cases/%d/send-for-approval" class="card mb-4 border-primary"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Final owner check</strong></div><div class="card-body"><p class="mb-0">Read the complete offending-club, reporting-club and official versions above. Only continue when the findings, rule, sanctions, appeal wording and audience differences are correct.</p></div><div class="card-footer"><button class="btn btn-primary">Submit reviewed notices for approval</button></div></form>`, id, escapeHTML(csrf))
+					fmt.Fprint(w, adminCaseOwnerReviewSubmitHTML(id, csrf))
 					fmt.Fprint(w, adminAmendProposedDecisionHTML(id, csrf))
 				} else if ownerReviewRequired && !sentForApproval {
-					fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for independent approval.</div>`)
+					fmt.Fprint(w, `<div class="alert alert-info"><strong>The case owner is reviewing the three complete email versions.</strong> This decision has not yet been sent for decision approval.</div>`)
 				} else if sentForApproval {
-					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The three email versions are awaiting another authorised administrator's independent approval.</div>`)
+					fmt.Fprint(w, `<div class="alert alert-success"><strong>Owner review complete.</strong> The complete audience notices are awaiting approval under this case's decision-approval policy.</div>`)
 				}
+				fmt.Fprint(w, `</div>`)
 			} else if map[string]bool{"approved": true, "published": true, "appealed": true, "closed": true}[status] {
 				fmt.Fprintf(w, `<div class="d-flex flex-wrap gap-2 mb-4"><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=offending_club">View offending-club PDF</a><a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=reporting_club">View reporting-club PDF</a><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="/admin/cases/%d/outcome-preview?audience=official">View league-official PDF</a></div>`, id, id, id)
 			}
 		}
-		fmt.Fprint(w, `<section class="card"><div class="card-header">Case history</div><div class="card-body py-2 small text-muted">This history cannot be edited. If something needs correcting, add a new correction so the original action remains visible.</div><ul class="list-group list-group-flush">`)
+		fmt.Fprint(w, `</div>`)
+		canReject := view.CanApprove && (source == "ineligible_player" || !sameAdminAssignment(proposedByAdminID, actor.ID))
+		s.writeAdminCaseWorkspaceDecisionActions(w, r, id, csrf, view, canReject)
+		fmt.Fprint(w, `</section><details class="card mb-4" id="case-background"><summary class="card-header fw-semibold">Case background and source reports</summary><div class="card-body"><h2 class="h5">Public summary</h2>`)
+		fmt.Fprintf(w, `<p>%s</p><h2 class="h5">Private summary</h2><p>%s</p>`, escapeHTML(publicSummary), escapeHTML(privateSummary))
+		fmt.Fprint(w, adminCaseReporterHTML(reporter))
+		fmt.Fprint(w, s.loadAdminCaseSourceReportHTML(r.Context(), id, permissions))
+		s.writeAdminHistoricalOutcomeSnapshots(w, r, id)
+		fmt.Fprint(w, `</div></details><details class="card mb-4" id="case-history"><summary class="card-header fw-semibold">Case history</summary><div class="card-body py-2 small text-muted">This history cannot be edited. If something needs correcting, add a new correction so the original action remains visible.</div><ul class="list-group list-group-flush">`)
 		events, _ := s.DB.Query(r.Context(), `SELECT event_type,actor_type,COALESCE(actor_label,''),COALESCE(reason,''),created_at,emergency_override FROM sanction_case_events WHERE case_id=$1 ORDER BY id DESC`, id)
 		if events != nil {
 			defer events.Close()
@@ -1627,11 +1688,10 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 				}
 			}
 		}
-		fmt.Fprint(w, `</ul></section>`)
-		s.writeAdminCaseDeliveryHistory(w, r, id, csrf)
-		fmt.Fprint(w, `</div><aside class="col-xl-4">`)
-		actor := adminActor(r)
-		s.writeAdminCaseDelegationControls(w, r, id, csrf, assignedAdminID, assignedAdminName, actor.ID)
+		fmt.Fprint(w, `</ul></details><details class="card mb-4" id="case-delivery"><summary class="card-header fw-semibold">Communication and delivery history</summary><div class="card-body">`)
+		s.writeAdminCaseDeliveryHistory(w, r, id, csrf, permissions)
+		fmt.Fprint(w, `</div></details></div><aside class="col-xl-4" id="case-evidence"><h2 class="h4 mb-3">Evidence and ownership</h2>`)
+		s.writeAdminCaseDelegationControls(w, r, id, csrf, assignedAdminID, assignedAdminName, actor.ID, permissions)
 		evidenceRows, _ := s.DB.Query(r.Context(), `SELECT evidence.id,evidence.original_name,evidence.media_type,evidence.byte_size,evidence.sha256,evidence.created_at,evidence.visibility,
 			COALESCE((SELECT sharing.action FROM sanction_evidence_sharing_events sharing WHERE sharing.case_id=evidence.case_id AND sharing.evidence_id=evidence.id AND sharing.audience='offending_club' ORDER BY sharing.id DESC LIMIT 1),''),
 			evidence.redacted_at IS NULL,provenance.source_evidence_id,COALESCE(reviewer.username,''),provenance.reviewed_at,allowed.evidence_id IS NOT NULL
@@ -1661,8 +1721,12 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 						Eligible:         eligible,
 						Available:        available,
 						SharingAction:    sharingAction,
-					})
-					fmt.Fprintf(w, `<li class="list-group-item"><a href="/admin/cases/%d/evidence/%d">%s</a><div class="small text-muted">%s · %d bytes · %s · SHA-256 %s</div>%s</li>`, id, evidenceID, escapeHTML(name), escapeHTML(media), size, escapeHTML(visibility), escapeHTML(sum[:minInt(12, len(sum))]), controls)
+					}, permissions)
+					label := escapeHTML(name)
+					if permissions.CanInvestigate {
+						label = fmt.Sprintf(`<a href="/admin/cases/%d/evidence/%d">%s</a>`, id, evidenceID, label)
+					}
+					fmt.Fprintf(w, `<li class="list-group-item">%s<div class="small text-muted">%s · %d bytes · %s · SHA-256 %s</div>%s</li>`, label, escapeHTML(media), size, escapeHTML(visibility), escapeHTML(sum[:minInt(12, len(sum))]), controls)
 				}
 			}
 			if count == 0 {
@@ -1670,56 +1734,23 @@ func (s *Server) handleAdminCaseDetail() http.HandlerFunc {
 			}
 			fmt.Fprint(w, `</ul></section>`)
 		}
-		if status == "decision_proposed" && (!ownerReviewRequired || sentForApproval) {
-			actor := adminActor(r)
-			isFinalSignOffAdmin := source == "ineligible_player" && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
-			canApprove := actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_approve") && !isFinalSignOffAdmin
-			if canApprove && source == "ineligible_player" {
-				canApprove = false
-				_ = s.DB.QueryRow(r.Context(), `SELECT sanction_ineligible_decision_approver($1)`, *actor.ID).Scan(&canApprove)
-			}
-			if canApprove {
-				fmt.Fprint(w, adminCaseApprovalFormHTML(id, csrf, source))
-			} else if isFinalSignOffAdmin {
-				fmt.Fprint(w, `<div class="alert alert-info"><strong>Awaiting decision approval from Dave or Warren.</strong> Denver's account provides the separate final sign-off after the decision and exact emails have been approved and locked.</div>`)
-			} else {
-				fmt.Fprint(w, `<div class="alert alert-warning"><strong>Awaiting an authorised independent approver.</strong> You can review the decision and exact email formatting above, but your account does not currently have sanctions approval access.</div>`)
-			}
-		}
-		if (status == "decision_proposed" && (!ownerReviewRequired || sentForApproval)) || (status == "triage" && hasProposed) {
-			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/reject" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Reject calculated proposal</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="2"></textarea></div><div class="card-footer"><button class="btn btn-outline-secondary">Reject proposal</button></div></form>`, id, csrf)
-		}
-		if status == "approved" {
-			s.writeAdminIneligibleReopenControl(w, r, id, source, status, csrf)
-			actor := adminActor(r)
-			canIssue := actor.ID != nil && s.adminHasPermission(r.Context(), *actor.ID, "sanctions_publish")
-			if source == "ineligible_player" {
-				canIssue = canIssue && actor.ID != nil && s.isActiveSanctionRecipientAdmin(r.Context(), *actor.ID, "play_cricket")
-				if canIssue {
-					canIssue = false
-					_ = s.DB.QueryRow(r.Context(), `SELECT sanction_ineligible_final_issuer($1)`, *actor.ID).Scan(&canIssue)
-				}
-			}
-			if canIssue {
-				fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/publish" class="card mb-3 border-danger"><input type="hidden" name="csrf_token" value="%s"><div class="card-header"><strong>Denver final sign-off</strong></div><div class="card-body"><p>This queues the exact locked email and PDF for the offending club, reporting club and required league officials. A no-action decision is delivered and closed without public-register publication.</p><button class="btn btn-danger">Final sign-off and issue outcomes</button></div></form>`, id, csrf)
-			} else if source == "ineligible_player" {
-				fmt.Fprint(w, `<div class="alert alert-info"><strong>Independent approval complete.</strong> Awaiting Denver's final sign-off before the locked outcomes are issued.</div>`)
-			} else {
-				fmt.Fprint(w, `<div class="alert alert-info"><strong>Independent approval complete.</strong> Awaiting an authorised publisher to issue the locked outcomes.</div>`)
-			}
-		}
-		if status == "approved" || status == "published" || status == "appealed" {
+		fmt.Fprint(w, `<details class="card mb-4" id="case-maintenance"><summary class="card-header fw-semibold">Other case actions</summary><div class="card-body"><p class="small text-muted">Corrections, closure and reversal record new history. Use the current-work section for the next normal step.</p>`)
+		if (status == "approved" || status == "published" || status == "appealed") && view.CanAppeal {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/overturn" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Overturn decision</div><div class="card-body"><label class="form-label">Reason</label><textarea class="form-control" name="reason" required rows="3"></textarea></div><div class="card-footer"><button class="btn btn-outline-danger">Record reversal</button></div></form>`, id, csrf)
 		}
-		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] {
+		if view.CanInvestigate && map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true, "decision_proposed": true}[status] {
 			fmt.Fprint(w, adminCloseCaseNoActionHTML(id, csrf, status, hasProposed, assignedAdminID, actor.ID, s.caseClosureNotificationControls(r.Context(), id)))
 		}
-		if map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
+		if view.CanInvestigate && map[string]bool{"submitted": true, "triage": true, "investigating": true, "response_pending": true}[status] {
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/investigation-note" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Investigation note</div><div class="card-body"><textarea class="form-control" name="note" rows="3" maxlength="20000" required placeholder="Add a private investigation note"></textarea><div class="form-text">Saved notes cannot be edited later. Add a correction if something changes.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save note</button></div></form>`, id, escapeHTML(csrf))
 			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/manual-response" enctype="multipart/form-data" class="card mb-3"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Record external club response</div><div class="card-body"><div class="row g-2"><div class="col-md-5"><label class="form-label">Channel</label><select class="form-select" name="channel" required><option value="email">Email</option><option value="phone">Phone</option><option value="meeting">Meeting</option><option value="other">Other</option></select></div><div class="col-md-7"><label class="form-label">Respondent / mailbox</label><input class="form-control" name="respondent" maxlength="300"></div><div class="col-12"><label class="form-label">Response</label><textarea class="form-control" name="response" rows="4" maxlength="20000" required></textarea></div><div class="col-12"><label class="form-label">Attachment (optional PDF, JPEG, PNG, WebP, MP4, or text; max 10 MB)</label><input class="form-control" type="file" name="evidence" accept="application/pdf,image/jpeg,image/png,image/webp,video/mp4,text/plain"></div></div></div><div class="card-footer"><button class="btn btn-outline-success">Record response</button></div></form>`, id, escapeHTML(csrf))
 		}
-		fmt.Fprint(w, adminUndoCaseOpeningHTML(id, csrf, source, status, isTest))
-		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Why is this correction needed?</label><textarea class="form-control" name="reason" required rows="2"></textarea><div class="form-text">The corrected version is added to the case history; the earlier wording remains visible.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save correction</button></div></form></aside></div></main>`, id, csrf, escapeHTML(publicSummary), escapeHTML(privateSummary))
+		if view.CanInvestigate {
+			fmt.Fprint(w, adminUndoCaseOpeningHTML(id, csrf, source, status, isTest))
+			fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/correct" class="card"><input type="hidden" name="csrf_token" value="%s"><div class="card-header">Correct case summary</div><div class="card-body"><label class="form-label">Public summary</label><textarea class="form-control mb-2" name="public_summary" rows="3">%s</textarea><label class="form-label">Private summary</label><textarea class="form-control mb-2" name="private_summary" rows="3">%s</textarea><label class="form-label">Why is this correction needed?</label><textarea class="form-control" name="reason" required rows="2"></textarea><div class="form-text">The corrected version is added to the case history; the earlier wording remains visible.</div></div><div class="card-footer"><button class="btn btn-outline-primary">Save correction</button></div></form>`, id, escapeHTML(csrf), escapeHTML(publicSummary), escapeHTML(privateSummary))
+		}
+		fmt.Fprint(w, `</div></details></aside></div></main>`)
+		fmt.Fprint(w, `<script>(function(){function reveal(hash){if(!hash||hash.charAt(0)!=='#')return;var target=document.getElementById(hash.slice(1));for(var node=target;node;node=node.parentElement){if(node.tagName==='DETAILS')node.open=true;}}document.addEventListener('click',function(event){var link=event.target.closest('a[href^="#"]');if(link)reveal(link.getAttribute('href'));});window.addEventListener('hashchange',function(){reveal(window.location.hash);});reveal(window.location.hash);})();</script>`)
 		pageFooter(w)
 	}
 }
@@ -1913,7 +1944,7 @@ func (s *Server) writeAdminCaseEmailPreviews(w http.ResponseWriter, r *http.Requ
 	fmt.Fprint(w, `</div></section>`)
 }
 
-func (s *Server) writeAdminCaseDeliveryHistory(w http.ResponseWriter, r *http.Request, caseID int64, csrf string) {
+func (s *Server) writeAdminCaseDeliveryHistory(w http.ResponseWriter, r *http.Request, caseID int64, csrf string, permissions adminCaseWorkspacePermissions) {
 	rows, err := s.DB.Query(r.Context(), `SELECT outbox.id,outbox.message_kind,outbox.recipient,outbox.subject,outbox.created_at,outbox.available_at,outbox.processed_at,
 		outbox.revoked_at,COALESCE(outbox.revocation_reason,''),
 		CASE WHEN outbox.revoked_at IS NOT NULL THEN 'revoked' ELSE COALESCE(latest.status,CASE WHEN outbox.processed_at IS NULL THEN 'queued' ELSE 'processed' END) END,latest.occurred_at,
@@ -1961,7 +1992,7 @@ func (s *Server) writeAdminCaseDeliveryHistory(w http.ResponseWriter, r *http.Re
 			detail += `<div class="small text-muted">Pending automatic retry</div>`
 		}
 		action := ""
-		if revokedAt == nil && (status == "bounced" || status == "complained" || (status == "failed" && processedAt != nil)) {
+		if permissions.CanPublishNotices && revokedAt == nil && (status == "bounced" || status == "complained" || (status == "failed" && processedAt != nil)) {
 			action = fmt.Sprintf(`<form method="POST" action="/admin/cases/%d/notices/%d/resend"><input type="hidden" name="csrf_token" value="%s"><input class="form-control form-control-sm mb-1" name="reason" required placeholder="Reason after resolving delivery issue"><button class="btn btn-sm btn-outline-danger">Queue exact resend</button></form>`, caseID, outboxID, escapeHTML(csrf))
 		}
 		fmt.Fprintf(w, `<tr><td><strong>%s</strong><div class="small text-muted">%s</div></td><td>%s</td><td><span class="badge %s">%s</span>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(strings.ReplaceAll(kind, "_", " ")), escapeHTML(subject), escapeHTML(recipient), statusClass, escapeHTML(status), detail, when, action)
@@ -2387,7 +2418,7 @@ type adminEvidenceDisclosureState struct {
 	SharingAction    string
 }
 
-func adminEvidenceDisclosureControlsHTML(caseID, evidenceID int64, csrf string, state adminEvidenceDisclosureState) string {
+func adminEvidenceDisclosureControlsHTML(caseID, evidenceID int64, csrf string, state adminEvidenceDisclosureState, permissions adminCaseWorkspacePermissions) string {
 	var output strings.Builder
 	endpoint := fmt.Sprintf("/admin/cases/%d/evidence/%d/share-with-offending-club", caseID, evidenceID)
 	if state.SourceEvidenceID != nil {
@@ -2398,6 +2429,17 @@ func adminEvidenceDisclosureControlsHTML(caseID, evidenceID int64, csrf string, 
 		fmt.Fprintf(&output, `<div class="small text-success fw-semibold mt-1">Reviewed redacted derivative of evidence #%d; attested by %s%s.</div>`, *state.SourceEvidenceID, escapeHTML(state.Reviewer), escapeHTML(reviewed))
 	} else {
 		fmt.Fprint(&output, `<div class="small text-danger fw-semibold mt-1">Private source evidence — direct portal sharing is blocked.</div>`)
+	}
+	if !permissions.CanInvestigate {
+		if state.SharingAction == "shared" {
+			fmt.Fprint(&output, `<div class="small fw-semibold mt-1">Shared with offending club</div>`)
+		} else if state.SourceEvidenceID != nil {
+			fmt.Fprint(&output, `<div class="small fw-semibold mt-1">Not shared</div>`)
+		}
+		if !state.Available {
+			fmt.Fprint(&output, `<div class="small text-muted mt-1">This evidence record is unavailable.</div>`)
+		}
+		return output.String()
 	}
 
 	if state.SharingAction == "shared" {

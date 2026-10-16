@@ -21,6 +21,7 @@ import (
 
 	ineligibledomain "cricket-ground-feedback/internal/ineligible"
 	"cricket-ground-feedback/internal/middleware"
+	sanctiondomain "cricket-ground-feedback/internal/sanctions"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -39,6 +40,7 @@ type ineligibleQueueFilters struct {
 	OffendingClub    string
 	Team             string
 	Player           string
+	Search           string
 	Assignee         string
 	CaseStatus       string
 	ReplyStatus      string
@@ -49,6 +51,7 @@ type ineligibleQueueFilters struct {
 	FixtureFrom      string
 	FixtureTo        string
 	LiveOnly         bool
+	TrainingOnly     bool
 	PendingSelection bool
 }
 
@@ -146,6 +149,7 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		OffendingClub:    strings.TrimSpace(values.Get("offending_club")),
 		Team:             strings.TrimSpace(values.Get("team")),
 		Player:           strings.TrimSpace(values.Get("player")),
+		Search:           strings.TrimSpace(values.Get("q")),
 		Assignee:         strings.TrimSpace(values.Get("assignee")),
 		CaseStatus:       strings.TrimSpace(values.Get("case_status")),
 		ReplyStatus:      strings.TrimSpace(values.Get("reply_status")),
@@ -156,6 +160,7 @@ func parseIneligibleQueueFilters(values url.Values) ineligibleQueueFilters {
 		FixtureFrom:      parseIneligibleFixtureDateFilter(values.Get("fixture_from")),
 		FixtureTo:        parseIneligibleFixtureDateFilter(values.Get("fixture_to")),
 		LiveOnly:         values.Get("live") == "1",
+		TrainingOnly:     values.Get("training") == "1",
 		PendingSelection: values.Get("pending_selection") == "1",
 	}
 	if filter.State == "" {
@@ -215,10 +220,24 @@ func parseIneligibleFixtureDateFilter(value string) string {
 
 func ineligibleQueueTabURL(filter ineligibleQueueFilters, scope, state, worklist string) string {
 	values := url.Values{
+		"view":     {"reports"},
 		"scope":    {scope},
 		"state":    {state},
 		"worklist": {worklist},
 		"sort":     {filter.Sort},
+	}
+	for key, value := range map[string]string{
+		"origin": filter.Origin, "q": filter.Search, "reporting_club": filter.ReportingClub,
+		"offending_club": filter.OffendingClub, "team": filter.Team, "player": filter.Player,
+		"assignee": filter.Assignee, "case_status": filter.CaseStatus,
+		"reply_status": filter.ReplyStatus, "age": filter.Age,
+	} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	if filter.TrainingOnly {
+		values.Set("training", "1")
 	}
 	if filter.LiveOnly {
 		values.Set("live", "1")
@@ -236,7 +255,7 @@ func ineligibleQueueTabURL(filter ineligibleQueueFilters, scope, state, worklist
 }
 
 func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
-	values := url.Values{}
+	values := url.Values{"view": {"reports"}}
 	for key, value := range map[string]string{
 		"state":             filter.State,
 		"origin":            filter.Origin,
@@ -244,6 +263,7 @@ func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
 		"offending_club":    filter.OffendingClub,
 		"team":              filter.Team,
 		"player":            filter.Player,
+		"q":                 filter.Search,
 		"assignee":          filter.Assignee,
 		"case_status":       filter.CaseStatus,
 		"reply_status":      filter.ReplyStatus,
@@ -252,6 +272,7 @@ func ineligibleClearFixtureDatesURL(filter ineligibleQueueFilters) string {
 		"worklist":          filter.Worklist,
 		"sort":              filter.Sort,
 		"live":              boolQueryValue(filter.LiveOnly),
+		"training":          boolQueryValue(filter.TrainingOnly),
 		"pending_selection": boolQueryValue(filter.PendingSelection),
 	} {
 		if value != "" {
@@ -281,6 +302,9 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	}
 	if filter.LiveOnly {
 		where = append(where, "NOT i.is_training")
+	}
+	if filter.TrainingOnly {
+		where = append(where, "i.is_training")
 	}
 	if filter.PendingSelection {
 		where = append(where, "i.origin='google_form'", "worklist.batch_id IS NULL", "c.id IS NULL")
@@ -313,6 +337,10 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	}
 	if filter.Player != "" {
 		where = append(where, "i.player_text ILIKE "+add("%"+filter.Player+"%"))
+	}
+	if filter.Search != "" {
+		param := add("%" + filter.Search + "%")
+		where = append(where, "(i.player_text ILIKE "+param+" OR i.reporting_club_text ILIKE "+param+" OR i.offending_club_text ILIKE "+param+" OR i.team_text ILIKE "+param+" OR c.reference ILIKE "+param+" OR a.username ILIKE "+param+")")
 	}
 	if filter.Assignee != "" {
 		where = append(where, "a.username ILIKE "+add("%"+filter.Assignee+"%"))
@@ -409,46 +437,47 @@ func buildIneligibleQueueQueryForAdmin(filter ineligibleQueueFilters, adminID *i
 	return query, args
 }
 
-func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
+func (s *Server) handleAdminIneligibleReports() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		filter := parseIneligibleQueueFilters(r.URL.Query())
+		filter.TrainingOnly = r.URL.Query().Get("training") == "1"
+		filter.LiveOnly = !filter.TrainingOnly
+		page := parseIneligibleCaseFilter(r.URL.Query()).Page
 		var currentAdminID *int32
 		if sess, sessionErr := getAdminSessionFromRequest(r); sessionErr == nil {
 			currentAdminID = &sess.AdminID
 		}
-		query, args := buildIneligibleQueueQueryForAdmin(filter, currentAdminID)
-		rows, err := s.DB.Query(ctx, query, args...)
+		queue, matchingTotal, err := s.loadIneligibleReportQueue(ctx, filter, currentAdminID, page)
 		if err != nil {
 			slog.Error("load ineligible intake queue", "error", err)
 			http.Error(w, "could not load ineligible-player intake", http.StatusInternalServerError)
 			return
 		}
-		queue := []ineligibleQueueRow{}
-		for rows.Next() {
-			var row ineligibleQueueRow
-			if err := rows.Scan(&row.ID, &row.Origin, &row.ExternalKey, &row.State, &row.IsTraining, &row.ReportingClubText, &row.OffendingClubText, &row.TeamText, &row.PlayerText, &row.FixtureDate, &row.ExternalCreatedAt, &row.CaseID, &row.CaseReference, &row.CaseStatus, &row.Assignee, &row.WorklistVisibility, &row.WorklistBatchID, &row.AttachmentCount, &row.ReplyCount, &row.LatestReplyAt, &row.ReplyNeedsReview); err != nil {
-				rows.Close()
-				http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
-				return
-			}
-			queue = append(queue, row)
+		lastPage := int((matchingTotal + ineligibleCasePageSize - 1) / ineligibleCasePageSize)
+		if lastPage < 1 {
+			lastPage = 1
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			http.Error(w, "could not read ineligible-player intake", http.StatusInternalServerError)
+		if page > lastPage {
+			http.Redirect(w, r, ineligibleReportPageURL(r.URL.Query(), lastPage), http.StatusSeeOther)
 			return
 		}
-		rows.Close()
-
-		counts, _ := s.loadIneligibleDashboardCounts(ctx)
-		syncHealth, hasSyncHealth := s.loadIneligibleSyncHealth(ctx)
+		counts, countErr := s.loadIneligibleDashboardCounts(ctx)
+		if countErr != nil {
+			slog.Error("load ineligible league totals", "error", countErr)
+		}
+		syncHealth, hasSyncHealth, syncErr := s.loadIneligibleSyncHealth(ctx)
+		if syncErr != nil {
+			slog.Error("load ineligible import health", "error", syncErr)
+		}
 		csrf := middleware.CSRFToken(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		pageHead(w, "Ineligible-player work")
-		writeAdminNav(w, csrf, r.URL.Path, adminRoleForRequest(r))
-		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4"><div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4"><div><h1 class="h2 mb-1">Ineligible-player cases</h1><p class="text-muted mb-0">Import, choose the reports to progress, then work from that selected list. New arrivals stay visible until they are next reviewed.</p></div><div class="d-flex flex-wrap gap-2 align-self-lg-start"><a class="btn btn-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?worklist=deferred&amp;scope=all&amp;state=open">View hidden reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible">Refresh</a><a class="btn btn-outline-primary" href="/admin/cases">All sanction cases</a><a class="btn btn-outline-success" href="/admin/cases/close-batch">Close historic cases</a></div></div>`)
+		s.writeAdminWorkspaceNav(w, r)
+		fmt.Fprint(w, `<main class="container-fluid px-3 px-lg-4 py-4 admin-workspace"><header class="workspace-page-heading"><div><h1 class="h2 mb-1">Ineligible-player reports</h1><p class="text-muted mb-0">Check incoming reports, then deliberately raise or link a case. New arrivals remain visible.</p></div><div class="d-flex flex-wrap gap-2"><a class="btn btn-primary" href="/admin/ineligible/selection">Change selected reports</a><a class="btn btn-outline-secondary" href="/admin/ineligible?view=reports&amp;worklist=deferred&amp;scope=all&amp;state=open">Deferred reports</a></div></header>`)
+		writeIneligibleWorkspaceTabs(w, "reports", true, r.URL.Query())
 		writeIneligibleFlash(w, r)
 		var nextReportID int64
 		if filter.Worklist == "visible" {
@@ -464,19 +493,11 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		} else if filter.Worklist == "visible" {
 			selectedClass = "btn-primary"
 		}
-		mineHref := ineligibleQueueTabURL(filter, "mine", "all", "visible")
+		mineHref := "/admin/cases/mine/ineligible"
 		selectedHref := ineligibleQueueTabURL(filter, "all", "open", "visible")
 		importedHref := ineligibleQueueTabURL(filter, "all", "all", "all")
-		fmt.Fprintf(w, `<nav class="btn-group mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Selected reports</a><a class="btn %s" href="%s">Report history</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
-		fmt.Fprint(w, `<div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3">`)
-		for _, card := range ineligibleQueueStatusCards(counts) {
-			fmt.Fprintf(w, `<div class="col"><a class="border rounded d-block h-100 %s text-decoration-none text-body p-2" href="%s"><div class="h4 mb-0">%d</div><div class="small text-muted">%s</div></a>`, card.Accent, escapeHTML(card.Href), card.Count, escapeHTML(card.Label))
-			if card.Note != "" && card.NoteHref != "" {
-				fmt.Fprintf(w, `<div class="small mt-1"><a href="%s">%s</a></div>`, escapeHTML(card.NoteHref), escapeHTML(card.Note))
-			}
-			fmt.Fprint(w, `</div>`)
-		}
-		fmt.Fprint(w, `</div>`)
+		fmt.Fprintf(w, `<nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Choose work queue"><a class="btn %s" href="%s">My assigned cases</a><a class="btn %s" href="%s">Reports awaiting review</a><a class="btn %s" href="%s">Report history</a></nav>`, mineClass, escapeHTML(mineHref), selectedClass, escapeHTML(selectedHref), importedClass, escapeHTML(importedHref))
+		writeIneligibleReportLeagueSummary(w, counts, countErr)
 		if hasSyncHealth {
 			completed := "still running"
 			if syncHealth.CompletedAt != nil {
@@ -498,6 +519,8 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				fmt.Fprintf(w, `<div class="small mt-1">%s</div>`, escapeHTML(syncHealth.Error))
 			}
 			fmt.Fprint(w, `</div><div class="small text-nowrap">Started `+escapeHTML(syncHealth.StartedAt.In(s.LondonLoc).Format("02 Jan 15:04"))+`</div></section>`)
+		} else if syncErr != nil {
+			fmt.Fprint(w, `<div class="alert alert-warning mb-3"><strong>Latest import status is unavailable.</strong> Refresh to check source freshness before relying on this queue.</div>`)
 		} else {
 			fmt.Fprint(w, `<div class="alert alert-warning mb-3"><strong>No Google Form import has run.</strong> Configure the read-only source before using the import action.</div>`)
 		}
@@ -514,7 +537,7 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 			queueHelp = "Open a report or case to continue from its current step."
 		case filter.Worklist == "all" && filter.State == "all":
 			queueTitle = "Report history"
-			queueHelp = "This view includes open, selected, hidden, case-raised, duplicate and ignored reports. Up to 2,000 matching reports are shown; narrow the dates or filters if needed."
+			queueHelp = "This view includes open, selected, deferred, case-raised, duplicate and ignored reports. Matching totals cover every page."
 		case filter.Worklist == "deferred":
 			queueTitle = "Hidden reports"
 			queueHelp = "These reports are hidden from the normal queue, not deleted. Change the selection to restore one."
@@ -530,6 +553,11 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		}
 		fmt.Fprint(w, `</div></details>`)
 		writeIneligibleFixtureDateControls(w, filter)
+		population := "live reports"
+		if filter.TrainingOnly {
+			population = "training reports"
+		}
+		fmt.Fprintf(w, `<p class="workspace-results-meta"><strong>%d matching reports</strong> · %s · filters apply to this list · all seasons</p>`, matchingTotal, population)
 		fmt.Fprintf(w, `<section class="card shadow-sm" id="reports"><div class="card-header"><h2 class="h5 mb-1">%s</h2><p class="small text-muted mb-0">%s</p></div><div class="table-responsive"><table class="table table-hover responsive-cards align-middle mb-0"><thead><tr><th>Report</th><th>Fixture</th><th>Received</th><th>Status</th><th>Next step</th></tr></thead><tbody>`, escapeHTML(queueTitle), escapeHTML(queueHelp))
 		for _, row := range queue {
 			received := "-"
@@ -541,6 +569,9 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 				fixture = row.FixtureDate.Format("02 Jan 2006")
 			}
 			caseHTML := ineligibleCaseNextStepHTML(row, s.LondonLoc)
+			if row.CaseID != nil {
+				caseHTML += fmt.Sprintf(`<div class="small mt-2"><a href="/admin/ineligible/%d">View report and all linked cases</a></div>`, row.ID)
+			}
 			rowClass := ""
 			if row.IsTraining {
 				rowClass = ` class="table-warning"`
@@ -583,7 +614,13 @@ func (s *Server) handleAdminIneligibleDashboard() http.HandlerFunc {
 		if len(queue) == 0 {
 			writeIneligibleEmptyQueue(w, filter, queueTitle)
 		}
-		fmt.Fprint(w, `</tbody></table></div></section></main>`)
+		fmt.Fprint(w, `</tbody></table></div></section>`)
+		writeIneligiblePagination(w, page, matchingTotal, ineligibleCasePageSize, func(nextPage int) string { return ineligibleReportPageURL(r.URL.Query(), nextPage) })
+		fmt.Fprint(w, `<details class="card mt-3"><summary class="card-header">Other administration</summary><div class="card-body d-flex flex-wrap gap-2"><a class="btn btn-outline-warning" href="/admin/ineligible/training/new">Create training report</a><a class="btn btn-outline-secondary" href="/admin/ineligible?view=reports&amp;training=1">View training reports</a><a class="btn btn-outline-secondary" href="/admin/cases">All sanction cases</a>`)
+		if currentAdminID != nil && s.adminHasPermission(ctx, *currentAdminID, "sanctions_investigate") {
+			fmt.Fprint(w, `<a class="btn btn-outline-secondary" href="/admin/cases/close-batch">Close historic cases</a>`)
+		}
+		fmt.Fprint(w, `</div></details></main>`)
 		pageFooter(w)
 	}
 }
@@ -665,6 +702,7 @@ func ineligibleQueueUsesAdvancedView(filter ineligibleQueueFilters) bool {
 		filter.OffendingClub != "" ||
 		filter.Team != "" ||
 		filter.Player != "" ||
+		filter.Search != "" ||
 		filter.Assignee != "" ||
 		filter.CaseStatus != "" ||
 		filter.ReplyStatus != "" ||
@@ -734,31 +772,54 @@ func ineligibleCaseGroupPredicate(group, alias string) string {
 	case "investigating":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status='investigating'"
 	case "awaiting_decision":
-		return alias + ".source_type='ineligible_player' AND " + alias + ".status='decision_proposed'"
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='decision_proposed' AND NOT (" + ineligibleOwnerReviewPendingSQL(alias) + ")"
+	case "owner_review":
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='decision_proposed' AND (" + ineligibleOwnerReviewPendingSQL(alias) + ")"
 	case "responses_overdue":
-		return alias + ".source_type='ineligible_player' AND ((" + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at<now())) OR (" + alias + ".status='investigating' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='expired')))"
+		return alias + ".source_type='ineligible_player' AND ((" + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at<=now())) OR (" + alias + ".status='investigating' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='expired')))"
 	case "responses_due":
-		return alias + ".source_type='ineligible_player' AND " + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at>=now())"
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='response_pending' AND EXISTS (SELECT 1 FROM sanction_response_requests latest WHERE latest.id=(SELECT request.id FROM sanction_response_requests request WHERE request.case_id=" + alias + ".id ORDER BY request.id DESC LIMIT 1) AND latest.status='pending' AND latest.due_at>now())"
 	case "new_replies":
 		return ineligibleCaseGroupPredicate("live", alias) + " AND EXISTS (SELECT 1 FROM sanction_case_events reply WHERE reply.id=(SELECT event.id FROM sanction_case_events event WHERE event.case_id=" + alias + ".id AND event.event_type IN ('party_response','external_response_recorded') ORDER BY event.id DESC LIMIT 1) AND NOT EXISTS (SELECT 1 FROM sanction_case_events reviewed WHERE reviewed.case_id=" + alias + ".id AND reviewed.event_type='response_reviewed' AND reviewed.metadata->>'response_event_id'=reply.id::text))"
 	case "delivery_exceptions":
 		return alias + ".source_type='ineligible_player' AND EXISTS (SELECT 1 FROM sanction_notification_outbox outbox WHERE outbox.case_id=" + alias + ".id AND outbox.revoked_at IS NULL AND EXISTS (SELECT 1 FROM sanction_notification_attempts latest WHERE latest.id=(SELECT attempt.id FROM sanction_notification_attempts attempt WHERE attempt.outbox_id=outbox.id ORDER BY attempt.attempt_number DESC,attempt.id DESC LIMIT 1) AND latest.status IN ('failed','bounced','complained')))"
 	case "awaiting_denver":
-		return alias + ".source_type='ineligible_player' AND " + alias + ".status='approved'"
+		if alias == "c" {
+			return "c.source_type='ineligible_player' AND c.status='approved' AND NOT " + sanctiondomain.ApprovedIneligibleSourceReviewPredicate()
+		}
+		return alias + ".source_type='ineligible_player' AND " + alias + ".status='approved' AND NOT EXISTS (SELECT 1 FROM sanction_cases c WHERE c.id=" + alias + ".id AND " + sanctiondomain.ApprovedIneligibleSourceReviewPredicate() + ")"
 	case "closed":
 		return alias + ".source_type='ineligible_player' AND " + alias + ".status IN ('published','closed')"
 	default:
 		return "TRUE"
 	}
 }
-func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHealth, bool) {
+
+// The checkpoint belongs to the current proposed revision. Earlier review
+// events cannot make a replacement proposal ready for approval.
+func ineligibleOwnerReviewPendingSQL(alias string) string {
+	return `EXISTS (SELECT 1 FROM sanction_decision_revisions decision
+		WHERE decision.id=(SELECT current.id FROM sanction_decision_revisions current
+			WHERE current.case_id=` + alias + `.id AND current.status='proposed'
+			ORDER BY current.revision DESC,current.id DESC LIMIT 1)
+		AND EXISTS (SELECT 1 FROM sanction_case_events required
+			WHERE required.case_id=` + alias + `.id AND required.event_type='decision_owner_review_required'
+			AND required.metadata->>'decision_revision_id'=decision.id::text)
+		AND NOT EXISTS (SELECT 1 FROM sanction_case_events sent
+			WHERE sent.case_id=` + alias + `.id AND sent.event_type='decision_sent_for_approval'
+			AND sent.metadata->>'decision_revision_id'=decision.id::text))`
+}
+func (s *Server) loadIneligibleSyncHealth(ctx context.Context) (ineligibleSyncHealth, bool, error) {
 	var result ineligibleSyncHealth
 	err := s.DB.QueryRow(ctx, `SELECT id,origin,status,rows_seen,rows_new,rows_changed,rows_errored,COALESCE(error_message,''),started_at,completed_at FROM sanction_intake_sync_runs WHERE origin='google_form' ORDER BY started_at DESC,id DESC LIMIT 1`).Scan(&result.ID, &result.Origin, &result.Status, &result.RowsSeen, &result.RowsNew, &result.RowsChanged, &result.RowsErrored, &result.Error, &result.StartedAt, &result.CompletedAt)
-	return result, err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		return result, false, nil
+	}
+	return result, err == nil, err
 }
 
 func writeIneligibleFixtureDateControls(w io.Writer, filter ineligibleQueueFilters) {
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="reply_status" value="%s"><input type="hidden" name="age" value="%s">%s<div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.ReplyStatus), escapeHTML(filter.Age), ineligibleFixedFilterInputs(filter), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded bg-body-tertiary p-3 mb-3" aria-label="Fixture date controls"><input type="hidden" name="scope" value="%s"><input type="hidden" name="state" value="%s"><input type="hidden" name="worklist" value="%s"><input type="hidden" name="origin" value="%s"><input type="hidden" name="reporting_club" value="%s"><input type="hidden" name="offending_club" value="%s"><input type="hidden" name="team" value="%s"><input type="hidden" name="player" value="%s"><input type="hidden" name="assignee" value="%s"><input type="hidden" name="case_status" value="%s"><input type="hidden" name="reply_status" value="%s"><input type="hidden" name="age" value="%s">%s<div class="row g-2 align-items-end"><div class="col-12 col-lg"><strong>Fixture dates</strong><div class="small text-muted">Choose a range or put the fixture column into date order.</div></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-from">From</label><input class="form-control" id="fixture-from" type="date" name="fixture_from" value="%s"></div><div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="fixture-to">To</label><input class="form-control" id="fixture-to" type="date" name="fixture_to" value="%s"></div><div class="col-12 col-md-4 col-lg-3"><label class="form-label" for="fixture-order">Order</label><select class="form-select" id="fixture-order" name="sort">`, escapeHTML(filter.Scope), escapeHTML(filter.State), escapeHTML(filter.Worklist), escapeHTML(filter.Origin), escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee), escapeHTML(filter.CaseStatus), escapeHTML(filter.ReplyStatus), escapeHTML(filter.Age), ineligibleFixedFilterInputs(filter, true), escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo))
 	writeIneligibleDateSortOptions(w, filter.Sort)
 	fmt.Fprint(w, `</select></div><div class="col-auto"><button class="btn btn-primary">Apply dates</button></div>`)
 	if filter.FixtureFrom != "" || filter.FixtureTo != "" {
@@ -802,7 +863,10 @@ func writeIneligibleDateSortOptions(w io.Writer, selectedValue string) {
 }
 
 func ineligibleClearFiltersURL(filter ineligibleQueueFilters) string {
-	values := url.Values{"scope": {"all"}, "state": {"open"}, "worklist": {"visible"}}
+	values := url.Values{"view": {"reports"}, "scope": {"all"}, "state": {"open"}, "worklist": {"visible"}}
+	if filter.TrainingOnly {
+		values.Set("training", "1")
+	}
 	if filter.LiveOnly {
 		values.Set("live", "1")
 	}
@@ -825,7 +889,7 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	} else {
 		allSelected = " selected"
 	}
-	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s">%s<div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to this queue's default view.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Ownership</label><select class="form-select" name="scope"><option value="mine"%s>My assigned cases</option><option value="all"%s>All reports</option></select></div><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), ineligibleFixedFilterInputs(filter), escapeHTML(plainIneligibleWorklist(filter.Worklist)), mineSelected, allSelected)
+	fmt.Fprintf(w, `<form method="GET" action="/admin/ineligible" class="border rounded p-3 mb-0"><input type="hidden" name="fixture_from" value="%s"><input type="hidden" name="fixture_to" value="%s">%s<div class="d-flex justify-content-between gap-3 mb-3"><div><strong>Find work</strong><div class="small text-muted">Use only the filters you need. Clear returns to this queue's default view.</div></div><span class="small text-muted">Current queue: %s</span></div><div class="row g-3"><div class="col-6 col-lg-2"><label class="form-label">Ownership</label><select class="form-select" name="scope"><option value="mine"%s>Reports linked to my cases</option><option value="all"%s>All reports</option></select></div><div class="col-6 col-lg-2"><label class="form-label">Work list</label><select class="form-select" name="worklist">`, escapeHTML(filter.FixtureFrom), escapeHTML(filter.FixtureTo), ineligibleFixedFilterInputs(filter), escapeHTML(plainIneligibleWorklist(filter.Worklist)), mineSelected, allSelected)
 	for _, option := range []struct{ Value, Label string }{{"visible", "Selected reports"}, {"deferred", "Hidden reports"}, {"all", "All imported reports"}} {
 		selected := ""
 		if filter.Worklist == option.Value {
@@ -835,7 +899,7 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	}
 	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Work status</label><select class="form-select" name="state">`)
 	writeSelectedOptions(w, filter.State, []string{"open", "all", "new", "reviewing", "exception", "linked", "duplicate", "ignored"})
-	fmt.Fprint(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Source</label><select class="form-select" name="origin"><option value="">All sources</option>`)
+	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4"><label class="form-label">Search report, club, team, player or case</label><input class="form-control" type="search" name="q" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Source</label><select class="form-select" name="origin"><option value="">All sources</option>`, escapeHTML(filter.Search))
 	writeSelectedOptions(w, filter.Origin, []string{"google_form", "native_form", "starred_player", "tracker_backfill"})
 	fmt.Fprintf(w, `</select></div><div class="col-6 col-lg-2"><label class="form-label">Reporting club</label><input class="form-control" name="reporting_club" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Offending club</label><input class="form-control" name="offending_club" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Team</label><input class="form-control" name="team" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Player</label><input class="form-control" name="player" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Assignee</label><input class="form-control" name="assignee" value="%s"></div><div class="col-6 col-lg-2"><label class="form-label">Case status</label><select class="form-select" name="case_status"><option value="">All statuses</option>`, escapeHTML(filter.ReportingClub), escapeHTML(filter.OffendingClub), escapeHTML(filter.Team), escapeHTML(filter.Player), escapeHTML(filter.Assignee))
 	writeSelectedOptions(w, filter.CaseStatus, []string{"submitted", "triage", "investigating", "response_pending", "decision_proposed", "approved", "published", "appealed", "closed", "rejected", "withdrawn"})
@@ -854,8 +918,15 @@ func writeIneligibleFilters(w http.ResponseWriter, filter ineligibleQueueFilters
 	fmt.Fprintf(w, `</select></div><div class="col-12 col-lg-4 d-flex align-items-end gap-2"><button class="btn btn-primary">Apply filters</button><a class="btn btn-outline-secondary" href="%s">Clear</a></div></div></form>`, escapeHTML(ineligibleClearFiltersURL(filter)))
 }
 
-func ineligibleFixedFilterInputs(filter ineligibleQueueFilters) string {
+func ineligibleFixedFilterInputs(filter ineligibleQueueFilters, includeSearch ...bool) string {
 	var result strings.Builder
+	if len(includeSearch) > 0 && includeSearch[0] && filter.Search != "" {
+		fmt.Fprintf(&result, `<input type="hidden" name="q" value="%s">`, escapeHTML(filter.Search))
+	}
+	result.WriteString(`<input type="hidden" name="view" value="reports">`)
+	if filter.TrainingOnly {
+		result.WriteString(`<input type="hidden" name="training" value="1">`)
+	}
 	if filter.LiveOnly {
 		result.WriteString(`<input type="hidden" name="live" value="1">`)
 	}

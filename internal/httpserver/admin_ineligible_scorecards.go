@@ -388,7 +388,7 @@ func (s *Server) loadScorecardPointsReview(ctx context.Context, caseID int64) (s
 	return scorecardPointsReviewForTeam(parsed.MatchDetails[0], teamID)
 }
 
-func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.Context, caseID int64, csrf string) {
+func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.Context, caseID int64, csrf string, permissions adminCaseWorkspacePermissions) {
 	rows, err := s.DB.Query(ctx, `SELECT snapshot.play_cricket_match_id,snapshot.fetched_at,snapshot.source_sha256,snapshot.snapshot_payload,evidence.id
 		FROM sanction_case_scorecard_evidence snapshot JOIN sanction_case_evidence evidence ON evidence.id=snapshot.evidence_id
 		WHERE snapshot.case_id=$1 ORDER BY snapshot.id DESC`, caseID)
@@ -409,13 +409,21 @@ func (s *Server) writeAdminScorecardEvidence(w http.ResponseWriter, ctx context.
 			items = append(items, item)
 		}
 	}
-	fmt.Fprintf(w, `<section class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span>Play-Cricket scorecard evidence</span><form method="POST" action="/admin/cases/%d/scorecard-evidence"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-sm btn-outline-primary">Fetch latest scorecard</button></form></div><div class="card-body">`, caseID, escapeHTML(csrf))
+	fmt.Fprint(w, `<section class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span>Play-Cricket scorecard evidence</span>`)
+	if permissions.CanInvestigate {
+		fmt.Fprintf(w, `<form method="POST" action="/admin/cases/%d/scorecard-evidence"><input type="hidden" name="csrf_token" value="%s"><button class="btn btn-sm btn-outline-primary">Fetch latest scorecard</button></form>`, caseID, escapeHTML(csrf))
+	}
+	fmt.Fprint(w, `</div><div class="card-body">`)
 	if len(items) == 0 {
 		fmt.Fprint(w, `<p class="text-muted mb-0">No scorecard snapshot retained yet. The lookup requires one exact Play-Cricket team-and-date match and will not guess.</p>`)
 	}
 	for _, item := range items {
 		parsed, parseErr := leagueapi.ParseScorecardJSON(item.raw)
-		fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><strong>Match %d</strong><a href="/admin/cases/%d/evidence/%d">Download original JSON</a></div><div class="small text-muted mb-2">Fetched %s &middot; SHA-256 %s</div>`, item.matchID, caseID, item.evidenceID, escapeHTML(item.fetched.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(item.digest[:minInt(12, len(item.digest))]))
+		fmt.Fprintf(w, `<article class="border rounded p-3 mb-3"><div class="d-flex justify-content-between gap-2"><strong>Match %d</strong>`, item.matchID)
+		if permissions.CanInvestigate {
+			fmt.Fprintf(w, `<a href="/admin/cases/%d/evidence/%d">Download original JSON</a>`, caseID, item.evidenceID)
+		}
+		fmt.Fprintf(w, `</div><div class="small text-muted mb-2">Fetched %s &middot; SHA-256 %s</div>`, escapeHTML(item.fetched.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(item.digest[:minInt(12, len(item.digest))]))
 		if parseErr == nil && len(parsed.MatchDetails) > 0 {
 			match := parsed.MatchDetails[0]
 			homeLabel, awayLabel := scorecardDisplayTeamLabels(match)

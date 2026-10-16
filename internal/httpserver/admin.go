@@ -108,6 +108,7 @@ func (s *Server) adminRouter() http.Handler {
 
 		// Sanctions
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible", s.handleAdminIneligibleDashboard())
+		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/export.csv", s.handleAdminIneligibleCaseExport())
 		r.With(s.requireAdminPermission("sanctions_triage")).Get("/ineligible/rollout", s.handleAdminIneligibleRollout())
 		r.With(s.requireAnyAdminPermission("sanctions_triage", "sanctions_investigate", "sanctions_approve")).Get("/ineligible/count", s.handleAdminIneligibleCount())
 		r.With(s.requireAdminPermission("sanctions_triage")).Post("/ineligible/sync", s.handleAdminIneligibleSync())
@@ -568,38 +569,47 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		defer cancel()
 
 		// ── 1. Current season/week ─────────────────────────────────────────
-		currentWeek, weekErr := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		currentWeek, weekErr := s.resolveCompetitionWeek(ctx, competitionWeekForReporting)
 		seasonID := currentWeek.SeasonID
 		seasonName := currentWeek.SeasonName
 		weekNum := currentWeek.Number
+		seasonWeeksURL := "/admin/weeks"
+		if seasonID > 0 {
+			seasonWeeksURL = fmt.Sprintf("/admin/weeks?season_id=%d", seasonID)
+		}
 		var progress reportProgress
 		var dashboardDataErr error
 
 		// ── 2. KPI: submissions this week / season total / avg pitch ───────
 		var seasonSubs int64
+		var ratingCount int64
 		var avgPitch float64
+		var seasonDataErr error
 		if weekErr == nil {
-			dashboardDataErr = s.DB.QueryRow(ctx, `
+			seasonDataErr = s.DB.QueryRow(ctx, `
 				SELECT
 				  COUNT(*) AS season_submissions,
+				  COUNT(pitch_rating) AS rating_count,
 				  COALESCE(AVG(pitch_rating), 0) AS avg_pitch
 				FROM submissions
 				WHERE season_id=$1
-			`, seasonID).Scan(&seasonSubs, &avgPitch)
-			if dashboardDataErr == nil {
-				progress, dashboardDataErr = s.loadWeekReportProgress(ctx, currentWeek)
-			}
+			`, seasonID).Scan(&seasonSubs, &ratingCount, &avgPitch)
+			progress, dashboardDataErr = s.loadWeekReportProgress(ctx, currentWeek)
 		}
-
-		// ── 3. KPI: compliance rate ────────────────────────────────────────
-		complianceRate := progress.completionRate()
 
 		// ── 4. KPI: open sanctions ─────────────────────────────────────────
 		var openSanctions int64
+		var sanctionDataErr error
 		if weekErr == nil {
-			s.DB.QueryRow(ctx, `
+			sanctionDataErr = s.DB.QueryRow(ctx, `
 				SELECT COUNT(*) FROM sanctions WHERE season_id=$1 AND status='active'
 			`, seasonID).Scan(&openSanctions)
+		}
+		canTriage := s.adminHasPermission(ctx, adminIDForRequest(r), "sanctions_triage")
+		var leagueCounts ineligibleDashboardCounts
+		var leagueCountsErr error
+		if canTriage {
+			leagueCounts, leagueCountsErr = s.loadIneligibleDashboardCounts(ctx)
 		}
 
 		// ── 5. Chart A: submissions per week ──────────────────────────────
@@ -608,6 +618,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			Count   int64
 		}
 		var weekBars []weekBar
+		weekChartErr := weekErr
 		if weekErr == nil {
 			wrows, err := s.DB.Query(ctx, `
 				SELECT w.week_number, COUNT(sub.id)
@@ -616,32 +627,47 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 				WHERE w.season_id = $1
 				GROUP BY w.week_number ORDER BY w.week_number
 			`, seasonID)
+			weekChartErr = err
 			if err == nil {
 				defer wrows.Close()
 				for wrows.Next() {
 					var wb weekBar
-					if e := wrows.Scan(&wb.WeekNum, &wb.Count); e == nil {
-						weekBars = append(weekBars, wb)
+					if e := wrows.Scan(&wb.WeekNum, &wb.Count); e != nil {
+						weekChartErr = e
+						break
 					}
+					weekBars = append(weekBars, wb)
+				}
+				if weekChartErr == nil {
+					weekChartErr = wrows.Err()
 				}
 			}
 		}
 
 		// ── 6. Chart B: pitch rating distribution ─────────────────────────
 		pitchDist := [6]int64{} // index 0 unused; 1–5
+		pitchChartErr := weekErr
 		if weekErr == nil {
 			prows, err := s.DB.Query(ctx, `
 				SELECT pitch_rating, COUNT(*) FROM submissions
 				WHERE season_id=$1 GROUP BY pitch_rating ORDER BY pitch_rating
 			`, seasonID)
+			pitchChartErr = err
 			if err == nil {
 				defer prows.Close()
 				for prows.Next() {
 					var rating int32
 					var cnt int64
-					if e := prows.Scan(&rating, &cnt); e == nil && rating >= 1 && rating <= 5 {
+					if e := prows.Scan(&rating, &cnt); e != nil {
+						pitchChartErr = e
+						break
+					}
+					if rating >= 1 && rating <= 5 {
 						pitchDist[rating] = cnt
 					}
+				}
+				if pitchChartErr == nil {
+					pitchChartErr = prows.Err()
 				}
 			}
 		}
@@ -652,6 +678,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			Count int64
 		}
 		var clubBars []clubBar
+		clubChartErr := weekErr
 		if weekErr == nil {
 			crows, err := s.DB.Query(ctx, `
 				SELECT cl.name, COUNT(sub.id)
@@ -661,13 +688,19 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 				WHERE sub.season_id = $1
 				GROUP BY cl.name ORDER BY COUNT(sub.id) DESC, cl.name ASC LIMIT 20
 			`, seasonID)
+			clubChartErr = err
 			if err == nil {
 				defer crows.Close()
 				for crows.Next() {
 					var cb clubBar
-					if e := crows.Scan(&cb.Club, &cb.Count); e == nil {
-						clubBars = append(clubBars, cb)
+					if e := crows.Scan(&cb.Club, &cb.Count); e != nil {
+						clubChartErr = e
+						break
 					}
+					clubBars = append(clubBars, cb)
+				}
+				if clubChartErr == nil {
+					clubChartErr = crows.Err()
 				}
 			}
 		}
@@ -695,14 +728,34 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			JOIN captains c ON sub.captain_id = c.id
 			ORDER BY sub.submitted_at DESC LIMIT 20
 		`)
+		recentSubsErr := err
 		if err == nil {
 			defer srows.Close()
 			for srows.Next() {
 				var sr subRow
 				if e := srows.Scan(&sr.ID, &sr.Season, &sr.Week, &sr.Club, &sr.Team,
-					&sr.Captain, &sr.MatchDate, &sr.SubmittedAt); e == nil {
-					recentSubs = append(recentSubs, sr)
+					&sr.Captain, &sr.MatchDate, &sr.SubmittedAt); e != nil {
+					recentSubsErr = e
+					break
 				}
+				recentSubs = append(recentSubs, sr)
+			}
+			if recentSubsErr == nil {
+				recentSubsErr = srows.Err()
+			}
+		}
+		if recentSubsErr != nil {
+			recentSubs = nil
+		}
+		for name, dataErr := range map[string]error{
+			"reporting week": weekErr, "report progress": dashboardDataErr,
+			"season submission sample": seasonDataErr, "legacy ledger": sanctionDataErr,
+			"ineligible league overview": leagueCountsErr, "submission trend": weekChartErr,
+			"pitch distribution": pitchChartErr, "club submissions": clubChartErr,
+			"recent submissions": recentSubsErr,
+		} {
+			if dataErr != nil {
+				log.Printf("admin Home %s unavailable: %v", name, dataErr)
 			}
 		}
 
@@ -716,32 +769,16 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 			pitchRatingTotal += pitchDist[rating]
 		}
 
-		csrfToken := ""
-		if c, err := r.Cookie(middleware.CSRFCookieName); err == nil {
-			csrfToken = c.Value
-		}
-		pitchColour := "#198754"
-		if avgPitch < 3 {
-			pitchColour = "#dc3545"
-		} else if avgPitch < 4 {
-			pitchColour = "#fd7e14"
-		}
-
-		sanctionClass := "text-dark"
-		if openSanctions > 0 {
-			sanctionClass = "text-danger"
-		}
-
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHeadWithCharts(w, "Dashboard")
-		writeAdminNav(w, csrfToken, r.URL.Path, adminRoleForRequest(r))
+		s.writeAdminWorkspaceNav(w, r)
 
-		fmt.Fprint(w, `<div class="container-fluid px-4">`)
+		fmt.Fprint(w, `<main class="container-fluid px-4 admin-workspace">`)
 
 		// Page title
 		fmt.Fprintf(w, `<div class="d-flex align-items-center justify-content-between mb-4">
   <div>
-    <h4 class="mb-0 fw-bold">Dashboard</h4>
+    <h1 class="h3 mb-1">Home</h1>
     <p class="text-muted mb-0 small">`)
 		if weekErr == nil {
 			fmt.Fprintf(w, `%s &mdash; Week %d`, escapeHTML(seasonName), weekNum)
@@ -757,13 +794,17 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		// Put each administrator's actionable casework first. The existing
 		// league-wide statistics remain below as a secondary overview.
 		s.writeAdminPersonalWork(w, r)
+		if canTriage {
+			writeAdminHomeLeagueOverview(w, leagueCounts, leagueCountsErr, canTriage)
+		}
 
 		// ── KPI cards ────────────────────────────────────────────────────
+		fmt.Fprint(w, `<section aria-labelledby="home-reporting-heading" class="mb-4"><div class="d-flex flex-wrap justify-content-between gap-2 mb-3"><div><h2 class="h5 mb-1" id="home-reporting-heading">Weekly match reporting</h2><p class="small text-muted mb-0">League-wide senior reporting · one required report per eligible team and fixture</p></div><a href="#season-statistics" class="btn btn-sm btn-outline-primary align-self-start">Season statistics and source records</a></div>`)
 		fmt.Fprint(w, `<div class="row g-3 mb-4">`)
 
 		kpiCard := func(accentClass, number, label, sublabel, href string) {
 			fmt.Fprintf(w, `
-<div class="col-6 col-md-4 col-xl-2">
+<div class="col-6 col-xl-3">
   <a class="card card-kpi kpi-link %s h-100" href="%s">
     <div class="card-body p-3">
       <div class="d-flex justify-content-between align-items-start">
@@ -779,46 +820,29 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		}
 
 		if weekErr != nil {
-			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-warning mb-0">No active week — check seed data.</div></div>`)
+			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-warning mb-0">Reporting week unavailable. Open All weeks to inspect the reporting schedule.</div></div>`)
 		} else if dashboardDataErr != nil {
 			fmt.Fprint(w, `<div class="col-12"><div class="alert alert-danger mb-0" role="alert">Dashboard metrics could not be loaded. Try again or open Compliance for the source records.</div></div>`)
 		} else {
-			compStr := fmt.Sprintf("%.1f%%", complianceRate)
-			pitchStr := fmt.Sprintf(`<span style="color:%s">%.1f</span>`, pitchColour, avgPitch)
-			sanctStr := fmt.Sprintf(`<span class="%s">%d</span>`, sanctionClass, openSanctions)
 			reportContext := fmt.Sprintf(
-				`<div class="text-muted kpi-context">of %d required &middot; %d this season</div>`,
+				`<div class="text-muted kpi-context">of %d required · excludes exemptions</div>`,
 				progress.Expected,
-				seasonSubs,
 			)
-			missingContext := `<div class="text-muted kpi-context">Open Compliance for details</div>`
-			if progress.Exempt > 0 {
-				exemptionLabel := "exemptions"
-				if progress.Exempt == 1 {
-					exemptionLabel = "exemption"
-				}
-				missingContext = fmt.Sprintf(
-					`<div class="text-muted kpi-context">%d approved %s</div>`,
-					progress.Exempt,
-					exemptionLabel,
-				)
-			}
-
-			kpiCard("kpi-red", fmt.Sprintf("%d", weekNum),
-				competitionWeekStatusLabel(currentWeek.Status), fmt.Sprintf(`<div class="text-muted kpi-context">%s</div>`, escapeHTML(seasonName)), fmt.Sprintf("/admin/weeks/%d", weekNum))
+			kpiCard("kpi-blue", fmt.Sprintf("%d", progress.Expected),
+				"Reports required", `<div class="text-muted kpi-context">Eligible team–fixture obligations</div>`, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
 			kpiCard("kpi-blue", fmt.Sprintf("%d", progress.Submitted),
 				"Reports received", reportContext, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
+			kpiCard("kpi-green", fmt.Sprintf("%d", progress.Exempt),
+				"Reports exempt", `<div class="text-muted kpi-context">Approved exemption, no counted report</div>`, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
 			kpiCard("kpi-red", fmt.Sprintf("%d", progress.Missing),
-				"Reports missing", missingContext, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
-			kpiCard("kpi-green", compStr,
-				"Week completion", `<div class="text-muted kpi-context">Received or exempt</div>`, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
-			kpiCard("kpi-amber", pitchStr,
-				"Season avg pitch", `<div class="text-muted kpi-context">1&ndash;5 scale</div>`, "/admin/rankings")
-			kpiCard("kpi-purple", sanctStr,
-				"Open sanctions", `<div class="text-muted kpi-context">Active this season</div>`, "/admin/sanctions")
+				"Reports missing", `<div class="text-muted kpi-context">Neither received nor exempt</div>`, fmt.Sprintf("/admin/compliance?week_id=%d", currentWeek.ID))
 		}
 
 		fmt.Fprint(w, `</div>`) // end KPI row
+		if weekErr == nil && dashboardDataErr == nil {
+			fmt.Fprintf(w, `<p class="small"><strong>%s</strong> · %d received + %d exempt + %d missing = %d required. <span class="text-muted">%s · Week %d · %s to %s</span></p>`, escapeHTML(homeCompletionLabel(progress)), progress.Submitted, progress.Exempt, progress.Missing, progress.Expected, escapeHTML(seasonName), weekNum, currentWeek.StartDate.Format("02 Jan"), currentWeek.EndDate.Format("02 Jan 2006"))
+		}
+		fmt.Fprint(w, `</section>`)
 
 		attentionItems := ""
 		if weekErr == nil && dashboardDataErr == nil {
@@ -834,19 +858,22 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 					missingLabel,
 				)
 			}
-			if openSanctions > 0 {
+			if sanctionDataErr != nil {
+				attentionItems += `<div class="attention-item attention-warning"><span><strong>Legacy ledger count unavailable</strong><small>Open the ledger to inspect its source records.</small></span></div>`
+			} else if openSanctions > 0 {
 				sanctionLabel := "sanctions"
 				if openSanctions == 1 {
 					sanctionLabel = "sanction"
 				}
 				attentionItems += fmt.Sprintf(
-					`<a class="attention-item attention-warning" href="/admin/sanctions"><span><strong>%d open %s</strong><small>Review active cases and letter status.</small></span><span aria-hidden="true">&rarr;</span></a>`,
+					`<a class="attention-item attention-warning" href="/admin/sanctions?season_id=%d"><span><strong>%d active legacy %s</strong><small>Season ledger entries, counted separately from investigation cases.</small></span><span aria-hidden="true">&rarr;</span></a>`,
+					seasonID,
 					openSanctions,
 					sanctionLabel,
 				)
 			}
 			if attentionItems == "" {
-				attentionItems = `<div class="attention-item attention-success"><span><strong>No urgent items</strong><small>All expected reports are satisfied and there are no open sanctions.</small></span></div>`
+				attentionItems = `<div class="attention-item attention-success"><span><strong>No missing reports in this week</strong><small>All required reports are received or exempt; no active entries in this season's legacy ledger.</small></span></div>`
 			}
 		} else {
 			attentionItems = `<div class="attention-item attention-warning"><span><strong>Attention data unavailable</strong><small>Open Compliance to inspect source records directly.</small></span></div>`
@@ -856,7 +883,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 <div class="row g-3 mb-4">
   <div class="col-12 col-xl-7">
     <section class="card h-100" aria-labelledby="attention-heading">
-      <div class="card-header"><span class="fw-semibold" id="attention-heading">Needs attention</span></div>
+      <div class="card-header"><span class="fw-semibold" id="attention-heading">Reporting and legacy ledger</span></div>
       <div class="card-body attention-list">%s</div>
     </section>
   </div>
@@ -873,12 +900,22 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
   </div>
 </div>`, attentionItems, currentWeek.ID)
 
+		fmt.Fprint(w, `<details class="card mb-4" id="season-statistics"><summary class="card-header fw-semibold">Season statistics and source records</summary><div class="card-body">`)
+		if weekErr == nil {
+			ratingContext := fmt.Sprintf("%d rating observations · 1–5 scale", ratingCount)
+			if seasonDataErr != nil {
+				ratingContext = "Rating sample unavailable · 1–5 scale"
+			}
+			fmt.Fprintf(w, `<div class="row g-3 mb-4"><div class="col-md-4"><div class="border rounded p-3 h-100"><strong>%s</strong><div>Stored submission records</div><div class="small text-muted">%s · raw records, distinct from required reports received</div></div></div><div class="col-md-4"><div class="border rounded p-3 h-100"><strong>%s</strong><div>Season average pitch</div><div class="small text-muted">%s · %s</div><a class="small" href="/admin/rankings?season_id=%d">Open rankings</a></div></div><div class="col-md-4"><div class="border rounded p-3 h-100"><strong>%s</strong><div>Active legacy ledger entries</div><div class="small text-muted">%s · separate from case-workflow totals</div><a class="small" href="/admin/sanctions?season_id=%d">Open legacy ledger</a></div></div></div>`, escapeHTML(homeCountLabel(seasonSubs, seasonDataErr)), escapeHTML(seasonName), escapeHTML(homePitchLabel(avgPitch, ratingCount, seasonDataErr)), escapeHTML(seasonName), escapeHTML(ratingContext), seasonID, escapeHTML(homeCountLabel(openSanctions, sanctionDataErr)), escapeHTML(seasonName), seasonID)
+		}
 		// ── Charts row ───────────────────────────────────────────────────
 		fmt.Fprint(w, `<div class="row g-3 mb-4">`)
 
 		// Chart A – submissions per week
 		weeklyEmptyState := ""
-		if weeklySubmissionTotal == 0 {
+		if weekChartErr != nil {
+			weeklyEmptyState = `<div class="alert alert-warning" role="alert">Submission trend unavailable. Open weekly records to inspect source data.</div>`
+		} else if weeklySubmissionTotal == 0 {
 			weeklyEmptyState = `<div class="empty-state mb-3"><strong>No submissions recorded</strong><span>Reports will appear here as they are received.</span></div>`
 		}
 		fmt.Fprintf(w, `
@@ -886,7 +923,7 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
   <div class="card data-card h-100">
     <div class="card-header d-flex justify-content-between align-items-center">
       <span class="fw-semibold">Reports by competition week</span>
-      <a href="/admin/weeks" class="card-header-link">View weekly records</a>
+      <a href="%s" class="card-header-link">View weekly records</a>
     </div>
     <div class="card-body">
       <p class="chart-description" id="chartWeeksDescription">%s, all scheduled weeks. Each value is a submitted team report.</p>
@@ -894,11 +931,15 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
       <div class="chart-container"><canvas id="chartWeeks" role="img" aria-describedby="chartWeeksDescription"></canvas></div>
     </div>
   </div>
-</div>`, escapeHTML(seasonName), weeklyEmptyState)
+</div>`, escapeHTML(seasonWeeksURL), escapeHTML(seasonName), weeklyEmptyState)
 
 		// Chart B – pitch distribution
 		pitchEmptyState := ""
-		if pitchRatingTotal == 0 {
+		pitchDescription := fmt.Sprintf("%s, %d rated reports on the 1–5 scale.", seasonName, pitchRatingTotal)
+		if pitchChartErr != nil {
+			pitchEmptyState = `<div class="alert alert-warning" role="alert">Pitch distribution unavailable. Open rankings to inspect source data.</div>`
+			pitchDescription = seasonName + ", rating sample unavailable."
+		} else if pitchRatingTotal == 0 {
 			pitchEmptyState = `<div class="empty-state mb-3"><strong>No pitch ratings recorded</strong><span>The distribution will appear after rated reports are submitted.</span></div>`
 		}
 		fmt.Fprintf(w, `
@@ -906,21 +947,23 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
   <div class="card data-card h-100">
     <div class="card-header d-flex justify-content-between align-items-center">
       <span class="fw-semibold">Pitch rating distribution</span>
-      <a href="/admin/rankings" class="card-header-link">View rankings</a>
+      <a href="/admin/rankings?season_id=%d" class="card-header-link">View rankings</a>
     </div>
     <div class="card-body">
-      <p class="chart-description" id="chartPitchDescription">%s, %d rated reports on the 1&ndash;5 scale.</p>
+      <p class="chart-description" id="chartPitchDescription">%s</p>
       %s
       <div class="chart-container"><canvas id="chartPitch" role="img" aria-describedby="chartPitchDescription"></canvas></div>
     </div>
   </div>
-</div>`, escapeHTML(seasonName), pitchRatingTotal, pitchEmptyState)
+</div>`, seasonID, escapeHTML(pitchDescription), pitchEmptyState)
 
 		fmt.Fprint(w, `</div>`) // end charts row
 
 		// Chart C – club breakdown (full width)
 		clubEmptyState := ""
-		if len(clubBars) == 0 {
+		if clubChartErr != nil {
+			clubEmptyState = `<div class="alert alert-warning" role="alert">Club submission totals unavailable. Find submissions to inspect source data.</div>`
+		} else if len(clubBars) == 0 {
 			clubEmptyState = `<div class="empty-state mb-3"><strong>No club reports recorded</strong><span>Club totals will appear when submissions are received.</span></div>`
 		}
 		fmt.Fprintf(w, `
@@ -941,11 +984,11 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 </div>`, escapeHTML(seasonName), clubEmptyState)
 
 		// ── Recent submissions table ──────────────────────────────────────
-		fmt.Fprint(w, `
+		fmt.Fprintf(w, `
 <div class="card shadow-sm mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <span class="fw-semibold">Recent Submissions</span>
-    <a href="/admin/weeks" class="btn btn-sm btn-outline-secondary">All Weeks</a>
+    <span class="fw-semibold">Recent submission records · all seasons</span>
+    <a href="%s" class="btn btn-sm btn-outline-secondary">Reporting season weeks</a>
   </div>
   <div class="table-responsive">
     <table class="table table-hover table-sm table-gmcl responsive-cards mb-0">
@@ -954,7 +997,10 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
         <th>Captain</th><th>Match Date</th><th>Submitted</th>
       </tr></thead>
       <tbody>
-`)
+`, escapeHTML(seasonWeeksURL))
+		if recentSubsErr != nil {
+			fmt.Fprint(w, `<tr><td colspan="8" class="text-center py-3">Recent submission records unavailable. Use Find submissions to continue.</td></tr>`)
+		}
 		for _, sr := range recentSubs {
 			fmt.Fprintf(w,
 				`<tr><td data-label="Submission"><a href="/admin/submissions/%d">#%d</a></td><td data-label="Season">%s</td><td data-label="Week">%d</td><td data-label="Club">%s</td><td data-label="Team">%s</td><td data-label="Captain">%s</td><td data-label="Match date">%s</td><td data-label="Submitted" class="text-muted">%s</td></tr>`,
@@ -962,14 +1008,14 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 				escapeHTML(sr.Club), escapeHTML(sr.Team), escapeHTML(sr.Captain),
 				sr.MatchDate.Format("2006-01-02"), sr.SubmittedAt.Format("02 Jan 15:04"))
 		}
-		if len(recentSubs) == 0 {
+		if len(recentSubs) == 0 && recentSubsErr == nil {
 			fmt.Fprint(w, `<tr><td colspan="8" class="text-center text-muted py-3">No submissions yet.</td></tr>`)
 		}
 		fmt.Fprint(w, `      </tbody>
     </table>
   </div>
 </div>
-</div>`)
+</div></details></main>`)
 
 		// ── Chart.js init scripts ─────────────────────────────────────────
 		// Build JSON arrays for Chart.js
@@ -1003,11 +1049,12 @@ func (s *Server) handleAdminDashboard() http.HandlerFunc {
 		}())
 
 		script := fmt.Sprintf(`
+if (window.Chart) {
 Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
 Chart.defaults.color = '#6c757d';
 
 // Chart A — submissions per week
-new Chart(document.getElementById('chartWeeks'), {
+if (%t) new Chart(document.getElementById('chartWeeks'), {
   type: 'bar',
   data: {
     labels: %s,
@@ -1031,7 +1078,7 @@ new Chart(document.getElementById('chartWeeks'), {
 });
 
 // Chart B — pitch distribution
-new Chart(document.getElementById('chartPitch'), {
+if (%t) new Chart(document.getElementById('chartPitch'), {
   type: 'doughnut',
   data: {
     labels: ['Rating 1','Rating 2','Rating 3','Rating 4','Rating 5'],
@@ -1052,7 +1099,7 @@ new Chart(document.getElementById('chartPitch'), {
 });
 
 // Chart C — club breakdown
-new Chart(document.getElementById('chartClubs'), {
+if (%t) new Chart(document.getElementById('chartClubs'), {
   type: 'bar',
   data: {
     labels: %s,
@@ -1075,14 +1122,68 @@ new Chart(document.getElementById('chartClubs'), {
     }
   }
 });
+}
 `,
-			string(weekLabels), string(weekData),
-			pitchDist[1], pitchDist[2], pitchDist[3], pitchDist[4], pitchDist[5],
-			string(clubLabels), string(clubData),
+			weekChartErr == nil, string(weekLabels), string(weekData),
+			pitchChartErr == nil, pitchDist[1], pitchDist[2], pitchDist[3], pitchDist[4], pitchDist[5],
+			clubChartErr == nil, string(clubLabels), string(clubData),
 		)
 
-		pageFooterWithScript(w, script)
+		pageFooterWithScript(w, script+adminWorkspaceDisclosureJS)
 	}
+}
+
+func homeCountLabel(count int64, err error) string {
+	if err != nil {
+		return "Unavailable"
+	}
+	return strconv.FormatInt(count, 10)
+}
+
+func homePitchLabel(average float64, samples int64, err error) string {
+	if err != nil {
+		return "Unavailable"
+	}
+	if samples == 0 {
+		return "No ratings"
+	}
+	return fmt.Sprintf("%.1f", average)
+}
+
+func homeCompletionLabel(progress reportProgress) string {
+	if progress.Expected == 0 {
+		return "No reports required"
+	}
+	return fmt.Sprintf("%.1f%% complete · %d of %d satisfied", progress.completionRate(), progress.Satisfied, progress.Expected)
+}
+
+func writeAdminHomeLeagueOverview(w io.Writer, counts ineligibleDashboardCounts, err error, canTriage bool) {
+	if !canTriage {
+		return
+	}
+	fmt.Fprint(w, `<section class="card mb-4" aria-labelledby="league-work-heading"><div class="card-header"><h2 class="h5 mb-1" id="league-work-heading">League overview</h2><div class="small text-muted">Ineligible players · all seasons · live cases and unresolved work · test and training excluded</div></div><div class="card-body">`)
+	if err != nil {
+		fmt.Fprint(w, `<div class="alert alert-warning mb-0" role="alert">League counts unavailable. <a class="alert-link" href="/admin/ineligible?view=cases">Open ineligible cases</a> to inspect the work.</div></div></section>`)
+		return
+	}
+	fmt.Fprint(w, `<div class="row g-3">`)
+	for _, metric := range []struct {
+		label string
+		count int64
+		href  string
+		note  string
+	}{
+		{"Active cases", counts.LiveCases, "/admin/ineligible?view=cases&scope=all&group=live", "One count per case, including work assigned to other staff"},
+		{"Awaiting Denver final issue", counts.AwaitingDenverSignoff, "/admin/ineligible?view=cases&scope=all&group=awaiting_denver", "Approved decisions; separate from supporting tasks"},
+		{"Cases with delivery problems", counts.DeliveryExceptions, "/admin/ineligible?view=cases&scope=all&group=delivery_exceptions", "Includes completed cases whose messages still need attention"},
+	} {
+		fmt.Fprintf(w, `<div class="col-md-4"><a class="d-block border rounded p-3 h-100 text-decoration-none text-body" href="%s"><strong class="h3 d-block">%d</strong><span>%s</span><span class="small text-muted d-block mt-1">%s</span></a></div>`, escapeHTML(metric.href), metric.count, escapeHTML(metric.label), escapeHTML(metric.note))
+	}
+	fmt.Fprint(w, `</div><p class="small text-muted mt-3 mb-0">League totals are separate from My work. These categories overlap and must not be added together.</p>`)
+	if canTriage {
+		fmt.Fprintf(w, `<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border-top pt-3 mt-3"><div><strong>%d reports awaiting triage</strong><div class="small text-muted">Visible new, selected or exception reports; raising a case is a separate action. %d deferred reports are retained.</div></div><a class="btn btn-outline-primary btn-sm" href="/admin/ineligible?view=reports&amp;scope=all&amp;state=open&amp;worklist=visible&amp;live=1">Review reports</a></div>`, counts.NewIntakes, counts.HiddenReports)
+	}
+	fmt.Fprint(w, `</div></section>`)
 }
 
 func (s *Server) handleAdminWeeks() http.HandlerFunc {
@@ -1090,10 +1191,27 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		currentWeek, err := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+		seasonID, explicitSeason, err := adminWeeksSeasonFilter(r.URL.Query())
 		if err != nil {
-			http.Error(w, "No competition weeks are configured.", http.StatusServiceUnavailable)
+			http.Error(w, "invalid season", http.StatusBadRequest)
 			return
+		}
+		if explicitSeason {
+			if err = s.DB.QueryRow(ctx, `SELECT id FROM seasons WHERE id=$1 AND NOT is_archived`, seasonID).Scan(&seasonID); err != nil {
+				if err == pgx.ErrNoRows {
+					http.Error(w, "season not found", http.StatusNotFound)
+				} else {
+					http.Error(w, "season unavailable", http.StatusServiceUnavailable)
+				}
+				return
+			}
+		} else {
+			currentWeek, weekErr := s.resolveCompetitionWeek(ctx, competitionWeekForDisplay)
+			if weekErr != nil {
+				http.Error(w, "No competition weeks are configured.", http.StatusServiceUnavailable)
+				return
+			}
+			seasonID = currentWeek.SeasonID
 		}
 		rows, err := s.DB.Query(ctx, `
 			SELECT w.id, s.name, w.week_number, w.start_date, w.end_date,
@@ -1105,7 +1223,7 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			WHERE s.id = $1
 			GROUP BY w.id, s.name, w.week_number, w.start_date, w.end_date
 			ORDER BY w.week_number
-		`, currentWeek.SeasonID, s.londonDate())
+		`, seasonID, s.londonDate())
 		if err != nil {
 			http.Error(w, "error", http.StatusInternalServerError)
 			return
@@ -1151,8 +1269,8 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 			if d.IsCurrent {
 				rowClass = ` class="table-warning fw-bold"`
 			}
-			fmt.Fprintf(w, `<tr%s style="cursor:pointer" onclick="location.href='/admin/weeks/%d'"><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
-				rowClass, d.Week, d.Season, d.Week,
+			fmt.Fprintf(w, `<tr%s style="cursor:pointer" onclick="location.href='/admin/weeks/%d?season_id=%d'"><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>`,
+				rowClass, d.Week, seasonID, escapeHTML(d.Season), d.Week,
 				d.StartDate.Format("2 Jan 2006"), d.EndDate.Format("2 Jan 2006"), d.Count)
 		}
 		fmt.Fprint(w, `      </tbody>
@@ -1165,6 +1283,17 @@ func (s *Server) handleAdminWeeks() http.HandlerFunc {
 	}
 }
 
+func adminWeeksSeasonFilter(values url.Values) (int32, bool, error) {
+	if !values.Has("season_id") {
+		return 0, false, nil
+	}
+	id, err := strconv.ParseInt(values.Get("season_id"), 10, 32)
+	if err != nil || id <= 0 {
+		return 0, true, fmt.Errorf("invalid season")
+	}
+	return int32(id), true, nil
+}
+
 func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		weekNum, err := strconv.ParseInt(chi.URLParam(r, "weekNum"), 10, 32)
@@ -1175,6 +1304,15 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		seasonID, explicitSeason, err := adminWeeksSeasonFilter(r.URL.Query())
+		if err != nil {
+			http.Error(w, "invalid season", http.StatusBadRequest)
+			return
+		}
+		var seasonArgument any
+		if explicitSeason {
+			seasonArgument = seasonID
+		}
 
 		var weekID int32
 		var seasonName string
@@ -1184,8 +1322,9 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			FROM weeks w JOIN seasons s ON s.id = w.season_id
 			WHERE w.week_number = $1
 			  AND s.is_archived = FALSE
+			  AND ($2::integer IS NULL OR s.id=$2)
 			ORDER BY s.id DESC
-		`, int32(weekNum)).Scan(&weekID, &seasonName, &startDate, &endDate)
+		`, int32(weekNum), seasonArgument).Scan(&weekID, &seasonName, &startDate, &endDate)
 		if err != nil {
 			http.Error(w, "week not found", http.StatusNotFound)
 			return
@@ -1288,12 +1427,18 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		pageHead(w, fmt.Sprintf("Week %d Submissions", weekNum))
 		writeAdminNav(w, csrfToken, "/admin/weeks", adminRoleForRequest(r))
+		weeksURL := "/admin/weeks"
+		weekURL := fmt.Sprintf("/admin/weeks/%d", weekNum)
+		if explicitSeason {
+			weeksURL += fmt.Sprintf("?season_id=%d", seasonID)
+			weekURL += fmt.Sprintf("?season_id=%d", seasonID)
+		}
 		fmt.Fprintf(w, `<div class="container-fluid">
 <div class="d-flex align-items-center gap-3 mb-3">
-  <a href="/admin/weeks" class="btn btn-outline-secondary btn-sm">&larr; All Weeks</a>
+  <a href="%s" class="btn btn-outline-secondary btn-sm">&larr; All Weeks</a>
   <h3 class="mb-0">Week %d &mdash; %s &ndash; %s <span class="fs-6 text-muted fw-normal">(%s)</span></h3>
 </div>
-`, int(weekNum), startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), seasonName)
+`, escapeHTML(weeksURL), int(weekNum), startDate.Format("2 Jan 2006"), endDate.Format("2 Jan 2006"), escapeHTML(seasonName))
 
 		// Club filter dropdown
 		fmt.Fprintf(w, `<form method="GET" action="/admin/weeks/%d" class="d-flex align-items-center gap-2 mb-3">
@@ -1308,8 +1453,11 @@ func (s *Server) handleAdminWeekDetail() http.HandlerFunc {
 			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, escapeHTML(cn), sel, escapeHTML(cn))
 		}
 		fmt.Fprint(w, `  </select>`)
+		if explicitSeason {
+			fmt.Fprintf(w, `<input type="hidden" name="season_id" value="%d">`, seasonID)
+		}
 		if clubFilter != "" {
-			fmt.Fprintf(w, `  <a href="/admin/weeks/%d" class="btn btn-outline-secondary btn-sm">Clear</a>`, weekNum)
+			fmt.Fprintf(w, `  <a href="%s" class="btn btn-outline-secondary btn-sm">Clear</a>`, escapeHTML(weekURL))
 		}
 		fmt.Fprint(w, `</form>`)
 
