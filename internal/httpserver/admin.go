@@ -45,6 +45,7 @@ func (s *Server) adminRouter() http.Handler {
 
 	// apply rate limiting and CSRF to admin routes
 	r.Use(middleware.RateLimit(60))
+	r.Use(juniorRequestLimit)
 	r.Use(middleware.CSRFMiddleware)
 	r.Get("/login", s.handleAdminLoginGet())
 	r.Post("/login", s.handleAdminLoginPost())
@@ -64,6 +65,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAdmin())
 		r.Use(s.requirePasswordChanged()) // block access to all other routes if force_password_change
+		r.Mount("/juniors", s.juniorAdminRouter())
 
 		r.Get("/dashboard", s.handleAdminDashboard())
 		r.Get("/rules-assistant", s.handleAdminRulesAssistant())

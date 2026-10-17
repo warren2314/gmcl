@@ -309,6 +309,9 @@ func writeAdminNavWithPermissions(w io.Writer, csrfToken, activePath, role strin
 		homeLabel = "Home"
 	}
 	menu := navLink("/admin/dashboard", homeLabel) + opsMenu
+	if role == "super_admin" || (permissions != nil && can("junior_manage")) {
+		menu += navLink("/admin/juniors", "Juniors")
+	}
 	if role == "super_admin" {
 		menu += competitionMenu + systemMenu
 	}

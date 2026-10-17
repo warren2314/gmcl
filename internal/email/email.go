@@ -30,6 +30,39 @@ type Client struct {
 	password   string
 	heloDomain string
 	configSet  string
+	timeout    time.Duration
+	requireTLS bool
+}
+
+// NewJuniorFromEnv keeps junior correspondence separate from the global
+// captain/sanctions reply mailbox. It has no development logging fallback.
+func NewJuniorFromEnv() (*Client, error) {
+	from := strings.TrimSpace(os.Getenv("JUNIOR_SMTP_FROM"))
+	if from == "" || strings.ContainsAny(from, "\r\n") || strings.TrimSpace(os.Getenv("SMTP_HOST")) == "" {
+		return nil, fmt.Errorf("junior SMTP sender is not configured")
+	}
+	address, err := mail.ParseAddress(from)
+	if err != nil {
+		return nil, fmt.Errorf("junior SMTP sender is invalid")
+	}
+	reply := strings.TrimSpace(os.Getenv("JUNIOR_REPLY_TO"))
+	if reply == "" {
+		reply = address.Address
+	}
+	if strings.ContainsAny(reply, "\r\n") {
+		return nil, fmt.Errorf("junior reply mailbox is invalid")
+	}
+	if _, err := mail.ParseAddress(reply); err != nil {
+		return nil, fmt.Errorf("junior reply mailbox is invalid")
+	}
+	client := NewFromEnv()
+	client.fromHeader, client.fromAddr, client.replyTo = from, address.Address, reply
+	client.timeout = 30 * time.Second
+	client.requireTLS = true
+	if parts := strings.SplitN(address.Address, "@", 2); len(parts) == 2 {
+		client.heloDomain = parts[1]
+	}
+	return client, nil
 }
 
 // Attachment is an immutable email attachment snapshot. Callers are expected
@@ -144,6 +177,12 @@ func (c *Client) sendWithMessageIDHTML(to, subject, body, messageID string, atta
 	if err != nil {
 		return fmt.Errorf("2fa_email_failed: dial %s: %w", addr, err)
 	}
+	if c.timeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+			conn.Close()
+			return fmt.Errorf("email connection deadline failed: %w", err)
+		}
+	}
 
 	client, err := smtp.NewClient(conn, c.host)
 	if err != nil {
@@ -164,7 +203,7 @@ func (c *Client) sendWithMessageIDHTML(to, subject, body, messageID string, atta
 		if err := client.StartTLS(tlsConfig); err != nil {
 			return fmt.Errorf("2fa_email_failed: STARTTLS: %w", err)
 		}
-	} else if c.username != "" || c.password != "" {
+	} else if c.requireTLS || c.username != "" || c.password != "" {
 		return fmt.Errorf("2fa_email_failed: server does not support STARTTLS")
 	}
 
