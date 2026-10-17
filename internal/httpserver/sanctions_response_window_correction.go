@@ -32,11 +32,11 @@ func (s *Server) loadAdminCaseResponseWindow(ctx context.Context, caseID int64) 
 	return view
 }
 
-func adminCaseResponseWindowHTML(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location) string {
-	return adminCaseResponseWindowHTMLAt(caseID, csrf, view, caseStatus, loc, time.Now())
+func adminCaseResponseWindowHTML(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location, permissions adminCaseWorkspacePermissions) string {
+	return adminCaseResponseWindowHTMLAt(caseID, csrf, view, caseStatus, loc, time.Now(), permissions)
 }
 
-func adminCaseResponseWindowHTMLAt(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location, now time.Time) string {
+func adminCaseResponseWindowHTMLAt(caseID int64, csrf string, view adminCaseResponseWindowView, caseStatus string, loc *time.Location, now time.Time, permissions adminCaseWorkspacePermissions) string {
 	if view.ID == 0 {
 		return ""
 	}
@@ -77,7 +77,7 @@ func adminCaseResponseWindowHTMLAt(caseID int64, csrf string, view adminCaseResp
 	if view.CorrectedAt != nil {
 		fmt.Fprintf(&body, `<div class="alert alert-light border small"><strong>Clock corrected %s.</strong> %s</div>`, escapeHTML(formatTime(view.CorrectedAt)), escapeHTML(view.CorrectionReason))
 	}
-	if view.Status == "pending" && caseStatus == "response_pending" && view.DeliveredAt != nil {
+	if permissions.CanInvestigate && view.Status == "pending" && caseStatus == "response_pending" && view.DeliveredAt != nil {
 		currentValue := view.DeliveredAt.In(loc).Format("2006-01-02T15:04")
 		fmt.Fprintf(&body, `<details class="border rounded p-3 mt-3"><summary class="fw-semibold">Correct an earlier initial-email date</summary><p class="small text-muted mt-3">Use this only when the club was first contacted outside this system before the recorded delivery above. The date can only move earlier. Day five, day seven and the secure-link expiry will be recalculated. If day seven has already passed, this case moves to <strong>Response overdue</strong> immediately.</p><form method="POST" action="/admin/cases/%d/response-window/correct"><input type="hidden" name="csrf_token" value="%s"><div class="mb-3"><label class="form-label" for="response-window-start">When was the initial email first sent?</label><input class="form-control" id="response-window-start" type="datetime-local" name="started_at" value="%s" required></div><div class="mb-3"><label class="form-label" for="response-window-reason">Why is the clock being corrected?</label><textarea class="form-control" id="response-window-reason" name="reason" rows="2" maxlength="2000" required placeholder="For example: Initial email was sent manually from the league mailbox on 24 August."></textarea></div><button class="btn btn-outline-warning" type="submit">Correct response clock</button></form></details>`, caseID, escapeHTML(csrf), escapeHTML(currentValue))
 	}

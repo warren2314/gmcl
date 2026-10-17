@@ -39,6 +39,16 @@ const staleIneligibleLinkedIntakesSQL = `SELECT EXISTS(
 	  )
 )`
 
+// ApprovedIneligibleSourceReviewPredicate is the read-only source-review
+// condition shared by case detail and case lists. The outer sanction_cases
+// relation must use the fixed alias c. No caller-provided SQL is interpolated.
+// This identifies a required review, not permission or a guarantee that the
+// reopening command will pass its delivery, task and locking checks.
+func ApprovedIneligibleSourceReviewPredicate() string {
+	stale := strings.TrimPrefix(strings.ReplaceAll(staleIneligibleLinkedIntakesSQL, "$1", "c.id"), "SELECT ")
+	return `(c.source_type='ineligible_player' AND c.status='approved' AND c.public_status='unpublished' AND c.published_at IS NULL AND ` + stale + `)`
+}
+
 type reopenRowQueryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -83,17 +93,9 @@ func outcomeDeliveryPreventsReopen(processedAt, revokedAt *time.Time, uncertainO
 // ApprovedIneligibleCaseNeedsReopen is a read-only UI readiness check. The
 // command repeats every condition while holding the case row lock.
 func (s *Service) ApprovedIneligibleCaseNeedsReopen(ctx context.Context, caseID int64) (bool, error) {
-	var sourceType, status, publicStatus string
-	var publishedAt *time.Time
-	if err := s.DB.QueryRow(ctx, `SELECT source_type,status,public_status,published_at FROM sanction_cases WHERE id=$1`, caseID).
-		Scan(&sourceType, &status, &publicStatus, &publishedAt); err != nil {
-		return false, err
-	}
-	stale, err := staleIneligibleLinkedIntakes(ctx, s.DB, caseID)
-	if err != nil {
-		return false, err
-	}
-	return validateIneligibleReopenState(sourceType, status, publicStatus, publishedAt, stale) == nil, nil
+	var needsReview bool
+	err := s.DB.QueryRow(ctx, `SELECT `+ApprovedIneligibleSourceReviewPredicate()+` FROM sanction_cases c WHERE c.id=$1`, caseID).Scan(&needsReview)
+	return needsReview, err
 }
 
 type reopenTaskSnapshot struct {

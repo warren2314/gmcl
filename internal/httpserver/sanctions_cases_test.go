@@ -349,7 +349,7 @@ func TestAdminCaseAssignmentAllowsExplicitReassignment(t *testing.T) {
 func TestRawEvidenceContainingReporterIdentityCannotBeSharedDirectly(t *testing.T) {
 	html := adminEvidenceDisclosureControlsHTML(41, 72, "csrf-token", adminEvidenceDisclosureState{
 		Available: true,
-	})
+	}, adminCaseWorkspacePermissions{CanInvestigate: true})
 	for _, required := range []string{
 		"Private source evidence",
 		`value="create_redacted_derivative"`,
@@ -376,7 +376,7 @@ func TestReviewedRedactedDerivativeCanBeShared(t *testing.T) {
 		ReviewedAt:       &reviewedAt,
 		Eligible:         true,
 		Available:        true,
-	})
+	}, adminCaseWorkspacePermissions{CanInvestigate: true})
 	for _, required := range []string{
 		"Reviewed redacted derivative of evidence #72",
 		"privacy-reviewer",
@@ -529,7 +529,7 @@ func TestCopyEvidenceRejectsSpoofedImageAndSVG(t *testing.T) {
 
 func TestAdminCaseSourceReportShowsRequiredFieldsSafely(t *testing.T) {
 	report := adminCaseSourceReport{IntakeID: 77, OffendingClub: "Offending CC", Team: "3rd XI", FixtureDate: "2026-08-01", Player: "Alex Player", Reason: "Registration <missing>", AdditionalInfo: "Checked list", AdditionalEvidence: "https://example.test/evidence", Score: "Scorecard 123"}
-	html := adminCaseSourceReportHTML(report)
+	html := adminCaseSourceReportHTML(report, adminCaseWorkspacePermissions{CanTriage: true})
 	for _, want := range []string{"Original report details", "Offending CC", "3rd XI", "2026-08-01", "Alex Player", "Registration &lt;missing&gt;", "Checked list", "https://example.test/evidence", "Scorecard 123", "/admin/ineligible/77"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("source report card missing %q: %s", want, html)

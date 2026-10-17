@@ -403,7 +403,8 @@ func caseAllegedRuleFormValues(rule caseAllegedRule, hawkSuggestion caseHawkRule
 	return formReference, selectionReason
 }
 
-func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Context, caseID int64, status, csrf, sourceType string) caseAllegedRule {
+func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Context, caseID int64, status, csrf, sourceType string, permissions adminCaseWorkspacePermissions) caseAllegedRule {
+	canRecord := permissions.CanInvestigate && map[string]bool{"submitted": true, "triage": true, "investigating": true}[status]
 	rule, err := loadCaseAllegedRule(ctx, s.DB, caseID)
 	if err == nil {
 		excerpt := strings.TrimSpace(rule.Text)
@@ -414,9 +415,13 @@ func (s *Server) writeAdminCaseAllegedRule(w http.ResponseWriter, ctx context.Co
 			escapeHTML(rule.Reference), escapeHTML(rule.Heading), rule.Revision, escapeHTML(excerpt), escapeHTML(rule.URL), escapeHTML(rule.SourceTitle),
 			escapeHTML(rule.SelectedAt.In(s.LondonLoc).Format("02 Jan 2006 15:04")), escapeHTML(rule.SelectedBy), escapeHTML(rule.Reason))
 	} else {
-		fmt.Fprint(w, `<div class="alert alert-warning"><strong>No alleged rule recorded.</strong> Select the published rule being investigated before preparing correspondence to the offending club. <a class="alert-link" href="#record-alleged-rule">Continue to Record alleged rule</a>.</div>`)
+		fmt.Fprint(w, `<div class="alert alert-warning"><strong>No alleged rule recorded.</strong> An authorised investigator must record the published rule being investigated before preparing correspondence to the offending club.`)
+		if canRecord {
+			fmt.Fprint(w, ` <a class="alert-link" href="#record-alleged-rule">Continue to Record alleged rule</a>.`)
+		}
+		fmt.Fprint(w, `</div>`)
 	}
-	if !map[string]bool{"submitted": true, "triage": true, "investigating": true}[status] {
+	if !canRecord {
 		return rule
 	}
 	var hawkSuggestion caseHawkRuleSuggestion

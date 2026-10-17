@@ -9,7 +9,7 @@ import (
 )
 
 const rulesAssistantAssetVersion = "20260824-1"
-const brandAssetVersion = "20260725-2"
+const brandAssetVersion = "20261015-1"
 
 const (
 	bootstrapCSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -125,10 +125,28 @@ func writeCaptainNav(w io.Writer) {
 
 // writeAdminNav writes the admin navbar with dropdowns, active-link highlighting, and logout.
 func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string) {
-	fmt.Fprint(w, adminRulesAssistantAssets(csrfToken))
 	role := "admin"
 	if len(roleOpt) > 0 && roleOpt[0] != "" {
 		role = roleOpt[0]
+	}
+	writeAdminNavWithPermissions(w, csrfToken, activePath, role, nil)
+}
+
+// A nil permission set preserves the existing navbar for older callers.
+// Workspace handlers pass their current grants; route middleware remains the
+// authority for access, including bookmarked URLs and all command requests.
+func writeAdminNavWithPermissions(w io.Writer, csrfToken, activePath, role string, permissions map[string]bool) {
+	fmt.Fprint(w, adminRulesAssistantAssets(csrfToken))
+	can := func(permission string) bool {
+		return permissions == nil || role == "super_admin" || permissions[permission]
+	}
+	canAny := func(required ...string) bool {
+		for _, permission := range required {
+			if can(permission) {
+				return true
+			}
+		}
+		return false
 	}
 	navLink := func(href, label string) string {
 		active := ""
@@ -157,26 +175,42 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		pitchMarksItem = `<li><a class="dropdown-item" href="/admin/pitch-marks">Pitch data import</a></li>`
 	}
 
+	sanctionsItems := ""
+	if canAny("sanctions_triage", "sanctions_investigate", "sanctions_approve") {
+		sanctionsItems += `<li><a class="dropdown-item d-flex justify-content-between align-items-center gap-2" href="/admin/cases/mine/ineligible">My ineligible-player cases <span id="ineligibleIntakeNavCount" class="badge text-bg-danger" hidden></span></a></li>`
+	}
+	if can("sanctions_triage") {
+		if permissions == nil {
+			sanctionsItems += `<li><a class="dropdown-item" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible">Ineligible-player reports</a></li>`
+		} else {
+			sanctionsItems += `<li><a class="dropdown-item" href="/admin/ineligible">Ineligible players</a></li>`
+		}
+		sanctionsItems += `<li><a class="dropdown-item" href="/admin/ineligible/rollout">Ineligible rollout gate</a></li><li><a class="dropdown-item" href="/admin/cases">Case dashboard</a></li><li><a class="dropdown-item" href="/admin/cases/new">Add card, ban, fine or points decision</a></li>`
+	}
+	if can("sanctions_import") {
+		sanctionsItems += `<li><a class="dropdown-item" href="/admin/cases/imports">Import legacy bans &amp; cards</a></li>`
+	}
+	if can("sanctions_investigate") {
+		sanctionsItems += `<li><a class="dropdown-item" href="/admin/cases/tasks">Follow-up tasks</a></li>`
+	}
+	if can("sanctions_publish") {
+		sanctionsItems += `<li><a class="dropdown-item" href="/admin/cases/recipients">Notice recipients</a></li>`
+	}
+	if can("sanctions_automation") {
+		sanctionsItems += `<li><a class="dropdown-item" href="/admin/cases/automation">Automation safety</a></li>`
+	}
 	sanctionsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
             Sanctions
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
-            <li><a class="dropdown-item d-flex justify-content-between align-items-center gap-2" href="/admin/cases/mine/ineligible">My ineligible-player cases <span id="ineligibleIntakeNavCount" class="badge text-bg-danger" hidden></span></a></li>
-            <li><a class="dropdown-item" href="/admin/ineligible?scope=all&amp;state=open&amp;worklist=visible">Ineligible-player reports</a></li>
-            <li><a class="dropdown-item" href="/admin/ineligible/rollout">Ineligible rollout gate</a></li>
-            <li><a class="dropdown-item" href="/admin/cases">Case dashboard</a></li>
-            <li><a class="dropdown-item" href="/admin/cases/new">Add card, ban, fine or points decision</a></li>
-            <li><a class="dropdown-item" href="/admin/cases/imports">Import legacy bans &amp; cards</a></li>
-            <li><a class="dropdown-item" href="/admin/cases/tasks">Follow-up tasks</a></li>
-            <li><a class="dropdown-item" href="/admin/cases/recipients">Notice recipients</a></li>
-            <li><a class="dropdown-item" href="/admin/cases/automation">Automation safety</a></li>
+            %s
             <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item" href="https://sanctions.gmcl.co.uk/" target="_blank" rel="noopener">View public register</a></li>
             <li><a class="dropdown-item" href="/admin/sanctions">Legacy card ledger</a></li>
           </ul>
-        </li>`, dropdownActive("/admin/ineligible", "/admin/cases", "/admin/sanctions"))
+        </li>`, dropdownActive("/admin/ineligible", "/admin/cases", "/admin/sanctions"), sanctionsItems)
 
 	operationsMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
@@ -197,6 +231,10 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		dropdownActive("/admin/fixtures", "/admin/compliance", "/admin/submissions", "/admin/weeks", "/admin/reminders", "/admin/teams-captains", "/admin/captain-preview"),
 	)
 
+	umpireItem := ""
+	if can("view_umpire_feedback") {
+		umpireItem = `<li><a class="dropdown-item" href="/admin/rankings/umpires">Umpire rankings</a></li>`
+	}
 	performanceMenu := fmt.Sprintf(`
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle%s" href="#" role="button" data-bs-toggle="dropdown">
@@ -204,11 +242,12 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
           </a>
           <ul class="dropdown-menu dropdown-menu-dark">
             <li><a class="dropdown-item" href="/admin/rankings">Club rankings</a></li>
-            <li><a class="dropdown-item" href="/admin/rankings/umpires">Umpire rankings</a></li>
+            %s
             %s
           </ul>
         </li>`,
 		dropdownActive("/admin/rankings", "/admin/pitch-marks"),
+		umpireItem,
 		pitchMarksItem,
 	)
 
@@ -265,7 +304,11 @@ func writeAdminNav(w io.Writer, csrfToken, activePath string, roleOpt ...string)
 		dropdownActive("/admin/email-health", "/admin/link-diagnostics", "/admin/security", "/admin/gdpr", "/admin/form-settings", "/admin/users"),
 	)
 
-	menu := navLink("/admin/dashboard", "Dashboard") + opsMenu
+	homeLabel := "Dashboard"
+	if permissions != nil {
+		homeLabel = "Home"
+	}
+	menu := navLink("/admin/dashboard", homeLabel) + opsMenu
 	if role == "super_admin" {
 		menu += competitionMenu + systemMenu
 	}

@@ -33,6 +33,10 @@ const (
 	// competitionWeekForSupportLink preserves the support-link rule: the active
 	// week, or the most recently completed week when the season is between weeks.
 	competitionWeekForSupportLink
+	// competitionWeekForReporting keeps the latest completed reporting period
+	// visible after a season closes, even when next season is already configured.
+	// Planning screens retain their upcoming-first display policy.
+	competitionWeekForReporting
 )
 
 type competitionWeek struct {
@@ -69,7 +73,7 @@ func (s *Server) resolveCompetitionWeek(
 
 	upcomingPriority, completedPriority := 1, 2
 	allowUpcoming, allowCompleted := true, true
-	if resolution == competitionWeekForSubmission {
+	if resolution == competitionWeekForSubmission || resolution == competitionWeekForReporting {
 		upcomingPriority, completedPriority = 2, 1
 	}
 	switch resolution {

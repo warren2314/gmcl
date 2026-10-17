@@ -28,6 +28,21 @@ func TestPersonalIneligibleCaseQueriesShareOneCaseCentricContract(t *testing.T) 
 	}
 }
 
+func TestPersonalIneligibleActionsRespectExistingRouteCapabilities(t *testing.T) {
+	if got := personalIneligibleTriageLink(false); got != "" {
+		t.Fatalf("triage CTA without access: %s", got)
+	}
+	if got := personalIneligibleTriageLink(true); !strings.Contains(got, "/admin/ineligible?") {
+		t.Fatalf("authorised triage CTA missing: %s", got)
+	}
+	if got := personalIneligibleCaseLink(false, 42, "CASE <42>"); strings.Contains(got, "href=") || !strings.Contains(got, "CASE &lt;42&gt;") {
+		t.Fatalf("read-only index exposes unavailable action or unescaped reference: %s", got)
+	}
+	if got := personalIneligibleCaseLink(true, 42, "CASE <42>"); !strings.Contains(got, "/admin/cases/42?return_to=") || !strings.Contains(got, "CASE &lt;42&gt;") {
+		t.Fatalf("case action/context missing: %s", got)
+	}
+}
+
 func TestParseIneligibleQueueFiltersNormalisesImpossiblePersonalHiddenView(t *testing.T) {
 	filter := parseIneligibleQueueFilters(url.Values{
 		"scope":    {"mine"},
@@ -63,12 +78,12 @@ func TestIneligibleClearFiltersURLPreservesQueueMeaning(t *testing.T) {
 		{
 			name:   "personal cases",
 			filter: ineligibleQueueFilters{Scope: "mine", State: "new", Worklist: "deferred"},
-			want:   "/admin/ineligible?scope=mine&state=all&worklist=visible",
+			want:   "/admin/ineligible?scope=mine&state=all&view=reports&worklist=visible",
 		},
 		{
 			name:   "shared triage",
 			filter: ineligibleQueueFilters{Scope: "all", State: "all", Worklist: "all"},
-			want:   "/admin/ineligible?scope=all&state=open&worklist=visible",
+			want:   "/admin/ineligible?scope=all&state=open&view=reports&worklist=visible",
 		},
 	}
 	for _, test := range tests {
