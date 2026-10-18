@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"cricket-ground-feedback/internal/db"
+	"cricket-ground-feedback/internal/junior"
 	"cricket-ground-feedback/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
@@ -16,8 +17,9 @@ import (
 type CleanupFunc func()
 
 type Server struct {
-	DB        *db.Pool
-	LondonLoc *time.Location
+	DB                 *db.Pool
+	LondonLoc          *time.Location
+	JuniorAccessMailer junior.AccessMailer
 }
 
 func NewServer() (http.Handler, CleanupFunc, error) {
@@ -144,6 +146,7 @@ func NewServerWithPool(pool *db.Pool) (http.Handler, CleanupFunc, error) {
 
 	// admin portal
 	r.Mount("/admin", s.adminRouter())
+	r.Mount("/junior", s.juniorPortalRouter())
 
 	// Internal jobs are migrating from the legacy bearer header to request
 	// signatures. The new ineligible sync is signature-only from day one.
