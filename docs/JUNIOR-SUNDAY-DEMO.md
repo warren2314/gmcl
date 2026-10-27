@@ -10,7 +10,7 @@ Open the link on the actual presentation computer and sign in normally as `joe-d
 
 Verify the 2027 DEMONSTRATION season is selected. Start with Oakfield's registration outstanding. Riverside has a response to review, Hillcrest has a completed response, Meadowbrook has a returned response and Oakfield has an overdue ground declaration. Willow Park illustrates an inactive club with retained 2026 history.
 
-## Suggested 10-minute walkthrough
+## Suggested 15-minute walkthrough
 
 1. **Junior Home:** outstanding work opens its matching records. Explain readiness and season context.
 2. **Oakfield Juniors CC:** use section links to show contacts, teams, official forms, competition entries, published fixtures, concessions and correspondence together. Show read-only View as Club before switching to an actual club session.
@@ -19,6 +19,8 @@ Verify the 2027 DEMONSTRATION season is selected. Start with Oakfield's registra
 5. **Concessions:** show the confirmed fictional concession and a separate candidate awaiting review. Explain the imported result evidence, Confirm/Dismiss/Request information and retained decision history. No automatic fine is issued.
 6. **Club action:** open Club Junior Lead sign-in, enter `lead1@demo.example.invalid`, then refresh the guide's simulated inbox. Open the new one-use link and confirm it. Submit Oakfield's registration form from the actual club portal.
 7. **Staff review:** return to League Admin, open the submitted response and complete or return it with a reason. Show the retained receipt and changed dashboard status.
+
+8. **Team-entry approval:** open **2027 Team Entry Form**, then Riverside's submitted response. Choose U13 Junior League for U13 A (already registered) and U15 Junior League for U15 B (new). Preview and approve, then show the allocation receipt and the competitions' team lists. Refreshing or repeating approval must not create duplicates. Oakfield has an outstanding copy for demonstrating a fresh club submission.
 
 Normal sign-in links expire after 15 minutes and work once; request another rather than sharing an old link. The simulated inbox exists only in this isolated executable. Requests are throttled for a minute, so wait before requesting repeated links for the same address.
 

@@ -47,6 +47,9 @@ func Seed(ctx context.Context, pool *db.Pool, password string) (State, error) {
 	err := pool.QueryRow(ctx, `SELECT state FROM junior_demo_state WHERE singleton`).Scan(&data)
 	if err == nil {
 		err = json.Unmarshal(data, &out)
+		if err == nil {
+			err = EnsureTeamEntryDemo(ctx, pool, out)
+		}
 		return out, err
 	}
 	if err != pgx.ErrNoRows {
@@ -290,5 +293,8 @@ func Seed(ctx context.Context, pool *db.Pool, password string) (State, error) {
 		return out, err
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO junior_demo_state(singleton,state) VALUES(true,$1::jsonb)`, string(data))
+	if err == nil {
+		err = EnsureTeamEntryDemo(ctx, pool, out)
+	}
 	return out, err
 }

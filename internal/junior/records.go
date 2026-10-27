@@ -348,6 +348,17 @@ func (s *Service) SaveTeam(ctx context.Context, p Principal, in TeamInput) (int6
 	if in.Name == "" || len(in.Name) > 120 || strings.IndexFunc(in.Name, unicode.IsControl) >= 0 {
 		return 0, fmt.Errorf("%w: enter a team name of at most 120 characters", ErrValidation)
 	}
+	in.Name = strings.Join(strings.Fields(in.Name), " ")
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('junior-team-creation:'||$1::integer::text,0))`, in.ClubID); err != nil {
+		return 0, err
+	}
+	var duplicate bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM junior_teams WHERE club_id=$1 AND id<>$2 AND lower(regexp_replace(btrim(name),'\s+',' ','g'))=lower($3))`, in.ClubID, in.ID, in.Name).Scan(&duplicate); err != nil {
+		return 0, err
+	}
+	if duplicate {
+		return 0, fmt.Errorf("%w: this team already exists; use its existing record", ErrConflict)
+	}
 	if in.ID > 0 {
 		err = tx.QueryRow(ctx, `UPDATE junior_teams SET name=$3,archived=$4,updated_at=now() WHERE id=$1 AND club_id=$2 RETURNING id`, in.ID, in.ClubID, in.Name, in.Archived).Scan(&in.ID)
 	} else {
