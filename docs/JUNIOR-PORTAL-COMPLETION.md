@@ -32,6 +32,8 @@ The seed retains demonstrations across restarts. An interrupted initial seed is 
 
 On 27 October the complete local `go test -race -p 1 -count=1 ./...` suite passed against a fresh fully migrated regression database, the isolated handler database and the populated demo rehearsal database. `go vet ./...` and diff/format checks passed. Hosted browser and remote CI receipts are recorded separately in the delivery handoff.
 
+CI's first run found the Go standard-library certificate advisory [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809), published after the previous release. CI and the production builder are moved from Go 1.26.9 to the fixed 1.26.10 patch release. The hosted demo executable is taken from the exact candidate's CI artifact after its checks, not from the older local compiler. The Compose expiry is quoted explicitly so it reaches the executable as RFC3339 text.
+
 Database-backed regressions cover directory/filter/CSV agreement; explicit and multi-club audiences; shared-address attribution; empty and out-of-scope selections; stale previews; inactive status across seasons; preserved participation/contact history; staff versus club authority; linked-profile club isolation; and first-run links.
 
 The populated-demo rehearsal uses its own fresh schema and exercises normal staff password login, simulated-email one-use club sign-in, real club submission and staff completion. It checks zero outbound transport attempts and refuses non-demo databases. CI provisions this rehearsal database alongside the existing test databases.

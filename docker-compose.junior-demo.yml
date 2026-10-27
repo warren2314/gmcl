@@ -10,7 +10,7 @@ services:
       DEMO_ACCESS_PASSWORD: ${DEMO_ACCESS_PASSWORD:?set a demo-only password}
       DEMO_SESSION_SECRET: ${DEMO_SESSION_SECRET:?set a demo-only session secret}
       DEMO_BASE_URL: https://junior-demo.gmcl.co.uk
-      DEMO_EXPIRES_AT: 2026-11-03T00:00:00Z
+      DEMO_EXPIRES_AT: '2026-11-03T00:00:00Z'
     volumes:
       - files:/demo-data
     tmpfs:
