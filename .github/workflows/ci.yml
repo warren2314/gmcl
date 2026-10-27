@@ -39,6 +39,7 @@ jobs:
       DB_DSN: postgres://appuser:apppassword@localhost:5432/appdb?sslmode=disable
       TEST_DB_DSN: postgres://appuser:apppassword@localhost:5432/appdb?sslmode=disable
       GMCL_HANDLER_TEST_DSN: postgres://appuser:apppassword@localhost:5432/gmcl_handler_qa_ci?sslmode=disable
+      GMCL_JUNIOR_DEMO_REHEARSAL_DSN: postgres://appuser:apppassword@localhost:5432/gmcl_junior_demo?sslmode=disable
 
     steps:
       - name: Check out tested commit
@@ -95,6 +96,7 @@ jobs:
         run: |
           psql "$DB_DSN" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE gmcl_handler_qa_ci'
           psql "$GMCL_HANDLER_TEST_DSN" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
+          psql "$DB_DSN" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE gmcl_junior_demo'
 
       - name: Run tests
         run: go test -race ./...

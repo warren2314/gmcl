@@ -16,3 +16,10 @@ n8n.gmcl.co.uk {
 
 	reverse_proxy n8n:5678
 }
+
+# Isolated fictional junior demonstration; normal league traffic stays above.
+junior-demo.gmcl.co.uk {
+	encode gzip
+	header X-Robots-Tag "noindex, nofollow"
+	reverse_proxy junior-demo-app:8080
+}

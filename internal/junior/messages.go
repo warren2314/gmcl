@@ -95,12 +95,17 @@ func (s *Service) PreviewAudience(ctx context.Context, p Principal, filter Audie
 }
 
 func previewAudience(ctx context.Context, q DBTX, filter AudienceFilter) (AudiencePreview, error) {
+	var err error
+	filter, err = NormaliseAudienceFilter(filter)
+	if err != nil {
+		return AudiencePreview{}, err
+	}
 	if filter.SeasonID <= 0 || filter.CompetitionID < 0 || filter.ClubID < 0 || (filter.Role != "" && filter.Role != "junior_lead" && filter.Role != "coach" && filter.Role != "safeguarding_officer") || (filter.AgeGroup != "" && filter.AgeGroup != "U9" && filter.AgeGroup != "U11" && filter.AgeGroup != "U13" && filter.AgeGroup != "U15" && filter.AgeGroup != "U18") {
 		return AudiencePreview{}, ErrValidation
 	}
 	// Contact eligibility is dated and season-specific. A verified lead account
 	// is included independently of contact roles, only for a lead/all audience.
-	rows, err := q.Query(ctx, `SELECT DISTINCT c.club_id,c.id,c.email,c.full_name FROM junior_contacts c JOIN junior_contact_roles r ON r.contact_id=c.id AND r.club_id=c.club_id
+	rows, err := q.Query(ctx, `WITH audience AS (SELECT DISTINCT c.club_id,c.id,c.email,c.full_name FROM junior_contacts c JOIN junior_contact_roles r ON r.contact_id=c.id AND r.club_id=c.club_id
         WHERE NOT c.archived AND btrim(c.email)<>'' AND r.season_id=$1 AND r.starts_on<=(now() AT TIME ZONE 'Europe/London')::date AND (r.ends_on IS NULL OR r.ends_on>=(now() AT TIME ZONE 'Europe/London')::date)
         AND EXISTS(SELECT 1 FROM junior_club_seasons cs WHERE cs.club_id=c.club_id AND cs.season_id=$1 AND cs.state='active')
         AND ($2::integer=0 OR c.club_id=$2) AND ($3::text='' OR r.role=$3) AND ($4::text='' OR r.age_group=$4)
@@ -108,7 +113,11 @@ func previewAudience(ctx context.Context, q DBTX, filter AudienceFilter) (Audien
         UNION ALL SELECT m.club_id,0::bigint,a.email,a.email FROM junior_memberships m JOIN junior_accounts a ON a.id=m.account_id
         WHERE m.revoked_at IS NULL AND a.is_active AND ($2::integer=0 OR m.club_id=$2) AND ($3::text='' OR $3='junior_lead') AND $4::text=''
         AND EXISTS(SELECT 1 FROM junior_club_seasons cs WHERE cs.club_id=m.club_id AND cs.season_id=$1 AND cs.state='active')
-        AND ($5::bigint=0 OR EXISTS(SELECT 1 FROM junior_competition_entries e JOIN junior_teams t ON t.id=e.team_id JOIN junior_competitions competition ON competition.id=e.competition_id WHERE e.competition_id=$5 AND competition.season_id=$1 AND t.club_id=m.club_id AND e.active AND NOT t.archived))`, filter.SeasonID, filter.ClubID, filter.Role, filter.AgeGroup, filter.CompetitionID)
+        AND ($5::bigint=0 OR EXISTS(SELECT 1 FROM junior_competition_entries e JOIN junior_teams t ON t.id=e.team_id JOIN junior_competitions competition ON competition.id=e.competition_id WHERE e.competition_id=$5 AND competition.season_id=$1 AND t.club_id=m.club_id AND e.active AND NOT t.archived)))
+        SELECT club_id,id,email,full_name FROM audience a
+        WHERE (cardinality($6::integer[])=0 OR club_id=ANY($6))
+        AND ($8::text='group' OR id=ANY($7::bigint[]))
+        AND NOT EXISTS(SELECT 1 FROM junior_club_status st WHERE st.club_id=a.club_id AND st.inactive)`, filter.SeasonID, filter.ClubID, filter.Role, filter.AgeGroup, filter.CompetitionID, filter.ClubIDs, filter.ContactIDs, filter.Selection)
 	if err != nil {
 		return AudiencePreview{}, err
 	}
@@ -128,6 +137,15 @@ func previewAudience(ctx context.Context, q DBTX, filter AudienceFilter) (Audien
 	}
 	if err = rows.Err(); err != nil {
 		return AudiencePreview{}, err
+	}
+	if filter.Selection == "contacts" {
+		found := map[int64]bool{}
+		for _, recipient := range result.Recipients {
+			found[recipient.ContactID] = true
+		}
+		if len(found) != len(filter.ContactIDs) {
+			return AudiencePreview{}, fmt.Errorf("%w: a selected contact is no longer eligible for this season and audience; review the directory again", ErrConflict)
+		}
 	}
 	sort.Slice(result.Recipients, func(i, j int) bool {
 		a, b := result.Recipients[i], result.Recipients[j]

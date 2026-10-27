@@ -116,7 +116,11 @@ func (s *Server) HandleJuniorAdminRecords() http.HandlerFunc {
 			if seasonID > 0 {
 				href += fmt.Sprintf("?season_id=%d", seasonID)
 			}
-			fmt.Fprintf(w, `<tr><td><a href="%s">%s</a></td><td>%s</td><td>%d</td><td>%d</td></tr>`, href, escapeHTML(club.Name), escapeHTML(junior.ParticipationLabel(club.State)), club.TeamCount, club.ContactCount)
+			status := junior.ParticipationLabel(club.State)
+			if club.Inactive {
+				status = "Inactive junior club · " + status
+			}
+			fmt.Fprintf(w, `<tr><td><a href="%s">%s</a></td><td>%s</td><td>%d</td><td>%d</td></tr>`, href, escapeHTML(club.Name), escapeHTML(status), club.TeamCount, club.ContactCount)
 		}
 		if len(clubs) == 0 {
 			fmt.Fprint(w, `<tr><td colspan="4" class="text-muted p-3">No clubs recorded yet. Add the first club below.</td></tr>`)
@@ -410,7 +414,7 @@ func (s *Server) JuniorClubRecordSection(w http.ResponseWriter, r *http.Request,
 	writeJuniorBadgeSection(w, r, p, profile, readOnly)
 	fmt.Fprintf(w, `<section class="card mb-4"><div class="card-header">Junior participation</div><div class="card-body"><strong>%s</strong><div class="small text-muted">%s</div>`, escapeHTML(junior.ParticipationLabel(profile.Club.State)), escapeHTML(profile.Season.Name))
 	if p.AdminID > 0 && !readOnly && profile.Season.ID > 0 {
-		fmt.Fprintf(w, `<form method="POST" action="%s/participation" class="row g-2 mt-2"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season_id" value="%d"><label class="col-md-4">Participation<select class="form-select" name="state"><option value="active"%s>Active</option><option value="withdrawn"%s>Withdrawn this season</option></select></label><label class="col-md-5">Source / reason<input class="form-control" name="source" maxlength="300" required placeholder="Entry form, previous season or staff decision"></label><div class="col-md-3 align-self-end"><button class="btn btn-primary">Save participation</button></div></form>`, base, csrf, profile.Season.ID, selectedMode(profile.Club.State, "active"), selectedMode(profile.Club.State, "withdrawn"))
+		fmt.Fprintf(w, `<form method="POST" action="%s/participation" class="row g-2 mt-2"><input type="hidden" name="csrf_token" value="%s"><input type="hidden" name="season_id" value="%d"><label class="col-md-4">Participation<select class="form-select" name="state"><option value="active"%s>Active</option><option value="withdrawn"%s>Withdrawn this season</option><option value="not_entered"%s>Not entered this season</option></select></label><label class="col-md-5">Source / reason<input class="form-control" name="source" maxlength="300" required placeholder="Entry form, previous season or staff decision"></label><div class="col-md-3 align-self-end"><button class="btn btn-primary">Save participation</button></div></form>`, base, csrf, profile.Season.ID, selectedMode(profile.Club.State, "active"), selectedMode(profile.Club.State, "withdrawn"), selectedMode(profile.Club.State, "not_entered"))
 	}
 	if len(profile.Participation) > 0 {
 		fmt.Fprint(w, `<details class="mt-3"><summary>Participation history</summary><ul>`)

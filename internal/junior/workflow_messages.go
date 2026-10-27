@@ -11,6 +11,13 @@ import (
 // Workflow messages use current contacts and retain one immutable audience
 // snapshot. A verified lead account is a fallback, not a contact-role grant.
 func workflowRecipients(ctx context.Context, q DBTX, clubID int32, seasonID int64, ageGroup string) ([]Recipient, error) {
+	var inactive bool
+	if err := q.QueryRow(ctx, `SELECT COALESCE((SELECT inactive FROM junior_club_status WHERE club_id=$1),false)`, clubID).Scan(&inactive); err != nil {
+		return nil, err
+	}
+	if inactive {
+		return []Recipient{}, nil
+	}
 	rows, err := q.Query(ctx, `SELECT c.id,c.email,c.full_name FROM junior_contacts c
  WHERE c.club_id=$1 AND NOT c.archived AND c.email<>'' AND EXISTS(
  SELECT 1 FROM junior_contact_roles r WHERE r.contact_id=c.id AND r.club_id=c.club_id AND r.season_id=$2

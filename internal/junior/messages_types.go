@@ -30,6 +30,10 @@ type AudienceFilter struct {
 	SeasonID, CompetitionID int64
 	ClubID                  int32
 	Role, AgeGroup          string
+	ClubIDs                 []int32
+	ContactIDs              []int64
+	// Contacts mode must never fall back to sending to the entire group.
+	Selection string
 }
 type MessageFilter struct {
 	ClubID       int32
