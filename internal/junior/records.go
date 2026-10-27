@@ -109,7 +109,8 @@ func (s *Service) ListClubs(ctx context.Context, p Principal, seasonID int64) ([
 	}
 	rows, err := s.DB.Query(ctx, `SELECT c.id,c.name,COALESCE(c.short_name,''),COALESCE(part.state,'not_entered'),
 		(SELECT count(*) FROM junior_teams team WHERE team.club_id=c.id AND NOT team.archived),
-		(SELECT count(*) FROM junior_contacts contact WHERE contact.club_id=c.id AND NOT contact.archived)
+		(SELECT count(*) FROM junior_contacts contact WHERE contact.club_id=c.id AND NOT contact.archived),
+		COALESCE((SELECT inactive FROM junior_club_status WHERE club_id=c.id),false)
 		FROM clubs c LEFT JOIN junior_club_seasons part ON part.club_id=c.id AND part.season_id=$1 ORDER BY c.name,c.id`, seasonID)
 	if err != nil {
 		return nil, err
@@ -118,7 +119,7 @@ func (s *Service) ListClubs(ctx context.Context, p Principal, seasonID int64) ([
 	var result []ClubSummary
 	for rows.Next() {
 		var item ClubSummary
-		if err = rows.Scan(&item.ID, &item.Name, &item.ShortName, &item.State, &item.TeamCount, &item.ContactCount); err != nil {
+		if err = rows.Scan(&item.ID, &item.Name, &item.ShortName, &item.State, &item.TeamCount, &item.ContactCount, &item.Inactive); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -137,6 +138,9 @@ func (s *Service) ClubProfile(ctx context.Context, p Principal, clubID int32, se
 	err := s.DB.QueryRow(ctx, `SELECT c.id,c.name,COALESCE(c.short_name,''),COALESCE(part.state,'not_entered') FROM clubs c LEFT JOIN junior_club_seasons part ON part.club_id=c.id AND part.season_id=$2 WHERE c.id=$1`, clubID, seasonID).Scan(&result.Club.ID, &result.Club.Name, &result.Club.ShortName, &result.Club.State)
 	if err != nil {
 		return result, recordsError(err)
+	}
+	if err = s.DB.QueryRow(ctx, `SELECT COALESCE((SELECT inactive FROM junior_club_status WHERE club_id=$1),false)`, clubID).Scan(&result.Club.Inactive); err != nil {
+		return result, err
 	}
 	if seasonID > 0 {
 		result.Season, err = recordsSeason(ctx, s.DB, seasonID)
@@ -307,8 +311,8 @@ func (s *Service) SetParticipation(ctx context.Context, p Principal, clubID int3
 	if err = recordsSeasonWrite(ctx, tx, p, seasonID); err != nil {
 		return err
 	}
-	if state != "active" && state != "withdrawn" {
-		return fmt.Errorf("%w: choose active or withdrawn", ErrValidation)
+	if state != "active" && state != "withdrawn" && state != "not_entered" {
+		return fmt.Errorf("%w: choose active, not entered or withdrawn", ErrValidation)
 	}
 	source = strings.TrimSpace(source)
 	if source == "" {

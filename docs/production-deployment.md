@@ -2,7 +2,7 @@
 
 Pushes to `master` deploy only after migrations, formatting, race-enabled tests,
 `go vet`, `gosec`, `govulncheck`, and the production Docker build all pass.
-CI and the production builder use the security-patched Go 1.26.9 toolchain.
+CI and the production builder use Go 1.26.10, including the certificate distrust correction in GO-2026-6809.
 
 The deploy job:
 

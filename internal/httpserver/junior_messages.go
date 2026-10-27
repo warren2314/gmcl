@@ -39,7 +39,22 @@ func juniorMessageFilter(r *http.Request) (junior.AudienceFilter, error) {
 		return filter, err
 	}
 	filter.Role, filter.AgeGroup = r.FormValue("role"), r.FormValue("age_group")
-	return filter, nil
+	filter.Selection = r.FormValue("audience_mode")
+	for _, value := range r.Form["club_ids"] {
+		id, e := strconv.ParseInt(value, 10, 32)
+		if e != nil || id <= 0 {
+			return filter, junior.ErrValidation
+		}
+		filter.ClubIDs = append(filter.ClubIDs, int32(id))
+	}
+	for _, value := range r.Form["contact_ids"] {
+		id, e := strconv.ParseInt(value, 10, 64)
+		if e != nil || id <= 0 {
+			return filter, junior.ErrValidation
+		}
+		filter.ContactIDs = append(filter.ContactIDs, id)
+	}
+	return junior.NormaliseAudienceFilter(filter)
 }
 
 func (s *Server) handleAdminJuniorMessages() http.HandlerFunc {
@@ -61,6 +76,15 @@ func (s *Server) handleAdminJuniorMessages() http.HandlerFunc {
 }
 
 func (s *Server) renderAdminJuniorMessages(w http.ResponseWriter, r *http.Request, filter junior.AudienceFilter, preview *junior.AudiencePreview) {
+	// Preview is rendered directly after POST; preserve its season in navigation.
+	if filter.SeasonID > 0 {
+		query := r.URL.Query()
+		query.Set("season_id", strconv.FormatInt(filter.SeasonID, 10))
+		copied := *r.URL
+		copied.RawQuery = query.Encode()
+		r = r.Clone(r.Context())
+		r.URL = &copied
+	}
 	service := junior.NewService(s.DB)
 	p := s.juniorPrincipal(r)
 	problemsOnly := r.FormValue("queue") == "problems"
@@ -85,6 +109,11 @@ func (s *Server) renderAdminJuniorMessages(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	competitions, err := service.ListCompetitions(r.Context(), p, filter.SeasonID)
+	if err != nil {
+		juniorHTTPError(w, r, err)
+		return
+	}
+	directory, err := service.ContactDirectory(r.Context(), p, filter, "")
 	if err != nil {
 		juniorHTTPError(w, r, err)
 		return
@@ -131,6 +160,7 @@ func (s *Server) renderAdminJuniorMessages(w http.ResponseWriter, r *http.Reques
 		fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, competition.ID, juniorMessageSelected(competition.ID == filter.CompetitionID), escapeHTML(competition.Name))
 	}
 	fmt.Fprint(w, `</select></label></div>`)
+	writeJuniorAudienceSelection(w, filter, clubs, directory)
 	if resolveID != "" {
 		fmt.Fprintf(w, `<div class="alert alert-warning mt-3">Resolving recipients for message #%s. Its existing subject and body will stay unchanged. Select the intended audience and preview it before confirming.</div>`, escapeHTML(resolveID))
 	} else {
@@ -144,7 +174,14 @@ func (s *Server) renderAdminJuniorMessages(w http.ResponseWriter, r *http.Reques
 		}
 		fmt.Fprintf(w, `<div class="alert alert-light border mt-3"><strong>Audience preview: %d unique email addresses</strong><ul class="mb-0">`, len(addresses))
 		for _, recipient := range preview.Recipients {
-			fmt.Fprintf(w, `<li>Club #%d — %s &lt;%s&gt;</li>`, recipient.ClubID, escapeHTML(recipient.Name), escapeHTML(recipient.Email))
+			clubName := fmt.Sprintf("Club #%d", recipient.ClubID)
+			for _, club := range clubs {
+				if club.ID == recipient.ClubID {
+					clubName = club.Name
+					break
+				}
+			}
+			fmt.Fprintf(w, `<li>%s — %s &lt;%s&gt;</li>`, escapeHTML(clubName), escapeHTML(recipient.Name), escapeHTML(recipient.Email))
 		}
 		if len(preview.Recipients) == 0 {
 			fmt.Fprint(w, `<li>No eligible email recipients. A queued message will be marked Needs recipients.</li>`)

@@ -26,6 +26,7 @@ type ClubSummary struct {
 	ID                      int32
 	Name, ShortName, State  string
 	TeamCount, ContactCount int64
+	Inactive                bool
 }
 type Team struct {
 	ID       int64

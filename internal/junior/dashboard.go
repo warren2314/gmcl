@@ -23,7 +23,7 @@ func (s *Service) Dashboard(ctx context.Context, p Principal, seasonID int64) (D
 	if seasonID == 0 {
 		return d, nil
 	}
-	err := s.DB.QueryRow(ctx, `WITH participating AS (SELECT club_id FROM junior_club_seasons WHERE season_id=$1 AND state='active'),
+	err := s.DB.QueryRow(ctx, `WITH participating AS (SELECT club_id FROM junior_club_seasons cs WHERE season_id=$1 AND state='active' AND NOT EXISTS(SELECT 1 FROM junior_club_status st WHERE st.club_id=cs.club_id AND st.inactive)),
  roles AS (SELECT DISTINCT r.club_id,r.role FROM junior_contact_roles r JOIN junior_contacts c ON c.id=r.contact_id
  WHERE r.season_id=$1 AND NOT c.archived AND r.starts_on<=(now() AT TIME ZONE 'Europe/London')::date AND (r.ends_on IS NULL OR r.ends_on>=(now() AT TIME ZONE 'Europe/London')::date)),
  forms AS (SELECT a.status,v.due_date FROM junior_form_assignments a JOIN junior_form_versions v ON v.id=a.version_id

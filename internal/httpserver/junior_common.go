@@ -65,9 +65,12 @@ func (s *Server) juniorPageStart(w http.ResponseWriter, r *http.Request, title s
 		s.writeAdminWorkspaceNav(w, r)
 	}
 	fmt.Fprint(w, `<main class="container py-4" style="max-width:1280px">`)
+	if s.JuniorDemo {
+		fmt.Fprint(w, `<div class="alert alert-warning"><strong>DEMONSTRATION — fictional clubs and records.</strong> Changes affect this demo only. No emails are sent. <a href="/admin/demo-guide">Demo guide and simulated sign-in inbox</a>.</div>`)
+	}
 	if p.AdminID > 0 && !p.ReadOnly {
 		fmt.Fprint(w, `<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Junior administration">`)
-		for _, link := range []struct{ path, label string }{{"", "Junior Home"}, {"clubs", "Clubs and contacts"}, {"forms", "Official forms"}, {"competitions", "Competitions and fixtures"}, {"concessions", "Concession review"}, {"messages", "Messages"}} {
+		for _, link := range []struct{ path, label string }{{"", "Junior Home"}, {"clubs", "Clubs and contacts"}, {"contacts", "Contact directory"}, {"forms", "Official forms"}, {"competitions", "Competitions and fixtures"}, {"concessions", "Concession review"}, {"messages", "Messages"}} {
 			href := "/admin/juniors"
 			if link.path != "" {
 				href += "/" + link.path
@@ -82,7 +85,7 @@ func (s *Server) juniorPageStart(w http.ResponseWriter, r *http.Request, title s
 			base = fmt.Sprintf("/admin/juniors/clubs/%d/preview", p.ClubID)
 		}
 		fmt.Fprint(w, `<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Club portal">`)
-		for _, link := range []struct{ path, label string }{{"", "Club Home"}, {"contacts", "Contacts and teams"}, {"forms", "Official forms"}, {"fixtures", "Official fixtures"}, {"messages", "Messages"}} {
+		for _, link := range []struct{ path, label string }{{"", "Club Home"}, {"contacts", "Contacts and teams"}, {"forms", "Official forms"}, {"fixtures", "Official fixtures"}, {"concessions", "Concessions"}, {"messages", "Messages"}} {
 			href := base
 			if link.path != "" {
 				if p.ReadOnly {

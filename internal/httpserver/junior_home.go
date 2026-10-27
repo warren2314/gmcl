@@ -129,7 +129,7 @@ func (s *Server) handleJuniorClubProfile() http.HandlerFunc {
 				return
 			}
 		}
-		forms, err := svc.ListForms(r.Context(), p, seasonID)
+		workspace, err := svc.ClubWorkspace(r.Context(), p, clubID, seasonID)
 		if err != nil {
 			juniorHTTPError(w, r, err)
 			return
@@ -145,15 +145,12 @@ func (s *Server) handleJuniorClubProfile() http.HandlerFunc {
 			}
 			fmt.Fprintf(w, `<p><a class="btn btn-outline-primary" href="%s">View as Club</a> <a class="btn btn-outline-secondary" href="%s">Club message history</a></p>`, previewURL, messageURL)
 		}
-		if p.AdminID == 0 || p.ReadOnly {
-			fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Official forms</h2><p>Open Official forms above to save a draft, submit a response or see its receipt.</p><ul>`)
-			for _, f := range forms {
-				fmt.Fprintf(w, `<li>%s — due %s · %d outstanding · %d awaiting review · %d completed</li>`, escapeHTML(f.Title), f.DueDate.Format("2 Jan 2006"), f.Outstanding, f.RequiresReview, f.Completed)
-			}
-			if len(forms) == 0 {
-				fmt.Fprint(w, `<li>No official forms assigned for this season.</li>`)
-			}
-			fmt.Fprint(w, `</ul></div></section>`)
+		if profile.Club.Inactive {
+			fmt.Fprint(w, `<div class="alert alert-warning">Inactive junior club — historical records are retained.</div>`)
+		}
+		writeJuniorClubWorkspace(w, r, p, clubID, seasonID, workspace)
+		if p.AdminID > 0 && !p.ReadOnly {
+			writeJuniorClubStatus(w, r, profile)
 		}
 		s.JuniorClubRecordSection(w, r, profile)
 		if p.AdminID > 0 && !p.ReadOnly {

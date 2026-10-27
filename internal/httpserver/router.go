@@ -20,6 +20,7 @@ type Server struct {
 	DB                 *db.Pool
 	LondonLoc          *time.Location
 	JuniorAccessMailer junior.AccessMailer
+	JuniorDemo         bool
 }
 
 func NewServer() (http.Handler, CleanupFunc, error) {

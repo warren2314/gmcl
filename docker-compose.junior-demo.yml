@@ -1,0 +1,61 @@
+# Run from a separate /opt/gmcl-junior-demo directory with its own .env.
+# This file never loads the production .env or mounts a production volume.
+name: gmcl-junior-demo
+services:
+  app:
+    image: ${DEMO_IMAGE:?set the verified demo image}
+    restart: unless-stopped
+    environment:
+      DEMO_DB_DSN: postgres://gmcl_junior_demo:${DEMO_DB_PASSWORD:?set a demo-only password}@junior-demo-db:5432/gmcl_junior_demo?sslmode=disable
+      DEMO_ACCESS_PASSWORD: ${DEMO_ACCESS_PASSWORD:?set a demo-only password}
+      DEMO_SESSION_SECRET: ${DEMO_SESSION_SECRET:?set a demo-only session secret}
+      DEMO_BASE_URL: https://junior-demo.gmcl.co.uk
+      DEMO_EXPIRES_AT: '2026-11-03T00:00:00Z'
+    volumes:
+      - files:/demo-data
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://localhost:8080/health']
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 30s
+    networks:
+      front:
+        aliases: [junior-demo-app]
+      back:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gmcl_junior_demo
+      POSTGRES_DB: gmcl_junior_demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:?set a demo-only password}
+    volumes:
+      - database:/var/lib/postgresql/data
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U gmcl_junior_demo -d gmcl_junior_demo']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      back:
+        aliases: [junior-demo-db]
+networks:
+  front:
+    external: true
+    name: gmcl_appnet
+  back:
+    internal: true
+volumes:
+  database:
+  files:
