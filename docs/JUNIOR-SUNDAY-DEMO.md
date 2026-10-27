@@ -30,6 +30,8 @@ The core workflows and four completion features are present. Real clubs still re
 
 The dedicated Compose project is `gmcl-junior-demo`, using `docker-compose.junior-demo.yml`. The live `gmcl` project and its volumes must not be used for demo reset. Keep the deployed image identity, binary checksum and proxy configuration backup in the host demo directory. Restarting preserves demonstration progress; resetting is a separate explicit operation and must retain the previous demo volume as recovery.
 
+The demo application service is `junior-demo-app`. Never name this service `app`: Compose adds the service name as a DNS alias on the shared proxy network, which would collide with the production application. After any container recreation, verify that only the production application owns the `app` alias, then check both live and demo login endpoints.
+
 The Caddy addition is a separate hostname only. Validate the complete derived configuration before reloading, retain its prior configuration and verify the live health endpoint afterwards. Restarts preserve the container's configuration; if Caddy is recreated from an older image before the demo, reapply the reviewed hostname fragment. The source Caddyfile includes it for subsequent image builds.
 
 After the event, retain the handoff and decide whether to extend the demo or remove the hostname/project. Expiry blocks interactive access without deleting the demonstration records.

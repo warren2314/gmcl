@@ -12,7 +12,8 @@ COPY . .
 # Generate go.sum from go.mod and fetch checksums (host may not have go.sum)
 RUN go mod tidy
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/app ./cmd/app
+# Keep release compilation within the small production host's available memory.
+RUN GOMEMLIMIT=400MiB GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p 1 -o /bin/app ./cmd/app
 
 FROM alpine:3.20
 

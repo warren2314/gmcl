@@ -2,7 +2,7 @@
 # This file never loads the production .env or mounts a production volume.
 name: gmcl-junior-demo
 services:
-  app:
+  junior-demo-app:
     image: ${DEMO_IMAGE:?set the verified demo image}
     restart: unless-stopped
     environment:

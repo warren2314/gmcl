@@ -143,7 +143,7 @@ if [[ "${CADDY_CHANGED}" == "1" ]]; then
 fi
 
 log "Checking end-to-end health"
-curl --fail --silent --show-error --retry 5 --retry-delay 3 --max-time 15 "${HEALTH_URL}" >/dev/null
+curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 --max-time 15 "${HEALTH_URL}" >/dev/null
 
 printf '%s\n' "${PREVIOUS_COMMIT}" > "${APP_DIR}/.previous-successful-deploy"
 printf '%s\n' "${TARGET_COMMIT}" > "${APP_DIR}/.last-successful-deploy"
