@@ -6,7 +6,9 @@ COPY migrations /migrations
 COPY static /static
 COPY images /images
 RUN addgroup -S junior-demo && adduser -S -G junior-demo junior-demo \
-    && mkdir -p /demo-data && chown junior-demo:junior-demo /demo-data
+    && mkdir -p /demo-data && chown junior-demo:junior-demo /demo-data \
+    && chmod 0755 /bin/junior-demo \
+    && chmod -R a+rX /migrations /static /images
 USER junior-demo
 ENV DEMO_HTTP_ADDR=:8080 DEMO_MIGRATE_DIR=/migrations DEMO_ASSET_DIR=/
 EXPOSE 8080
