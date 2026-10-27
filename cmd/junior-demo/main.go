@@ -65,7 +65,7 @@ func run() error {
 	if assets == "" {
 		assets = "."
 	}
-	handler, err := httpserver.NewJuniorDemoHandler(ctx, pool, httpserver.JuniorDemoOptions{Password: password, BaseURL: base, AssetDir: assets, ExpiresAt: expires})
+	handler, err := httpserver.NewJuniorDemoHandler(ctx, pool, httpserver.JuniorDemoOptions{BaseURL: base, AssetDir: assets, ExpiresAt: expires})
 	if err != nil {
 		return err
 	}

@@ -66,7 +66,7 @@ func (s *Server) juniorPageStart(w http.ResponseWriter, r *http.Request, title s
 	}
 	fmt.Fprint(w, `<main class="container py-4" style="max-width:1280px">`)
 	if s.JuniorDemo {
-		fmt.Fprint(w, `<div class="alert alert-warning"><strong>DEMONSTRATION — fictional clubs and records.</strong> Changes affect this demo only. No emails are sent. <a href="/_demo/">Demo guide and simulated sign-in inbox</a>.</div>`)
+		fmt.Fprint(w, `<div class="alert alert-warning"><strong>DEMONSTRATION — fictional clubs and records.</strong> Changes affect this demo only. No emails are sent. <a href="/admin/demo-guide">Demo guide and simulated sign-in inbox</a>.</div>`)
 	}
 	if p.AdminID > 0 && !p.ReadOnly {
 		fmt.Fprint(w, `<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Junior administration">`)

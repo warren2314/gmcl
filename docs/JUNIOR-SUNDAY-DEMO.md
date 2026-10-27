@@ -6,7 +6,7 @@ All clubs, contacts, forms, messages and results are fictional. The demo's own d
 
 ## Before presenting
 
-Open the link on the actual presentation computer. Use `joe-demo` and the supplied demo password at the browser access prompt. Open League Admin and use the same demo credentials at its normal sign-in form. Keep `/_demo/` available in another tab for the guide and simulated sign-in inbox. Do not use a live GMCL password.
+Open the link on the actual presentation computer and sign in normally as `joe-demo` with the supplied demonstration password. Keep `/admin/demo-guide` available in another tab for the guide and simulated sign-in inbox; both require the normal staff session. Do not use a live GMCL password.
 
 Verify the 2027 DEMONSTRATION season is selected. Start with Oakfield's registration outstanding. Riverside has a response to review, Hillcrest has a completed response, Meadowbrook has a returned response and Oakfield has an overdue ground declaration. Willow Park illustrates an inactive club with retained 2026 history.
 

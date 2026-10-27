@@ -22,7 +22,7 @@ Season participation additionally supports an explicit Not entered this season v
 
 ## Demonstration boundary
 
-`cmd/junior-demo` is a separate executable. It requires the dedicated `gmcl_junior_demo` database/user, its own session secret, outer access password and expiry. It constructs only the junior HTTP surface and normal authentication routes; it never calls the production application constructor or starts production workers. SMTP is forcibly unset and outbound sending disabled. Only fictional `@demo.example.invalid` access messages can reach its in-memory simulated inbox.
+`cmd/junior-demo` is a separate executable. It requires the dedicated `gmcl_junior_demo` database/user, its own session secret, strong demonstration account password and expiry. It constructs only the junior HTTP surface and normal authentication routes; it never calls the production application constructor or starts production workers. The guide and simulated inbox require the normal authenticated staff session, avoiding a second browser authentication prompt. SMTP is forcibly unset and outbound sending disabled. Only fictional `@demo.example.invalid` access messages can reach its in-memory simulated inbox.
 
 The demo has its own PostgreSQL container, file volume and credentials. It loads no production .env or volume. The app image is built from explicitly selected runtime artifacts, never a working-directory snapshot containing credentials or backups. Existing production application/database containers remain unchanged when the additional hostname is proxied.
 

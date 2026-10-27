@@ -25,7 +25,7 @@ import (
 
 func TestJuniorDemoRefusesNonDemoDatabasePostgres(t *testing.T) {
 	ctx, pool := newAdminWorkspaceMigratedDB(t)
-	handler, err := NewJuniorDemoHandler(ctx, pool, JuniorDemoOptions{Password: "synthetic-demo-password-not-a-live-credential", BaseURL: "https://demo.example.invalid", ExpiresAt: time.Now().Add(time.Hour)})
+	handler, err := NewJuniorDemoHandler(ctx, pool, JuniorDemoOptions{BaseURL: "https://demo.example.invalid", ExpiresAt: time.Now().Add(time.Hour)})
 	if err == nil || handler != nil {
 		t.Fatal("demo handler accepted an application/test database")
 	}
@@ -94,12 +94,12 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 	if err != nil || again.AdminID != seed.AdminID || again.SeasonID != seed.SeasonID {
 		t.Fatalf("restart changed demo identities: %+v %v", again, err)
 	}
-	handler, err := NewJuniorDemoHandler(ctx, pool, JuniorDemoOptions{Password: password, BaseURL: "https://demo.example.invalid", AssetDir: filepath.Join("..", ".."), ExpiresAt: time.Now().Add(time.Hour)})
+	handler, err := NewJuniorDemoHandler(ctx, pool, JuniorDemoOptions{BaseURL: "https://demo.example.invalid", AssetDir: filepath.Join("..", ".."), ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cookies := map[string]*http.Cookie{}
-	request := func(method, path string, form url.Values, authenticate bool) *httptest.ResponseRecorder {
+	request := func(method, path string, form url.Values) *httptest.ResponseRecorder {
 		if method == http.MethodPost {
 			if form == nil {
 				form = url.Values{}
@@ -110,9 +110,6 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 		}
 		r := httptest.NewRequest(method, "https://demo.example.invalid"+path, strings.NewReader(form.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if authenticate {
-			r.SetBasicAuth("joe-demo", password)
-		}
 		for _, c := range cookies {
 			r.AddCookie(c)
 		}
@@ -123,31 +120,31 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 		}
 		return w
 	}
-	if w := request("GET", "/_demo/", nil, false); w.Code != 401 {
-		t.Fatalf("demo missing outer authentication: %d", w.Code)
+	if w := request("GET", "/admin/demo-guide", nil); w.Code != 303 {
+		t.Fatalf("demo guide missing staff authentication: %d", w.Code)
 	}
-	if w := request("GET", "/admin/cases", nil, true); w.Code != 404 {
+	if w := request("GET", "/admin/cases", nil); w.Code != 404 {
 		t.Fatalf("demo exposed non-junior operation: %d", w.Code)
 	}
-	if w := request("GET", "/admin/login", nil, true); w.Code != 200 {
+	if w := request("GET", "/admin/login", nil); w.Code != 200 {
 		t.Fatalf("demo login: %d", w.Code)
 	}
-	if w := request("POST", "/admin/login", url.Values{"username": {"joe-demo"}, "password": {password}}, true); w.Code != 303 && w.Code != 302 {
+	if w := request("POST", "/admin/login", url.Values{"username": {"joe-demo"}, "password": {password}}); w.Code != 303 && w.Code != 302 {
 		t.Fatalf("normal staff login: %d %s", w.Code, w.Body.String())
 	}
 	for _, path := range []string{"/admin/juniors", "/admin/juniors/contacts", fmt.Sprintf("/admin/juniors/clubs/%d?season_id=%d", seed.Clubs[0], seed.SeasonID), "/admin/juniors/competitions", "/admin/juniors/concessions", "/admin/juniors/messages"} {
-		w := request("GET", path, nil, true)
+		w := request("GET", path, nil)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "DEMONSTRATION") {
 			t.Fatalf("populated demo page %s: %d %s", path, w.Code, w.Body.String())
 		}
 	}
-	if w := request("GET", "/junior/login", nil, true); w.Code != 200 {
+	if w := request("GET", "/junior/login", nil); w.Code != 200 {
 		t.Fatal("club login unavailable")
 	}
-	if w := request("POST", "/junior/login", url.Values{"email": {"lead1@demo.example.invalid"}}, true); w.Code != 200 {
+	if w := request("POST", "/junior/login", url.Values{"email": {"lead1@demo.example.invalid"}}); w.Code != 200 {
 		t.Fatal("club login request failed")
 	}
-	inbox := request("GET", "/_demo/", nil, true)
+	inbox := request("GET", "/admin/demo-guide", nil)
 	match := regexp.MustCompile(`href="(https://demo\.example\.invalid/junior/access\?token=[^"]+)"`).FindStringSubmatch(inbox.Body.String())
 	if len(match) != 2 {
 		t.Fatal("fictional sign-in email missing from simulated inbox")
@@ -156,13 +153,13 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := request("GET", link.RequestURI(), nil, true); w.Code != 200 {
+	if w := request("GET", link.RequestURI(), nil); w.Code != 200 {
 		t.Fatal("one-use sign-in confirmation unavailable")
 	}
-	if w := request("POST", "/junior/access", url.Values{"token": {link.Query().Get("token")}}, true); w.Code != 303 {
+	if w := request("POST", "/junior/access", url.Values{"token": {link.Query().Get("token")}}); w.Code != 303 {
 		t.Fatalf("normal club token redemption: %d %s", w.Code, w.Body.String())
 	}
-	if w := request("GET", "/junior", nil, true); w.Code != 200 || !strings.Contains(w.Body.String(), "Oakfield") {
+	if w := request("GET", "/junior", nil); w.Code != 200 || !strings.Contains(w.Body.String(), "Oakfield") {
 		t.Fatalf("club home: %d %s", w.Code, w.Body.String())
 	}
 	var assignment int64
@@ -170,14 +167,14 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	formPath := fmt.Sprintf("/junior/forms/%d", assignment)
-	if w := request("POST", formPath, url.Values{"action": {"submit"}, "draft_revision": {"0"}, "answer_confirmed": {"yes"}, "answer_notes": {"Fictional club submission during rehearsal"}}, true); w.Code != 303 {
+	if w := request("POST", formPath, url.Values{"action": {"submit"}, "draft_revision": {"0"}, "answer_confirmed": {"yes"}, "answer_notes": {"Fictional club submission during rehearsal"}}); w.Code != 303 {
 		t.Fatalf("actual club submission: %d %s", w.Code, w.Body.String())
 	}
 	var submission int64
 	if err = pool.QueryRow(ctx, `SELECT latest_submission_id FROM junior_form_assignments WHERE id=$1`, assignment).Scan(&submission); err != nil {
 		t.Fatal(err)
 	}
-	if w := request("POST", fmt.Sprintf("/admin/juniors/forms/assignments/%d", assignment), url.Values{"action": {"complete"}, "submission_id": {fmt.Sprint(submission)}, "reason": {"Rehearsal checked"}}, true); w.Code != 303 {
+	if w := request("POST", fmt.Sprintf("/admin/juniors/forms/assignments/%d", assignment), url.Values{"action": {"complete"}, "submission_id": {fmt.Sprint(submission)}, "reason": {"Rehearsal checked"}}); w.Code != 303 {
 		t.Fatalf("actual staff review: %d %s", w.Code, w.Body.String())
 	}
 	state, err := junior.NewService(pool).ClubWorkspace(ctx, junior.Principal{AdminID: seed.AdminID}, seed.Clubs[0], seed.SeasonID)
