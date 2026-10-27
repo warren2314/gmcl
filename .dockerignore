@@ -8,5 +8,11 @@
 .codex-go-cache
 .codex-build
 output
+outputs
+tmp
+backups
+.env
+.env.*
+*.env
 app.exe
 *.log
