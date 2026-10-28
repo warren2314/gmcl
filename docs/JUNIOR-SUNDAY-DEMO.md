@@ -24,6 +24,14 @@ Verify the 2027 DEMONSTRATION season is selected. Start with Oakfield's registra
 
 Normal sign-in links expire after 15 minutes and work once; request another rather than sharing an old link. The simulated inbox exists only in this isolated executable. Requests are throttled for a minute, so wait before requesting repeated links for the same address.
 
+## Grounds and clear clash warnings
+
+Open **Grounds and clashes**. All saved postcodes and addresses are deliberately fictional for Sunday. Show the permitted layouts: **two U11 games OR one U15 game**. A mixed combination needs its own verified layout.
+
+Open **Venue demonstration — U11** and **Venue demonstration — U15**. On **29 May 2027 at 18:00**, two U11 fixtures and one U15 fixture share **Sunday Demonstration Ground**, which belongs to neither home club. The mixed use is blocked with a red warning naming the fixtures and postcode. Move the U15 start to **19:00**, save and refresh the Grounds page: the bookings fit back-to-back. Practice edits persist. Publication stays a separate action and is disabled while blocking warnings remain.
+
+Draft and published junior bookings across competitions are checked. Senior/external bookings and U9 capacity remain separate checks; no clash email is sent. Real addresses and confirmed club layouts will be loaded later. See [Grounds workflow](JUNIOR-GROUNDS-AND-CLASHES.md) for legacy mapping and history behaviour.
+
 ## What to say about scope
 
 The core workflows and four completion features are present. Real clubs still require authoritative roster/contact review, agreed dates and competition setup, verified email/invitations and a small pilot. The mailbox connection is being prepared separately. Results currently use reviewed CSV; there is no connected junior Play-Cricket results feed. Fines and fixture-change negotiation are future enhancements.
