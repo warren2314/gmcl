@@ -94,6 +94,62 @@ func TestJuniorDemoPopulatedJourneyPostgres(t *testing.T) {
 	if err != nil || again.AdminID != seed.AdminID || again.SeasonID != seed.SeasonID {
 		t.Fatalf("restart changed demo identities: %+v %v", again, err)
 	}
+	// Rehearse a pre-directory practice spelling and a presenter time change.
+	// The one-time upgrade must resolve known fictional aliases, not reset work.
+	groundSvc := junior.NewService(pool)
+	staff := junior.Principal{AdminID: seed.AdminID}
+	groundRecords, e := groundSvc.Grounds(ctx, staff)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var canonical int64
+	for _, g := range groundRecords {
+		if g.Name == "Hillcrest Cricket Ground" {
+			canonical = g.ID
+		}
+	}
+	alias, e := groundSvc.SaveGround(ctx, staff, junior.Ground{Name: "HillCrest CC", Address: "Legacy fictional practice alias", Postcode: "ZZ9 9ZZ", Source: "Fictional alias test", RulesConfirmed: true, Layouts: []junior.GroundLayout{{"U13": 1}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	draftRows, e := groundSvc.ListFixtures(ctx, staff, seed.DraftCompetitionID, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	changed := draftRows[0]
+	changed.GroundID = alias
+	changed.StartTime = "19:30"
+	c, e := groundSvc.GetCompetition(ctx, staff, changed.CompetitionID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = groundSvc.SaveDraftFixture(ctx, staff, c.ID, c.Revision, changed); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = pool.Exec(ctx, `DELETE FROM junior_demo_extensions WHERE name='grounds_v2'`); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = juniordemo.Seed(ctx, pool, password); e != nil {
+		t.Fatal(e)
+	}
+	draftRows, e = groundSvc.ListFixtures(ctx, staff, seed.DraftCompetitionID, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, f := range draftRows {
+		if f.ID == changed.ID && (f.GroundID != canonical || f.StartTime != "19:30") {
+			t.Fatalf("alias upgrade reset work or split venue: %+v", f)
+		}
+	}
+	groundRecords, e = groundSvc.Grounds(ctx, staff)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, g := range groundRecords {
+		if g.ID == alias && !g.Archived {
+			t.Fatal("superseded fictional alias still offered")
+		}
+	}
 	handler, err := NewJuniorDemoHandler(ctx, pool, JuniorDemoOptions{BaseURL: "https://demo.example.invalid", AssetDir: filepath.Join("..", ".."), ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)

@@ -49,6 +49,9 @@ func Seed(ctx context.Context, pool *db.Pool, password string) (State, error) {
 		err = json.Unmarshal(data, &out)
 		if err == nil {
 			err = EnsureTeamEntryDemo(ctx, pool, out)
+			if err == nil {
+				err = EnsureGroundDemo(ctx, pool, out)
+			}
 		}
 		return out, err
 	}
@@ -295,6 +298,9 @@ func Seed(ctx context.Context, pool *db.Pool, password string) (State, error) {
 	_, err = pool.Exec(ctx, `INSERT INTO junior_demo_state(singleton,state) VALUES(true,$1::jsonb)`, string(data))
 	if err == nil {
 		err = EnsureTeamEntryDemo(ctx, pool, out)
+		if err == nil {
+			err = EnsureGroundDemo(ctx, pool, out)
+		}
 	}
 	return out, err
 }

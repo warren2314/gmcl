@@ -19,6 +19,10 @@ func (s *Service) fixtureAdminTx(ctx context.Context, p Principal) (pgx.Tx, erro
 		_ = tx.Rollback(ctx)
 		return nil, err
 	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(764320097)`); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
 	return tx, nil
 }
 func loadCompetition(ctx context.Context, q DBTX, id int64, lock bool) (Competition, error) {
@@ -228,7 +232,7 @@ func (s *Service) SaveFixtureConstraints(ctx context.Context, p Principal, id, e
 		}
 	}
 	for _, g := range f.Grounds {
-		if g.ClubID <= 0 || strings.TrimSpace(g.Name) == "" || len(g.Name) > 200 || strings.ContainsAny(g.Name, "\r\n\x00") || g.Capacity < 1 || g.Capacity > 20 {
+		if g.ClubID <= 0 || (g.GroundID == 0 && (strings.TrimSpace(g.Name) == "" || len(g.Name) > 200 || strings.ContainsAny(g.Name, "\r\n\x00") || g.Capacity < 1 || g.Capacity > 20)) {
 			return fixtureValidation("ground club, name and capacity1–20 required")
 		}
 	}
@@ -248,6 +252,9 @@ func (s *Service) SaveFixtureConstraints(ctx context.Context, p Principal, id, e
 	}
 	if c.Revision != expected {
 		return ErrConflict
+	}
+	if err = resolveGroundConstraints(ctx, tx, c, &f); err != nil {
+		return err
 	}
 	raw, err := json.Marshal(f)
 	if err != nil {
@@ -296,11 +303,22 @@ func (s *Service) GenerateFixtures(ctx context.Context, p Principal, id, expecte
 	if err != nil {
 		return err
 	}
+	if err = resolveGroundConstraints(ctx, tx, c, &constraints); err != nil {
+		return err
+	}
 	fixtures, err := GenerateFixtureSchedule(c, entries, constraints)
 	if err != nil {
 		return err
 	}
-	otherPublished, err := loadFixtureRows(ctx, tx, 0, true, 0)
+	if err = hydrateFixtureGrounds(ctx, tx, fixtures); err != nil {
+		return err
+	}
+	for _, f := range fixtures {
+		if f.RequiresSavedGround && f.GroundID == 0 {
+			return fixtureValidation("choose a saved home ground for every participating club before generating fixtures")
+		}
+	}
+	otherPublished, err := loadOtherJuniorBookings(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -321,7 +339,7 @@ func (s *Service) GenerateFixtures(ctx context.Context, p Principal, id, expecte
 		return err
 	}
 	for _, f := range fixtures {
-		if _, err = tx.Exec(ctx, `INSERT INTO junior_fixtures(competition_id,generation_id,home_team_id,away_team_id,match_date,start_time,ground_name) VALUES($1,$2,$3,$4,$5::date,$6,$7)`, id, generationID, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, f.GroundName); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO junior_fixtures(competition_id,generation_id,home_team_id,away_team_id,match_date,start_time,ground_name,ground_id) VALUES($1,$2,$3,$4,$5::date,$6,$7,NULLIF($8,0))`, id, generationID, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, f.GroundName, f.GroundID); err != nil {
 			return err
 		}
 	}
@@ -364,8 +382,20 @@ func (s *Service) SaveDraftFixture(ctx context.Context, p Principal, id, expecte
 	if f.MatchDate < c.StartDate || f.MatchDate > c.EndDate {
 		return fixtureValidation("fixture outside competition window")
 	}
+	f.AgeGroup = c.AgeGroup
+	resolved := []Fixture{f}
+	if err = hydrateFixtureGrounds(ctx, tx, resolved); err != nil {
+		return err
+	}
+	f = resolved[0]
+	if f.GroundArchived {
+		return fixtureValidation("choose an active saved venue")
+	}
+	if f.RequiresSavedGround && f.GroundID == 0 {
+		return fixtureValidation("choose a saved venue, including for neutral fixtures")
+	}
 	if f.ID == 0 {
-		err = tx.QueryRow(ctx, `INSERT INTO junior_fixtures(competition_id,home_team_id,away_team_id,match_date,start_time,ground_name) VALUES($1,$2,$3,$4::date,$5,$6) RETURNING id`, id, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, strings.TrimSpace(f.GroundName)).Scan(&f.ID)
+		err = tx.QueryRow(ctx, `INSERT INTO junior_fixtures(competition_id,home_team_id,away_team_id,match_date,start_time,ground_name,ground_id) VALUES($1,$2,$3,$4::date,$5,$6,NULLIF($7,0)) RETURNING id`, id, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, strings.TrimSpace(f.GroundName), f.GroundID).Scan(&f.ID)
 	} else {
 		var oldHome, oldAway int64
 		var observed bool
@@ -379,7 +409,7 @@ func (s *Service) SaveDraftFixture(ctx context.Context, p Principal, id, expecte
 		if observed && (oldHome != f.HomeTeamID || oldAway != f.AwayTeamID) {
 			return fixtureValidation("teams cannot change after result evidence exists")
 		}
-		_, err = tx.Exec(ctx, `UPDATE junior_fixtures SET home_team_id=$3,away_team_id=$4,match_date=$5::date,start_time=$6,ground_name=$7 WHERE id=$1 AND competition_id=$2`, f.ID, id, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, strings.TrimSpace(f.GroundName))
+		_, err = tx.Exec(ctx, `UPDATE junior_fixtures SET home_team_id=$3,away_team_id=$4,match_date=$5::date,start_time=$6,ground_name=$7,ground_id=NULLIF($8,0) WHERE id=$1 AND competition_id=$2`, f.ID, id, f.HomeTeamID, f.AwayTeamID, f.MatchDate, f.StartTime, strings.TrimSpace(f.GroundName), f.GroundID)
 	}
 	if err != nil {
 		return err
@@ -413,7 +443,14 @@ func loadFixtureRows(ctx context.Context, q DBTX, id int64, published bool, club
 			predicate = `selected_pub.id=$3`
 		}
 	}
-	query := `SELECT ` + fixtureID + `,` + compID + `,` + publication + `,f.home_team_id,f.away_team_id,h.club_id,a.club_id,f.match_date::text,f.start_time,f.ground_name,h.name,a.name,hc.name,ac.name,` + constraintJSON + `,co.season_id,co.name,co.age_group,co.division FROM ` + table + constraintsJoin + ` JOIN junior_competitions co ON co.id=` + compID + ` JOIN junior_teams h ON h.id=f.home_team_id JOIN junior_teams a ON a.id=f.away_team_id JOIN clubs hc ON hc.id=h.club_id JOIN clubs ac ON ac.id=a.club_id WHERE ` + predicate + ` AND ($1::bigint=0 OR ` + compID + `=$1) AND ($2::int=0 OR h.club_id=$2 OR a.club_id=$2) ORDER BY f.match_date,f.start_time,` + fixtureID
+	groundID, postcode, address := `COALESCE(f.ground_id,0)`, `''::text`, `''::text`
+	if published {
+		constraintsJoin += ` LEFT JOIN LATERAL(SELECT ground_id FROM junior_publication_ground_links l WHERE l.publication_id=f.publication_id AND l.fixture_id=f.fixture_id ORDER BY l.id DESC LIMIT 1) gl ON true `
+		groundID = `COALESCE(f.ground_id,gl.ground_id,0)`
+		postcode = `f.ground_postcode`
+		address = `f.ground_address`
+	}
+	query := `SELECT ` + fixtureID + `,` + compID + `,` + publication + `,f.home_team_id,f.away_team_id,h.club_id,a.club_id,f.match_date::text,f.start_time,f.ground_name,h.name,a.name,hc.name,ac.name,` + constraintJSON + `,co.season_id,co.name,co.age_group,co.division,` + groundID + `,` + postcode + `,` + address + ` FROM ` + table + constraintsJoin + ` JOIN junior_competitions co ON co.id=` + compID + ` JOIN junior_teams h ON h.id=f.home_team_id JOIN junior_teams a ON a.id=f.away_team_id JOIN clubs hc ON hc.id=h.club_id JOIN clubs ac ON ac.id=a.club_id WHERE ` + predicate + ` AND ($1::bigint=0 OR ` + compID + `=$1) AND ($2::int=0 OR h.club_id=$2 OR a.club_id=$2) ORDER BY f.match_date,f.start_time,` + fixtureID
 	args := []any{id, clubID}
 	if published && publicationID > 0 {
 		args = append(args, publicationID)
@@ -427,7 +464,7 @@ func loadFixtureRows(ctx context.Context, q DBTX, id int64, published bool, club
 	for rows.Next() {
 		var f Fixture
 		var raw []byte
-		if err = rows.Scan(&f.ID, &f.CompetitionID, &f.PublicationID, &f.HomeTeamID, &f.AwayTeamID, &f.HomeClubID, &f.AwayClubID, &f.MatchDate, &f.StartTime, &f.GroundName, &f.HomeTeamName, &f.AwayTeamName, &f.HomeClubName, &f.AwayClubName, &raw, &f.SeasonID, &f.CompetitionName, &f.AgeGroup, &f.Division); err != nil {
+		if err = rows.Scan(&f.ID, &f.CompetitionID, &f.PublicationID, &f.HomeTeamID, &f.AwayTeamID, &f.HomeClubID, &f.AwayClubID, &f.MatchDate, &f.StartTime, &f.GroundName, &f.HomeTeamName, &f.AwayTeamName, &f.HomeClubName, &f.AwayClubName, &raw, &f.SeasonID, &f.CompetitionName, &f.AgeGroup, &f.Division, &f.GroundID, &f.GroundPostcode, &f.GroundAddress); err != nil {
 			return nil, err
 		}
 		var snapshot FixtureConstraints
@@ -440,9 +477,21 @@ func loadFixtureRows(ctx context.Context, q DBTX, id int64, published bool, club
 				f.GroundCapacity = g.Capacity
 			}
 		}
+		if published {
+			f.BookingState = "published"
+		} else {
+			f.BookingState = "draft"
+		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err = hydrateFixtureGrounds(ctx, q, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 func (s *Service) ListFixtures(ctx context.Context, p Principal, id int64, published bool) ([]Fixture, error) {
 	if err := Authorize(ctx, s.DB, p, p.ClubID, false); err != nil {
@@ -469,7 +518,7 @@ func (s *Service) FixtureChecks(ctx context.Context, p Principal, id int64) ([]F
 	if err != nil {
 		return nil, err
 	}
-	all, err := loadFixtureRows(ctx, s.DB, 0, true, 0)
+	all, err := loadOtherJuniorBookings(ctx, s.DB, id)
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +563,7 @@ func (s *Service) PublishFixtures(ctx context.Context, p Principal, id, expected
 	if err != nil {
 		return 0, err
 	}
-	all, err := loadFixtureRows(ctx, tx, 0, true, 0)
+	all, err := loadOtherJuniorBookings(ctx, tx, id)
 	if err != nil {
 		return 0, err
 	}
@@ -549,7 +598,7 @@ func (s *Service) PublishFixtures(ctx context.Context, p Principal, id, expected
 	if !acknowledge || strings.TrimSpace(reason) == "" || len(reason) > 10000 {
 		return 0, fixtureValidation("record acknowledgement of ground/source coverage gaps before publication")
 	}
-	raw, err := json.Marshal(map[string]any{"constraints": constraints, "issues": issues})
+	raw, err := json.Marshal(map[string]any{"constraints": constraints, "issues": issues, "venue_bookings": drafts})
 	if err != nil {
 		return 0, err
 	}
@@ -558,7 +607,7 @@ func (s *Service) PublishFixtures(ctx context.Context, p Principal, id, expected
 	if err != nil {
 		return 0, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO junior_publication_fixtures(publication_id,fixture_id,home_team_id,away_team_id,match_date,start_time,ground_name) SELECT $2,id,home_team_id,away_team_id,match_date,start_time,ground_name FROM junior_fixtures WHERE competition_id=$1 AND NOT retired`, id, publicationID)
+	_, err = tx.Exec(ctx, `INSERT INTO junior_publication_fixtures(publication_id,fixture_id,home_team_id,away_team_id,match_date,start_time,ground_name,ground_id,ground_postcode,ground_address) SELECT $2,f.id,f.home_team_id,f.away_team_id,f.match_date,f.start_time,COALESCE(g.name,f.ground_name),f.ground_id,COALESCE(g.postcode,''),COALESCE(g.address,'') FROM junior_fixtures f LEFT JOIN junior_grounds g ON g.id=f.ground_id WHERE f.competition_id=$1 AND NOT f.retired`, id, publicationID)
 	if err != nil {
 		return 0, err
 	}

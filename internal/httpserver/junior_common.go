@@ -70,7 +70,7 @@ func (s *Server) juniorPageStart(w http.ResponseWriter, r *http.Request, title s
 	}
 	if p.AdminID > 0 && !p.ReadOnly {
 		fmt.Fprint(w, `<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Junior administration">`)
-		for _, link := range []struct{ path, label string }{{"", "Junior Home"}, {"clubs", "Clubs and contacts"}, {"contacts", "Contact directory"}, {"forms", "Official forms"}, {"competitions", "Competitions and fixtures"}, {"concessions", "Concession review"}, {"messages", "Messages"}} {
+		for _, link := range []struct{ path, label string }{{"", "Junior Home"}, {"clubs", "Clubs and contacts"}, {"contacts", "Contact directory"}, {"forms", "Official forms"}, {"grounds", "Grounds and clashes"}, {"competitions", "Competitions and fixtures"}, {"concessions", "Concession review"}, {"messages", "Messages"}} {
 			href := "/admin/juniors"
 			if link.path != "" {
 				href += "/" + link.path

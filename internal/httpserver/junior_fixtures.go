@@ -188,8 +188,9 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 					seen[entry.ClubID] = true
 					key := strconv.FormatInt(int64(entry.ClubID), 10)
 					name := strings.TrimSpace(r.FormValue("ground_" + key))
-					if name != "" {
-						f.Grounds = append(f.Grounds, junior.GroundConstraint{ClubID: entry.ClubID, Name: name, Capacity: int(juniorFixtureFormID(r, "capacity_"+key))})
+					groundID := juniorFixtureFormID(r, "ground_id_"+key)
+					if name != "" || groundID > 0 {
+						f.Grounds = append(f.Grounds, junior.GroundConstraint{ClubID: entry.ClubID, GroundID: groundID, Name: name, Capacity: int(juniorFixtureFormID(r, "capacity_"+key))})
 					}
 					for _, date := range juniorFixtureDates(r.FormValue("unavailable_" + key)) {
 						f.Unavailable = append(f.Unavailable, junior.UnavailableDate{ClubID: entry.ClubID, Date: date})
@@ -199,7 +200,7 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 			case "generate":
 				err = svc.GenerateFixtures(r.Context(), p, id, revision, r.FormValue("replace_draft") == "1")
 			case "save_fixture":
-				err = svc.SaveDraftFixture(r.Context(), p, id, revision, junior.Fixture{ID: juniorFixtureFormID(r, "fixture_id"), HomeTeamID: juniorFixtureFormID(r, "home_team_id"), AwayTeamID: juniorFixtureFormID(r, "away_team_id"), MatchDate: r.FormValue("match_date"), StartTime: r.FormValue("start_time"), GroundName: r.FormValue("ground_name")})
+				err = svc.SaveDraftFixture(r.Context(), p, id, revision, junior.Fixture{ID: juniorFixtureFormID(r, "fixture_id"), HomeTeamID: juniorFixtureFormID(r, "home_team_id"), AwayTeamID: juniorFixtureFormID(r, "away_team_id"), MatchDate: r.FormValue("match_date"), StartTime: r.FormValue("start_time"), GroundName: r.FormValue("ground_name"), GroundID: juniorFixtureFormID(r, "ground_id")})
 			case "retire_fixture":
 				err = svc.RetireDraftFixture(r.Context(), p, id, revision, juniorFixtureFormID(r, "fixture_id"), r.FormValue("reason"))
 			case "publish":
@@ -243,6 +244,11 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 			juniorHTTPError(w, r, err)
 			return
 		}
+		grounds, err := svc.Grounds(r.Context(), p)
+		if err != nil {
+			juniorHTTPError(w, r, err)
+			return
+		}
 		options := []junior.CompetitionEntry{}
 		rows, err := s.DB.Query(r.Context(), `SELECT t.id,t.club_id,t.name,c.name FROM junior_teams t JOIN clubs c ON c.id=t.club_id JOIN junior_club_seasons cs ON cs.club_id=t.club_id WHERE cs.season_id=$1 AND cs.state='active' AND NOT t.archived ORDER BY c.name,t.name,t.id`, c.SeasonID)
 		if err != nil {
@@ -266,6 +272,7 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 		}
 		s.juniorPageStart(w, r, c.Name)
 		defer juniorPageEnd(w)
+		fmt.Fprint(w, `<p><a href="/admin/juniors/grounds">Grounds and clashes: addresses, postcodes and permitted layouts</a></p>`)
 		fmt.Fprintf(w, `<p>%s · %s · %s to %s · draft revision%d</p><div class="d-flex gap-2 flex-wrap mb-4"><a class="btn btn-outline-primary" href="%s">Official fixtures</a><a class="btn btn-outline-primary" href="/admin/juniors/results?competition_id=%d">Results and source history</a></div>`, escapeHTML(juniorCompetitionAgeDivision(c)), escapeHTML(c.Format), escapeHTML(c.StartDate), escapeHTML(c.EndDate), c.Revision, escapeHTML(juniorFixtureLink(p, "fixtures", id)), id)
 		if c.SeasonState == "closed" {
 			fmt.Fprint(w, `<div class="alert alert-info">This junior season is closed. Fixtures and result records are read-only.</div><h2 class="h4">Retained draft schedule</h2><div class="table-responsive"><table class="table"><thead><tr><th>Fixture</th><th>Date and time</th><th>Home</th><th>Away</th><th>Ground</th></tr></thead><tbody>`)
@@ -307,10 +314,12 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 		sort.Slice(clubIDs, func(i, j int) bool { return clubs[clubIDs[i]].ClubName < clubs[clubIDs[j]].ClubName })
 		for _, clubID := range clubIDs {
 			ground := ""
+			var groundID int64
 			capacity := 1
 			for _, g := range constraints.Grounds {
 				if g.ClubID == clubID {
 					ground = g.Name
+					groundID = g.GroundID
 					capacity = g.Capacity
 					break
 				}
@@ -321,7 +330,14 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 					unavailable = append(unavailable, u.Date)
 				}
 			}
-			fmt.Fprintf(w, `<fieldset class="col-12 border rounded p-3"><legend class="h6">%s</legend><div class="row g-2"><div class="col-md-5"><label class="form-label">Home ground (blank means unknown)</label><input class="form-control" name="ground_%d" value="%s" maxlength="200"></div><div class="col-md-2"><label class="form-label">Concurrent pitches</label><input class="form-control" type="number" name="capacity_%d" value="%d" min="1" max="20"></div><div class="col-md-5"><label class="form-label">Unavailable dates — one per line</label><textarea class="form-control" name="unavailable_%d" rows="2">%s</textarea></div></div></fieldset>`, escapeHTML(clubs[clubID].ClubName), clubID, escapeHTML(ground), clubID, capacity, clubID, escapeHTML(strings.Join(unavailable, "\n")))
+			fmt.Fprintf(w, `<fieldset class="col-12 border rounded p-3"><legend class="h6">%s</legend><div class="row g-2"><div class="col-md-7">`, escapeHTML(clubs[clubID].ClubName))
+			if len(grounds) > 0 && c.AgeGroup != "U9" {
+				fmt.Fprint(w, `<label class="form-label">Saved home venue (neutral venues may also be selected)</label>`)
+				juniorGroundSelect(w, fmt.Sprintf("ground_id_%d", clubID), groundID, grounds)
+			} else {
+				fmt.Fprintf(w, `<label class="form-label">Home ground (blank means unknown)</label><input class="form-control" name="ground_%d" value="%s" maxlength="200"><label class="form-label">Concurrent pitches</label><input class="form-control" type="number" name="capacity_%d" value="%d" min="1" max="20">`, clubID, escapeHTML(ground), clubID, capacity)
+			}
+			fmt.Fprintf(w, `</div><div class="col-md-5"><label class="form-label">Unavailable dates — one per line</label><textarea class="form-control" name="unavailable_%d" rows="2">%s</textarea></div></div></fieldset>`, clubID, escapeHTML(strings.Join(unavailable, "\n")))
 		}
 		fmt.Fprint(w, `<div><button class="btn btn-primary">Save dates and constraints</button></div></form></div></section>`)
 		fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Draft schedule</h2><p>Draft edits do not change the official publication. Regeneration retains the replaced draft as history.</p>`)
@@ -338,19 +354,29 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 			fmt.Fprintf(w, `<div class="alert alert-%s py-2">%s</div>`, class, escapeHTML(issue.Message))
 		}
 		for _, f := range fixtures {
-			s.renderJuniorDraftFixtureForm(w, r, c, entries, f)
+			s.renderJuniorDraftFixtureForm(w, r, c, entries, f, grounds)
 			fmt.Fprint(w, `<form method="POST" class="d-flex flex-wrap gap-2 mb-3">`)
 			juniorFixtureCSRF(w, r)
 			fmt.Fprintf(w, `<input type="hidden" name="action" value="retire_fixture"><input type="hidden" name="revision" value="%d"><input type="hidden" name="fixture_id" value="%d"><label class="visually-hidden" for="retire-%d">Removal reason</label><input id="retire-%d" class="form-control" style="max-width:30rem" name="reason" placeholder="Reason for removing this draft fixture" required maxlength="10000"><button class="btn btn-sm btn-outline-danger">Remove draft fixture</button></form>`, c.Revision, f.ID, f.ID, f.ID)
 		}
 		fmt.Fprint(w, `<h3 class="h5 mt-3">Add manual fixture</h3>`)
-		s.renderJuniorDraftFixtureForm(w, r, c, entries, junior.Fixture{MatchDate: c.StartDate, StartTime: c.DefaultStartTime})
+		s.renderJuniorDraftFixtureForm(w, r, c, entries, junior.Fixture{MatchDate: c.StartDate, StartTime: c.DefaultStartTime}, grounds)
+		blocked := ""
+		for _, issue := range issues {
+			if issue.Blocking {
+				blocked = " disabled"
+				break
+			}
+		}
+		if blocked != "" {
+			fmt.Fprint(w, `<p class="text-danger">Resolve the blocking warnings before publishing official fixtures.</p>`)
+		}
 		fmt.Fprint(w, `<hr><form method="POST">`)
 		juniorFixtureCSRF(w, r)
-		fmt.Fprintf(w, `<input type="hidden" name="action" value="publish"><input type="hidden" name="revision" value="%d"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="acknowledge" value="1" required>I have checked missing ground information and external/senior bookings.</label><label class="form-label">Publication / correction reason and checks performed</label><textarea class="form-control mb-3" name="reason" required maxlength="10000"></textarea><button class="btn btn-success">Publish official fixtures</button></form></div></section>`, c.Revision)
+		fmt.Fprintf(w, `<input type="hidden" name="action" value="publish"><input type="hidden" name="revision" value="%d"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="acknowledge" value="1" required>I have checked missing ground information and external/senior bookings.</label><label class="form-label">Publication / correction reason and checks performed</label><textarea class="form-control mb-3" name="reason" required maxlength="10000"></textarea><button class="btn btn-success"%s>Publish official fixtures</button></form></div></section>`, c.Revision, blocked)
 	}
 }
-func (s *Server) renderJuniorDraftFixtureForm(w http.ResponseWriter, r *http.Request, c junior.Competition, entries []junior.CompetitionEntry, f junior.Fixture) {
+func (s *Server) renderJuniorDraftFixtureForm(w http.ResponseWriter, r *http.Request, c junior.Competition, entries []junior.CompetitionEntry, f junior.Fixture, grounds []junior.Ground) {
 	fmt.Fprint(w, `<form method="POST" class="row g-2 border rounded p-2 mb-3">`)
 	juniorFixtureCSRF(w, r)
 	fmt.Fprintf(w, `<input type="hidden" name="action" value="save_fixture"><input type="hidden" name="revision" value="%d"><input type="hidden" name="fixture_id" value="%d">`, c.Revision, f.ID)
@@ -368,7 +394,16 @@ func (s *Server) renderJuniorDraftFixtureForm(w http.ResponseWriter, r *http.Req
 		}
 		fmt.Fprint(w, `</select></div>`)
 	}
-	fmt.Fprintf(w, `<div class="col-md-2"><label class="form-label">Date</label><input class="form-control" type="date" name="match_date" value="%s" required></div><div class="col-md-2"><label class="form-label">Start</label><input class="form-control" type="time" name="start_time" value="%s" required></div><div class="col-md-2"><label class="form-label">Ground</label><input class="form-control" name="ground_name" value="%s" maxlength="200"></div><div><button class="btn btn-sm btn-primary">Save draft fixture</button><span class="small text-muted ms-2">Fixture%d</span></div></form>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime), escapeHTML(f.GroundName), f.ID)
+	fmt.Fprintf(w, `<div class="col-md-2"><label class="form-label">Date</label><input class="form-control" type="date" name="match_date" value="%s" required></div><div class="col-md-2"><label class="form-label">Start</label><input class="form-control" type="time" name="start_time" value="%s" required></div><div class="col-12"><label class="form-label">Ground / neutral venue</label>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime))
+	if len(grounds) > 0 && c.AgeGroup != "U9" {
+		juniorGroundSelect(w, "ground_id", f.GroundID, grounds)
+		if f.ID > 0 && f.GroundID == 0 {
+			fmt.Fprintf(w, `<p class="text-danger">Choose the saved venue for this older label: %s</p>`, escapeHTML(f.GroundName))
+		}
+	} else {
+		fmt.Fprintf(w, `<input class="form-control" name="ground_name" value="%s" maxlength="200">`, escapeHTML(f.GroundName))
+	}
+	fmt.Fprintf(w, `</div><div><button class="btn btn-sm btn-primary">Save draft fixture</button><span class="small text-muted ms-2">Fixture %d</span></div></form>`, f.ID)
 }
 func (s *Server) handleJuniorFixture() http.HandlerFunc { return s.handleJuniorFixtures() }
 func juniorCompetitionAgeDivision(c junior.Competition) string {
@@ -453,7 +488,7 @@ func juniorFilterFixtures(items []junior.Fixture, q url.Values) ([]junior.Fixtur
 		if q.Get("date_to") != "" && f.MatchDate > q.Get("date_to") {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(f.CompetitionName+" "+f.Division+" "+f.HomeClubName+" "+f.AwayClubName+" "+f.HomeTeamName+" "+f.AwayTeamName+" "+f.GroundName), query) {
+		if query != "" && !strings.Contains(strings.ToLower(f.CompetitionName+" "+f.Division+" "+f.HomeClubName+" "+f.AwayClubName+" "+f.HomeTeamName+" "+f.AwayTeamName+" "+f.GroundName+" "+f.GroundPostcode+" "+f.GroundAddress), query) {
 			continue
 		}
 		out = append(out, f)
@@ -553,7 +588,7 @@ func (s *Server) handleJuniorFixtures() http.HandlerFunc {
 		fmt.Fprintf(w, `<a class="btn btn-outline-secondary" href="%s">Export matching fixtures</a></div><p>%d fixtures. Official publication is independent of email delivery.</p>`, escapeHTML(export.String()), len(items))
 		fmt.Fprint(w, `<div class="table-responsive"><table class="table"><thead><tr><th>Date/start</th><th>Competition</th><th>Home</th><th>Away</th><th>Ground</th><th>Publication</th></tr></thead><tbody>`)
 		for _, f := range items {
-			fmt.Fprintf(w, `<tr><td>%s %s<div class="small">Fixture%d</div></td><td>%s<div class="small">%s · %s</div></td><td>%s — %s</td><td>%s — %s</td><td>%s</td><td>%d</td></tr>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime), f.ID, escapeHTML(f.CompetitionName), escapeHTML(f.AgeGroup), escapeHTML(f.Division), escapeHTML(f.HomeClubName), escapeHTML(f.HomeTeamName), escapeHTML(f.AwayClubName), escapeHTML(f.AwayTeamName), escapeHTML(f.GroundName), f.PublicationID)
+			fmt.Fprintf(w, `<tr><td>%s %s<div class="small">Fixture%d</div></td><td>%s<div class="small">%s · %s</div></td><td>%s — %s</td><td>%s — %s</td><td>%s</td><td>%d</td></tr>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime), f.ID, escapeHTML(f.CompetitionName), escapeHTML(f.AgeGroup), escapeHTML(f.Division), escapeHTML(f.HomeClubName), escapeHTML(f.HomeTeamName), escapeHTML(f.AwayClubName), escapeHTML(f.AwayTeamName), escapeHTML(f.GroundName+" · "+f.GroundPostcode+" · "+f.GroundAddress), f.PublicationID)
 		}
 		fmt.Fprint(w, `</tbody></table></div>`)
 	}

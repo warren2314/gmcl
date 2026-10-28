@@ -18,6 +18,7 @@ type CompetitionEntry struct {
 	TeamName, ClubName string
 }
 type GroundConstraint struct {
+	GroundID int64  `json:"ground_id,omitempty"`
 	ClubID   int32  `json:"club_id"`
 	Name     string `json:"name"`
 	Capacity int    `json:"capacity"`
@@ -34,6 +35,10 @@ type FixtureConstraints struct {
 	DurationMinutes int                `json:"duration_minutes"`
 }
 type Fixture struct {
+	GroundID, GroundRevision                                                                 int64
+	GroundPostcode, GroundAddress, BookingState                                              string
+	GroundLayouts                                                                            []GroundLayout
+	GroundArchived, RequiresSavedGround                                                      bool
 	DurationMinutes, GroundCapacity                                                          int
 	ID, CompetitionID, PublicationID, HomeTeamID, AwayTeamID                                 int64
 	HomeClubID, AwayClubID                                                                   int32
@@ -95,9 +100,11 @@ func GenerateFixtureSchedule(c Competition, entries []CompetitionEntry, f Fixtur
 		return nil, fixtureValidation("invalid default start time")
 	}
 	grounds := map[int32]string{}
+	groundIDs := map[int32]int64{}
 	for _, g := range f.Grounds {
 		if grounds[g.ClubID] == "" {
 			grounds[g.ClubID] = strings.TrimSpace(g.Name)
+			groundIDs[g.ClubID] = g.GroundID
 		}
 	}
 	out := []Fixture{}
@@ -116,7 +123,7 @@ func GenerateFixtureSchedule(c Competition, entries []CompetitionEntry, f Fixtur
 				if leg == 1 {
 					h, a = a, h
 				}
-				out = append(out, Fixture{CompetitionID: c.ID, HomeTeamID: h.TeamID, AwayTeamID: a.TeamID, HomeClubID: h.ClubID, AwayClubID: a.ClubID, HomeTeamName: h.TeamName, AwayTeamName: a.TeamName, HomeClubName: h.ClubName, AwayClubName: a.ClubName, MatchDate: dates[round+leg*rounds], StartTime: c.DefaultStartTime, GroundName: grounds[h.ClubID]})
+				out = append(out, Fixture{CompetitionID: c.ID, AgeGroup: c.AgeGroup, CompetitionName: c.Name, DurationMinutes: f.DurationMinutes, GroundID: groundIDs[h.ClubID], HomeTeamID: h.TeamID, AwayTeamID: a.TeamID, HomeClubID: h.ClubID, AwayClubID: a.ClubID, HomeTeamName: h.TeamName, AwayTeamName: a.TeamName, HomeClubName: h.ClubName, AwayClubName: a.ClubName, MatchDate: dates[round+leg*rounds], StartTime: c.DefaultStartTime, GroundName: grounds[h.ClubID]})
 			}
 		}
 		last := rotation[len(rotation)-1]
@@ -254,6 +261,9 @@ func CheckFixtureSchedule(c Competition, f FixtureConstraints, drafts, otherPubl
 		if own && start+duration > 1440 {
 			issues = append(issues, FixtureIssue{"overnight_fixture", "Fixture extends beyond its calendar date", true})
 		}
+		if x.GroundID > 0 {
+			continue
+		} // Saved venues use shared, age-specific layouts below.
 		if ground == "" {
 			if own {
 				issues = append(issues, FixtureIssue{"missing_ground", fmt.Sprintf("Fixture%d has no verified ground", x.ID), false})
@@ -304,12 +314,12 @@ func CheckFixtureSchedule(c Competition, f FixtureConstraints, drafts, otherPubl
 			}
 		}
 	}
-	return issues
+	return append(issues, CheckGroundLayouts(drafts, otherPublished)...)
 }
 func FixtureCSVRows(fixtures []Fixture) [][]string {
-	rows := [][]string{{"fixture_id", "competition_id", "publication_id", "date", "start_time", "home_club", "home_team", "away_club", "away_team", "ground", "season_id", "competition", "age_group", "division"}}
+	rows := [][]string{{"fixture_id", "competition_id", "publication_id", "date", "start_time", "home_club", "home_team", "away_club", "away_team", "ground", "season_id", "competition", "age_group", "division", "ground_id", "ground_postcode", "ground_address"}}
 	for _, f := range fixtures {
-		rows = append(rows, []string{strconv.FormatInt(f.ID, 10), strconv.FormatInt(f.CompetitionID, 10), strconv.FormatInt(f.PublicationID, 10), f.MatchDate, f.StartTime, f.HomeClubName, f.HomeTeamName, f.AwayClubName, f.AwayTeamName, f.GroundName, strconv.FormatInt(f.SeasonID, 10), f.CompetitionName, f.AgeGroup, f.Division})
+		rows = append(rows, []string{strconv.FormatInt(f.ID, 10), strconv.FormatInt(f.CompetitionID, 10), strconv.FormatInt(f.PublicationID, 10), f.MatchDate, f.StartTime, f.HomeClubName, f.HomeTeamName, f.AwayClubName, f.AwayTeamName, f.GroundName, strconv.FormatInt(f.SeasonID, 10), f.CompetitionName, f.AgeGroup, f.Division, strconv.FormatInt(f.GroundID, 10), f.GroundPostcode, f.GroundAddress})
 	}
 	return rows
 }
