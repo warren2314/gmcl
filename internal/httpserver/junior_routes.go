@@ -57,6 +57,8 @@ func (s *Server) juniorAdminRouter() http.Handler {
 	r.Post("/forms/{formID}", s.handleJuniorForms())
 	r.Get("/forms/assignments/{assignmentID}", s.handleJuniorFormAssignment())
 	r.Post("/forms/assignments/{assignmentID}", s.handleJuniorFormAssignment())
+	r.Get("/forms/assignments/{assignmentID}/team-entry", s.handleJuniorTeamEntry())
+	r.Post("/forms/assignments/{assignmentID}/team-entry", s.handleJuniorTeamEntry())
 	r.Get("/competitions", s.handleJuniorCompetitions())
 	r.Post("/competitions", s.handleJuniorCompetitions())
 	r.Get("/competitions/{id}", s.handleJuniorCompetition())

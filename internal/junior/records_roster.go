@@ -409,6 +409,16 @@ func (s *Service) ApplyRoster(ctx context.Context, p Principal, id int64, mappin
 				key := fmt.Sprintf("%d:%s", mapping.ClubID, strings.ToLower(strings.TrimSpace(row.TeamName)))
 				teamID = teams[key]
 				if teamID == 0 {
+					if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('junior-team-creation:'||$1::integer::text,0))`, mapping.ClubID); err != nil {
+						return result, err
+					}
+					var duplicate bool
+					if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM junior_teams WHERE club_id=$1 AND lower(regexp_replace(btrim(name),'\s+',' ','g'))=lower($2))`, mapping.ClubID, strings.Join(strings.Fields(row.TeamName), " ")).Scan(&duplicate); err != nil {
+						return result, err
+					}
+					if duplicate {
+						return result, fmt.Errorf("%w: team on row %d already exists; select its existing record", ErrConflict, row.Number)
+					}
 					err = tx.QueryRow(ctx, `INSERT INTO junior_teams(club_id,name) VALUES($1,$2) RETURNING id`, mapping.ClubID, row.TeamName).Scan(&teamID)
 					if err != nil {
 						return result, recordsError(err)

@@ -109,12 +109,18 @@ func ValidateFormFields(fields []FormField) error {
 		return fmt.Errorf("%w: add between one and ten fields", ErrValidation)
 	}
 	keys := map[string]bool{}
+	teamFields := 0
 	for _, f := range fields {
 		if !formKey.MatchString(f.Key) || keys[f.Key] || strings.TrimSpace(f.Label) == "" || len(f.Label) > 160 || strings.ContainsAny(f.Label, "\x00\r\n") {
 			return fmt.Errorf("%w: each field needs a unique key and a short label", ErrValidation)
 		}
 		keys[f.Key] = true
 		switch f.Type {
+		case "team_entries":
+			teamFields++
+			if teamFields > 1 || !f.Required {
+				return fixtureValidation("use one required Team entries question per form")
+			}
 		case "text", "long_text", "email", "number", "date", "yes_no":
 		case "select":
 			if len(f.Options) < 1 || len(f.Options) > 30 {
@@ -150,6 +156,10 @@ func ValidateFormValues(fields []FormField, values map[string]string, complete b
 		}
 		valid := true
 		switch f.Type {
+		case "team_entries":
+			if _, err := ParseTeamEntries(value, complete); err != nil {
+				return err
+			}
 		case "email":
 			_, err := CanonicalEmail(value)
 			valid = err == nil
@@ -182,6 +192,9 @@ func ValidateFormValues(fields []FormField, values map[string]string, complete b
 }
 
 func (s *Service) PublishForm(ctx context.Context, p Principal, input FormInput) (int64, error) {
+	if HasTeamEntries(input.Fields) {
+		input.RequiresReview = true
+	}
 	if p.AdminID < 1 || p.ReadOnly {
 		return 0, ErrForbidden
 	}
@@ -419,6 +432,9 @@ func (s *Service) SaveFormResponse(ctx context.Context, p Principal, id int64, e
 	if err = json.Unmarshal(fieldsRaw, &fields); err != nil {
 		return 0, err
 	}
+	if HasTeamEntries(fields) {
+		requiresReview = true
+	}
 	if err = ValidateFormValues(fields, values, submit); err != nil {
 		return 0, err
 	}
@@ -491,6 +507,19 @@ func (s *Service) ReviewForm(ctx context.Context, p Principal, assignmentID, sub
 	}
 	if latest != submissionID || latest == 0 || state == "superseded" {
 		return ErrConflict
+	}
+	if action == "complete" {
+		var raw []byte
+		if err = tx.QueryRow(ctx, `SELECT v.fields FROM junior_form_versions v JOIN junior_form_assignments a ON a.version_id=v.id WHERE a.id=$1`, assignmentID).Scan(&raw); err != nil {
+			return err
+		}
+		var fields []FormField
+		if err = json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+		if HasTeamEntries(fields) {
+			return fixtureValidation("review the team allocation preview before approving this entry form")
+		}
 	}
 	target := "completed"
 	if action == "return" {

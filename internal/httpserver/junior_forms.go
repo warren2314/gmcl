@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -68,6 +69,9 @@ func juniorParseFormBuilder(r *http.Request, id int64) (junior.FormInput, error)
 			key = "question_" + suffix
 		}
 		field := junior.FormField{Key: key, Label: label, Type: r.FormValue("field_type_" + suffix), Required: required}
+		if field.Type == "team_entries" {
+			field.Required = true
+		}
 		if field.Type == "select" {
 			for _, option := range strings.Split(strings.ReplaceAll(choices, "\r\n", "\n"), "\n") {
 				if option = strings.TrimSpace(option); option != "" {
@@ -320,7 +324,7 @@ func (s *Server) renderJuniorFormBuilder(w http.ResponseWriter, r *http.Request,
 			label = "Unused question"
 		}
 		fmt.Fprintf(w, `<details class="card mb-2"%s><summary class="card-header">Question %d · %s</summary><div class="card-body row g-3"><input type="hidden" name="field_key_%d" value="%s"><label class="col-md-8">Question label<input class="form-control" name="field_label_%d" maxlength="160" value="%s"></label><label class="col-md-4">Answer type<select class="form-select" name="field_type_%d">`, opened, i, escapeHTML(label), i, escapeHTML(f.Key), i, escapeHTML(f.Label), i)
-		for _, kind := range []struct{ key, label string }{{"text", "Short text"}, {"long_text", "Long text"}, {"email", "Email address"}, {"number", "Number"}, {"date", "Date"}, {"yes_no", "Yes / no"}, {"select", "Choice"}} {
+		for _, kind := range []struct{ key, label string }{{"text", "Short text"}, {"long_text", "Long text"}, {"email", "Email address"}, {"number", "Number"}, {"date", "Date"}, {"yes_no", "Yes / no"}, {"select", "Choice"}, {"team_entries", "Team entries (required; league approval)"}} {
 			sel := ""
 			if kind.key == f.Type {
 				sel = " selected"
@@ -550,6 +554,21 @@ func (s *Server) handleJuniorFormAssignment() http.HandlerFunc {
 				values := map[string]string{}
 				for _, field := range assignment.Fields {
 					values[field.Key] = strings.TrimSpace(r.FormValue("answer_" + field.Key))
+					if field.Type == "team_entries" {
+						entries := []junior.TeamEntry{}
+						for i := 0; i < 10; i++ {
+							name, age := strings.TrimSpace(r.FormValue(fmt.Sprintf("team_%s_%d_name", field.Key, i))), r.FormValue(fmt.Sprintf("team_%s_%d_age", field.Key, i))
+							if name != "" || age != "" {
+								entries = append(entries, junior.TeamEntry{Name: name, AgeGroup: age})
+							}
+						}
+						raw, e := json.Marshal(entries)
+						if e != nil {
+							juniorHTTPError(w, r, e)
+							return
+						}
+						values[field.Key] = string(raw)
+					}
 				}
 				_, err = svc.SaveFormResponse(r.Context(), p, id, revision, values, action == "submit")
 			}
@@ -596,10 +615,27 @@ func (s *Server) handleJuniorFormAssignment() http.HandlerFunc {
 			juniorRenderFormValues(w, assignment.Fields, assignment.Values)
 			fmt.Fprint(w, `</div></section>`)
 		}
-		if p.AdminID > 0 && !p.ReadOnly && assignment.SubmissionID > 0 && assignment.Status == "submitted" {
+		if p.AdminID > 0 && !p.ReadOnly && assignment.SubmissionID > 0 && assignment.Status == "submitted" && junior.HasTeamEntries(assignment.Fields) {
+			fmt.Fprintf(w, `<p><a class="btn btn-primary" href="/admin/juniors/forms/assignments/%d/team-entry">Review team entries and choose leagues</a></p><form method="POST">`, assignment.ID)
+			juniorFixtureCSRF(w, r)
+			fmt.Fprintf(w, `<input type="hidden" name="submission_id" value="%d"><label class="d-block">Reason for returning<textarea class="form-control" name="reason" required maxlength="2000"></textarea></label><button class="btn btn-outline-primary mt-2" name="action" value="return">Return to club for changes</button></form>`, assignment.SubmissionID)
+		}
+		if p.AdminID > 0 && !p.ReadOnly && assignment.SubmissionID > 0 && assignment.Status == "submitted" && !junior.HasTeamEntries(assignment.Fields) {
 			fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Review submitted response</h2><form method="POST">`)
 			juniorFixtureCSRF(w, r)
 			fmt.Fprintf(w, `<input type="hidden" name="submission_id" value="%d"><label class="form-label" for="review-reason">Review note (required when returning)</label><textarea class="form-control mb-3" name="reason" id="review-reason" maxlength="2000" rows="3"></textarea><div class="d-flex flex-wrap gap-2"><button class="btn btn-success" name="action" value="complete">Mark completed</button><button class="btn btn-outline-primary" name="action" value="return">Return to club for changes</button></div></form></div></section>`, assignment.SubmissionID)
+		}
+		if junior.HasTeamEntries(assignment.Fields) {
+			items, e := svc.TeamEntryReceipt(r.Context(), p, id)
+			if e != nil {
+				juniorHTTPError(w, r, e)
+				return
+			}
+			if len(items) > 0 {
+				fmt.Fprint(w, `<section><h2 class="h4">Approved team allocation receipt</h2>`)
+				juniorRenderTeamPlan(w, items)
+				fmt.Fprint(w, `</section>`)
+			}
 		}
 		fmt.Fprint(w, `<section><h2 class="h4">Submitted response history</h2>`)
 		if len(receipts) == 0 {
@@ -624,6 +660,16 @@ func juniorRenderFormValues(w http.ResponseWriter, fields []junior.FormField, va
 	fmt.Fprint(w, `<dl>`)
 	for _, f := range fields {
 		value := values[f.Key]
+		if f.Type == "team_entries" {
+			entries, e := junior.ParseTeamEntries(value, false)
+			if e == nil {
+				parts := []string{}
+				for _, entry := range entries {
+					parts = append(parts, entry.Name+" ("+entry.AgeGroup+")")
+				}
+				value = strings.Join(parts, "; ")
+			}
+		}
 		if value == "" {
 			value = "Not answered"
 		}
@@ -641,6 +687,24 @@ func juniorRenderFormAnswer(w http.ResponseWriter, f junior.FormField, value str
 	}
 	fmt.Fprintf(w, `<div class="mb-3"><label class="form-label" for="%s">%s%s</label>`, escapeHTML(id), escapeHTML(f.Label), star)
 	switch f.Type {
+	case "team_entries":
+		entries, _ := junior.ParseTeamEntries(value, false)
+		fmt.Fprint(w, `<p>Enter up to ten teams. Include the age in each name, for example U13 A. Leave unused rows blank. The league reviews these entries before creating teams or allocating leagues.</p>`)
+		for i := 0; i < 10; i++ {
+			var entry junior.TeamEntry
+			if i < len(entries) {
+				entry = entries[i]
+			}
+			fmt.Fprintf(w, `<div class="row g-2 mb-2"><label class="col">Team %d name<input class="form-control" name="team_%s_%d_name" maxlength="120" value="%s"></label><label class="col">Team %d age group<select class="form-select" name="team_%s_%d_age"><option value="">Unused row</option>`, i+1, f.Key, i, escapeHTML(entry.Name), i+1, f.Key, i)
+			for _, age := range []string{"U9", "U11", "U13", "U15", "U18"} {
+				sel := ""
+				if age == entry.AgeGroup {
+					sel = " selected"
+				}
+				fmt.Fprintf(w, `<option%s>%s</option>`, sel, age)
+			}
+			fmt.Fprint(w, `</select></label></div>`)
+		}
 	case "long_text":
 		fmt.Fprintf(w, `<textarea id="%s" class="form-control" name="%s" maxlength="4000" rows="4"%s>%s</textarea>`, escapeHTML(id), escapeHTML(id), required, escapeHTML(value))
 	case "select", "yes_no":
