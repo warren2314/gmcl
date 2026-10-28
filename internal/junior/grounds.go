@@ -130,7 +130,7 @@ func (s *Service) SaveGround(ctx context.Context, p Principal, g Ground) (int64,
 		return 0, recordsError(err)
 	}
 	// A prepared publication must be reviewed again after venue rules change.
-	_, err = tx.Exec(ctx, `UPDATE junior_competitions SET revision=revision+1 WHERE id IN(SELECT competition_id FROM junior_fixtures WHERE ground_id=$1 UNION SELECT c.id FROM junior_competitions c JOIN junior_publication_fixtures f ON f.publication_id=c.current_publication_id WHERE f.ground_id=$1 OR EXISTS(SELECT 1 FROM junior_publication_ground_links l WHERE l.publication_id=f.publication_id AND l.fixture_id=f.fixture_id AND l.ground_id=$1) UNION SELECT competition_id FROM junior_fixture_constraints fc WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(fc.settings->'grounds','[]'::jsonb)) x WHERE x->>'ground_id'=$1::bigint::text))`, g.ID)
+	_, err = tx.Exec(ctx, `UPDATE junior_competitions SET revision=revision+1 WHERE id IN(SELECT competition_id FROM junior_fixtures WHERE ground_id=$1 UNION SELECT c.id FROM junior_competitions c JOIN junior_publication_fixtures f ON f.publication_id=c.current_publication_id WHERE f.ground_id=$1 OR EXISTS(SELECT 1 FROM junior_publication_ground_links l WHERE l.publication_id=f.publication_id AND l.fixture_id=f.fixture_id AND l.ground_id=$1) UNION SELECT competition_id FROM junior_fixture_constraints fc WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(NULLIF(fc.settings->'grounds','null'::jsonb),'[]'::jsonb)) x WHERE x->>'ground_id'=$1::bigint::text))`, g.ID)
 	if err != nil {
 		return 0, err
 	}

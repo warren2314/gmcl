@@ -127,7 +127,11 @@ func (s *Server) handleJuniorGrounds() http.HandlerFunc {
 			}
 			fmt.Fprintf(w, `<option value="%d"%s>%s</option>`, season.ID, sel, escapeHTML(season.Name))
 		}
-		fmt.Fprint(w, `</select></label><button class="btn btn-outline-primary">Find / refresh warnings</button></form>`)
+		archivedChecked := ""
+		if r.URL.Query().Get("archived") == "1" {
+			archivedChecked = " checked"
+		}
+		fmt.Fprintf(w, `</select></label><label class="align-self-end"><input type="checkbox" name="archived" value="1"%s> Show archived venues</label><button class="btn btn-outline-primary">Find / refresh warnings</button></form>`, archivedChecked)
 		fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Clash warnings</h2>`)
 		if len(issues) == 0 {
 			fmt.Fprint(w, `<p>No saved-venue clashes detected in the recorded junior bookings. This does not confirm outside bookings or U9 coverage.</p>`)
@@ -143,6 +147,9 @@ func (s *Server) handleJuniorGrounds() http.HandlerFunc {
 		fmt.Fprint(w, `<h2 class="h4">Saved grounds</h2><div class="table-responsive"><table class="table"><thead><tr><th>Ground</th><th>Address / postcode</th><th>Allowed simultaneous layouts</th><th>Verification / source</th></tr></thead><tbody>`)
 		query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 		for _, g := range grounds {
+			if g.Archived && r.URL.Query().Get("archived") != "1" {
+				continue
+			}
 			if query != "" && !strings.Contains(strings.ToLower(g.Name+" "+g.Address+" "+g.Postcode), query) {
 				continue
 			}

@@ -19,7 +19,7 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		return fmt.Errorf("grounds examples require the dedicated demo database")
 	}
 	var done bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM junior_demo_extensions WHERE name='grounds_v1')`).Scan(&done); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM junior_demo_extensions WHERE name='grounds_v2')`).Scan(&done); err != nil {
 		return err
 	}
 	if done {
@@ -39,7 +39,7 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		byName[g.Name] = g.ID
 	}
 	names := []string{}
-	rows, err := pool.Query(ctx, `SELECT DISTINCT name FROM (SELECT ground_name name FROM junior_fixtures UNION SELECT ground_name FROM junior_publication_fixtures UNION SELECT x->>'name' FROM junior_fixture_constraints,jsonb_array_elements(COALESCE(settings->'grounds','[]'::jsonb)) x) n WHERE length(btrim(name))>0 ORDER BY name`)
+	rows, err := pool.Query(ctx, `SELECT DISTINCT name FROM (SELECT ground_name name FROM junior_fixtures UNION SELECT ground_name FROM junior_publication_fixtures UNION SELECT x->>'name' FROM junior_fixture_constraints,jsonb_array_elements(COALESCE(NULLIF(settings->'grounds','null'::jsonb),'[]'::jsonb)) x) n WHERE length(btrim(name))>0 ORDER BY name`)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,14 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 	if err != nil {
 		return err
 	}
-	names = append(names, "Sunday Demonstration Ground")
+	// These are explicit aliases of our own fictional examples, not a general
+	// name-matching rule for real venues. Unknown demo labels remain separate.
+	aliases := map[string]string{"Hillcrest": "Hillcrest Cricket Ground", "HillCrest CC": "Hillcrest Cricket Ground", "Oakfield": "Oakfield Cricket Ground", "Oakfield CC": "Oakfield Cricket Ground", "Riverside": "Riverside Cricket Ground", "Riverside CC": "Riverside Cricket Ground", "Meadowbrook CC": "Meadowbrook Cricket Ground"}
+	names = append(names, "Oakfield Cricket Ground", "Riverside Cricket Ground", "Hillcrest Cricket Ground", "Meadowbrook Cricket Ground", "Sunday Demonstration Ground")
 	for i, name := range names {
+		if aliases[name] != "" {
+			continue
+		}
 		if byName[name] > 0 {
 			continue
 		}
@@ -68,6 +74,9 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		}
 		byName[name] = id
 	}
+	for alias, canonical := range aliases {
+		byName[alias] = byName[canonical]
+	}
 	// Link original labels explicitly in this synthetic database. Publications
 	// retain their immutable original rows; an audited association is appended.
 	drafts, err := svc.ListFixtures(ctx, staff, 0, false)
@@ -75,7 +84,7 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		return err
 	}
 	for _, f := range drafts {
-		if f.GroundID > 0 || f.AgeGroup == "U9" || byName[f.GroundName] == 0 {
+		if f.GroundID == byName[f.GroundName] || f.AgeGroup == "U9" || byName[f.GroundName] == 0 {
 			continue
 		}
 		c, e := svc.GetCompetition(ctx, staff, f.CompetitionID)
@@ -95,7 +104,7 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		return err
 	}
 	for _, f := range published {
-		if f.GroundID == 0 && byName[f.GroundName] > 0 {
+		if f.GroundID != byName[f.GroundName] && byName[f.GroundName] > 0 {
 			if err = svc.LinkPublishedGround(ctx, staff, f.PublicationID, f.ID, byName[f.GroundName]); err != nil {
 				return err
 			}
@@ -117,7 +126,7 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		complete := true
 		for i := range constraints.Grounds {
 			g := &constraints.Grounds[i]
-			if g.GroundID == 0 {
+			if g.GroundID != byName[g.Name] {
 				if byName[g.Name] == 0 {
 					complete = false
 					break
@@ -133,6 +142,16 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 			}
 			if e = svc.SaveFixtureConstraints(ctx, staff, c.ID, fresh.Revision, constraints); e != nil {
 				return e
+			}
+		}
+	}
+	for _, g := range grounds {
+		if canonical := aliases[g.Name]; canonical != "" && !g.Archived {
+			g.Archived = true
+			g.RulesConfirmed = true
+			g.Source = "FICTIONAL DEMO ONLY. Older spelling linked explicitly to " + canonical + "; use the canonical saved venue."
+			if _, err = svc.SaveGround(ctx, staff, g); err != nil {
+				return err
 			}
 		}
 	}
@@ -185,8 +204,14 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 		if e != nil {
 			return e
 		}
-		if e = svc.SaveFixtureConstraints(ctx, staff, comp, c.Revision, junior.FixtureConstraints{PlayingDates: []string{"2027-05-29"}, DurationMinutes: 60}); e != nil {
+		constraints, e := svc.GetFixtureConstraints(ctx, staff, comp)
+		if e != nil {
 			return e
+		}
+		if len(constraints.PlayingDates) == 0 {
+			if e = svc.SaveFixtureConstraints(ctx, staff, comp, c.Revision, junior.FixtureConstraints{PlayingDates: []string{"2027-05-29"}, DurationMinutes: 60}); e != nil {
+				return e
+			}
 		}
 		existing, e := svc.ListFixtures(ctx, staff, comp, false)
 		if e != nil {
@@ -209,6 +234,6 @@ func EnsureGroundDemo(ctx context.Context, pool *db.Pool, state State) error {
 			}
 		}
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO junior_demo_extensions(name) VALUES('grounds_v1') ON CONFLICT DO NOTHING`)
+	_, err = pool.Exec(ctx, `INSERT INTO junior_demo_extensions(name) VALUES('grounds_v2') ON CONFLICT DO NOTHING`)
 	return err
 }
