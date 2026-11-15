@@ -12,8 +12,11 @@ import (
 )
 
 type TeamEntry struct {
-	Name     string `json:"name"`
-	AgeGroup string `json:"age_group"`
+	Name           string `json:"name"`
+	AgeGroup       string `json:"age_group"`
+	RequestedGrade string `json:"requested_grade,omitempty"`
+	GradingNotes   string `json:"grading_notes,omitempty"`
+	Zone           string `json:"zone,omitempty"`
 }
 type TeamEntryChoice struct {
 	TeamEntry
@@ -51,6 +54,12 @@ func ParseTeamEntries(raw string, required bool) ([]TeamEntry, error) {
 		e := &entries[i]
 		e.Name = strings.Join(strings.Fields(e.Name), " ")
 		e.AgeGroup = strings.ToUpper(strings.TrimSpace(e.AgeGroup))
+		e.RequestedGrade = strings.TrimSpace(e.RequestedGrade)
+		e.GradingNotes = strings.TrimSpace(e.GradingNotes)
+		e.Zone = strings.TrimSpace(e.Zone)
+		if len(e.RequestedGrade) > 100 || len(e.GradingNotes) > 2000 || len(e.Zone) > 100 || strings.ContainsAny(e.RequestedGrade+e.Zone, "\r\n\x00") || strings.ContainsRune(e.GradingNotes, 0) {
+			return nil, fixtureValidation("use a short requested grade/zone and grading notes of at most 2000 characters")
+		}
 		switch e.AgeGroup {
 		case "U9", "U11", "U13", "U15", "U18":
 		default:
@@ -272,7 +281,7 @@ func (s *Service) ApproveTeamEntry(ctx context.Context, p Principal, a, submissi
 				return err
 			}
 		}
-		tag, e := tx.Exec(ctx, `INSERT INTO junior_competition_entries(competition_id,team_id,active) VALUES($1,$2,true) ON CONFLICT(competition_id,team_id) DO UPDATE SET active=true WHERE NOT junior_competition_entries.active`, item.CompetitionID, item.TeamID)
+		tag, e := tx.Exec(ctx, `INSERT INTO junior_competition_entries(competition_id,team_id,active,requested_grade,grading_notes,zone,source_assignment_id,source_submission_id) VALUES($1,$2,true,$3,$4,$5,$6,$7) ON CONFLICT(competition_id,team_id) DO UPDATE SET active=true,requested_grade=EXCLUDED.requested_grade,grading_notes=EXCLUDED.grading_notes,zone=EXCLUDED.zone,source_assignment_id=EXCLUDED.source_assignment_id,source_submission_id=EXCLUDED.source_submission_id`, item.CompetitionID, item.TeamID, item.RequestedGrade, item.GradingNotes, item.Zone, a, submission)
 		if e != nil {
 			return e
 		}

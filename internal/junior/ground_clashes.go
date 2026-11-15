@@ -8,6 +8,9 @@ import (
 )
 
 func fixtureBookingLabel(f Fixture) string {
+	if f.BookingState == "external" {
+		return f.CompetitionName + " (whole-ground booking)"
+	}
 	home, away := strings.TrimSpace(f.HomeClubName+" "+f.HomeTeamName), strings.TrimSpace(f.AwayClubName+" "+f.AwayTeamName)
 	if home == "" {
 		home = fmt.Sprintf("Team %d", f.HomeTeamID)
@@ -19,7 +22,7 @@ func fixtureBookingLabel(f Fixture) string {
 	if state == "" {
 		state = "draft"
 	}
-	return fmt.Sprintf("%s v %s (%s, %s, %s, fixture %d)", home, away, f.AgeGroup, state, f.CompetitionName, f.ID)
+	return fmt.Sprintf("%s v %s (%s, %s, %s, fixture %d)", home, away, f.AgeGroup, state, strings.TrimSpace(f.CompetitionName+" · "+f.Division), f.ID)
 }
 func CheckGroundLayouts(own, other []Fixture) []FixtureIssue {
 	issues := []FixtureIssue{}
@@ -30,10 +33,8 @@ func CheckGroundLayouts(own, other []Fixture) []FixtureIssue {
 		key        string
 	}
 	groups := map[string][]booking{}
-	ownDates := map[string]bool{}
 	savedOwnDates := map[string]bool{}
 	for _, f := range own {
-		ownDates[f.MatchDate] = true
 		if f.GroundID > 0 {
 			savedOwnDates[f.MatchDate] = true
 		}
@@ -49,12 +50,6 @@ func CheckGroundLayouts(own, other []Fixture) []FixtureIssue {
 		}
 		if ours && f.GroundArchived {
 			issues = append(issues, FixtureIssue{"archived_ground", "Ground is archived: " + f.GroundName + " " + f.GroundPostcode + ". Choose an active venue before publication.", true})
-		}
-		if f.AgeGroup == "U9" {
-			if ownDates[f.MatchDate] {
-				issues = append(issues, FixtureIssue{"u9_coverage_gap", "U9 venue capacity is outside this release; check those bookings separately.", false})
-			}
-			continue
 		}
 		startTime, err := time.Parse("15:04", f.StartTime)
 		if err != nil {
@@ -134,11 +129,18 @@ func CheckGroundLayouts(own, other []Fixture) []FixtureIssue {
 					break
 				}
 			}
+			if counts["External"] > 0 {
+				fits = len(active) == 1
+			}
 			if fits {
 				continue
 			}
 			reported[signature] = true
-			message := fmt.Sprintf("GROUND CLASH — %s (%s), %s %02d:%02d–%02d:%02d. Cannot fit together: %s. Allowed layouts: %s. Change the time or venue, or verify a genuinely supported mixed layout.", venue.GroundName, venue.GroundPostcode, venue.MatchDate, start/60, start%60, end/60, end%60, strings.Join(labels, "; "), GroundLayoutsText(venue.GroundLayouts))
+			advice := "Change the time or venue, or verify a genuinely supported mixed layout."
+			if counts["External"] > 0 {
+				advice = "The external booking reserves the whole ground. Change the fixture time or venue, or correct the external booking."
+			}
+			message := fmt.Sprintf("GROUND CLASH — %s (%s), %s %02d:%02d–%02d:%02d. Cannot fit together: %s. Allowed layouts: %s. %s", venue.GroundName, venue.GroundPostcode, venue.MatchDate, start/60, start%60, end/60, end%60, strings.Join(labels, "; "), GroundLayoutsText(venue.GroundLayouts), advice)
 			issues = append(issues, FixtureIssue{"ground_clash", message, true})
 		}
 	}

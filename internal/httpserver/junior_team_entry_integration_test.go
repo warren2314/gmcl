@@ -51,7 +51,7 @@ func TestJuniorTeamEntryApprovalPostgres(t *testing.T) {
 	clubPath := fmt.Sprintf("/junior/forms/%d", a.ID)
 	clubPage := juniorPortalTestRequest(t, router, grant, "GET", clubPath, nil)
 	assertAdminWorkspaceHandlerHTML(t, clubPage, []string{"Team 1 name", "Team 1 age group", "Submit official response"}, nil)
-	clubPost := juniorPortalTestRequest(t, router, grant, "POST", clubPath, url.Values{"csrf_token": {"synthetic-csrf-token"}, "action": {"submit"}, "draft_revision": {"0"}, "team_entries_0_name": {" U13   A "}, "team_entries_0_age": {"U13"}, "team_entries_1_name": {"B"}, "team_entries_1_age": {"U15"}})
+	clubPost := juniorPortalTestRequest(t, router, grant, "POST", clubPath, url.Values{"csrf_token": {"synthetic-csrf-token"}, "action": {"submit"}, "draft_revision": {"0"}, "team_entries_0_name": {" U13   A "}, "team_entries_0_age": {"U13"}, "team_entries_0_grade": {"Division 2"}, "team_entries_0_zone": {"Rochdale"}, "team_entries_0_notes": {"Previously Division 3; developing squad"}, "team_entries_1_name": {"B"}, "team_entries_1_age": {"U15"}})
 	if clubPost.Code != 303 {
 		t.Fatalf("club entry submission: %d %s", clubPost.Code, clubPost.Body.String())
 	}
@@ -60,6 +60,10 @@ func TestJuniorTeamEntryApprovalPostgres(t *testing.T) {
 		t.Fatalf("review must be mandatory: %v %v", current, err)
 	}
 	submission := current.SubmissionID
+	entryData, err := junior.AssignmentTeamEntries(current)
+	if err != nil || entryData[0].RequestedGrade != "Division 2" || entryData[0].Zone != "Rochdale" {
+		t.Fatalf("grading submission lost: %+v %v", entryData, err)
+	}
 	if err = svc.ReviewForm(ctx, p, a.ID, submission, "complete", ""); !errors.Is(err, junior.ErrValidation) {
 		t.Fatalf("generic review bypass: %v", err)
 	}
@@ -131,6 +135,17 @@ func TestJuniorTeamEntryApprovalPostgres(t *testing.T) {
 	}
 	page = adminWorkspaceHandlerRequest(t, router, p.AdminID, "GET", juniorFormLink(p, a.ID), nil)
 	assertAdminWorkspaceHandlerHTML(t, page, []string{"Completed", "Approved team allocation receipt", "U15 B"}, []string{"Mark completed"})
+	approved, err := svc.CompetitionEntries(ctx, p, comps[0])
+	if err != nil || len(approved) != 1 || approved[0].RequestedGrade != "Division 2" || approved[0].Zone != "Rochdale" || approved[0].SourceSubmissionID != submission || approved[0].SourceAssignmentID != a.ID {
+		t.Fatalf("grading did not follow allocation: %+v %v", approved, err)
+	}
+	receipt, err := svc.TeamEntryReceipt(ctx, p, a.ID)
+	if err != nil || receipt[0].GradingNotes != "Previously Division 3; developing squad" {
+		t.Fatalf("grading receipt: %+v %v", receipt, err)
+	}
+	page = adminWorkspaceHandlerRequest(t, router, p.AdminID, "GET", fmt.Sprintf("/admin/juniors/competitions/%d", comps[0]), nil)
+	assertAdminWorkspaceHandlerHTML(t, page, []string{"Division 2", "Rochdale", "Previously Division 3; developing squad", "Original entry"}, nil)
+	writeJuniorPlanningSnapshot(t, "grading", page)
 	// A second form/version with the same teams cannot recreate team or entry records.
 	b := publish("Reconfirmed team entries")
 	sub2, err := svc.SaveFormResponse(ctx, grant.Principal, b.ID, 0, values, true)

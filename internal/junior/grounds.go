@@ -21,7 +21,7 @@ type Ground struct {
 	Archived, RulesConfirmed        bool
 }
 
-var GroundAges = []string{"U11", "U13", "U15", "U18"}
+var GroundAges = []string{"U9", "U11", "U13", "U15", "U18"}
 var groundPostcode = regexp.MustCompile(`^(GIR0AA|[A-Z]{1,2}[0-9][0-9A-Z]?[0-9][A-Z]{2})$`)
 
 func GroundLayoutsText(layouts []GroundLayout) string {
@@ -62,7 +62,7 @@ func validateGround(g *Ground) error {
 				}
 			}
 			if !valid || n < 0 || n > 10 {
-				return fixtureValidation("layouts support U11/U13/U15/U18 with zero to ten games per age")
+				return fixtureValidation("layouts support U9/U11/U13/U15/U18 with zero to ten games per age")
 			}
 			total += n
 		}
@@ -183,7 +183,7 @@ func hydrateFixtureGrounds(ctx context.Context, q DBTX, fixtures []Fixture) erro
 	}
 	for i := range fixtures {
 		f := &fixtures[i]
-		f.RequiresSavedGround = len(grounds) > 0 && f.AgeGroup != "U9"
+		f.RequiresSavedGround = len(grounds) > 0
 		if f.GroundID == 0 {
 			continue
 		}
@@ -216,7 +216,7 @@ func resolveGroundConstraints(ctx context.Context, q DBTX, c Competition, f *Fix
 	for i := range f.Grounds {
 		g := &f.Grounds[i]
 		if g.GroundID == 0 {
-			if len(grounds) > 0 && c.AgeGroup != "U9" {
+			if len(grounds) > 0 {
 				return fixtureValidation("choose a saved ground for every home venue")
 			}
 			continue
@@ -245,6 +245,11 @@ func loadOtherJuniorBookings(ctx context.Context, q DBTX, competition int64) ([]
 			out = append(out, f)
 		}
 	}
+	external, err := loadExternalGroundBookings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, external...)
 	return out, nil
 }
 func (s *Service) GroundBookings(ctx context.Context, p Principal, season int64) ([]Fixture, []FixtureIssue, error) {
@@ -262,7 +267,7 @@ func (s *Service) GroundBookings(ctx context.Context, p Principal, season int64)
 	otherSeasons := []Fixture{}
 	seen := map[string]bool{}
 	for _, f := range all {
-		if season > 0 && f.SeasonID != season {
+		if season > 0 && f.SeasonID != season && f.BookingState != "external" {
 			otherSeasons = append(otherSeasons, f)
 			continue
 		}

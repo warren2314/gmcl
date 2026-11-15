@@ -122,7 +122,7 @@ func (s *Service) GetCompetition(ctx context.Context, p Principal, id int64) (Co
 	return loadCompetition(ctx, s.DB, id, false)
 }
 func competitionEntries(ctx context.Context, q DBTX, id int64) ([]CompetitionEntry, error) {
-	rows, err := q.Query(ctx, `SELECT t.id,t.club_id,t.name,c.name FROM junior_competition_entries e JOIN junior_competitions co ON co.id=e.competition_id JOIN junior_teams t ON t.id=e.team_id JOIN junior_club_seasons cs ON cs.club_id=t.club_id AND cs.season_id=co.season_id JOIN clubs c ON c.id=t.club_id WHERE e.competition_id=$1 AND e.active AND NOT t.archived AND cs.state='active' ORDER BY t.id`, id)
+	rows, err := q.Query(ctx, `SELECT t.id,t.club_id,t.name,c.name,e.requested_grade,e.grading_notes,e.zone,COALESCE(e.source_assignment_id,0),COALESCE(e.source_submission_id,0) FROM junior_competition_entries e JOIN junior_competitions co ON co.id=e.competition_id JOIN junior_teams t ON t.id=e.team_id JOIN junior_club_seasons cs ON cs.club_id=t.club_id AND cs.season_id=co.season_id JOIN clubs c ON c.id=t.club_id WHERE e.competition_id=$1 AND e.active AND NOT t.archived AND cs.state='active' ORDER BY t.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func competitionEntries(ctx context.Context, q DBTX, id int64) ([]CompetitionEnt
 	out := []CompetitionEntry{}
 	for rows.Next() {
 		var e CompetitionEntry
-		if err = rows.Scan(&e.TeamID, &e.ClubID, &e.TeamName, &e.ClubName); err != nil {
+		if err = rows.Scan(&e.TeamID, &e.ClubID, &e.TeamName, &e.ClubName, &e.RequestedGrade, &e.GradingNotes, &e.Zone, &e.SourceAssignmentID, &e.SourceSubmissionID); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

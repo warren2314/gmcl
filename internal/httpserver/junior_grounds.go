@@ -118,7 +118,7 @@ func (s *Server) handleJuniorGrounds() http.HandlerFunc {
 		}
 		s.juniorPageStart(w, r, "Grounds and clash warnings")
 		defer juniorPageEnd(w)
-		fmt.Fprint(w, `<p>Choose saved physical venues for fixtures, including neutral grounds. Postcodes and addresses help identify the right place; the saved ground ID connects its bookings even when names change. Postcode format checks are not address verification.</p><p>Each layout is an alternative use of the same space. U9 capacity, senior fixtures and outside bookings need separate checks. Warnings appear here and on competition drafts; no clash emails are sent.</p>`)
+		fmt.Fprint(w, `<p>Choose saved physical venues for fixtures, including neutral grounds. Postcodes and addresses help identify the right place; the saved ground ID connects its bookings even when names change. Postcode format checks are not address verification.</p><p>Each layout is an alternative use of the same space. Include U9 games in confirmed layouts. Record women’s, senior and other commitments in the ground calendar; unrecorded bookings still need separate checks. Warnings appear here and on competition drafts; no clash emails are sent.</p>`)
 		fmt.Fprintf(w, `<form method="GET" class="d-flex gap-2 mb-3"><label>Find ground<input class="form-control" name="q" value="%s" placeholder="Name, postcode or address"></label><label>Booking season<select class="form-select" name="season_id"><option value="">All junior seasons</option>`, escapeHTML(r.URL.Query().Get("q")))
 		for _, season := range seasons {
 			sel := ""
@@ -134,15 +134,9 @@ func (s *Server) handleJuniorGrounds() http.HandlerFunc {
 		fmt.Fprintf(w, `</select></label><label class="align-self-end"><input type="checkbox" name="archived" value="1"%s> Show archived venues</label><button class="btn btn-outline-primary">Find / refresh warnings</button></form>`, archivedChecked)
 		fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Clash warnings</h2>`)
 		if len(issues) == 0 {
-			fmt.Fprint(w, `<p>No saved-venue clashes detected in the recorded junior bookings. This does not confirm outside bookings or U9 coverage.</p>`)
+			fmt.Fprint(w, `<p>No saved-venue clashes detected in the recorded junior bookings. This does not confirm unrecorded outside bookings.</p>`)
 		}
-		for _, issue := range issues {
-			class := "warning"
-			if issue.Blocking {
-				class = "danger"
-			}
-			fmt.Fprintf(w, `<div class="alert alert-%s">%s</div>`, class, escapeHTML(issue.Message))
-		}
+		juniorRenderClashAlerts(w, issues, bookings)
 		fmt.Fprint(w, `</div></section>`)
 		fmt.Fprint(w, `<h2 class="h4">Saved grounds</h2><div class="table-responsive"><table class="table"><thead><tr><th>Ground</th><th>Address / postcode</th><th>Allowed simultaneous layouts</th><th>Verification / source</th></tr></thead><tbody>`)
 		query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
@@ -185,6 +179,10 @@ func (s *Server) handleJuniorGrounds() http.HandlerFunc {
 		fmt.Fprintf(w, `</tbody></table></div><label class="form-check"><input class="form-check-input" type="checkbox" name="archived" value="1"%s>Archive this venue (retain booking history)</label><label class="form-check my-2"><input class="form-check-input" type="checkbox" name="confirm" value="1" required>I have checked this address and the physical layouts, including mixed-age use.</label><button class="btn btn-primary">Save ground and layouts</button> <a href="/admin/juniors/grounds">New ground / clear editor</a></form></div></details>`, checked)
 		fmt.Fprint(w, `<h2 class="h4">Recorded bookings and legacy venue links</h2><p>Published and tentative draft bookings are both considered. The same fixture appearing in both is counted once where they overlap. Older published venue labels can be linked without rewriting their historical publication.</p><div class="table-responsive"><table class="table"><thead><tr><th>Date / time</th><th>Fixture / competition</th><th>Venue</th><th>Status / action</th></tr></thead><tbody>`)
 		for _, f := range bookings {
+			if f.BookingState == "external" {
+				fmt.Fprintf(w, `<tr><td>%s %s<br>%d minutes</td><td>%s</td><td>%s<br>%s</td><td>Whole-ground booking · <a href="%s">Review in calendar</a></td></tr>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime), f.DurationMinutes, escapeHTML(f.CompetitionName), escapeHTML(f.GroundName), escapeHTML(f.GroundPostcode), escapeHTML(juniorCalendarLink(f.MatchDate, f.GroundID, 0)))
+				continue
+			}
 			fmt.Fprintf(w, `<tr><td>%s %s<br>%d minutes</td><td><a href="/admin/juniors/competitions/%d">%s · %s</a><br>%s %s v %s %s · fixture %d</td><td>%s<br>%s</td><td>%s`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime), f.DurationMinutes, f.CompetitionID, escapeHTML(f.CompetitionName), escapeHTML(f.AgeGroup), escapeHTML(f.HomeClubName), escapeHTML(f.HomeTeamName), escapeHTML(f.AwayClubName), escapeHTML(f.AwayTeamName), f.ID, escapeHTML(f.GroundName), escapeHTML(f.GroundPostcode), escapeHTML(f.BookingState))
 			if f.GroundID == 0 {
 				if f.PublicationID > 0 {

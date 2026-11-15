@@ -62,6 +62,8 @@ func (s *Server) juniorAdminRouter() http.Handler {
 	r.Get("/competitions", s.handleJuniorCompetitions())
 	r.Get("/grounds", s.handleJuniorGrounds())
 	r.Post("/grounds", s.handleJuniorGrounds())
+	r.Get("/ground-calendar", s.handleJuniorGroundCalendar())
+	r.Post("/ground-calendar", s.handleJuniorGroundCalendar())
 	r.Post("/competitions", s.handleJuniorCompetitions())
 	r.Get("/competitions/{id}", s.handleJuniorCompetition())
 	r.Post("/competitions/{id}", s.handleJuniorCompetition())

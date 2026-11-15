@@ -28,7 +28,13 @@ func (s *Server) handleJuniorAdminHome() http.HandlerFunc {
 			juniorHTTPError(w, r, err)
 			return
 		}
+		_, groundIssues, err := svc.GroundBookings(r.Context(), p, seasonID)
+		if err != nil {
+			juniorHTTPError(w, r, err)
+			return
+		}
 		s.juniorPageStart(w, r, "Junior Home")
+		juniorRenderBlockingSummary(w, groundIssues)
 		fmt.Fprint(w, `<p class="text-muted">Your junior season, club records and next actions in one place. Select a season to keep every total in context.</p>`)
 		writeJuniorRecordSeasonSelector(w, r, seasons, seasonID)
 		portalState := "Closed for rollout"

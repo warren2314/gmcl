@@ -8,9 +8,9 @@ import (
 )
 
 func juniorRenderTeamPlan(w http.ResponseWriter, items []junior.TeamEntryChoice) {
-	fmt.Fprint(w, `<div class="table-responsive"><table class="table"><thead><tr><th>Team</th><th>Age</th><th>League / division</th><th>Action</th></tr></thead><tbody>`)
+	fmt.Fprint(w, `<div class="table-responsive"><table class="table"><thead><tr><th>Team</th><th>Age</th><th>Requested grade / zone / grading information</th><th>League / division</th><th>Action</th></tr></thead><tbody>`)
 	for _, item := range items {
-		fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(item.Name), escapeHTML(item.AgeGroup), escapeHTML(item.Competition), escapeHTML(item.Effect))
+		fmt.Fprintf(w, `<tr><td>%s</td><td>%s</td><td style="white-space:pre-wrap">%s · %s<br>%s</td><td>%s</td><td>%s</td></tr>`, escapeHTML(item.Name), escapeHTML(item.AgeGroup), escapeHTML(item.RequestedGrade), escapeHTML(item.Zone), escapeHTML(item.GradingNotes), escapeHTML(item.Competition), escapeHTML(item.Effect))
 	}
 	fmt.Fprint(w, `</tbody></table></div>`)
 }
@@ -96,6 +96,7 @@ func (s *Server) handleJuniorTeamEntry() http.HandlerFunc {
 		juniorFixtureCSRF(w, r)
 		fmt.Fprintf(w, `<input type="hidden" name="submission_id" value="%d">`, a.SubmissionID)
 		for i, entry := range entries {
+			fmt.Fprintf(w, `<p><strong>Requested grade:</strong> %s · <strong>Zone:</strong> %s<br><span style="white-space:pre-wrap">%s</span></p>`, escapeHTML(entry.RequestedGrade), escapeHTML(entry.Zone), escapeHTML(entry.GradingNotes))
 			fmt.Fprintf(w, `<label class="d-block mb-3">%s · %s<select class="form-select" name="competition_%d" required><option value="">Choose league / division</option>`, escapeHTML(entry.Name), escapeHTML(entry.AgeGroup), i)
 			for _, c := range competitions {
 				if c.AgeGroup != entry.AgeGroup || c.SeasonState != "open" {
