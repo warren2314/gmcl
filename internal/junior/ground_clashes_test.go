@@ -73,7 +73,7 @@ func TestGroundInputValidation(t *testing.T) {
 	}
 	g.RulesConfirmed = true
 	g.Layouts = []GroundLayout{{"U9": 2}}
-	if err := validateGround(&g); err == nil {
-		t.Fatal("U9 rules should be deferred")
+	if err := validateGround(&g); err != nil {
+		t.Fatalf("U9 capacity should be supported: %v", err)
 	}
 }

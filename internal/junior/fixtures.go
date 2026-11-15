@@ -13,9 +13,11 @@ type Competition struct {
 	Name, AgeGroup, Division, Format, StartDate, EndDate, DefaultStartTime, SeasonState string
 }
 type CompetitionEntry struct {
-	TeamID             int64
-	ClubID             int32
-	TeamName, ClubName string
+	TeamID                                 int64
+	ClubID                                 int32
+	TeamName, ClubName                     string
+	RequestedGrade, GradingNotes, Zone     string
+	SourceAssignmentID, SourceSubmissionID int64
 }
 type GroundConstraint struct {
 	GroundID int64  `json:"ground_id,omitempty"`
@@ -36,6 +38,7 @@ type FixtureConstraints struct {
 }
 type Fixture struct {
 	GroundID, GroundRevision                                                                 int64
+	ExternalSource                                                                           string
 	GroundPostcode, GroundAddress, BookingState                                              string
 	GroundLayouts                                                                            []GroundLayout
 	GroundArchived, RequiresSavedGround                                                      bool
@@ -197,7 +200,7 @@ func ScheduleGeneratedFixtureDates(c Competition, f FixtureConstraints, generate
 }
 
 func CheckFixtureSchedule(c Competition, f FixtureConstraints, drafts, otherPublished []Fixture) []FixtureIssue {
-	issues := []FixtureIssue{{Code: "senior_coverage_gap", Message: "Senior/other external ground bookings are not ingested. Check separately before acknowledging publication."}}
+	issues := []FixtureIssue{{Code: "senior_coverage_gap", Message: "Recorded women’s, senior and other bookings are checked. Confirm that all external bookings have been supplied before publication."}}
 	if len(drafts) == 0 {
 		issues = append(issues, FixtureIssue{"empty_schedule", "No draft fixtures to publish", true})
 	}
@@ -229,6 +232,9 @@ func CheckFixtureSchedule(c Competition, f FixtureConstraints, drafts, otherPubl
 			issues = append(issues, FixtureIssue{"outside_dates", fmt.Sprintf("Fixture%d is outside permitted playing/reserve dates", x.ID), true})
 		}
 		for _, team := range []int64{x.HomeTeamID, x.AwayTeamID} {
+			if team == 0 {
+				continue
+			}
 			key := fmt.Sprintf("%d/%s", team, x.MatchDate)
 			if teamDates[key] && own {
 				issues = append(issues, FixtureIssue{"team_double_booking", fmt.Sprintf("Team%d plays twice on %s", team, x.MatchDate), true})

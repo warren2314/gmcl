@@ -270,8 +270,24 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 			juniorHTTPError(w, r, err)
 			return
 		}
+		clashBookings, _, err := svc.GroundBookings(r.Context(), p, 0)
+		if err != nil {
+			juniorHTTPError(w, r, err)
+			return
+		}
+		filteredBookings := []junior.Fixture{}
+		for _, b := range clashBookings {
+			for _, f := range fixtures {
+				if f.GroundID == b.GroundID && f.MatchDate == b.MatchDate {
+					filteredBookings = append(filteredBookings, b)
+					break
+				}
+			}
+		}
+		clashBookings = filteredBookings
 		s.juniorPageStart(w, r, c.Name)
 		defer juniorPageEnd(w)
+		juniorRenderBlockingSummary(w, issues)
 		fmt.Fprint(w, `<p><a href="/admin/juniors/grounds">Grounds and clashes: addresses, postcodes and permitted layouts</a></p>`)
 		fmt.Fprintf(w, `<p>%s · %s · %s to %s · draft revision%d</p><div class="d-flex gap-2 flex-wrap mb-4"><a class="btn btn-outline-primary" href="%s">Official fixtures</a><a class="btn btn-outline-primary" href="/admin/juniors/results?competition_id=%d">Results and source history</a></div>`, escapeHTML(juniorCompetitionAgeDivision(c)), escapeHTML(c.Format), escapeHTML(c.StartDate), escapeHTML(c.EndDate), c.Revision, escapeHTML(juniorFixtureLink(p, "fixtures", id)), id)
 		if c.SeasonState == "closed" {
@@ -285,6 +301,7 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 		fmt.Fprint(w, `<section class="card mb-4"><div class="card-body"><h2 class="h4">Participating teams</h2><ul>`)
 		for _, e := range entries {
 			fmt.Fprintf(w, `<li>%s — %s<form method="POST" class="d-inline ms-2">`, escapeHTML(e.ClubName), escapeHTML(e.TeamName))
+			juniorEntryGrading(w, e)
 			juniorFixtureCSRF(w, r)
 			fmt.Fprintf(w, `<input type="hidden" name="action" value="entry"><input type="hidden" name="revision" value="%d"><input type="hidden" name="team_id" value="%d"><button class="btn btn-sm btn-outline-secondary">Withdraw entry</button></form></li>`, c.Revision, e.TeamID)
 		}
@@ -331,7 +348,7 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 				}
 			}
 			fmt.Fprintf(w, `<fieldset class="col-12 border rounded p-3"><legend class="h6">%s</legend><div class="row g-2"><div class="col-md-7">`, escapeHTML(clubs[clubID].ClubName))
-			if len(grounds) > 0 && c.AgeGroup != "U9" {
+			if len(grounds) > 0 {
 				fmt.Fprint(w, `<label class="form-label">Saved home venue (neutral venues may also be selected)</label>`)
 				juniorGroundSelect(w, fmt.Sprintf("ground_id_%d", clubID), groundID, grounds)
 			} else {
@@ -346,13 +363,7 @@ func (s *Server) handleJuniorCompetition() http.HandlerFunc {
 			juniorFixtureCSRF(w, r)
 			fmt.Fprintf(w, `<input type="hidden" name="action" value="generate"><input type="hidden" name="revision" value="%d"><label class="form-check"><input class="form-check-input" type="checkbox" name="replace_draft" value="1">Replace existing draft, including manual edits</label><button class="btn btn-outline-primary mt-2">Generate draft</button></form>`, c.Revision)
 		}
-		for _, issue := range issues {
-			class := "warning"
-			if issue.Blocking {
-				class = "danger"
-			}
-			fmt.Fprintf(w, `<div class="alert alert-%s py-2">%s</div>`, class, escapeHTML(issue.Message))
-		}
+		juniorRenderClashAlerts(w, issues, clashBookings)
 		for _, f := range fixtures {
 			s.renderJuniorDraftFixtureForm(w, r, c, entries, f, grounds)
 			fmt.Fprint(w, `<form method="POST" class="d-flex flex-wrap gap-2 mb-3">`)
@@ -395,7 +406,7 @@ func (s *Server) renderJuniorDraftFixtureForm(w http.ResponseWriter, r *http.Req
 		fmt.Fprint(w, `</select></div>`)
 	}
 	fmt.Fprintf(w, `<div class="col-md-2"><label class="form-label">Date</label><input class="form-control" type="date" name="match_date" value="%s" required></div><div class="col-md-2"><label class="form-label">Start</label><input class="form-control" type="time" name="start_time" value="%s" required></div><div class="col-12"><label class="form-label">Ground / neutral venue</label>`, escapeHTML(f.MatchDate), escapeHTML(f.StartTime))
-	if len(grounds) > 0 && c.AgeGroup != "U9" {
+	if len(grounds) > 0 {
 		juniorGroundSelect(w, "ground_id", f.GroundID, grounds)
 		if f.ID > 0 && f.GroundID == 0 {
 			fmt.Fprintf(w, `<p class="text-danger">Choose the saved venue for this older label: %s</p>`, escapeHTML(f.GroundName))

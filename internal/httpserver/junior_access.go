@@ -162,7 +162,7 @@ func juniorAccessPageEnd(w http.ResponseWriter) { fmt.Fprint(w, `</main></body><
 func (s *Server) handleJuniorLoginGet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		juniorAccessPageStart(w, "Junior Lead sign-in")
-		fmt.Fprint(w, `<p>Use the email address invited by your league administrator. We will email a one-use sign-in link for your club.</p>`)
+		fmt.Fprint(w, `<p>Use the email address invited by your league administrator. We will email a one-use sign-in link for your club. Links expire after 15 minutes; request a fresh link if yours has expired or has already been used. Open the email link and choose Continue to sign in. No shared club password is needed.</p>`)
 		fmt.Fprintf(w, `<form method="POST" action="/junior/login"><input type="hidden" name="csrf_token" value="%s"><label class="form-label" for="junior-email">Email address</label><input class="form-control mb-3" id="junior-email" name="email" type="email" maxlength="254" autocomplete="email" required><button class="btn btn-primary">Email sign-in link</button></form><p class="text-muted mt-3">If you have changed roles or need an invitation, contact your league administrator.</p>`, escapeHTML(middleware.CSRFToken(r)))
 		juniorAccessPageEnd(w)
 	}

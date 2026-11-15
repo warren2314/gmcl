@@ -145,7 +145,11 @@ func ValidateFormValues(fields []FormField, values map[string]string, complete b
 	for _, f := range fields {
 		allowed[f.Key] = true
 		value := strings.TrimSpace(values[f.Key])
-		if len(values[f.Key]) > 4000 || strings.ContainsRune(values[f.Key], 0) {
+		limit := 4000
+		if f.Type == "team_entries" {
+			limit = 64 << 10
+		}
+		if len(values[f.Key]) > limit || strings.ContainsRune(values[f.Key], 0) {
 			return fmt.Errorf("%w: %s is too long or contains an invalid character", ErrValidation, f.Label)
 		}
 		if value == "" {

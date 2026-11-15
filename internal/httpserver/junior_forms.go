@@ -558,8 +558,11 @@ func (s *Server) handleJuniorFormAssignment() http.HandlerFunc {
 						entries := []junior.TeamEntry{}
 						for i := 0; i < 10; i++ {
 							name, age := strings.TrimSpace(r.FormValue(fmt.Sprintf("team_%s_%d_name", field.Key, i))), r.FormValue(fmt.Sprintf("team_%s_%d_age", field.Key, i))
-							if name != "" || age != "" {
-								entries = append(entries, junior.TeamEntry{Name: name, AgeGroup: age})
+							grade := r.FormValue(fmt.Sprintf("team_%s_%d_grade", field.Key, i))
+							notes := r.FormValue(fmt.Sprintf("team_%s_%d_notes", field.Key, i))
+							zone := r.FormValue(fmt.Sprintf("team_%s_%d_zone", field.Key, i))
+							if name != "" || age != "" || grade != "" || notes != "" || zone != "" {
+								entries = append(entries, junior.TeamEntry{Name: name, AgeGroup: age, RequestedGrade: grade, GradingNotes: notes, Zone: zone})
 							}
 						}
 						raw, e := json.Marshal(entries)
@@ -665,7 +668,7 @@ func juniorRenderFormValues(w http.ResponseWriter, fields []junior.FormField, va
 			if e == nil {
 				parts := []string{}
 				for _, entry := range entries {
-					parts = append(parts, entry.Name+" ("+entry.AgeGroup+")")
+					parts = append(parts, entry.Name+" ("+entry.AgeGroup+") · Requested grade: "+entry.RequestedGrade+" · Zone: "+entry.Zone+" · Grading notes: "+entry.GradingNotes)
 				}
 				value = strings.Join(parts, "; ")
 			}
@@ -703,7 +706,7 @@ func juniorRenderFormAnswer(w http.ResponseWriter, f junior.FormField, value str
 				}
 				fmt.Fprintf(w, `<option%s>%s</option>`, sel, age)
 			}
-			fmt.Fprint(w, `</select></label></div>`)
+			fmt.Fprintf(w, `</select></label><label class="col">Requested grade<input class="form-control" name="team_%s_%d_grade" maxlength="100" value="%s"></label><label class="col">Geographical zone<input class="form-control" name="team_%s_%d_zone" maxlength="100" value="%s"></label><label class="col-12">Grading information (previous division, experience and playing strength)<textarea class="form-control" name="team_%s_%d_notes" maxlength="2000">%s</textarea></label></div>`, f.Key, i, escapeHTML(entry.RequestedGrade), f.Key, i, escapeHTML(entry.Zone), f.Key, i, escapeHTML(entry.GradingNotes))
 		}
 	case "long_text":
 		fmt.Fprintf(w, `<textarea id="%s" class="form-control" name="%s" maxlength="4000" rows="4"%s>%s</textarea>`, escapeHTML(id), escapeHTML(id), required, escapeHTML(value))
