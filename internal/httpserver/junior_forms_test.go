@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestJuniorFormBuilderParsesQuestionsAndTargets(t *testing.T) {
 	if len(input.Fields) != 2 || input.Fields[0].Key != "question_1" || !input.Fields[0].Required || len(input.Fields[1].Options) != 3 || len(input.ClubIDs) != 2 || !input.RequiresReview || input.SeasonID != 7 {
 		t.Fatalf("builder contract: %+v", input)
 	}
-	for _, bad := range []struct{ key, value string }{{"field_label_11", "Unexpected"}, {"field_type_1", "file"}, {"field_key_2", "question_1"}, {"field_options_2", "U9\nU9"}, {"club_id", "-1"}, {"due_date", "not a date"}} {
+	for _, bad := range []struct{ key, value string }{{"field_label_" + strconv.Itoa(junior.MaxFormFields+1), "Unexpected"}, {"field_type_1", "file"}, {"field_description_1", strings.Repeat("a", 1001)}, {"field_options_2", "U9\nU9"}, {"club_id", "-1"}, {"due_date", "not a date"}} {
 		t.Run(bad.key+bad.value, func(t *testing.T) {
 			copy := url.Values{}
 			for key, items := range values {
@@ -42,14 +43,14 @@ func TestJuniorFormBuilderParsesQuestionsAndTargets(t *testing.T) {
 	}
 }
 func TestJuniorFormResponseHTMLAndFilteredCSV(t *testing.T) {
-	field := junior.FormField{Key: "availability", Label: `<script>label</script>`, Type: "select", Required: true, Options: []string{`<unsafe>`, `Yes`}}
+	field := junior.FormField{Key: "availability", Label: `<script>label</script>`, Description: `<script>guidance</script>`, Type: "select", Required: true, Options: []string{`<unsafe>`, `Yes`}}
 	w := httptest.NewRecorder()
 	juniorRenderFormAnswer(w, field, `<unsafe>`)
 	html := w.Body.String()
-	if strings.Contains(html, "<script>") || strings.Contains(html, "<unsafe>") || !strings.Contains(html, "required") || !strings.Contains(html, "selected") {
+	if strings.Contains(html, "<script>") || strings.Contains(html, "<unsafe>") || !strings.Contains(html, "required") || !strings.Contains(html, "selected") || !strings.Contains(html, `aria-describedby="answer_availability_help"`) || !strings.Contains(html, "guidance") {
 		t.Fatalf("unsafe or unusable answer HTML: %s", html)
 	}
-	items := []junior.FormAssignment{{ID: 1, Title: "Availability", Club: "A", Status: "submitted", Fields: []junior.FormField{field}, Values: map[string]string{"availability": "draft"}, SubmittedValues: map[string]string{"availability": "=HYPERLINK(\"x\")"}, DueDate: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)}, {ID: 2, Title: "Availability", Club: "B", Status: "assigned", Fields: []junior.FormField{field}}}
+	items := []junior.FormAssignment{{ID: 1, Title: "Availability", Club: "A", Status: "submitted", Fields: []junior.FormField{{Key: "u9s", Label: "U9s", Type: "section"}, field}, Values: map[string]string{"availability": "draft"}, SubmittedValues: map[string]string{"availability": "=HYPERLINK(\"x\")"}, DueDate: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)}, {ID: 2, Title: "Availability", Club: "B", Status: "assigned", Fields: []junior.FormField{field}}}
 	filtered := juniorFilterFormAssignments(items, "submitted", "a")
 	if len(filtered) != 1 || filtered[0].ID != 1 {
 		t.Fatal("filter/export population differs")
@@ -71,10 +72,36 @@ func TestJuniorFormBuilderRetainsUniqueKeysAcrossNewVersions(t *testing.T) {
 	s := &Server{}
 	w := httptest.NewRecorder()
 	s.renderJuniorFormBuilder(w, httptest.NewRequest("GET", "/admin/juniors/forms/1?edit=1", nil), junior.FormInput{ID: 1, SeasonID: 7, Fields: []junior.FormField{{Key: "question_2", Label: "Existing", Type: "text"}}}, []junior.ClubSummary{{ID: 1, Name: "A", State: "active"}}, []junior.Season{{ID: 7, Name: "2026", State: "open"}})
-	if !strings.Contains(w.Body.String(), `name="field_key_1" value="question_2"`) || !strings.Contains(w.Body.String(), `name="field_key_2" value="question_1"`) {
-		t.Fatal("new question reused existing immutable key")
+	if !strings.Contains(w.Body.String(), `name="field_key_1" value="question_2"`) {
+		t.Fatal("the builder lost an existing question key")
+	}
+	values := url.Values{
+		"due_date":      {"2027-02-01"},
+		"field_label_1": {"U9s"}, "field_type_1": {"section"}, "field_description_1": {"For U9 teams"},
+		"field_label_2": {"Existing"}, "field_type_2": {"text"}, "field_key_2": {"question_1"},
+	}
+	for i := 3; i <= junior.MaxFormFields; i++ {
+		n := strconv.Itoa(i)
+		values.Set("field_label_"+n, "Question "+n)
+		values.Set("field_type_"+n, "text")
+	}
+	input, err := juniorParseFormBuilder(juniorBuilderRequest(values), 1)
+	if err != nil || len(input.Fields) != junior.MaxFormFields {
+		t.Fatalf("expected %d items: %v", junior.MaxFormFields, err)
+	}
+	section := input.Fields[0]
+	if section.Key != "question_2" || section.Type != "section" || section.Description != "For U9 teams" || input.Fields[1].Key != "question_1" {
+		t.Fatalf("section or existing question changed: %+v", input.Fields[:2])
+	}
+	if err := junior.ValidateFormValues(input.Fields, map[string]string{section.Key: "unexpected"}, true); !errors.Is(err, junior.ErrValidation) {
+		t.Fatalf("section accepted an answer: %v", err)
+	}
+	values.Set("field_key_1", "question_1")
+	if _, err := juniorParseFormBuilder(juniorBuilderRequest(values), 1); !errors.Is(err, junior.ErrValidation) {
+		t.Fatalf("duplicate item key accepted: %v", err)
 	}
 }
+
 func TestJuniorFixtureFiltersPreservePublishedPopulation(t *testing.T) {
 	fixtures := []junior.Fixture{{ID: 1, SeasonID: 3, AgeGroup: "U13", Division: "North", CompetitionName: "League", MatchDate: "2027-05-08", HomeClubID: 7, AwayClubID: 8, HomeClubName: "A", AwayClubName: "B"}, {ID: 2, SeasonID: 3, AgeGroup: "U13", Division: "South", MatchDate: "2027-05-08", HomeClubID: 7, AwayClubID: 9}, {ID: 3, SeasonID: 4, AgeGroup: "U13", Division: "North", MatchDate: "2027-05-08", HomeClubID: 7, AwayClubID: 8}}
 	filtered, err := juniorFilterFixtures(fixtures, url.Values{"season_id": {"3"}, "age_group": {"U13"}, "division": {"North"}, "club_id": {"8"}, "date_from": {"2027-05-01"}, "date_to": {"2027-05-15"}, "q": {"league"}})
