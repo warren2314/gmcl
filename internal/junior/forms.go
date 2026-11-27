@@ -11,14 +11,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
+const MaxFormFields = 100
+
 type FormField struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	Type     string   `json:"type"`
-	Required bool     `json:"required"`
-	Options  []string `json:"options,omitempty"`
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required"`
+	Options     []string `json:"options,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 type FormInput struct {
 	ID, CurrentVersionID, SeasonID int64
@@ -105,16 +109,27 @@ func (s *Service) FormSubmissionHistory(ctx context.Context, p Principal, assign
 var formKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 func ValidateFormFields(fields []FormField) error {
-	if len(fields) < 1 || len(fields) > 10 {
-		return fmt.Errorf("%w: add between one and ten fields", ErrValidation)
+	if len(fields) < 1 || len(fields) > MaxFormFields {
+		return fmt.Errorf("%w: add up to %d questions and section headings", ErrValidation, MaxFormFields)
 	}
 	keys := map[string]bool{}
 	teamFields := 0
+	questions := 0
 	for _, f := range fields {
 		if !formKey.MatchString(f.Key) || keys[f.Key] || strings.TrimSpace(f.Label) == "" || len(f.Label) > 160 || strings.ContainsAny(f.Label, "\x00\r\n") {
 			return fmt.Errorf("%w: each field needs a unique key and a short label", ErrValidation)
 		}
 		keys[f.Key] = true
+		if utf8.RuneCountInString(f.Description) > 1000 || strings.ContainsRune(f.Description, 0) {
+			return fmt.Errorf("%w: more information must be 1,000 characters or fewer", ErrValidation)
+		}
+		if f.Type == "section" {
+			if f.Required || len(f.Options) != 0 {
+				return fmt.Errorf("%w: section headings cannot require an answer or have choices", ErrValidation)
+			}
+			continue
+		}
+		questions++
 		switch f.Type {
 		case "team_entries":
 			teamFields++
@@ -137,12 +152,18 @@ func ValidateFormFields(fields []FormField) error {
 			return fmt.Errorf("%w: unsupported field type", ErrValidation)
 		}
 	}
+	if questions == 0 {
+		return fmt.Errorf("%w: add at least one question", ErrValidation)
+	}
 	return nil
 }
 
 func ValidateFormValues(fields []FormField, values map[string]string, complete bool) error {
 	allowed := map[string]bool{}
 	for _, f := range fields {
+		if f.Type == "section" {
+			continue
+		}
 		allowed[f.Key] = true
 		value := strings.TrimSpace(values[f.Key])
 		limit := 4000

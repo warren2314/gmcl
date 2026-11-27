@@ -45,30 +45,42 @@ func juniorParseFormBuilder(r *http.Request, id int64) (junior.FormInput, error)
 		return input, fmt.Errorf("%w: enter a valid deadline", junior.ErrValidation)
 	}
 	input.DueDate = due
+	usedKeys := map[string]bool{}
 	for name := range r.PostForm {
 		if strings.HasPrefix(name, "field_label_") {
 			n, err := strconv.Atoi(strings.TrimPrefix(name, "field_label_"))
-			if err != nil || n < 1 || n > 10 {
-				return input, fmt.Errorf("%w: at most ten questions are supported", junior.ErrValidation)
+			if err != nil || n < 1 || n > junior.MaxFormFields {
+				return input, fmt.Errorf("%w: at most %d questions and section headings are supported", junior.ErrValidation, junior.MaxFormFields)
+			}
+			if key := r.PostForm.Get("field_key_" + strconv.Itoa(n)); key != "" && strings.TrimSpace(r.PostForm.Get(name)) != "" {
+				usedKeys[key] = true
 			}
 		}
 	}
-	for i := 1; i <= 10; i++ {
+	nextKey := 1
+	for i := 1; i <= junior.MaxFormFields; i++ {
 		suffix := strconv.Itoa(i)
 		label := strings.TrimSpace(r.FormValue("field_label_" + suffix))
 		choices := r.FormValue("field_options_" + suffix)
+		description := strings.TrimSpace(r.FormValue("field_description_" + suffix))
 		required := r.FormValue("field_required_"+suffix) == "1"
 		if label == "" {
-			if required || strings.TrimSpace(choices) != "" {
-				return input, fmt.Errorf("%w: add a label for question %d", junior.ErrValidation, i)
+			if required || description != "" || strings.TrimSpace(choices) != "" {
+				return input, fmt.Errorf("%w: add a label for item %d", junior.ErrValidation, i)
 			}
 			continue
 		}
 		key := r.FormValue("field_key_" + suffix)
 		if key == "" {
-			key = "question_" + suffix
+			for {
+				key = "question_" + strconv.Itoa(nextKey)
+				nextKey++
+				if !usedKeys[key] {
+					break
+				}
+			}
 		}
-		field := junior.FormField{Key: key, Label: label, Type: r.FormValue("field_type_" + suffix), Required: required}
+		field := junior.FormField{Key: key, Label: label, Description: description, Type: r.FormValue("field_type_" + suffix), Required: required}
 		if field.Type == "team_entries" {
 			field.Required = true
 		}
@@ -116,7 +128,7 @@ func (s *Server) handleJuniorForms() http.HandlerFunc {
 			return
 		}
 		if r.Method == http.MethodPost {
-			r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
 			if err := r.ParseForm(); err != nil {
 				juniorHTTPError(w, r, junior.ErrValidation)
 				return
@@ -286,7 +298,7 @@ func (s *Server) renderJuniorFormBuilder(w http.ResponseWriter, r *http.Request,
 		fmt.Fprint(w, `<div class="alert alert-warning">Choose an open junior season before publishing a form.</div>`)
 		return
 	}
-	fmt.Fprint(w, `<p>Use up to ten questions. Open an unused question to add another. Blank questions are omitted. Each publication fixes its questions, deadline and selected clubs.</p><form method="POST">`)
+	fmt.Fprint(w, `<p>Add questions and use section headings to group them, for example U9s and U11s. More information appears under each label. Blank items are left out.</p><form method="POST">`)
 	juniorFixtureCSRF(w, r)
 	fmt.Fprintf(w, `<input type="hidden" name="action" value="publish"><input type="hidden" name="season_id" value="%d"><input type="hidden" name="current_version_id" value="%d"><div class="row g-3 mb-3"><label class="col-md-8">Form title<input class="form-control" name="title" maxlength="200" value="%s" required></label><label class="col-md-4">Deadline<input class="form-control" type="date" name="due_date" value="%s" required></label><label class="col-12">Instructions<textarea class="form-control" name="description" maxlength="4000" rows="3">%s</textarea></label></div>`, input.SeasonID, input.CurrentVersionID, escapeHTML(input.Title), func() string {
 		if input.DueDate.IsZero() {
@@ -299,44 +311,20 @@ func (s *Server) renderJuniorFormBuilder(w http.ResponseWriter, r *http.Request,
 		checked = " checked"
 	}
 	fmt.Fprintf(w, `<label class="form-check mb-3"><input class="form-check-input" type="checkbox" name="requires_review" value="1"%s>Require league review after submission</label>`, checked)
-	usedKeys := map[string]bool{}
-	for _, field := range input.Fields {
-		usedKeys[field.Key] = true
+	fmt.Fprintf(w, `<div id="junior-form-items" data-limit="%d">`, junior.MaxFormFields)
+	for i, field := range input.Fields {
+		juniorRenderBuilderItem(w, i+1, field)
 	}
-	for i := 1; i <= 10; i++ {
-		key := fmt.Sprintf("question_%d", i)
-		if i > len(input.Fields) {
-			for n := 1; usedKeys[key]; n++ {
-				key = fmt.Sprintf("question_%d", n)
-			}
-			usedKeys[key] = true
-		}
-		f := junior.FormField{Key: key, Type: "text"}
-		if i <= len(input.Fields) {
-			f = input.Fields[i-1]
-		}
-		opened := ""
-		if i == 1 || f.Label != "" {
-			opened = " open"
-		}
-		label := f.Label
-		if label == "" {
-			label = "Unused question"
-		}
-		fmt.Fprintf(w, `<details class="card mb-2"%s><summary class="card-header">Question %d · %s</summary><div class="card-body row g-3"><input type="hidden" name="field_key_%d" value="%s"><label class="col-md-8">Question label<input class="form-control" name="field_label_%d" maxlength="160" value="%s"></label><label class="col-md-4">Answer type<select class="form-select" name="field_type_%d">`, opened, i, escapeHTML(label), i, escapeHTML(f.Key), i, escapeHTML(f.Label), i)
-		for _, kind := range []struct{ key, label string }{{"text", "Short text"}, {"long_text", "Long text"}, {"email", "Email address"}, {"number", "Number"}, {"date", "Date"}, {"yes_no", "Yes / no"}, {"select", "Choice"}, {"team_entries", "Team entries (required; league approval)"}} {
-			sel := ""
-			if kind.key == f.Type {
-				sel = " selected"
-			}
-			fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, kind.key, sel, kind.label)
-		}
-		checked = ""
-		if f.Required {
-			checked = " checked"
-		}
-		fmt.Fprintf(w, `</select></label><label class="col-md-8">Choices — one per line, for Choice answers only<textarea class="form-control" name="field_options_%d" rows="2">%s</textarea></label><div class="col-md-4"><label class="form-check mt-4"><input class="form-check-input" type="checkbox" name="field_required_%d" value="1"%s>Answer required</label></div></div></details>`, i, escapeHTML(strings.Join(f.Options, "\n")), i, checked)
+	if len(input.Fields) == 0 {
+		juniorRenderBuilderItem(w, 1, junior.FormField{Type: "text"})
 	}
+	fmt.Fprint(w, `</div><template id="junior-form-item-template">`)
+	juniorRenderBuilderItem(w, 0, junior.FormField{Type: "text"})
+	fmt.Fprintf(w, `</template><div class="d-flex flex-wrap gap-2 mb-2">
+<button class="btn btn-outline-primary" type="button" id="junior-add-question">Add question</button>
+<button class="btn btn-outline-primary" type="button" id="junior-add-section">Add section</button>
+</div><p class="small text-muted">You can add up to %d questions and section headings in total.</p>`, junior.MaxFormFields)
+	fmt.Fprint(w, juniorFormBuilderScript)
 	selected := map[int32]bool{}
 	for _, id := range input.ClubIDs {
 		selected[id] = true
@@ -365,6 +353,98 @@ func (s *Server) renderJuniorFormBuilder(w http.ResponseWriter, r *http.Request,
 	}
 	fmt.Fprint(w, `</form>`)
 }
+
+func juniorRenderBuilderItem(w http.ResponseWriter, i int, f junior.FormField) {
+	section := f.Type == "section"
+	title := f.Label
+	if title == "" {
+		title = "New question"
+	}
+	label := "Question label"
+	if section {
+		label = "Section heading"
+	}
+	fmt.Fprintf(w, `<details class="card mb-2" open><summary class="card-header"><span data-item-title>%s</span></summary><div class="card-body row g-3">
+<input type="hidden" name="field_key_%d" value="%s"><label class="col-md-8"><span data-item-label>%s</span><input class="form-control" name="field_label_%d" maxlength="160" value="%s"></label>
+<label class="col-md-4">Answer type or section<select class="form-select" name="field_type_%d">`, escapeHTML(title), i, escapeHTML(f.Key), label, i, escapeHTML(f.Label), i)
+	for _, kind := range []struct{ key, label string }{{"text", "Short text"}, {"long_text", "Long text"}, {"email", "Email address"}, {"number", "Number"}, {"date", "Date"}, {"yes_no", "Yes / no"}, {"select", "Choice"}, {"team_entries", "Team entries (required; league approval)"}, {"section", "Section heading"}} {
+		selected := ""
+		if kind.key == f.Type {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, `<option value="%s"%s>%s</option>`, kind.key, selected, kind.label)
+	}
+	checked := ""
+	if f.Required {
+		checked = " checked"
+	}
+	fmt.Fprintf(w, `</select></label><label class="col-12">More information (optional)<textarea class="form-control" name="field_description_%d" maxlength="1000" rows="2">%s</textarea></label>
+<label class="col-md-8" data-item-choices>Choices (one per line)<textarea class="form-control" name="field_options_%d" rows="2">%s</textarea></label>
+<div class="col-md-4" data-item-required><label class="form-check mt-4"><input class="form-check-input" type="checkbox" name="field_required_%d" value="1"%s>Answer required</label></div>
+<div class="col-12 d-flex gap-2 flex-wrap">
+<button type="button" class="btn btn-sm btn-outline-secondary" data-item-action="up">Move up</button>
+<button type="button" class="btn btn-sm btn-outline-secondary" data-item-action="down">Move down</button>
+<button type="button" class="btn btn-sm btn-outline-danger" data-item-action="remove">Remove</button>
+</div></div></details>`, i, escapeHTML(f.Description), i, escapeHTML(strings.Join(f.Options, "\n")), i, checked)
+}
+
+const juniorFormBuilderScript = `<script>
+(() => {
+	const list = document.getElementById('junior-form-items');
+	const template = document.getElementById('junior-form-item-template');
+	const addQuestion = document.getElementById('junior-add-question');
+	const addSection = document.getElementById('junior-add-section');
+
+	function refresh() {
+		const items = Array.from(list.children);
+		for (const [index, item] of items.entries()) {
+			for (const field of item.querySelectorAll('[name]')) {
+				field.name = field.name.replace(/\d+$/, index + 1);
+			}
+			const type = item.querySelector('select').value;
+			const label = item.querySelector('input[name^="field_label_"]');
+			const question = type !== 'section';
+			item.querySelector('[data-item-label]').textContent = question ? 'Question label' : 'Section heading';
+			item.querySelector('[data-item-title]').textContent = label.value.trim() || (question ? 'New question' : 'New section');
+			const choices = item.querySelector('[data-item-choices]');
+			const required = item.querySelector('[data-item-required]');
+			choices.hidden = choices.querySelector('textarea').disabled = type !== 'select';
+			required.hidden = required.querySelector('input').disabled = !question || type === 'team_entries';
+			item.querySelector('[data-item-action="up"]').disabled = index === 0;
+			item.querySelector('[data-item-action="down"]').disabled = index === items.length - 1;
+		}
+		addQuestion.disabled = addSection.disabled = items.length >= Number(list.dataset.limit);
+	}
+
+	function add(type) {
+		const item = template.content.firstElementChild.cloneNode(true);
+		item.querySelector('select').value = type;
+		list.append(item);
+		refresh();
+		item.querySelector('input[name^="field_label_"]').focus();
+	}
+	addQuestion.addEventListener('click', () => add('text'));
+	addSection.addEventListener('click', () => add('section'));
+	list.addEventListener('input', refresh);
+	list.addEventListener('click', event => {
+		const action = event.target.dataset.itemAction;
+		if (!action) return;
+		const item = event.target.closest('details');
+		if (action === 'remove') {
+			const next = item.nextElementSibling || item.previousElementSibling;
+			item.remove();
+			refresh();
+			(next ? next.querySelector('summary') : addQuestion).focus();
+			return;
+		}
+		if (action === 'up') list.insertBefore(item, item.previousElementSibling);
+		if (action === 'down') list.insertBefore(item.nextElementSibling, item);
+		refresh();
+		(item.contains(document.activeElement) ? document.activeElement : item.querySelector('summary')).focus();
+	});
+	refresh();
+})();
+</script>`
 
 func juniorFilterFormAssignments(items []junior.FormAssignment, status, query string) []junior.FormAssignment {
 	out := []junior.FormAssignment{}
@@ -475,6 +555,9 @@ func juniorFormCSVRows(items []junior.FormAssignment) [][]string {
 	rows := [][]string{{"assignment_id", "form", "club", "version", "status", "deadline", "submission_id", "question_key", "question", "submitted_answer", "draft_answer"}}
 	for _, a := range items {
 		for _, f := range a.Fields {
+			if f.Type == "section" {
+				continue
+			}
 			rows = append(rows, []string{strconv.FormatInt(a.ID, 10), a.Title, a.Club, strconv.Itoa(a.Revision), a.Status, a.DueDate.Format("2006-01-02"), strconv.FormatInt(a.SubmissionID, 10), f.Key, f.Label, a.SubmittedValues[f.Key], a.Values[f.Key]})
 		}
 	}
@@ -533,7 +616,7 @@ func (s *Server) handleJuniorFormAssignment() http.HandlerFunc {
 				juniorHTTPError(w, r, junior.ErrForbidden)
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
+			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 			if err = r.ParseForm(); err != nil {
 				juniorHTTPError(w, r, junior.ErrValidation)
 				return
@@ -553,6 +636,9 @@ func (s *Server) handleJuniorFormAssignment() http.HandlerFunc {
 				}
 				values := map[string]string{}
 				for _, field := range assignment.Fields {
+					if field.Type == "section" {
+						continue
+					}
 					values[field.Key] = strings.TrimSpace(r.FormValue("answer_" + field.Key))
 					if field.Type == "team_entries" {
 						entries := []junior.TeamEntry{}
@@ -662,6 +748,12 @@ func juniorLondon() *time.Location {
 func juniorRenderFormValues(w http.ResponseWriter, fields []junior.FormField, values map[string]string) {
 	fmt.Fprint(w, `<dl>`)
 	for _, f := range fields {
+		if f.Type == "section" {
+			fmt.Fprint(w, `</dl>`)
+			juniorRenderFormSection(w, f)
+			fmt.Fprint(w, `<dl>`)
+			continue
+		}
 		value := values[f.Key]
 		if f.Type == "team_entries" {
 			entries, e := junior.ParseTeamEntries(value, false)
@@ -676,11 +768,26 @@ func juniorRenderFormValues(w http.ResponseWriter, fields []junior.FormField, va
 		if value == "" {
 			value = "Not answered"
 		}
-		fmt.Fprintf(w, `<dt>%s</dt><dd style="white-space:pre-wrap;overflow-wrap:anywhere">%s</dd>`, escapeHTML(f.Label), escapeHTML(value))
+		fmt.Fprintf(w, `<dt>%s</dt><dd style="overflow-wrap:anywhere">`, escapeHTML(f.Label))
+		if f.Description != "" {
+			fmt.Fprintf(w, `<p class="form-text mb-1" style="white-space:pre-wrap">%s</p>`, escapeHTML(f.Description))
+		}
+		fmt.Fprintf(w, `<div style="white-space:pre-wrap">%s</div></dd>`, escapeHTML(value))
 	}
 	fmt.Fprint(w, `</dl>`)
 }
+func juniorRenderFormSection(w http.ResponseWriter, f junior.FormField) {
+	fmt.Fprintf(w, `<h3 class="h5 mt-4 pt-3 border-top">%s</h3>`, escapeHTML(f.Label))
+	if f.Description != "" {
+		fmt.Fprintf(w, `<p class="text-muted" style="white-space:pre-wrap;overflow-wrap:anywhere">%s</p>`, escapeHTML(f.Description))
+	}
+}
+
 func juniorRenderFormAnswer(w http.ResponseWriter, f junior.FormField, value string) {
+	if f.Type == "section" {
+		juniorRenderFormSection(w, f)
+		return
+	}
 	id := "answer_" + f.Key
 	required := ""
 	star := ""
@@ -688,7 +795,16 @@ func juniorRenderFormAnswer(w http.ResponseWriter, f junior.FormField, value str
 		required = " required"
 		star = " (required)"
 	}
-	fmt.Fprintf(w, `<div class="mb-3"><label class="form-label" for="%s">%s%s</label>`, escapeHTML(id), escapeHTML(f.Label), star)
+	fmt.Fprint(w, `<div class="mb-3">`)
+	if f.Type == "team_entries" {
+		fmt.Fprintf(w, `<fieldset><legend class="fs-6">%s%s</legend>`, escapeHTML(f.Label), star)
+	} else {
+		fmt.Fprintf(w, `<label class="form-label" for="%s">%s%s</label>`, escapeHTML(id), escapeHTML(f.Label), star)
+	}
+	if f.Description != "" {
+		fmt.Fprintf(w, `<p id="%s_help" class="form-text mt-0" style="white-space:pre-wrap;overflow-wrap:anywhere">%s</p>`, escapeHTML(id), escapeHTML(f.Description))
+		required += ` aria-describedby="` + escapeHTML(id) + `_help"`
+	}
 	switch f.Type {
 	case "team_entries":
 		entries, _ := junior.ParseTeamEntries(value, false)
@@ -708,6 +824,7 @@ func juniorRenderFormAnswer(w http.ResponseWriter, f junior.FormField, value str
 			}
 			fmt.Fprintf(w, `</select></label><label class="col">Requested grade<input class="form-control" name="team_%s_%d_grade" maxlength="100" value="%s"></label><label class="col">Geographical zone<input class="form-control" name="team_%s_%d_zone" maxlength="100" value="%s"></label><label class="col-12">Grading information (previous division, experience and playing strength)<textarea class="form-control" name="team_%s_%d_notes" maxlength="2000">%s</textarea></label></div>`, f.Key, i, escapeHTML(entry.RequestedGrade), f.Key, i, escapeHTML(entry.Zone), f.Key, i, escapeHTML(entry.GradingNotes))
 		}
+		fmt.Fprint(w, `</fieldset>`)
 	case "long_text":
 		fmt.Fprintf(w, `<textarea id="%s" class="form-control" name="%s" maxlength="4000" rows="4"%s>%s</textarea>`, escapeHTML(id), escapeHTML(id), required, escapeHTML(value))
 	case "select", "yes_no":

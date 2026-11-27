@@ -61,8 +61,13 @@ func TestJuniorFormHTTPWorkflowPostgres(t *testing.T) {
 		return adminWorkspaceHandlerRequest(t, router, seed.Admin.AdminID, method, path, values)
 	}
 	builder := staffRequest("GET", fmt.Sprintf("/admin/juniors/forms/new?season_id=%d", seed.SeasonID), nil)
-	assertAdminWorkspaceHandlerHTML(t, builder, []string{"Publish official form", "Question 10", "Target clubs", "Answer type"}, []string{"JSON"})
+	assertAdminWorkspaceHandlerHTML(t, builder, []string{"Publish official form", "Add question", "Add section", "More information", "Target clubs", "Answer type"}, []string{"JSON"})
 	values := url.Values{"csrf_token": {"synthetic-csrf-token"}, "action": {"publish"}, "season_id": {strconv.FormatInt(seed.SeasonID, 10)}, "title": {"Synthetic official form"}, "description": {"Synthetic instructions"}, "due_date": {"2027-05-01"}, "requires_review": {"1"}, "field_label_1": {"Official answer"}, "field_type_1": {"text"}, "field_required_1": {"1"}, "field_label_2": {"Contact email"}, "field_type_2": {"email"}}
+	values.Set("field_label_3", "U11s")
+	values.Set("field_type_3", "section")
+	values.Set("field_key_3", "u11s")
+	values.Set("field_description_3", "Details for U11 teams")
+	values.Set("field_description_2", "Use your club email address")
 	values.Set("due_date", time.Now().AddDate(0, 0, -1).In(juniorLondon()).Format("2006-01-02"))
 	for _, club := range seed.Clubs {
 		values.Add("club_id", strconv.FormatInt(int64(club), 10))
@@ -114,6 +119,8 @@ func TestJuniorFormHTTPWorkflowPostgres(t *testing.T) {
 	if cross.Code != 403 {
 		t.Fatalf("cross-club response leak: %d", cross.Code)
 	}
+	clubForm := juniorPortalTestRequest(t, router, grant, "GET", path, nil)
+	assertAdminWorkspaceHandlerHTML(t, clubForm, []string{"U11s</h3>", "Details for U11 teams", "Use your club email address"}, []string{`name="answer_u11s"`})
 	noCSRF := juniorPortalTestRequest(t, router, grant, "POST", path, url.Values{"action": {"save"}, "draft_revision": {"0"}})
 	if noCSRF.Code != 403 {
 		t.Fatalf("club CSRF bypass: %d", noCSRF.Code)
